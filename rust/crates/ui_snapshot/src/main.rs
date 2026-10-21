@@ -3148,7 +3148,7 @@ fn main() -> anyhow::Result<()> {
         println!("wrote {out} ({w}x{h})");
         return Ok(());
     }
-    let base = settings_ui::panel(
+    let mut base = settings_ui::panel(
         category,
         None,
         &expanded,
@@ -3160,6 +3160,27 @@ fn main() -> anyhow::Result<()> {
         &search,
         !search.is_empty(),
     );
+    if scene_size.is_some() {
+        for (index, (red, green, blue)) in [
+            (0.996, 0.373, 0.341),
+            (0.996, 0.737, 0.18),
+            (0.157, 0.784, 0.251),
+        ]
+        .iter()
+        .enumerate()
+        {
+            base.rects.push(ui::Rect {
+                radius: 6.0,
+                ..ui::Rect::new(
+                    20.0 + index as f32 * 20.0,
+                    14.0,
+                    12.0,
+                    12.0,
+                    ui::Rgba::new(*red, *green, *blue, 1.0),
+                )
+            });
+        }
+    }
 
     // With POPOVER=1, render an open Theme dropdown to verify the floating overlay.
     // With FONTPOP=1, render the (long, scrolled) font-family dropdown to verify the scrollbar.
@@ -3197,7 +3218,14 @@ fn main() -> anyhow::Result<()> {
             (&pop.rects, &pop.tris, &pop.texts),
         )?;
     } else {
-        r.render(&base.rects, &base.tris, &base.texts)?;
+        let layers: Vec<ui::Layer> = vec![(
+            base.rects.as_slice(),
+            base.tris.as_slice(),
+            base.texts.as_slice(),
+            base.icons.as_slice(),
+            None,
+        )];
+        r.render_frame(ui::theme().background, &layers)?;
     }
 
     let (w, h, rgba) = r.read_rgba()?;

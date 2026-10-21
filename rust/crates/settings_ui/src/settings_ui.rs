@@ -9,8 +9,8 @@ pub use settings_view::{SettingsView, SideEffects};
 
 use settings::Settings;
 use ui::{
-    button_static, chevron_down, chevron_right, chevron_up_down, close_icon, div, divider_faded,
-    label, render, search_icon, theme, ButtonStyle, Div, LabelSize, Node, Rect, Rgba,
+    chevron_down, chevron_right, chevron_up_down, close_icon, div, label, render, search_icon,
+    theme, ButtonStyle, Div, LabelSize, Node, Rect, Rgba,
 };
 
 // Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
@@ -32,8 +32,25 @@ fn sel_c() -> Rgba {
 fn chip_c() -> Rgba {
     theme().element_background
 }
+fn panel_edge_c() -> Rgba {
+    match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.25),
+        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.06),
+    }
+}
+
+// Settings rules and control edges are translucent so they read the same on the panel and on a tinted hit row.
+fn line_c() -> Rgba {
+    match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.06),
+        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.08),
+    }
+}
 fn border_c() -> Rgba {
-    theme().border
+    match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.12),
+        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.15),
+    }
 }
 fn hover_c() -> Rgba {
     theme().element_hover
@@ -48,45 +65,23 @@ fn menu_c() -> Rgba {
     theme().elevated_surface_background
 }
 
-const TITLEBAR: f32 = 28.0; // top clearance for the traffic lights
 const ROUND: f32 = 6.0;
-// Navbar item metrics from the reference's TreeViewItem: lead (disclosure) column and the sub-item indent
-// column that centers the 1px guide line.
-const NAV_LEAD_W: f32 = 16.0;
-const NAV_INDENT_W: f32 = 22.0;
+const NAV_LEAD_W: f32 = 12.0;
 
-// Navbar highlight/guide colors, matching the reference TreeViewItem (element_active @ 0.5, border @ 0.4/0.5).
-fn nav_sel_bg() -> Rgba {
-    theme().element_active.alpha(0.5)
-}
-fn nav_sel_border() -> Rgba {
-    theme().border.alpha(0.4)
-}
 fn nav_guide() -> Rgba {
-    theme().border.alpha(0.5)
+    theme().border_variant
 }
 
-/// The reference navbar item box: full-width, rounded, a reserved 1px border (colored when selected), subtle
-/// selected/hover fill. Both categories and sub-sections use it so the highlight spans the whole width.
 fn nav_item_box(active: bool, hovered: bool) -> Div {
     let mut b = div()
         .row()
         .h_px(28.0)
-        .pl(2.0)
-        .pr(4.0)
-        .gap(8.0)
+        .px(8.0)
+        .gap(6.0)
         .items_center()
-        .rounded(4.0)
-        .border(
-            1.0,
-            if active {
-                nav_sel_border()
-            } else {
-                Rgba::TRANSPARENT
-            },
-        );
+        .rounded(ROUND);
     if active {
-        b = b.bg(nav_sel_bg());
+        b = b.bg(sel_c());
     } else if hovered {
         b = b.bg(hover_c());
     }
@@ -1659,14 +1654,16 @@ pub fn popover(
     out
 }
 
-const SIDEBAR_W: f32 = 240.0;
-const CONTENT_PAD: f32 = 32.0;
-// Top inset of the content column before the toolbar. The traffic lights sit over the sidebar (not the
-// content), so the content doesn't reserve titlebar height -- it matches the reference's content `pt_6` (24).
-const CONTENT_TOP: f32 = 24.0;
-// The fixed top strip of the content column: top inset + toolbar (30) + gap (16). The scrollable page starts
-// below it.
-const PAGE_TOP: f32 = CONTENT_TOP + 30.0 + 16.0;
+const TITLE_H: f32 = 40.0;
+const GAP: f32 = 6.0;
+const NAV_W: f32 = 260.0;
+const PANEL_RADIUS: f32 = 10.0;
+const SIDEBAR_W: f32 = GAP + NAV_W + GAP;
+const CONTENT_PAD: f32 = 28.0;
+const HIT_BLEED: f32 = 12.0;
+const TOOLBAR_H: f32 = 52.0;
+const PAGE_TOP: f32 = TITLE_H + TOOLBAR_H;
+const NAV_FOOT_H: f32 = 26.0;
 
 fn rem(v: f32) -> f32 {
     v * ui::ui_text_scale()
@@ -1677,7 +1674,12 @@ fn rem(v: f32) -> f32 {
 pub fn content_region(w: f32, h: f32) -> (f32, f32, f32, f32) {
     let x = rem(SIDEBAR_W);
     let y = rem(PAGE_TOP);
-    (x, y, (w - x).max(0.0), (h - y).max(0.0))
+    (
+        x,
+        y,
+        (w - x - rem(GAP)).max(0.0),
+        (h - y - rem(GAP)).max(0.0),
+    )
 }
 
 /// The content-page scrollbar thumb (logical px), or None when everything fits. Same style as the popover's.
@@ -1732,21 +1734,97 @@ pub fn chrome(
         .filter(|_| selected == LANGUAGES_TOOLS)
         .and_then(|index| language_names().get(index).copied());
     let x = rem(SIDEBAR_W);
+    let (gap, radius) = (rem(GAP), rem(PANEL_RADIUS));
+    let panel_h = (h - rem(TITLE_H) - gap).max(0.0);
+    // Panels float on the window background with a faint outer edge, not an inner border.
+    let ring = |rect: Rect| Rect {
+        radius: radius + 1.0,
+        border: 1.0,
+        border_color: panel_edge_c(),
+        ..Rect::new(
+            rect.x - 1.0,
+            rect.y - 1.0,
+            rect.w + 2.0,
+            rect.h + 2.0,
+            Rgba::TRANSPARENT,
+        )
+    };
     let mut out = render(
-        &sidebar_head(search, search_active),
-        Rect::new(0.0, 0.0, x, h, sidebar_c()),
+        &div()
+            .row()
+            .h_px(TITLE_H)
+            .pl(86.0)
+            .items_center()
+            .child(label("Settings").size(13.0).medium().color(title_c()))
+            .into(),
+        Rect::new(0.0, 0.0, w, rem(TITLE_H), Rgba::TRANSPARENT),
     );
+    out.rects.insert(
+        0,
+        Rect {
+            radius,
+            ..Rect::new(gap, rem(TITLE_H), rem(NAV_W), panel_h, sidebar_c())
+        },
+    );
+    out.rects.insert(
+        0,
+        ring(Rect::new(
+            gap,
+            rem(TITLE_H),
+            rem(NAV_W),
+            panel_h,
+            Rgba::TRANSPARENT,
+        )),
+    );
+    let head = render(
+        &sidebar_head(search, search_active),
+        Rect::new(gap, rem(TITLE_H), rem(NAV_W), rem(52.0), Rgba::TRANSPARENT),
+    );
+    let foot = render(
+        &div()
+            .col()
+            .h_px(NAV_FOOT_H)
+            .px(14.0)
+            .pt(4.0)
+            .child(
+                label(format!("Pomelo {}", env!("CARGO_PKG_VERSION")))
+                    .size(12.0)
+                    .color(theme().text_placeholder),
+            )
+            .into(),
+        Rect::new(
+            gap,
+            h - gap - rem(NAV_FOOT_H + 6.0),
+            rem(NAV_W),
+            rem(NAV_FOOT_H),
+            Rgba::TRANSPARENT,
+        ),
+    );
+    for part in [head, foot] {
+        out.rects.extend(part.rects);
+        out.tris.extend(part.tris);
+        out.texts.extend(part.texts);
+        out.icons.extend(part.icons);
+        out.hits.extend(part.hits);
+    }
     let nav_top = out
         .hits
         .iter()
         .find(|(_, id)| *id == CTRL_SEARCH)
         .map_or(0.0, |(rect, _)| rect.y + rect.h)
-        + rem(10.0);
-    let nav_clip = Rect::new(0.0, nav_top, x, (h - nav_top).max(0.0), Rgba::TRANSPARENT);
+        + rem(8.0);
+    let nav_bottom = h - gap - rem(NAV_FOOT_H + 8.0);
+    let nav_clip = Rect::new(
+        gap,
+        nav_top,
+        rem(NAV_W),
+        (nav_bottom - nav_top).max(0.0),
+        Rgba::TRANSPARENT,
+    );
     let origin = nav_top - nav_scroll;
     let nav = render(
         &sidebar_nav(selected, hovered, active_section, expanded, search),
-        Rect::new(0.0, origin, x, h.max(1.0) * 4.0, Rgba::TRANSPARENT),
+        Rect::new(gap, origin, rem(NAV_W), h.max(1.0) * 4.0, Rgba::TRANSPARENT),
     );
     let nav_height = nav
         .hits
@@ -1754,13 +1832,24 @@ pub fn chrome(
         .map(|(rect, _)| rect.y + rect.h)
         .fold(origin, f32::max)
         - origin
-        + rem(10.0);
+        + rem(8.0);
+    let content_w = (w - x - gap).max(0.0);
+    out.rects.push(Rect {
+        radius,
+        ..Rect::new(x, rem(TITLE_H), content_w, rem(TOOLBAR_H), bg_c())
+    });
+    out.rects.push(Rect::new(
+        x,
+        rem(TITLE_H) + radius,
+        content_w,
+        rem(TOOLBAR_H) - radius,
+        bg_c(),
+    ));
     let strip: Node = div()
         .col()
-        .h_px(PAGE_TOP)
-        .bg(bg_c())
+        .h_px(TOOLBAR_H)
         .px(CONTENT_PAD)
-        .child(div().h_px(CONTENT_TOP))
+        .justify_center()
         .child(match sub_page {
             Some(name) => {
                 sub_page_header(&["User", CATEGORIES[LANGUAGES_TOOLS].0, "Languages", name])
@@ -1770,13 +1859,26 @@ pub fn chrome(
         .into();
     let sp = render(
         &strip,
-        Rect::new(x, 0.0, (w - x).max(0.0), rem(PAGE_TOP), bg_c()),
+        Rect::new(
+            x,
+            rem(TITLE_H),
+            content_w,
+            rem(TOOLBAR_H),
+            Rgba::TRANSPARENT,
+        ),
     );
     out.rects.extend(sp.rects);
     out.tris.extend(sp.tris);
     out.texts.extend(sp.texts);
     out.icons.extend(sp.icons);
     out.hits.extend(sp.hits);
+    out.rects.push(ring(Rect::new(
+        x,
+        rem(TITLE_H),
+        content_w,
+        panel_h,
+        Rgba::TRANSPARENT,
+    )));
     Chrome {
         fixed: out,
         nav,
@@ -1802,13 +1904,16 @@ pub fn page(
     let top = rem(PAGE_TOP);
     let pad = rem(CONTENT_PAD);
     let mut out = ui::Painted {
-        rects: vec![Rect::new(
-            cl,
-            top,
-            (w - cl).max(0.0),
-            (h - top).max(0.0),
-            bg_c(),
-        )],
+        rects: vec![Rect {
+            radius: rem(PANEL_RADIUS),
+            ..Rect::new(
+                cl,
+                rem(TITLE_H),
+                (w - cl - rem(GAP)).max(0.0),
+                (h - rem(TITLE_H) - rem(GAP)).max(0.0),
+                bg_c(),
+            )
+        }],
         ..Default::default()
     };
     let jira = &state.jira;
@@ -1881,10 +1986,15 @@ pub fn page(
     } else {
         stub_body(CATEGORIES[selected].0)
     };
+    let bleed = if search.is_empty() {
+        0.0
+    } else {
+        rem(HIT_BLEED)
+    };
     let area = Rect::new(
-        cl + pad,
-        top - scroll,
-        (w - cl - 2.0 * pad).max(0.0),
+        cl + pad - bleed,
+        top + rem(4.0) - scroll,
+        (w - cl - rem(GAP) - 2.0 * pad + 2.0 * bleed).max(0.0),
         100000.0,
         Rgba::TRANSPARENT,
     );
@@ -1918,6 +2028,8 @@ pub fn panel(
     search_active: bool,
 ) -> ui::Painted {
     let (mut out, _) = page(selected, s, state, editing, search, w, h, 0.0);
+    out.rects
+        .insert(0, Rect::new(0.0, 0.0, w, h, theme().background));
     let ch = chrome(
         selected,
         hovered,
@@ -1941,18 +2053,7 @@ pub fn panel(
     out
 }
 
-/// The sidebar's fixed top: room for the traffic lights and the search box.
 fn sidebar_head(search: &str, search_active: bool) -> Node {
-    let col = div()
-        .col()
-        .w_px(240.0)
-        .bg(sidebar_c())
-        .px(10.0)
-        .py(10.0)
-        .gap(2.0)
-        .child(div().h_px(TITLEBAR)); // clear the traffic lights
-
-    // Search box: magnifier prefix, the query/placeholder, and a clear (x) button when non-empty (reference).
     let show_caret = search_active && ui::caret_phase();
     let text_area = if search.is_empty() {
         div()
@@ -1960,24 +2061,35 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
             .flex(1.0)
             .items_center()
             .child(caret(show_caret))
-            .child(label("Search settings...").size(12.0).color(dim_c()))
+            .child(
+                label("Search settings...")
+                    .size(13.0)
+                    .color(theme().text_placeholder),
+            )
     } else {
         div()
             .row()
             .flex(1.0)
             .items_center()
-            .child(label(search).size(12.0).color(title_c()))
+            .child(label(search).size(13.0).color(title_c()))
             .child(caret(show_caret))
     };
     let mut search_box = div()
         .row()
-        .h_px(32.0)
-        .px(8.0)
-        .gap(6.0)
+        .h_px(30.0)
+        .px(10.0)
+        .gap(8.0)
         .items_center()
         .rounded(ROUND)
         .bg(search_c())
-        .border(1.0, border_c())
+        .border(
+            1.0,
+            if search_active {
+                theme().text_accent
+            } else {
+                border_c()
+            },
+        )
         .on_click(CTRL_SEARCH)
         .child(search_icon().size(14.0).color(dim_c()))
         .child(text_area);
@@ -1989,7 +2101,13 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
                 .child(close_icon().size(14.0).color(dim_c())),
         );
     }
-    col.child(search_box).into()
+    div()
+        .col()
+        .w_px(NAV_W)
+        .px(8.0)
+        .pt(8.0)
+        .child(search_box)
+        .into()
 }
 
 /// The category list under the search box; it scrolls when it is taller than the window.
@@ -2000,7 +2118,7 @@ fn sidebar_nav(
     expanded: &[bool],
     search: &str,
 ) -> Node {
-    let mut col = div().col().w_px(240.0).px(10.0).pb(10.0).gap(2.0);
+    let mut col = div().col().w_px(NAV_W).px(6.0).gap(1.0);
     let searching = !search.is_empty();
     let q = search.to_lowercase();
     for (i, (name, subs)) in CATEGORIES.iter().enumerate() {
@@ -2023,9 +2141,15 @@ fn sidebar_nav(
         let toggle_id = NAV_TOGGLE_BASE + i as u64;
         let lead: Node = if has_subs {
             let chevron: Node = if is_expanded {
-                chevron_down().size(14.0).color(dim_c()).into()
+                chevron_down()
+                    .size(12.0)
+                    .color(theme().text_placeholder)
+                    .into()
             } else {
-                chevron_right().size(14.0).color(dim_c()).into()
+                chevron_right()
+                    .size(12.0)
+                    .color(theme().text_placeholder)
+                    .into()
             };
             let mut btn = div()
                 .w_px(NAV_LEAD_W)
@@ -2045,19 +2169,41 @@ fn sidebar_nav(
 
         // Single navbar highlight: a category shows its box only when selected AND no sub-section is active
         // (for a page with sections the active section carries the highlight instead), like the reference.
-        let cat_active = is_selected && active_section.is_none();
+        let cat_active = is_selected && !searching;
+        let mut name_label = label(*name).size(13.0).color(if cat_active || searching {
+            title_c()
+        } else {
+            dim_c()
+        });
+        if cat_active {
+            name_label = name_label.medium();
+        }
         let inner = nav_item_box(cat_active, is_hovered)
             .on_click(i as u64)
             .child(lead)
-            .child(label(*name).size(14.0).color(title_c()));
+            .child(name_label);
         col = col.child(inner);
 
-        if has_subs && is_expanded {
+        if has_subs && is_expanded && !sections.is_empty() {
+            let count = sections.len() as f32;
+            let mut subs_col = div().col().flex(1.0).gap(1.0).pl(12.0);
             for (section_idx, sub) in sections {
                 let id = NAV_JUMP_BASE + i as u64 * NAV_JUMP_STRIDE + section_idx as u64;
                 let is_active = !searching && is_selected && active_section == Some(section_idx);
-                col = col.child(sub_item(sub, id, hovered == Some(id), is_active));
+                subs_col = subs_col.child(sub_item(sub, id, hovered == Some(id), is_active));
             }
+            col = col.child(
+                div()
+                    .row()
+                    .pl(15.0)
+                    .child(
+                        div()
+                            .w_px(1.0)
+                            .h_px(count * 26.0 + (count - 1.0))
+                            .bg(nav_guide()),
+                    )
+                    .child(subs_col),
+            );
         }
     }
     col.into()
@@ -2123,29 +2269,23 @@ fn matching_sections(cat: usize, query: &str) -> Vec<(usize, &'static str)> {
     out
 }
 
-/// An indented sub-section under an expanded category. The guide line sits under the parent's chevron centre
-/// (x = px(10 sidebar) + 14 = 24, matching the chevron centre at px(10)+px(8 row)+6 = 24) and the text
-/// left-aligns with the parent's name (px(10)+14+1+11 = 36 = parent name x px(10)+8+12+6).
 fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
-    // Reference: the sub-item is the same full-width box; its lead is a 22px column with a centered 1px guide
-    // line (so the guide runs continuously and sits inside the box, not cutting across a narrower highlight).
-    // The guide spans the full row pitch (item 28 + col gap 2) so consecutive sub-items' lines join into one
-    // continuous vertical guide instead of leaving a gap.
-    let indent = div()
-        .w_px(NAV_INDENT_W)
-        .h_px(28.0)
+    let mut row = div()
+        .row()
+        .h_px(26.0)
+        .px(8.0)
         .items_center()
-        .justify_center()
-        .child(div().w_px(1.0).h_px(30.0).bg(nav_guide()));
-    nav_item_box(active, hovered)
+        .rounded(ROUND)
         .on_click(id)
-        .child(indent)
         .child(
             label(name)
-                .size(13.0)
-                .color(if active { title_c() } else { dim_c() }),
-        )
-        .into()
+                .size(12.0)
+                .color(if active { theme().text_accent } else { dim_c() }),
+        );
+    if hovered {
+        row = row.bg(hover_c());
+    }
+    row.into()
 }
 
 /// The content-pane top bar: file switcher on the left, "Edit in settings.json" on the right. Like the
@@ -2154,39 +2294,52 @@ fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
 /// The scope the page edits: the user's settings file, or (Project and Integrations) the open project, whose
 /// config the right button then opens.
 fn toolbar(project: Option<&str>) -> Node {
-    let (scope, file): (Node, Node) = match project {
-        Some(name) => (
-            button_static(name.to_string(), ButtonStyle::TintedAccent).into(),
-            ui::button_sized(
-                CTRL_EDIT_PROJECT_CONFIG,
-                "Edit pom.yml",
-                ButtonStyle::OutlinedGhost,
-                ui::ButtonSize::Default,
-            )
-            .into(),
-        ),
+    let (scope, file) = match project {
+        Some(name) => (name.to_string(), (CTRL_EDIT_PROJECT_CONFIG, "Edit pom.yml")),
         None => (
-            button_static("User", ButtonStyle::TintedAccent).into(),
-            ui::button_sized(
-                CTRL_OPEN_JSON,
-                "Edit in settings.json",
-                ButtonStyle::OutlinedGhost,
-                ui::ButtonSize::Default,
-            )
-            .into(),
+            "User".to_string(),
+            (CTRL_OPEN_JSON, "Edit in settings.json"),
         ),
     };
-    // The left file group grows to fill, pushing the right button to the content's right edge. When the left
-    // group's content is wider than its grown slot, it overflows under the (last-drawn, on-top) right button
-    // rather than shoving it off-window.
+    let chip = div()
+        .row()
+        .h_px(26.0)
+        .px(10.0)
+        .items_center()
+        .rounded(ROUND)
+        .bg(theme().text_accent.alpha(0.16))
+        .child(label(scope).size(12.0).medium().color(theme().text_accent));
     div()
         .row()
         .h_px(30.0)
         .items_center()
         .justify_between()
-        .child(div().row().gap(8.0).items_center().child(scope))
-        .child(file)
+        .child(div().row().gap(8.0).items_center().child(chip))
+        .child(small_button(
+            file.0,
+            file.1,
+            false,
+            Some(ui::IconKind::File),
+        ))
         .into()
+}
+
+fn small_button(id: u64, text: &str, secondary: bool, icon: Option<ui::IconKind>) -> Div {
+    let mut b = div()
+        .row()
+        .h_px(24.0)
+        .px(8.0)
+        .gap(4.0)
+        .items_center()
+        .rounded(ROUND)
+        .on_click(id);
+    if secondary {
+        b = b.bg(chip_c()).border(1.0, border_c());
+    }
+    if let Some(kind) = icon {
+        b = b.child(ui::icon(kind).size(14.0).color(title_c()));
+    }
+    b.child(label(text.to_string()).size(12.0).medium().color(title_c()))
 }
 
 fn stub_body(name: &str) -> Node {
@@ -3754,11 +3907,26 @@ fn row_matches(row: &SettingRow, q: &str) -> bool {
 /// Render a page from its data, filtering rows by `query` (title/description substring) and dropping section
 /// headers whose section has no visible row, like the reference's settings search.
 fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -> Node {
-    let heading = label(page.title)
-        .label_size(LabelSize::Large)
-        .color(title_c())
-        .into();
-    render_page_under(heading, page, query, editing, w)
+    let title = if query.is_empty() {
+        page.title.to_string()
+    } else {
+        format!("Results for \"{query}\"")
+    };
+    render_page_under(page_title(&title), page, query, editing, w)
+}
+
+fn page_title(text: &str) -> Node {
+    div()
+        .col()
+        .pt(6.0)
+        .pb(4.0)
+        .child(
+            label(text.to_string())
+                .size(20.0)
+                .weight(600)
+                .color(title_c()),
+        )
+        .into()
 }
 
 fn render_page_under(
@@ -3768,11 +3936,9 @@ fn render_page_under(
     editing: Option<(u64, &str)>,
     w: f32,
 ) -> Node {
-    // The title+description column is capped (like the reference's max_w_2_3) so descriptions wrap instead of
-    // running under the control. Widths are in design px (the element builders re-apply the UI scale).
+    // Widths are in design px (the element builders re-apply the UI scale).
     let scale = ui::ui_text_scale();
-    let content_design_w = (w / scale - 240.0 - 64.0).max(200.0);
-    let left_col_w = content_design_w * 2.0 / 3.0;
+    let row_w = (w / scale - SIDEBAR_W - GAP - 2.0 * CONTENT_PAD).max(200.0);
     let q = query.to_lowercase();
     let n = page.items.len();
     let mut visible = vec![false; n];
@@ -3799,16 +3965,29 @@ fn render_page_under(
         }
     }
 
-    let mut col = div().col().child(heading).child(div().h_px(16.0));
+    let searching = !q.is_empty();
+    // Search hits bleed past the text column (the page widens by HIT_BLEED each side); everything else stays put.
+    let inset = |node: Node| -> Node {
+        if searching {
+            div().col().px(HIT_BLEED).child(node).into()
+        } else {
+            node
+        }
+    };
+    let mut col = div().col().child(inset(heading));
 
-    if !q.is_empty() && visible.iter().all(|v| !v) {
+    if searching && visible.iter().all(|v| !v) {
         return col
-            .child(label("No matching settings.").color(dim_c()))
+            .child(inset(label("No matching settings.").color(dim_c()).into()))
             .into();
     }
 
-    let mut first_section = true;
     let mut section_idx = 0usize;
+    let mut in_bindings = false;
+    let mut table_open = false;
+    let last_visible_row = (0..n)
+        .rev()
+        .find(|&i| visible[i] && matches!(page.items[i], PageItem::Row(_)));
     for (i, item) in page.items.iter().enumerate() {
         let is_header = matches!(item, PageItem::Header(_));
         if !visible[i] {
@@ -3819,14 +3998,17 @@ fn render_page_under(
         }
         match item {
             PageItem::Header(name) => {
-                if !first_section {
-                    col = col.child(div().h_px(20.0));
-                }
-                first_section = false;
-                col = col.child(section_header(
-                    name,
+                let shown = if searching {
+                    format!("{} - {}", page.title, name)
+                } else {
+                    name.to_string()
+                };
+                col = col.child(inset(section_header(
+                    &shown,
                     SECTION_ANCHOR_BASE + section_idx as u64,
-                ));
+                )));
+                in_bindings = *name == "Bindings";
+                table_open = false;
                 section_idx += 1;
             }
             PageItem::Row(row) => {
@@ -3870,14 +4052,61 @@ fn render_page_under(
                     Control::Keys { binding } => keys(binding),
                     Control::SubPage { id } => sub_page_button(*id),
                 };
-                col = col.child(row_frame(
-                    &row.title,
-                    &row.description,
-                    control,
-                    row.reset,
-                    left_col_w,
-                ));
-                col = col.child(divider());
+                let last = last_visible_row == Some(i);
+                let binding = in_bindings
+                    && !row.description.is_empty()
+                    && matches!(&row.control, Control::Keys { .. } | Control::Value { .. });
+                if binding {
+                    if !table_open {
+                        let head = |text: &str| -> Node {
+                            label(text.to_uppercase())
+                                .size(11.0)
+                                .weight(600)
+                                .color(theme().text_placeholder)
+                                .into()
+                        };
+                        col = col.child(inset(binding_row(
+                            head("Action"),
+                            head("Name"),
+                            head("Keys"),
+                            30.0,
+                            false,
+                        )));
+                        table_open = true;
+                    }
+                    let keys_cell = match &row.control {
+                        Control::Value { text } => label(text.clone())
+                            .size(12.0)
+                            .color(theme().text_placeholder)
+                            .into(),
+                        _ => control,
+                    };
+                    col = col.child(inset(binding_row(
+                        label(row.title.to_string())
+                            .size(13.0)
+                            .color(title_c())
+                            .into(),
+                        label(row.description.to_string())
+                            .size(12.0)
+                            .mono()
+                            .color(theme().text_placeholder)
+                            .truncate()
+                            .into(),
+                        keys_cell,
+                        38.0,
+                        last,
+                    )));
+                } else {
+                    col = col.child(row_frame(
+                        &row.title,
+                        &row.description,
+                        control,
+                        row.reset,
+                        row_w,
+                        searching,
+                        last,
+                    ));
+                }
             }
         }
     }
@@ -3885,9 +4114,18 @@ fn render_page_under(
 }
 
 fn keys(binding: &str) -> Node {
-    let mut row = div().row().items_center().gap(6.0);
+    let mut row = div().row().items_center().gap(4.0);
     for stroke in binding.split_whitespace() {
-        row = row.child(ui::render_keystroke(stroke, 13.0));
+        row = row.child(
+            div()
+                .row()
+                .items_center()
+                .h_px(18.0)
+                .px(5.0)
+                .rounded(4.0)
+                .bg(hover_c())
+                .child(ui::render_keystroke(stroke, 11.0)),
+        );
     }
     row.into()
 }
@@ -3895,42 +4133,99 @@ fn keys(binding: &str) -> Node {
 fn section_header(name: &str, anchor: u64) -> Node {
     div()
         .col()
-        .gap(8.0)
+        .pt(22.0)
+        .pb(8.0)
         .on_click(anchor) // geometry marker only: lets the app read this section's y to scroll the navbar to it
         .child(
-            label(name)
-                .label_size(LabelSize::Small)
-                .color(dim_c())
-                .mono(),
+            div().row().h_px(14.0).items_center().child(
+                label(name.to_uppercase())
+                    .size(11.0)
+                    .weight(600)
+                    .color(dim_c()),
+            ),
         )
-        .child(divider_faded())
+        .into()
+}
+
+fn binding_row(action: Node, name: Node, keys: Node, height: f32, last: bool) -> Node {
+    let row = div()
+        .row()
+        .h_px(height - 1.0)
+        .gap(16.0)
+        .items_center()
+        .child(div().row().flex(1.0).child(action))
+        .child(div().row().w_px(260.0).child(name))
+        .child(div().row().w_px(150.0).child(keys));
+    div()
+        .col()
+        .child(row)
+        .child(if last {
+            div().h_px(1.0).into()
+        } else {
+            divider()
+        })
         .into()
 }
 
 fn divider() -> Node {
-    ui::divider().into()
+    div().h_px(1.0).bg(line_c()).into()
 }
 
-fn row_frame(title: &str, desc: &str, control: Node, reset: Option<u64>, left_col_w: f32) -> Node {
-    let mut title_row = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .child(label(title).label_size(LabelSize::Default).color(title_c()));
+fn row_frame(
+    title: &str,
+    desc: &str,
+    control: Node,
+    reset: Option<u64>,
+    row_w: f32,
+    hit: bool,
+    last: bool,
+) -> Node {
+    let mut right = div().row().gap(6.0).items_center();
     if let Some(primary) = reset {
-        title_row = title_row.child(reset_button(primary + RESET_OFFSET));
+        right = right.child(reset_button(primary + RESET_OFFSET));
     }
-    let mut left = div().col().w_px(left_col_w).gap(5.0).child(title_row);
+    let right: Node = right.child(control).into();
+    let inner_w = if hit { row_w - 24.0 } else { row_w };
+    let left_col_w = (inner_w - 48.0 - ui::measure(&right).0).max(160.0);
+    let mut left = div().col().w_px(left_col_w).gap(3.0).child(
+        div()
+            .row()
+            .h_px(20.0)
+            .items_center()
+            .child(label(title).size(13.0).medium().color(title_c())),
+    );
     if !desc.is_empty() {
         left = left.child(description_node(desc, left_col_w));
     }
-    div()
+    // The spacer pushes the control to the right edge and holds the row to the 58px minimum height.
+    let row = div()
         .row()
-        .py(14.0)
         .items_center()
-        .justify_between()
+        .gap(24.0)
         .child(left)
-        .child(control)
+        .child(div().flex(1.0).h_px(if hit { 58.0 } else { 57.0 }))
+        .child(right);
+    if hit {
+        let accent = theme().text_accent;
+        return div()
+            .col()
+            .pb(if last { 0.0 } else { 8.0 })
+            .child(
+                row.p(12.0)
+                    .rounded(ROUND)
+                    .bg(accent.alpha(0.06))
+                    .border(1.0, accent.alpha(0.16)),
+            )
+            .into();
+    }
+    div()
+        .col()
+        .child(div().col().py(10.0).child(row))
+        .child(if last {
+            div().h_px(1.0).into()
+        } else {
+            divider()
+        })
         .into()
 }
 
@@ -3942,17 +4237,17 @@ fn reset_button(id: u64) -> Node {
         .items_center()
         .justify_center()
         .on_click(id)
-        .child(ui::icon(ui::IconKind::Undo).size(12.0).color(dim_c()))
+        .child(
+            ui::icon(ui::IconKind::Undo)
+                .size(14.0)
+                .color(theme().text_placeholder),
+        )
         .into()
 }
 
 fn description_node(desc: &str, wrap_w: f32) -> Node {
     if !desc.contains('`') {
-        return label(desc)
-            .label_size(LabelSize::Small)
-            .color(dim_c())
-            .wrap(wrap_w)
-            .into();
+        return label(desc).size(12.0).color(dim_c()).wrap(wrap_w).into();
     }
     let mut row = div().row().items_center();
     for (i, part) in desc.split('`').enumerate() {
@@ -3975,57 +4270,81 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
     row.into()
 }
 
-/// A subtle-bordered dropdown control: value + up/down chevron; clicking cycles the value (app-side).
+/// Bundled fonts register under a hidden dotted name (".PomeloMono"); show it as words ("Pomelo Mono").
+fn display_value(value: &str) -> String {
+    let Some(name) = value.strip_prefix('.') else {
+        return value.to_string();
+    };
+    let mut out = String::new();
+    for (index, ch) in name.chars().enumerate() {
+        if index > 0 && ch.is_uppercase() {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 fn dropdown(value: &str, id: u64) -> Node {
+    let value = display_value(value);
+    let value = value.as_str();
+    let text_w = ui::measure_text_width(value, 13.0, false, ui::ui_font_weight());
+    let w = (10.0 + text_w + 10.0 + 12.0 + 8.0).max(188.0);
     div()
+        .row()
+        .w_px(w)
         .h_px(28.0)
-        .px(10.0)
-        .gap(14.0)
+        .pl(10.0)
+        .pr(8.0)
         .items_center()
+        .justify_between()
         .rounded(ROUND)
         .bg(chip_c())
         .border(1.0, border_c())
         .on_click(id)
-        .child(label(value).size(12.0).color(title_c()))
-        .child(chevron_up_down().size(11.0).color(dim_c()))
+        .child(label(value).size(13.0).color(title_c()))
+        .child(chevron_up_down().size(12.0).color(dim_c()))
         .into()
 }
 
 fn toggle_switch(on: bool, id: u64) -> Node {
-    let track = if on { theme().icon_accent } else { chip_c() };
-    let knob = div().w_px(14.0).h_px(14.0).rounded(7.0).bg(bg_c());
+    let knob_color = if on { theme().on_accent } else { dim_c() };
+    let knob = div().w_px(14.0).h_px(14.0).rounded(7.0).bg(knob_color);
     let mut row = div()
         .row()
-        .w_px(36.0)
+        .w_px(34.0)
         .h_px(20.0)
         .px(3.0)
         .items_center()
         .rounded(10.0)
-        .bg(track)
-        .border(1.0, border_c())
         .on_click(id);
     if on {
-        row = row.child(div().flex(1.0)).child(knob);
+        row = row
+            .bg(theme().accent_fill)
+            .child(div().flex(1.0))
+            .child(knob);
     } else {
-        row = row.child(knob).child(div().flex(1.0));
+        row = row
+            .bg(theme().element_active)
+            .border(1.0, border_c())
+            .child(knob)
+            .child(div().flex(1.0));
     }
     row.into()
 }
 
-/// A stepper control: one bordered rounded box `[- | value | +]`, the end segments clickable, with thin
-/// separators between segments. Clicking the value box begins inline editing (`edit` = the typed buffer),
-/// which shows a caret and focuses the box border, mirroring the reference's editable NumberField.
 fn stepper(value: &str, dec: u64, inc: u64, edit_id: u64, edit: Option<&str>) -> Node {
     let editing = edit.is_some();
     let shown = edit.unwrap_or(value);
     let mut value_box = div()
         .row()
         .h_px(28.0)
-        .px(14.0)
+        .w_px(42.0)
         .gap(1.0)
         .items_center()
+        .justify_center()
         .on_click(edit_id)
-        .child(label(shown).size(12.0).color(title_c()));
+        .child(label(shown).size(13.0).mono().color(title_c()));
     if editing {
         // Reserve the caret slot while editing so the number doesn't shift as the caret blinks.
         value_box = value_box.child(caret(ui::caret_phase()));
@@ -4044,11 +4363,9 @@ fn stepper(value: &str, dec: u64, inc: u64, edit_id: u64, edit: Option<&str>) ->
                 border_c()
             },
         )
-        .child(step_seg("-", dec))
-        .child(step_sep())
+        .child(step_seg(ui::IconKind::Dash, dec))
         .child(value_box)
-        .child(step_sep())
-        .child(step_seg("+", inc))
+        .child(step_seg(ui::IconKind::Plus, inc))
         .into()
 }
 
@@ -4066,23 +4383,24 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
     row = if text.is_empty() && !editing {
         row.child(
             label(placeholder)
-                .size(12.0)
+                .size(13.0)
+                .mono()
                 .color(theme().text_placeholder),
         )
     } else {
-        row.child(label(text).size(12.0).color(title_c()).truncate())
+        row.child(label(text).size(13.0).mono().color(title_c()).truncate())
     };
     if editing {
         row = row.child(caret(ui::caret_phase()));
     }
     div()
         .row()
-        .w_px(256.0)
-        .h_px(32.0)
-        .px(8.0)
+        .w_px(220.0)
+        .h_px(28.0)
+        .px(10.0)
         .items_center()
         .rounded(ROUND)
-        .bg(theme().editor_background)
+        .bg(chip_c())
         .border(
             1.0,
             if editing {
@@ -4134,16 +4452,16 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
 
 fn action_button(id: u64, text: &str, enabled: bool) -> Node {
     if enabled {
-        ui::button_sized(id, text, ui::ButtonStyle::Outlined, ui::ButtonSize::Medium).into()
+        small_button(id, text, true, None).into()
     } else {
         div()
             .row()
-            .h_px(28.0)
+            .h_px(24.0)
             .px(8.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(ROUND)
             .border(1.0, theme().border_variant)
-            .child(label(text).size(14.0).color(theme().text_disabled))
+            .child(label(text).size(12.0).color(theme().text_disabled))
             .into()
     }
 }
@@ -4168,29 +4486,23 @@ fn value_text(text: &str) -> Node {
 }
 
 fn sub_page_button(id: u64) -> Node {
-    ui::button_sized(
-        id,
-        "Configure",
-        ui::ButtonStyle::OutlinedGhost,
-        ui::ButtonSize::Medium,
-    )
-    .child(
-        ui::icon(ui::IconKind::ChevronRight)
-            .size(14.0)
-            .color(dim_c()),
-    )
-    .into()
+    div()
+        .row()
+        .h_px(24.0)
+        .gap(6.0)
+        .items_center()
+        .on_click(id)
+        .child(label("Configure").size(13.0).color(dim_c()))
+        .child(
+            ui::icon(ui::IconKind::ChevronRight)
+                .size(12.0)
+                .color(dim_c()),
+        )
+        .into()
 }
 
-/// The reference renders `.unimplemented()` fields as an Outlined, Medium "Edit in settings.json" button.
 fn edit_in_json_button(id: u64) -> Node {
-    ui::button_sized(
-        id,
-        "Edit in settings.json",
-        ui::ButtonStyle::Outlined,
-        ui::ButtonSize::Medium,
-    )
-    .into()
+    small_button(id, "Edit in settings.json", false, Some(ui::IconKind::File)).into()
 }
 
 /// A text caret: a fixed-width slot (so surrounding text never shifts) whose bar shows only on the blink's
@@ -4207,17 +4519,14 @@ fn caret(visible: bool) -> Node {
         .into()
 }
 
-fn step_sep() -> Node {
-    div().w_px(1.0).h_px(28.0).bg(border_c()).into()
-}
-
-fn step_seg(sym: &str, id: u64) -> Node {
+fn step_seg(kind: ui::IconKind, id: u64) -> Node {
     div()
+        .w_px(28.0)
         .h_px(28.0)
-        .px(11.0)
         .items_center()
+        .justify_center()
         .on_click(id)
-        .child(label(sym).size(15.0).color(dim_c()))
+        .child(ui::icon(kind).size(12.0).color(dim_c()))
         .into()
 }
 
@@ -4307,9 +4616,9 @@ mod tests {
         assert!(!p.rects.is_empty());
         assert!(p.texts.iter().any(|x| x.text == "Appearance"));
         assert!(p.texts.iter().any(|x| x.text == "Pomelo Dark"));
-        assert!(p.texts.iter().any(|x| x.text == "Theme")); // first section header
-        assert!(p.texts.iter().any(|x| x.text == "UI Font")); // second section header
-                                                              // Categories + controls are all clickable.
+        assert!(p.texts.iter().any(|x| x.text == "THEME"));
+        assert!(p.texts.iter().any(|x| x.text == "BUFFER FONT"));
+        // Categories + controls are all clickable.
         assert!(p.hits.len() >= CATEGORIES.len());
         assert!(p.hits.iter().any(|(_, id)| *id == CTRL_THEME));
         assert!(p.hits.iter().any(|(_, id)| *id == CTRL_FONT_SIZE_INC));
@@ -4454,10 +4763,9 @@ mod tests {
         }
         let headers: Vec<_> = texts
             .iter()
-            .filter(|t| t.text == "Delivery" || t.text == "Alert Sounds")
-            .filter(|t| t.font.is_mono())
+            .filter(|t| t.text == "DELIVERY" || t.text == "ALERT SOUNDS")
             .collect();
-        assert_eq!(headers.len(), 2, "section headers are mono");
+        assert_eq!(headers.len(), 2, "section headers are uppercase labels");
     }
 
     #[test]
@@ -4736,15 +5044,15 @@ mod tests {
         // Every font sits under Appearance, as in the reference.
         let appearance = texts_of(1, &state, &settings);
         for expected in [
-            "Buffer Font",
-            "UI Font",
-            "Agent Panel Font",
-            "Terminal Font",
-            "Cursor",
+            "BUFFER FONT",
+            "UI FONT",
+            "AGENT PANEL FONT",
+            "TERMINAL FONT",
+            "CURSOR",
         ] {
             assert!(appearance.iter().any(|t| t.text == expected), "{expected}");
         }
-        assert!(!editor.iter().any(|t| t.text == "Buffer Font"));
+        assert!(!editor.iter().any(|t| t.text == "BUFFER FONT"));
         let terminal = texts_of(TERMINAL, &state, &settings);
         assert!(terminal.iter().any(|t| t.text == "10000"));
         let keymap = texts_of(KEYMAP, &state, &settings);
