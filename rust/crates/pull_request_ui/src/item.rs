@@ -1,12 +1,15 @@
+mod actions;
+
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
 use markdown::{MarkdownBody, MarkdownStyle, DOCUMENT_STYLE};
-use pom_forge::{PrTarget, PullRequest, TimelineItem, TimelineKind};
+use pom_forge::{MergeMethod, PrTarget, PullRequest, TimelineItem, TimelineKind};
 use pom_paths::StateDir;
 use terminal::Modifiers;
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{Item, ItemTick};
+use workspace::text_field::{TextArea, TextField};
+use workspace::{Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
 const PAD: f32 = 24.0;
 /// Text past this width gets hard to read, so the overview and checks stop growing with the tab.
@@ -69,6 +72,16 @@ pub struct PrItem {
     /// A link to hand the clipboard on the next tick, and when the last one was copied.
     copy: Option<String>,
     copied_at: Option<std::time::Instant>,
+    merge_method: MergeMethod,
+    merge_menu: bool,
+    confirm_merge: bool,
+    pending: Option<actions::Pending>,
+    requests: Vec<PanelRequest>,
+    focus: Option<actions::Field>,
+    reply: TextField,
+    review: TextArea,
+    /// Opens the GitHub client changes go through.
+    connect: Arc<dyn Fn() -> Option<pom_forge::Client> + Send + Sync>,
 }
 
 impl PrItem {
@@ -79,7 +92,12 @@ impl PrItem {
         target: PrTarget,
         cached: Option<PullRequest>,
     ) -> PrItem {
+        let connect = {
+            let (state, session) = (state.clone(), session.clone());
+            Arc::new(move || pom_forge::resolve(&state, &session))
+        };
         let mut item = PrItem {
+            connect,
             state,
             session,
             waker,
@@ -96,7 +114,16 @@ impl PrItem {
             conversation: None,
             copy: None,
             copied_at: None,
+            merge_method: MergeMethod::default(),
+            merge_menu: false,
+            confirm_merge: false,
+            pending: None,
+            requests: Vec::new(),
+            focus: None,
+            reply: TextField::default(),
+            review: TextArea::default(),
         };
+        item.review.set_font_size(12.0);
         item.load();
         item
     }
@@ -568,9 +595,19 @@ impl PrItem {
             }
             self.conversation = Some((timeline.clone(), bodies));
         }
+        let card_width = width - 2.0 * 12.0;
+        let mut controls = timeline
+            .iter()
+            .flat_map(|item| &item.threads)
+            .filter(|thread| !thread.id.is_empty())
+            .enumerate()
+            .map(|(ordinal, thread)| {
+                self.thread_controls(ordinal, &thread.id, thread.resolved, card_width)
+            })
+            .collect::<Vec<_>>()
+            .into_iter();
         let (_, bodies) = self.conversation.as_mut()?;
         let colors = theme();
-        let card_width = width - 2.0 * 12.0;
         let mut next = 0usize;
         let mut render_next = |bodies: &mut Vec<MarkdownBody>, width: f32| {
             let index = next;
@@ -674,13 +711,24 @@ impl PrItem {
                     );
                 }
                 card = card.child(thread_box);
+                if !thread.id.is_empty() {
+                    if let Some(row) = controls.next() {
+                        card = card.child(row);
+                    }
+                }
             }
             column = column.child(card);
         }
         Some(column.into())
     }
 
-    fn overview(pr: &PullRequest, description: Option<Node>, conversation: Option<Node>) -> Node {
+    fn overview(
+        pr: &PullRequest,
+        merge: Option<Node>,
+        description: Option<Node>,
+        conversation: Option<Node>,
+        review: Option<Node>,
+    ) -> Node {
         let colors = theme();
         let section = |title: &str, body: Node| -> Node {
             div()
@@ -697,11 +745,8 @@ impl PrItem {
                 .into()
         };
         let mut column = div().col().gap(14.0);
-        if let Some((_, _, text)) = merge_status(pr) {
-            column = column.child(section(
-                "Merge",
-                label(text).size(12.0).color(colors.text_muted).into(),
-            ));
+        if let Some(merge) = merge {
+            column = column.child(section("Merge", merge));
         }
         let reviewers: Node = if pr.reviewers.is_empty() {
             muted("No reviewers")
@@ -774,6 +819,9 @@ impl PrItem {
                 conversation,
             ));
         }
+        if let Some(review) = review {
+            column = column.child(section("Review", review));
+        }
         column.into()
     }
 
@@ -836,6 +884,9 @@ impl PrItem {
     }
 
     fn click(&mut self, id: u64) {
+        if self.click_action(id) {
+            return;
+        }
         match id {
             OPEN_ON_GITHUB => {
                 if let Some(url) = self.pr.as_ref().map(|pr| pr.url.clone()) {
@@ -1008,9 +1059,16 @@ impl Item for PrItem {
         } else {
             column = column.child(self.header(width));
         }
-        let (description, conversation) = match self.tab {
-            Tab::Overview => (self.description(content_w), self.conversation(content_w)),
-            Tab::Checks => (None, None),
+        let (merge, description, conversation, review) = match self.tab {
+            Tab::Overview => (
+                self.pr
+                    .as_ref()
+                    .and_then(|pr| self.merge_box(pr, content_w)),
+                self.description(content_w),
+                self.conversation(content_w),
+                self.review_box(content_w),
+            ),
+            Tab::Checks => (None, None, None, None),
         };
         if let Some(pr) = &self.pr {
             if let Some(blockers) = Self::blockers(pr) {
@@ -1019,7 +1077,7 @@ impl Item for PrItem {
             column = column
                 .child(self.tabs(checks))
                 .child(div().col().w_px(content_w).child(match self.tab {
-                    Tab::Overview => Self::overview(pr, description, conversation),
+                    Tab::Overview => Self::overview(pr, merge, description, conversation, review),
                     Tab::Checks => Self::checks(pr),
                 }));
         }
@@ -1055,8 +1113,12 @@ impl Item for PrItem {
                 x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
             })
             .map(|(_, id)| *id);
-        if let Some(id) = hit {
-            self.click(id);
+        match hit {
+            Some(id) => self.click(id),
+            None => {
+                self.focus = None;
+                self.merge_menu = false;
+            }
         }
         true
     }
@@ -1070,6 +1132,12 @@ impl Item for PrItem {
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> ItemTick {
+        if self.poll_pending() {
+            return ItemTick {
+                changed: true,
+                ..ItemTick::default()
+            };
+        }
         if let Some(url) = self.copy.take() {
             self.copied_at = Some(std::time::Instant::now());
             return ItemTick {
@@ -1107,7 +1175,29 @@ impl Item for PrItem {
     }
 
     fn is_busy(&self) -> bool {
-        self.loading.is_some() || self.copied_at.is_some()
+        self.loading.is_some() || self.copied_at.is_some() || self.pending.is_some()
+    }
+
+    fn take_requests(&mut self) -> Vec<PanelRequest> {
+        std::mem::take(&mut self.requests)
+    }
+
+    fn wants_keystrokes(&self) -> bool {
+        self.focus.is_some()
+    }
+
+    fn keystroke(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome {
+        self.field_keystroke(keystroke)
+    }
+
+    fn input_text(&mut self, text: &str) {
+        self.field_text(text);
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        if !focused {
+            self.focus = None;
+        }
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1175,6 +1265,7 @@ mod tests {
                     at: "2026-09-01T09:00:00Z".into(),
                     state: "CHANGES_REQUESTED".into(),
                     threads: vec![pom_forge::ReviewThread {
+                        id: String::new(),
                         path: "src/db.rs".into(),
                         line: Some(12),
                         resolved: true,

@@ -10,6 +10,7 @@ use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
 
 mod blame;
 mod branch_changes;
+pub mod conflict;
 mod line_staging;
 pub use blame::{blame, entry_for_row, inline_text, relative_timestamp, BlameEntry};
 pub use branch_changes::{

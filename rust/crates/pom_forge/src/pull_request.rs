@@ -76,6 +76,9 @@ pub struct Reviewer {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct PullRequest {
+    /// GitHub's node id, which changes (merge, review) are addressed to.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub number: u64,
     pub title: String,
     /// OPEN / MERGED / CLOSED.
@@ -85,6 +88,9 @@ pub struct PullRequest {
     pub mergeable: String,
     pub merge_state_status: String,
     pub head_ref_name: String,
+    /// The head commit shown, so a merge never takes a newer push nobody looked at.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub head_ref_oid: String,
     pub base_ref_name: String,
     pub author: Option<Actor>,
     pub reviews: Vec<Review>,
@@ -124,6 +130,8 @@ pub struct ThreadComment {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReviewThread {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub path: String,
     pub line: Option<u64>,
     pub resolved: bool,
@@ -305,8 +313,8 @@ pub fn severity<'a>(prs: impl IntoIterator<Item = &'a PullRequest>) -> Severity 
     }
 }
 
-const NODE_FIELDS: &str = "number title state url isDraft mergeable mergeStateStatus
-        headRefName baseRefName additions deletions changedFiles createdAt updatedAt
+const NODE_FIELDS: &str = "id number title state url isDraft mergeable mergeStateStatus
+        headRefName headRefOid baseRefName additions deletions changedFiles createdAt updatedAt
         reviewDecision
         author { login avatarUrl }
         latestReviews(first: 30) { nodes { state submittedAt author { login } } }
@@ -322,7 +330,7 @@ const DETAIL_FIELDS: &str = "body
         reviewRequests(first: 20) { nodes { requestedReviewer { __typename ... on User { login } } } }
         comments(first: 50) { nodes { author { login } body createdAt } }
         reviews(first: 50) { nodes { databaseId state body submittedAt author { login } } }
-        reviewThreads(first: 100) { nodes { isResolved path line comments(first: 50) { nodes { body createdAt author { login } pullRequestReview { databaseId } } } } }
+        reviewThreads(first: 100) { nodes { id isResolved path line comments(first: 50) { nodes { body createdAt author { login } pullRequestReview { databaseId } } } } }
 ";
 
 /// Reviews with the inline threads they started, threads no listed review started, and plain comments, oldest
@@ -349,6 +357,7 @@ fn timeline(node: &Value) -> Vec<TimelineItem> {
             .pointer("/comments/nodes/0/pullRequestReview/databaseId")
             .and_then(Value::as_u64);
         let item = ReviewThread {
+            id: text(thread, "/id"),
             path: text(thread, "/path"),
             line: thread.pointer("/line").and_then(Value::as_u64),
             resolved: thread
@@ -470,6 +479,7 @@ fn from_node(node: &Value) -> PullRequest {
     })
     .collect();
     let mut pr = PullRequest {
+        id: text(node, "/id"),
         number: number("/number"),
         title: text(node, "/title"),
         state: text(node, "/state"),
@@ -481,6 +491,7 @@ fn from_node(node: &Value) -> PullRequest {
         mergeable: text(node, "/mergeable"),
         merge_state_status: text(node, "/mergeStateStatus"),
         head_ref_name: text(node, "/headRefName"),
+        head_ref_oid: text(node, "/headRefOid"),
         base_ref_name: text(node, "/baseRefName"),
         author: node.get("author").and_then(actor),
         reviews: nodes(node, "/latestReviews/nodes")

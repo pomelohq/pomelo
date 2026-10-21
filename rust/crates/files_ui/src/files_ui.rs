@@ -36,6 +36,7 @@ use workspace::text_field;
 mod caret_glide;
 mod command_palette;
 mod completions_menu;
+mod conflict_controls;
 mod definition;
 mod diagnostic_nav;
 mod file_finder;
@@ -496,6 +497,7 @@ const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 14_600_000; // + row
 const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 14_700_000; // + row
 const HOVER_BASE: u64 = FUNC_VIEW_BASE + 14_800_000; // + popover
 const HUNK_CONTROL_BASE: u64 = FUNC_VIEW_BASE + 14_900_000; // + control
+const CONFLICT_CONTROL_BASE: u64 = HUNK_CONTROL_BASE + 1_000; // + conflict * 4 + control
 const MODAL_END: u64 = FUNC_VIEW_BASE + 15_000_000;
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
@@ -767,6 +769,10 @@ struct FileItem {
     expanded: Vec<Range<usize>>,
     /// The hunk control the pointer is over, so it can light up.
     hunk_control_hover: Option<u64>,
+    /// Merge conflicts in the buffer, for the buffer version they were parsed at.
+    conflict_cache: RefCell<Option<(u64, Vec<git::conflict::Conflict>)>>,
+    /// What the editor asks the workspace to do, such as starting a side agent; drained every frame.
+    panel_requests: Vec<workspace::PanelRequest>,
     /// The committed text expanded changes show their removed lines from.
     base: Option<BaseText>,
     /// Whether `rows` holds removed lines of expanded changes.
@@ -1131,6 +1137,8 @@ impl FileItem {
             split_left: Vec::new(),
             expanded: Vec::new(),
             hunk_control_hover: None,
+            conflict_cache: RefCell::new(None),
+            panel_requests: Vec::new(),
             base: None,
             has_virtual_rows: false,
             completions: None,
@@ -4122,6 +4130,10 @@ impl Searchable for FileItem {
 }
 
 impl Item for FileItem {
+    fn take_requests(&mut self) -> Vec<workspace::PanelRequest> {
+        std::mem::take(&mut self.panel_requests)
+    }
+
     fn footer_height(&mut self, body_h: f32) -> f32 {
         self.footer
             .as_mut()
@@ -4677,6 +4689,7 @@ impl Item for FileItem {
     fn hover_popovers(&self, content: Rect) -> Vec<(Node, f32, f32)> {
         let mut popovers = self.hover_popover_nodes(content);
         popovers.extend(self.hunk_controls(content));
+        popovers.extend(self.conflict_controls(content));
         popovers
     }
 
@@ -4692,6 +4705,7 @@ impl Item for FileItem {
     fn hover_completion(&mut self, id: Option<u64>) {
         self.hunk_control_hover = id.filter(|id| {
             (HUNK_CONTROL_BASE..HUNK_CONTROL_BASE + hunk_controls::CONTROL_COUNT).contains(id)
+                || Self::is_conflict_control(*id)
         });
         if let Some(menu) = self.completions.as_mut() {
             menu.hovered = id.filter(|id| (COMPLETION_BASE..HOVER_BASE).contains(id));
@@ -4703,7 +4717,7 @@ impl Item for FileItem {
             self.click_completion((id - COMPLETION_BASE) as usize);
             return true;
         }
-        if self.click_hunk_control(id) {
+        if self.click_hunk_control(id) || self.click_conflict_control(id) {
             return true;
         }
         if (HOVER_BASE..HUNK_CONTROL_BASE).contains(&id) {
@@ -5858,6 +5872,7 @@ impl Item for FileItem {
         let last =
             (first + (self.body_h / edit_line_h()).ceil() as usize + 2).min(self.disp_count());
         let mut rects = self.expanded_hunk_rects(content, first, last);
+        rects.extend(self.conflict_rects(content, first, last));
 
         // Every caret's display line is highlighted across the gutter and text, except rows that also hold a
         // non-empty selection.
@@ -11319,6 +11334,34 @@ mod hunk_action_tests {
 
         assert!(item.popover_click(HUNK_CONTROL_BASE + 3));
         assert_eq!(caret_line(&item), 4);
+    }
+
+    #[test]
+    fn a_conflict_strip_keeps_a_side_or_asks_an_agent() {
+        let conflicted = "x\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> origin/main\ny\n";
+        let repo = Repo::new("conflict-controls", "x\ny\n");
+        let mut item = repo.open(conflicted);
+        let content = Rect::new(0.0, 0.0, 900.0, 10.0 * edit_line_h(), Rgba::TRANSPARENT);
+        let strips = item.conflict_controls(content);
+        assert_eq!(strips.len(), 1);
+        assert_eq!(strips[0].2, edit_line_h(), "it sits on the opening marker");
+        assert_eq!(item.conflict_rects(content, 0, 7).len(), 2);
+
+        assert!(item.popover_click(CONFLICT_CONTROL_BASE + 3));
+        match item.take_requests().as_slice() {
+            [workspace::PanelRequest::FixWithAgent(fix)] => {
+                assert!(fix.prompt.contains("a.txt"));
+                assert_eq!(fix.cwd, item.root);
+            }
+            other => panic!("expected one agent request, got {}", other.len()),
+        }
+
+        assert!(item.popover_click(CONFLICT_CONTROL_BASE + 1));
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "x\ntheirs\ny\n");
+        assert!(item.conflict_controls(content).is_empty());
+        item.input_key(EditKey::Undo, false);
+        assert!(item.popover_click(CONFLICT_CONTROL_BASE + 2));
+        assert_eq!(item.buffer.as_ref().unwrap().text(), "x\nours\ntheirs\ny\n");
     }
 
     #[test]

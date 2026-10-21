@@ -19,4 +19,5 @@ workspace = { path = "../workspace" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
