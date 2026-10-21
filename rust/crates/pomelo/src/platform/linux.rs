@@ -9,6 +9,11 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
     WindowAttributesExtWayland::with_name(attributes, "pomelo", "pomelo")
 }
 
+/// The main window draws its own title bar with the window buttons, so the system's is turned off.
+pub(crate) fn main_window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    window_attributes(attributes).with_decorations(false)
+}
+
 pub(crate) fn hide_pointer_until_mouse_moves() {}
 
 pub(crate) fn titlebar_double_click(window: &Window) {
@@ -89,4 +94,47 @@ pub(crate) fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, entry)
+}
+
+/// The undecorated window's border band that resizes it, as the cursor (physical pixels) stands on it.
+pub(crate) fn resize_edge(
+    window: &Window,
+    cursor: (f64, f64),
+) -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection;
+
+    if window.is_maximized() || window.fullscreen().is_some() {
+        return None;
+    }
+    let scale = window.scale_factor();
+    let size = window.inner_size();
+    let (width, height) = (size.width as f64 / scale, size.height as f64 / scale);
+    let (x, y) = (cursor.0 / scale, cursor.1 / scale);
+    const EDGE: f64 = 5.0;
+    const CORNER: f64 = 12.0;
+    let (left, right) = (x < CORNER, x > width - CORNER);
+    let (top, bottom) = (y < CORNER, y > height - CORNER);
+    if (top && left) && (x < EDGE || y < EDGE) {
+        return Some(ResizeDirection::NorthWest);
+    }
+    if (top && right) && (x > width - EDGE || y < EDGE) {
+        return Some(ResizeDirection::NorthEast);
+    }
+    if (bottom && left) && (x < EDGE || y > height - EDGE) {
+        return Some(ResizeDirection::SouthWest);
+    }
+    if (bottom && right) && (x > width - EDGE || y > height - EDGE) {
+        return Some(ResizeDirection::SouthEast);
+    }
+    if y < EDGE {
+        Some(ResizeDirection::North)
+    } else if y > height - EDGE {
+        Some(ResizeDirection::South)
+    } else if x < EDGE {
+        Some(ResizeDirection::West)
+    } else if x > width - EDGE {
+        Some(ResizeDirection::East)
+    } else {
+        None
+    }
 }

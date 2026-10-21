@@ -960,6 +960,20 @@ pub(crate) struct MachineChecks {
     checked: bool,
 }
 
+/// Opens Docker Desktop or OrbStack on macOS; on Linux starts the system's Docker service, which asks for
+/// the password through the desktop's authentication dialog.
+fn start_docker() -> bool {
+    let succeeds =
+        |command: &mut std::process::Command| command.status().is_ok_and(|status| status.success());
+    if cfg!(target_os = "macos") {
+        ["Docker", "OrbStack"]
+            .iter()
+            .any(|app| succeeds(std::process::Command::new("open").args(["-a", app])))
+    } else {
+        succeeds(std::process::Command::new("systemctl").args(["start", "docker.service"]))
+    }
+}
+
 fn docker_version(path: &str) -> Option<String> {
     let output = std::process::Command::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -1072,21 +1086,15 @@ impl App {
         if index != 0 {
             return;
         }
-        let started = ["Docker", "OrbStack"].iter().any(|app| {
-            std::process::Command::new("open")
-                .args(["-a", app])
-                .status()
-                .is_ok_and(|status| status.success())
-        });
-        if !started {
+        if !start_docker() {
+            let hint = if cfg!(target_os = "macos") {
+                "Install Docker Desktop or OrbStack to run shared services"
+            } else {
+                "Start Docker with `sudo systemctl start docker`, or install Docker Engine to run shared services"
+            };
             let windows: Vec<WindowId> = self.mains.keys().copied().collect();
             for id in windows {
-                self.with_workspace_view(id, |view, _| {
-                    view.show_toast(
-                        "Install Docker Desktop or OrbStack to run shared services",
-                        None,
-                    )
-                });
+                self.with_workspace_view(id, |view, _| view.show_toast(hint, None));
             }
             return;
         }

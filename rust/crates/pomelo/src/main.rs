@@ -1577,7 +1577,7 @@ impl App {
         project: Option<&std::path::Path>,
     ) -> WindowId {
         let bounds = window_bounds::restore(project);
-        let attrs = platform::window_attributes(window_bounds::apply(
+        let attrs = platform::main_window_attributes(window_bounds::apply(
             Window::default_attributes().with_title("Pomelo"),
             bounds,
             event_loop,
@@ -2582,8 +2582,11 @@ impl App {
         }
         m.last_drawn = Instant::now();
         let fullscreen = is_native_fullscreen(&m.window);
-        m.entity
-            .update(app.app_mut(), |view, _| view.set_fullscreen(fullscreen));
+        let maximized = m.window.is_maximized();
+        m.entity.update(app.app_mut(), |view, _| {
+            view.set_fullscreen(fullscreen);
+            view.set_maximized(maximized);
+        });
         let (w, h) = m.ui.size();
         let scale = m.window.scale_factor() as f32;
         app.resize(m.handle, w, h, scale);
@@ -3196,6 +3199,21 @@ impl App {
         Some(entity.update(app.app_mut(), f))
     }
 
+    fn close_main(&mut self, id: WindowId, event_loop: &ActiveEventLoop) {
+        self.with_workspace_view(id, |v, _| v.persist_panes(true));
+        self.persist_settings();
+        self.save_window_bounds(id);
+        if let Some(m) = self.mains.remove(&id) {
+            if let Some(app) = self.main_app.as_mut() {
+                app.close_window(m.handle);
+            }
+        }
+        self.sync_dev_proxy();
+        if self.mains.is_empty() {
+            event_loop.exit();
+        }
+    }
+
     /// After routing an input to a main view, apply the effects it flagged: persist dock geometry, and open a
     /// new window for a session ("Open in new window") as a real second OS window.
     fn sync_workspace_effects(&mut self, id: WindowId, event_loop: &ActiveEventLoop) {
@@ -3207,6 +3225,10 @@ impl App {
         };
         let (effects, agent_fix) =
             entity.update(app.app_mut(), |v, _| (v.take_effects(), v.take_agent_fix()));
+        if effects.titlebar == Some(workspace::TitlebarGesture::Close) {
+            self.close_main(id, event_loop);
+            return;
+        }
         if let (Some(gesture), Some(main)) = (effects.titlebar, self.mains.get(&id)) {
             match gesture {
                 workspace::TitlebarGesture::Move => {
@@ -3215,6 +3237,11 @@ impl App {
                     }
                 }
                 workspace::TitlebarGesture::DoubleClick => titlebar_double_click(&main.window),
+                workspace::TitlebarGesture::Minimize => main.window.set_minimized(true),
+                workspace::TitlebarGesture::ToggleMaximize => {
+                    main.window.set_maximized(!main.window.is_maximized())
+                }
+                workspace::TitlebarGesture::Close => {}
             }
         }
         if effects.persist {
@@ -4204,20 +4231,7 @@ impl ApplicationHandler for App {
                 }
                 self.draw_main(id);
             }
-            WindowEvent::CloseRequested => {
-                self.with_workspace_view(id, |v, _| v.persist_panes(true));
-                self.persist_settings();
-                self.save_window_bounds(id);
-                if let Some(m) = self.mains.remove(&id) {
-                    if let Some(app) = self.main_app.as_mut() {
-                        app.close_window(m.handle);
-                    }
-                }
-                self.sync_dev_proxy();
-                if self.mains.is_empty() {
-                    event_loop.exit();
-                }
-            }
+            WindowEvent::CloseRequested => self.close_main(id, event_loop),
             WindowEvent::Resized(size) => {
                 if let Some(m) = self.mains.get_mut(&id) {
                     if m.resizing_until.is_none() {
@@ -4264,14 +4278,16 @@ impl ApplicationHandler for App {
                     .with_workspace_view(id, |v, _| v.terminal_pointer_at(lx, ly))
                     .flatten();
                 if let Some(m) = self.mains.get(&id) {
-                    m.window.set_cursor(match resize {
+                    let icon = match resize {
                         Some(workspace::ResizeCursor::Horizontal) => CursorIcon::EwResize,
                         Some(workspace::ResizeCursor::Vertical) => CursorIcon::NsResize,
                         None if terminal_pointer == Some(true) => CursorIcon::Pointer,
                         None if terminal_pointer == Some(false) => CursorIcon::Text,
                         None if over => CursorIcon::Pointer,
                         None => CursorIcon::Default,
-                    });
+                    };
+                    let edge = platform::resize_edge(&m.window, m.cursor);
+                    m.window.set_cursor(edge.map_or(icon, CursorIcon::from));
                 }
             }
             WindowEvent::MouseInput {
@@ -4285,6 +4301,14 @@ impl ApplicationHandler for App {
                 };
                 match state {
                     ElementState::Pressed => {
+                        if let Some(m) = self.mains.get(&id) {
+                            if let Some(edge) = platform::resize_edge(&m.window, m.cursor) {
+                                if let Err(error) = m.window.drag_resize_window(edge) {
+                                    eprintln!("resize window: {error}");
+                                }
+                                return;
+                            }
+                        }
                         self.with_workspace_view(id, |v, _| v.mouse_down(lx, ly));
                         self.reset_caret();
                         self.sync_workspace_effects(id, event_loop);

@@ -120,6 +120,9 @@ pub enum TitlebarGesture {
     Move,
     /// Whatever the system's "double-click a window's title bar" setting says.
     DoubleClick,
+    Minimize,
+    ToggleMaximize,
+    Close,
 }
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
@@ -1270,6 +1273,10 @@ impl WorkspaceView {
         let changed = self.layout.fullscreen != fullscreen;
         self.layout.fullscreen = fullscreen;
         changed
+    }
+
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.layout.maximized = maximized;
     }
 
     pub fn set_stale_services(&mut self, names: &[String]) {
@@ -7943,6 +7950,12 @@ impl WorkspaceView {
             self.pending.action = Some(crate::keymap::Action::OpenAgentUsage);
         } else if id == crate::USAGE_REFRESH {
             self.pending.refresh_usage = true;
+        } else if id == crate::WINDOW_MINIMIZE {
+            self.pending.titlebar = Some(TitlebarGesture::Minimize);
+        } else if id == crate::WINDOW_MAXIMIZE {
+            self.pending.titlebar = Some(TitlebarGesture::ToggleMaximize);
+        } else if id == crate::WINDOW_CLOSE {
+            self.pending.titlebar = Some(TitlebarGesture::Close);
         } else if id == crate::APP_MENU {
             let open = self
                 .menu
@@ -9388,6 +9401,9 @@ mod tests {
     #[test]
     fn fullscreen_moves_the_project_name_to_the_edge() {
         let (mut app, h, e) = open();
+        let drawn_buttons = e.update(app.app_mut(), |v, _| {
+            std::mem::replace(&mut v.layout.window_controls, false)
+        });
         app.draw(h);
         let windowed = app
             .window(h)
@@ -9400,6 +9416,22 @@ mod tests {
             .and_then(|w| w.center_of(SESSION_TRIGGER))
             .expect("trigger");
         assert!(full.0 < windowed.0 - 50.0, "{full:?} vs {windowed:?}");
+        e.update(app.app_mut(), |v, _| {
+            v.set_fullscreen(false);
+            v.layout.window_controls = drawn_buttons;
+        });
+        app.draw(h);
+        let own_buttons = app
+            .window(h)
+            .and_then(|w| w.center_of(SESSION_TRIGGER))
+            .expect("trigger");
+        if drawn_buttons {
+            assert_eq!(own_buttons, full, "no traffic lights to clear");
+            assert!(app
+                .window(h)
+                .and_then(|w| w.center_of(crate::WINDOW_CLOSE))
+                .is_some());
+        }
     }
 
     #[test]

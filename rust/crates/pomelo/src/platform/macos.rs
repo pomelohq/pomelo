@@ -10,6 +10,10 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
         .with_title_hidden(true)
 }
 
+pub(crate) fn main_window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    window_attributes(attributes)
+}
+
 pub(crate) fn set_dock_icon() {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
@@ -293,4 +297,12 @@ pub(crate) fn set_start_at_login(enabled: bool) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     std::fs::write(&path, plist)
+}
+
+/// The window's own frame resizes it on macOS.
+pub(crate) fn resize_edge(
+    _window: &Window,
+    _cursor: (f64, f64),
+) -> Option<winit::window::ResizeDirection> {
+    None
 }

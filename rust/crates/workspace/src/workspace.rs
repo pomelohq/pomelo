@@ -499,6 +499,10 @@ pub enum RowAction {
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
 pub const SESSION_TRIGGER: u64 = 1;
+/// The window buttons drawn at the header's right end where the window has no system title bar.
+pub const WINDOW_MINIMIZE: u64 = 90;
+pub const WINDOW_MAXIMIZE: u64 = 91;
+pub const WINDOW_CLOSE: u64 = 92;
 /// The title bar's "<workspace> needs you" pill: goes to the next workspace whose agent waits.
 pub const ATTENTION_PILL: u64 = 13;
 pub const SESSION_OPEN: u64 = 3;
@@ -1147,6 +1151,9 @@ pub struct Layout {
     pub session_scroll: f32,
     /// The window fills the screen: macOS hides the traffic lights, so the header needs no room for them.
     pub fullscreen: bool,
+    /// The header draws minimize, maximize and close itself: Linux windows here have no system title bar.
+    pub window_controls: bool,
+    pub maximized: bool,
     pub files_view: Option<Box<dyn FunctionView>>,
     /// The files view's language servers as the status bar shows them, taken each frame.
     pub language_servers: LanguageServers,
@@ -2317,6 +2324,8 @@ impl Default for Layout {
             session_menu: false,
             session_scroll: 0.0,
             fullscreen: false,
+            window_controls: cfg!(target_os = "linux"),
+            maximized: false,
             files_view: None,
             language_servers: LanguageServers::default(),
             terminal_view: None,
@@ -2830,7 +2839,7 @@ impl Layout {
     /// session name as a subtle Button-style trigger, like the reference's project name button.
     /// Where the session switcher starts: past the traffic lights, or near the edge once they are hidden.
     fn session_left(&self) -> f32 {
-        if self.fullscreen {
+        if self.fullscreen || self.window_controls {
             FULLSCREEN_LEFT
         } else {
             SESSION_LEFT
@@ -2937,13 +2946,16 @@ impl Layout {
         if let Some(update) = &self.update.button {
             right = right.child(crate::update::button(update, hovered));
         }
-        let right: Node = right
+        let mut right = right
             .child(crate::usage::chip(
                 &self.usage,
                 hovered == Some(USAGE_CHIP) || self.usage_card_open,
             ))
-            .child(chevron)
-            .into();
+            .child(chevron);
+        if self.window_controls {
+            right = right.child(self.window_buttons(hovered));
+        }
+        let right: Node = right.into();
         let scale = ui::ui_text_scale();
         let right_w = ui::measure(&right).0 * scale;
         let cluster = render(
@@ -2962,6 +2974,43 @@ impl Layout {
         painted.icons.extend(cluster.icons);
         painted.hits.extend(cluster.hits);
         painted
+    }
+
+    fn window_buttons(&self, hovered: Option<u64>) -> Node {
+        let button = |id: u64, kind: ui::IconKind| -> Node {
+            let hot = hovered == Some(id);
+            let mut button = div()
+                .row()
+                .w_px(20.0)
+                .h_px(20.0)
+                .rounded(10.0)
+                .items_center()
+                .justify_center()
+                .on_click(id)
+                .child(ui::icon(kind).size(14.0).color(if hot {
+                    theme().icon_muted
+                } else {
+                    theme().icon
+                }));
+            if hot {
+                button = button.bg(theme().ghost_element_hover);
+            }
+            button.into()
+        };
+        let maximize = if self.maximized {
+            ui::IconKind::WindowRestore
+        } else {
+            ui::IconKind::WindowMaximize
+        };
+        div()
+            .row()
+            .items_center()
+            .gap(12.0)
+            .pl(12.0)
+            .child(button(WINDOW_MINIMIZE, ui::IconKind::WindowMinimize))
+            .child(button(WINDOW_MAXIMIZE, maximize))
+            .child(button(WINDOW_CLOSE, ui::IconKind::Close))
+            .into()
     }
 
     /// The first other workspace whose agent waits for input, named by its ticket key or its name.

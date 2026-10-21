@@ -2857,7 +2857,12 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
             PageItem::Header("Startup"),
             PageItem::Row(SettingRow {
                 title: "Start at Login".into(),
-                description: "Open Pomelo when you log in to this Mac.".into(),
+                description: if cfg!(target_os = "macos") {
+                    "Open Pomelo when you log in to this Mac."
+                } else {
+                    "Open Pomelo when you log in."
+                }
+                .into(),
                 control: Control::Toggle {
                     id: CTRL_START_AT_LOGIN,
                     on: general.start_at_login,
