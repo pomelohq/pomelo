@@ -366,7 +366,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                     .items_center()
                     .child(div().w_px(4.0).h_px(4.0).rounded(2.0).bg(colors.text_muted)),
             )
-            .child(body_text(item, text_width - 20.0))
+            .child(body_text(item, text_width - 18.0))
             .into()
     };
     // Lines stand 10px apart; a run of bullets holds together 4px apart.
@@ -439,12 +439,13 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                         .items_center()
                         .child(icon(IconKind::Warning).size(14.0).color(colors.warning)),
                 )
-                .child(
-                    label(warning.clone())
-                        .size(13.0)
-                        .color(colors.text)
-                        .wrap(text_width - 46.0),
-                ),
+                .child(paragraph(
+                    warning,
+                    13.0,
+                    20.0,
+                    text_width - 46.0,
+                    colors.text,
+                )),
         );
     }
     let mut card = modal_frame(PROMPT_WIDTH).child(modal_header(&prompt.message, cancel));
@@ -456,16 +457,54 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
     card.child(modal_footer(None, buttons.into())).into()
 }
 
-/// Muted body copy at the body line height, wrapping only when it does not fit `width`.
-fn body_text(text: &str, width: f32) -> Node {
-    let copy = label(text.to_string()).size(13.0).color(theme().text_muted);
-    if ui::measure_text_width(text, 13.0, false, ui::ui_font_weight()) / ui::ui_text_scale()
-        <= width
-    {
-        text_line(20.0, copy)
-    } else {
-        copy.wrap(width).into()
+/// `text` broken at spaces into lines that fit `width`, each `line_height` tall, so wrapped copy keeps the
+/// type scale's leading.
+pub fn paragraph(text: &str, size: f32, line_height: f32, width: f32, color: Rgba) -> Node {
+    let fits = |candidate: &str| {
+        ui::measure_text_width(candidate, size, false, ui::ui_font_weight()) / ui::ui_text_scale()
+            <= width
+    };
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(line) if fits(&format!("{line} {word}")) => {
+                line.push(' ');
+                line.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
     }
+    let mut column = div().col();
+    for line in lines {
+        column = column.child(text_line(line_height, label(line).size(size).color(color)));
+    }
+    column.into()
+}
+
+/// Muted body copy at the body line height, wrapping only when it does not fit `width`. A run between `**`
+/// marks is set strong, in the text color: the thing the sentence is about.
+fn body_text(text: &str, width: f32) -> Node {
+    let colors = theme();
+    let plain = text.replace("**", "");
+    let fits = ui::measure_text_width(&plain, 13.0, false, ui::ui_font_weight())
+        / ui::ui_text_scale()
+        <= width;
+    if !fits {
+        return paragraph(&plain, 13.0, 20.0, width, colors.text_muted);
+    }
+    let mut row = div().row().h_px(20.0).items_center();
+    for (index, run) in text.split("**").enumerate() {
+        if run.is_empty() {
+            continue;
+        }
+        let run = label(run.to_string()).size(13.0);
+        row = row.child(if index % 2 == 1 {
+            run.weight(600).color(colors.text)
+        } else {
+            run.color(colors.text_muted)
+        });
+    }
+    row.into()
 }
 
 /// A text input with its label above and its hint or error below: a 30px box on the surface layer whose ring
@@ -564,7 +603,7 @@ impl InputField {
             row = row.ring(3.0, colors.overlay_selected);
         }
         if let Some(kind) = self.leading {
-            row = row.child(icon(kind).size(14.0).color(colors.icon_muted));
+            row = row.child(icon(kind).size(14.0).color(colors.text_placeholder));
         }
         // Away from the box, a known value reads with what it stands for; editing shows only the value.
         if let Some(suffix) = suffix.filter(|_| !focused) {

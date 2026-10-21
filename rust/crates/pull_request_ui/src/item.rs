@@ -997,20 +997,20 @@ fn raised(content: ui::Div, radius: f32) -> Node {
         ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
         ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
     };
-    div()
-        .col()
-        .pb(1.0)
-        .rounded(radius + 1.0)
-        .bg(shadow)
-        .child(
-            div()
-                .col()
-                .p(1.0)
-                .rounded(radius + 1.0)
-                .bg(colors.border_variant)
-                .child(content.rounded(radius).bg(colors.element_background)),
-        )
-        .into()
+    // A light card stands off the page by its shadow, so its edge is barely there.
+    let edge = match colors.appearance {
+        ui::Appearance::Dark => colors.border_variant,
+        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.04).over(colors.element_background),
+    };
+    let card = div().col().pb(1.0).rounded(radius + 1.0).bg(shadow).child(
+        div()
+            .col()
+            .p(1.0)
+            .rounded(radius + 1.0)
+            .bg(edge)
+            .child(content.rounded(radius).bg(colors.element_background)),
+    );
+    card.into()
 }
 
 fn hex_color(hex: &str) -> Option<Rgba> {

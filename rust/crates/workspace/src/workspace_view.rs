@@ -59,9 +59,9 @@ pub fn unpushed_warning(unpushed: &[(String, usize)]) -> Option<String> {
 /// What deleting the workspace `label` on `branch` does, as its confirmation lists it.
 pub fn delete_workspace_detail(label: &str, branch: &str) -> String {
     let named = if label == branch {
-        branch.to_string()
+        format!("**{branch}**")
     } else {
-        format!("{label} on {branch}")
+        format!("**{label}** on {branch}")
     };
     format!(
         "{named}. Pomelo will:\n- stop its services and release its ports and slots\n- run its pre-delete \

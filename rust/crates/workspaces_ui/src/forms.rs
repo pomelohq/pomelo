@@ -856,7 +856,11 @@ impl CreateWorkspaceModal {
             )
             .child(anchor);
         if open.is_some() {
-            line = line.bg(colors.element_selected);
+            // The selection tint laid on the list's surface, not the panel's.
+            line = line.bg(colors
+                .text_accent
+                .alpha(0.11)
+                .over(colors.editor_background));
         }
         line.child(div().w_px(10.0))
             .child(self.modules_cell(row))

@@ -37,6 +37,7 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "project-delete" => (0, &[("PROMPT", "delete")]),
         "git-discard-all" => (0, &[("PROMPT", "discard-all")]),
         "git-discard-file" => (0, &[("PROMPT", "discard-file")]),
+        "git-pr-merge-confirm" => (0, &[("MERGECONFIRM", "1")]),
         "project-switcher-filtered" => (0, &[("SWITCHER", "rate")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
@@ -338,6 +339,12 @@ fn pr_fixture(view: &str) -> pull_request_ui::PrItem {
                 ..pom_forge::TimelineItem::default()
             },
         ];
+    }
+    // The merge confirmation needs a pull request with nothing blocking it.
+    if view == "merge-confirm" {
+        pr.checks = "pass".into();
+        pr.review = "approved".into();
+        pr.review_decision = "APPROVED".into();
     }
     let mut item = pull_request_ui::PrItem::new(
         pom_paths::StateDir::new(dir.join("state")),
@@ -1863,11 +1870,25 @@ fn main() -> anyhow::Result<()> {
     }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
-    if std::env::var("MODAL").is_ok() || std::env::var("PROMPT").is_ok() {
+    if std::env::var("MODAL").is_ok()
+        || std::env::var("PROMPT").is_ok()
+        || std::env::var("MERGECONFIRM").is_ok()
+    {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
         }
-        let node = if let Ok(name) = std::env::var("MODAL") {
+        let node = if std::env::var("MERGECONFIRM").is_ok() {
+            // The board frames the section with 8px of the tab around it, where its edge and shadow fall.
+            let section = pr_fixture("merge-confirm")
+                .confirming_merge_box(lw - 16.0)
+                .ok_or_else(|| anyhow::anyhow!("the fixture pull request cannot merge"))?;
+            ui::div()
+                .col()
+                .p(8.0)
+                .bg(ui::theme().editor_background)
+                .child(section)
+                .into()
+        } else if let Ok(name) = std::env::var("MODAL") {
             let mut modal = modal_fixture::modal(&name)
                 .ok_or_else(|| anyhow::anyhow!("unknown modal {name}"))?;
             modal.render()
@@ -1898,7 +1919,12 @@ fn main() -> anyhow::Result<()> {
                 overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
             ));
         }
-        r.render_frame(ui::theme().background, &layers)?;
+        let backdrop = if std::env::var("MERGECONFIRM").is_ok() {
+            ui::theme().editor_background
+        } else {
+            ui::theme().background
+        };
+        r.render_frame(backdrop, &layers)?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;
         let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
