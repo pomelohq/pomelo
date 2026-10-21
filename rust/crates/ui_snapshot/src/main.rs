@@ -30,9 +30,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "services-stopped" => (
             0,
             &[
-                ("SERVICES", "web/vite"),
+                ("SERVICES", "web/app"),
                 ("FACTS", "674"),
-                ("STOPPED", "web/vite"),
+                ("STOPPED", "web/app"),
             ],
         ),
         "services-crashed" => (0, &[("SERVICES", "api/jobs"), ("FACTS", "674")]),
@@ -591,7 +591,7 @@ fn main() -> anyhow::Result<()> {
         std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
         std::fs::write(
             dir.join("pom.yml"),
-            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails s -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      vite:\n        type: frontend\n        mode: dev\n        modes:\n          dev: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    env:\n      .env.development:\n        RAILS_ENV: development\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails server -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      app:\n        type: frontend\n        port: true\n        mode: hmr\n        modes:\n          hmr: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
         )?;
         let config = pom_config::Config::load(&dir.join("pom.yml"))?;
         let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
@@ -606,7 +606,7 @@ fn main() -> anyhow::Result<()> {
         ));
         let mut panel = services_ui::ServicesPanel::new(
             services_ui::ServicesContext {
-                runner,
+                runner: runner.clone(),
                 config: std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
                     config,
                 )))),
@@ -617,6 +617,31 @@ fn main() -> anyhow::Result<()> {
             },
             dir.join("workspace--feat-login"),
         );
+        // The facts the boards show: leased ports behind the proxy, and api/server's holder up for 12 minutes.
+        for (repo, service, port) in [("api", "server", 3000), ("web", "app", 5173)] {
+            let key = pom_ports::service_key(
+                &pom_env::port_ws_key("feat-login"),
+                &format!("{repo}~{service}"),
+            );
+            runner.ports().acquire_preferred(&key, port, 1);
+        }
+        let server = runner.holder_name(&pom_services::ServiceTarget {
+            branch: "feat-login".into(),
+            is_main: false,
+            repo: "api".into(),
+            service: "server".into(),
+        });
+        let pidfile = runner.holders().pidfile(&server);
+        if let Some(parent) = pidfile.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&pidfile, "48213\n")?;
+        std::fs::File::options()
+            .write(true)
+            .open(&pidfile)?
+            .set_modified(
+                std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
+            )?;
         use services_ui::Status;
         panel.show_status("_ws", "gateway", Status::Running, None, None);
         panel.show_status("api", "server", Status::Running, None, None);
@@ -631,7 +656,7 @@ fn main() -> anyhow::Result<()> {
                 at: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(130)),
             }),
         );
-        panel.show_status("web", "vite", Status::Running, None, None);
+        panel.show_status("web", "app", Status::Running, None, None);
         panel.show_status(
             "web",
             "storybook",

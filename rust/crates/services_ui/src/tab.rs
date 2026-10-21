@@ -747,16 +747,8 @@ impl ServiceItem {
             .runner
             .holders()
             .pidfile(&self.process_holder());
-        let started = std::fs::metadata(pidfile)
-            .and_then(|meta| meta.modified())
-            .ok()?;
-        let seconds = started.elapsed().ok()?.as_secs();
-        Some(match seconds {
-            0..=59 => format!("{seconds}s"),
-            60..=3599 => format!("{}m {}s", seconds / 60, seconds % 60),
-            3600..=86_399 => format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60),
-            _ => format!("{}d {}h", seconds / 86_400, (seconds % 86_400) / 3600),
-        })
+        // The same wording as the dock's rows ("12m", "2h 5m"), so a service reads alike in both places.
+        view::uptime(&pidfile)
     }
 
     fn header(&self, state: &State) -> Node {

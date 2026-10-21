@@ -44,6 +44,8 @@ pom_config = { path = "../pom_config" }
 pom_services = { path = "../pom_services" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }
+pom_ports = { path = "../pom_ports" }
+pom_env = { path = "../pom_env" }
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 anyhow.workspace = true
