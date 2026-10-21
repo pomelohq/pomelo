@@ -1,14 +1,33 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
-use markdown::{MarkdownBody, DOCUMENT_STYLE};
+use markdown::{MarkdownBody, MarkdownStyle, DOCUMENT_STYLE};
 use pom_forge::{PrTarget, PullRequest, TimelineItem, TimelineKind};
 use pom_paths::StateDir;
 use terminal::Modifiers;
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{Item, ItemTick, PrSeverity};
+use workspace::{Item, ItemTick};
 
-const PAD: f32 = 16.0;
+const PAD: f32 = 24.0;
+/// Text past this width gets hard to read, so the overview and checks stop growing with the tab.
+const MAX_CONTENT_W: f32 = 760.0;
+const CREATE_PR: u64 = 6;
+/// The tab reads at the panel's 12px text, so bodies use the document layout scaled down to it.
+const BODY_STYLE: MarkdownStyle = MarkdownStyle {
+    text_size: 12.0,
+    line_height: 18.0,
+    paragraph_spacing: 8.0,
+    code_block_margin: 8.0,
+    heading_margin_top: 12.0,
+    code_size: 11.5,
+    code_line_height: 18.0,
+    ..DOCUMENT_STYLE
+};
+/// Comments sit in tighter cards than the description.
+const COMMENT_STYLE: MarkdownStyle = MarkdownStyle {
+    line_height: 14.0,
+    ..BODY_STYLE
+};
 const OPEN_ON_GITHUB: u64 = 1;
 const REFRESH: u64 = 2;
 const OVERVIEW_TAB: u64 = 3;
@@ -121,6 +140,18 @@ impl PrItem {
         self.pr = pr;
     }
 
+    /// Shows the lookup as failed with `error` (previews and tests).
+    pub fn show_error(&mut self, error: &str) {
+        self.loading = None;
+        self.pr = None;
+        self.error = Some(error.to_string());
+    }
+
+    /// Picks the Checks sub-tab (previews and tests).
+    pub fn show_checks(&mut self) {
+        self.tab = Tab::Checks;
+    }
+
     fn open(&mut self, url: &str) {
         if url.is_empty() {
             return;
@@ -132,183 +163,368 @@ impl PrItem {
 
     fn state_pill(pr: &PullRequest) -> Node {
         let colors = theme();
-        let (text, color) = match (pr.state.as_str(), pr.is_draft) {
-            ("MERGED", _) => ("Merged", PrSeverity::Merged.color()),
-            ("CLOSED", _) => ("Closed", colors.error),
-            (_, true) => ("Draft", colors.text_muted),
-            _ => ("Open", colors.success),
+        let (text, color, fill) = match (pr.state.as_str(), pr.is_draft) {
+            ("MERGED", _) => ("Merged", colors.text_accent, colors.text_accent.alpha(0.18)),
+            ("CLOSED", _) => ("Closed", colors.error, colors.error.alpha(0.16)),
+            (_, true) => ("Draft", colors.text_muted, colors.element_hover),
+            _ => ("Open", colors.success, colors.success.alpha(0.16)),
+        };
+        let kind = match pr.state.as_str() {
+            "MERGED" => IconKind::Merged,
+            "CLOSED" => IconKind::XCircle,
+            _ => IconKind::PullRequest,
         };
         div()
             .row()
-            .h_px(20.0)
-            .px(8.0)
-            .gap(4.0)
+            .h_px(22.0)
+            .px(9.0)
+            .gap(5.0)
             .items_center()
-            .rounded(10.0)
-            .bg(Rgba::new(color.r, color.g, color.b, 0.16))
-            .child(
-                icon(if pr.state == "MERGED" {
-                    IconKind::Merged
-                } else {
-                    IconKind::PullRequest
-                })
-                .size(12.0)
-                .color(color),
-            )
-            .child(label(text).size(12.0).color(color))
+            .rounded(12.0)
+            .bg(fill)
+            .child(icon(kind).size(13.0).color(color))
+            .child(label(text).size(12.0).weight(600).color(color))
+            .into()
+    }
+
+    fn header_button(id: u64, kind: IconKind, text: &str) -> Node {
+        let colors = theme();
+        div()
+            .row()
+            .h_px(26.0)
+            .px(8.0)
+            .gap(5.0)
+            .items_center()
+            .rounded(4.0)
+            .on_click(id)
+            .child(icon(kind).size(13.0).color(colors.text_muted))
+            .child(label(text.to_string()).size(12.0).color(colors.text_muted))
             .into()
     }
 
     fn header(&self, width: f32) -> Node {
         let colors = theme();
-        let button = |id: u64, kind: IconKind, text: &str| {
-            div()
-                .row()
-                .h_px(24.0)
-                .px(8.0)
-                .gap(4.0)
-                .items_center()
-                .rounded(4.0)
-                .border(1.0, colors.border_variant)
-                .on_click(id)
-                .child(icon(kind).size(12.0).color(colors.icon_muted))
-                .child(label(text.to_string()).size(12.0).color(colors.text))
-        };
-        let mut top = div().row().gap(8.0).items_center();
+        let mut top = div().row().gap(10.0).items_center();
         if let Some(pr) = &self.pr {
-            top = top.child(Self::state_pill(pr)).child(
-                label(format!("#{}", pr.number))
-                    .size(13.0)
-                    .color(colors.text_muted),
-            );
+            top = top
+                .child(Self::state_pill(pr))
+                .child(
+                    label(format!("#{}", pr.number))
+                        .size(11.5)
+                        .mono()
+                        .color(colors.text_placeholder),
+                )
+                .child(
+                    label(self.target.repo.clone())
+                        .size(12.0)
+                        .color(colors.text_placeholder),
+                );
         }
         top = top.child(div().row().flex(1.0));
         if self.pr.is_some() {
             let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
-            top = top.child(button(
-                COPY_LINK,
-                IconKind::Copy,
-                if copied { "Copied" } else { "Copy Link" },
-            ));
-            top = top.child(button(
-                OPEN_ON_GITHUB,
-                IconKind::ArrowUpRight,
-                "Open on GitHub",
-            ));
+            top = top
+                .child(Self::header_button(
+                    COPY_LINK,
+                    IconKind::Copy,
+                    if copied { "Copied" } else { "Copy Link" },
+                ))
+                .child(Self::header_button(
+                    OPEN_ON_GITHUB,
+                    IconKind::ArrowUpRight,
+                    "Open on GitHub",
+                ))
+                .child(Self::header_button(
+                    REFRESH,
+                    IconKind::RotateCw,
+                    if self.loading.is_some() {
+                        "Loading..."
+                    } else {
+                        "Refresh"
+                    },
+                ));
         }
-        top = top.child(button(
-            REFRESH,
-            IconKind::RotateCw,
-            if self.loading.is_some() {
-                "Loading..."
-            } else {
-                "Refresh"
-            },
-        ));
-        let mut column = div().col().gap(6.0).child(top);
-        match &self.pr {
-            Some(pr) => {
-                column = column.child(
-                    label(pr.title.clone())
-                        .size(18.0)
-                        .color(colors.text)
-                        .wrap(width),
-                );
-                let author = pr
-                    .author
-                    .as_ref()
-                    .map_or("", |author| author.login.as_str());
-                column = column.child(
-                    div()
-                        .row()
-                        .gap(10.0)
-                        .items_center()
-                        .child(
-                            label(author.to_string())
-                                .size(12.0)
-                                .color(colors.text_muted),
-                        )
-                        .child(
-                            label(format!("{} > {}", pr.head_ref_name, pr.base_ref_name))
-                                .size(12.0)
-                                .mono()
-                                .color(colors.text_muted),
-                        )
-                        .child(
-                            label(format!("+{}", pr.additions))
-                                .size(12.0)
-                                .color(colors.version_control_added),
-                        )
-                        .child(
-                            label(format!("-{}", pr.deletions))
-                                .size(12.0)
-                                .color(colors.version_control_deleted),
-                        ),
-                );
-            }
-            None => {
-                let text = if self.loading.is_some() {
-                    format!("Looking up {} on GitHub...", self.target.head)
-                } else {
-                    format!("No pull request for {} yet", self.target.head)
-                };
-                column = column.child(label(text).size(14.0).color(colors.text_muted));
-            }
-        }
-        if let Some(error) = &self.error {
+        let mut column = div().col().gap(10.0).child(top.pb(2.0));
+        if let Some(pr) = &self.pr {
             column = column.child(
-                label(error.clone())
-                    .size(12.0)
-                    .color(colors.error)
+                label(pr.title.clone())
+                    .size(20.0)
+                    .weight(600)
+                    .color(colors.text)
                     .wrap(width),
             );
+            let author = pr
+                .author
+                .as_ref()
+                .map_or("", |author| author.login.as_str());
+            column = column.child(
+                div()
+                    .row()
+                    .h_px(14.0)
+                    .gap(12.0)
+                    .items_center()
+                    .child(
+                        label(author.to_string())
+                            .size(12.0)
+                            .color(colors.text_muted),
+                    )
+                    .child(
+                        label(format!("{} > {}", pr.head_ref_name, pr.base_ref_name))
+                            .size(11.5)
+                            .mono()
+                            .color(colors.text_placeholder),
+                    )
+                    .child(
+                        label(format!("+{}", pr.additions))
+                            .size(11.5)
+                            .mono()
+                            .color(colors.success),
+                    )
+                    .child(
+                        label(format!("-{}", pr.deletions))
+                            .size(11.5)
+                            .mono()
+                            .color(colors.error),
+                    ),
+            );
+            if let Some(error) = &self.error {
+                column = column.child(
+                    label(error.clone())
+                        .size(12.0)
+                        .color(colors.error)
+                        .wrap(width),
+                );
+            }
         }
         column.into()
     }
 
+    /// What stands between the PR and a merge, as raised chips: failing checks, requested changes, the merge state.
+    fn blockers(pr: &PullRequest) -> Option<Node> {
+        if pr.state != "OPEN" {
+            return None;
+        }
+        let colors = theme();
+        let mut chips: Vec<(IconKind, Rgba, String)> = Vec::new();
+        if pr.checks == "fail" {
+            let failing: Vec<&str> = pr
+                .status_check_rollup
+                .iter()
+                .filter(|check| check.result == "fail")
+                .map(|check| check.name.as_str())
+                .collect();
+            chips.push((
+                IconKind::XCircle,
+                colors.error,
+                format!("CI failed: {}", failing.join(", ")),
+            ));
+        } else if pr.checks == "pending" {
+            chips.push((IconKind::Clock, colors.warning, "Checks running".into()));
+        }
+        let asked: Vec<&str> = pr
+            .reviewers
+            .iter()
+            .filter(|reviewer| reviewer.state == "changes")
+            .map(|reviewer| reviewer.name.as_str())
+            .collect();
+        if !asked.is_empty() {
+            chips.push((
+                IconKind::Undo,
+                colors.error,
+                format!("Changes requested by {}", asked.join(", ")),
+            ));
+        } else if pr.review == "review" {
+            chips.push((
+                IconKind::Clock,
+                colors.text_muted,
+                "Waiting for review".into(),
+            ));
+        }
+        if let Some((kind, color, text)) = merge_status(pr) {
+            chips.push((kind, color, text));
+        }
+        if chips.is_empty() {
+            return None;
+        }
+        let mut row = div().row().gap(8.0);
+        for (kind, color, text) in chips {
+            row = row.child(raised(
+                div()
+                    .row()
+                    .h_px(28.0)
+                    .px(10.0)
+                    .gap(6.0)
+                    .items_center()
+                    .child(icon(kind).size(14.0).color(color))
+                    .child(label(text).size(12.0).color(colors.text)),
+                6.0,
+            ));
+        }
+        Some(row.into())
+    }
+
     fn tabs(&self, checks: usize) -> Node {
         let colors = theme();
-        let tab = |id: u64, text: String, active: bool| {
-            div()
-                .col()
+        let tab = |id: u64, text: &str, count: Option<usize>, active: bool| {
+            let mut segment = div()
+                .row()
+                .h_px(23.0)
+                .px(12.0)
                 .gap(6.0)
+                .items_center()
+                .rounded(4.0)
                 .on_click(id)
-                .child(label(text).size(13.0).color(if active {
+                .child(label(text.to_string()).size(12.0).color(if active {
                     colors.text
                 } else {
                     colors.text_muted
-                }))
-                .child(div().h_px(2.0).bg(if active {
-                    colors.text_accent
-                } else {
-                    Rgba::TRANSPARENT
-                }))
+                }));
+            if let Some(count) = count {
+                segment = segment.child(
+                    label(count.to_string())
+                        .size(12.0)
+                        .color(colors.text_placeholder),
+                );
+            }
+            if active {
+                raised(segment, 4.0)
+            } else {
+                segment.into()
+            }
         };
         div()
-            .col()
+            .row()
             .child(
                 div()
                     .row()
-                    .gap(16.0)
+                    .p(2.0)
+                    .gap(2.0)
+                    .rounded(6.0)
+                    .bg(colors.background)
                     .child(tab(
                         OVERVIEW_TAB,
-                        "Overview".into(),
+                        "Overview",
+                        None,
                         self.tab == Tab::Overview,
                     ))
                     .child(tab(
                         CHECKS_TAB,
-                        format!("Checks {checks}"),
+                        "Checks",
+                        Some(checks),
                         self.tab == Tab::Checks,
                     )),
             )
-            .child(div().h_px(1.0).bg(colors.border_variant))
             .into()
     }
 
     fn section(title: &str) -> Node {
-        label(title.to_string())
-            .size(11.0)
-            .color(theme().text_muted)
+        div()
+            .row()
+            .h_px(14.0)
+            .items_center()
+            .child(
+                label(title.to_uppercase())
+                    .size(11.0)
+                    .weight(600)
+                    .color(theme().text_placeholder),
+            )
+            .into()
+    }
+
+    /// A centered message for a tab with no PR to show: still looking, none yet, or the lookup failed.
+    fn state_card(&self, width: f32) -> Node {
+        let colors = theme();
+        if self.loading.is_some() {
+            let column = div().col().gap(12.0).child(
+                div()
+                    .row()
+                    .gap(8.0)
+                    .items_center()
+                    .child(
+                        icon(IconKind::LoadCircle)
+                            .size(14.0)
+                            .color(colors.text_muted),
+                    )
+                    .child(
+                        label(format!("Looking up {} on GitHub...", self.target.head))
+                            .size(12.0)
+                            .color(colors.text_muted),
+                    ),
+            );
+            let mut lines = div().col().gap(10.0).w_px(420.0).py(4.0);
+            for share in [0.6, 0.9, 0.4, 0.75, 0.55] {
+                lines = lines.child(
+                    div()
+                        .w_px(420.0 * share)
+                        .h_px(10.0)
+                        .rounded(5.0)
+                        .bg(colors.element_hover),
+                );
+            }
+            return column.child(lines).into();
+        }
+        let card_width = width.min(520.0);
+        let (kind, color, title, hint) = match &self.error {
+            Some(error) => (
+                IconKind::Warning,
+                colors.error,
+                error.clone(),
+                "The rest of the Git panel keeps working without it.".to_string(),
+            ),
+            None => (
+                IconKind::PullRequest,
+                colors.text,
+                format!("No pull request for {} yet", self.target.head),
+                "Open one on GitHub; it shows up here on the next refresh.".to_string(),
+            ),
+        };
+        let mut actions = div().row().gap(8.0).items_center();
+        if self.error.is_none() {
+            actions = actions.child(
+                div()
+                    .row()
+                    .h_px(30.0)
+                    .px(8.0)
+                    .gap(6.0)
+                    .items_center()
+                    .rounded(6.0)
+                    .border(1.0, colors.text_accent.alpha(0.4))
+                    .on_click(CREATE_PR)
+                    .child(icon(IconKind::Plus).size(12.0).color(colors.text_accent))
+                    .child(
+                        label("Create Pull Request")
+                            .size(13.0)
+                            .color(colors.text_accent),
+                    ),
+            );
+        }
+        actions = actions.child(Self::header_button(REFRESH, IconKind::RotateCw, "Refresh"));
+        div()
+            .row()
+            .child(
+                div()
+                    .col()
+                    .w_px(card_width)
+                    .p(18.0)
+                    .gap(8.0)
+                    .rounded(10.0)
+                    .bg(colors.panel_background)
+                    .child(icon(kind).size(20.0).color(color))
+                    .child(
+                        label(title)
+                            .size(13.0)
+                            .weight(600)
+                            .color(colors.text)
+                            .wrap(card_width - 36.0),
+                    )
+                    .child(
+                        label(hint)
+                            .size(13.0)
+                            .color(colors.text_placeholder)
+                            .wrap(card_width - 36.0),
+                    )
+                    .child(actions),
+            )
             .into()
     }
 
@@ -325,7 +541,7 @@ impl PrItem {
             self.description = Some((body.clone(), MarkdownBody::new(&body)));
         }
         let (_, parsed) = self.description.as_mut()?;
-        Some(parsed.render(width, DOCUMENT_STYLE, LINK_BASE))
+        Some(parsed.render(width, BODY_STYLE, LINK_BASE))
     }
 
     /// Reviews (with their inline threads) and comments after the description, oldest first.
@@ -364,13 +580,13 @@ impl PrItem {
                 .map(|body| {
                     body.render(
                         width,
-                        DOCUMENT_STYLE,
+                        COMMENT_STYLE,
                         CONVERSATION_LINK_BASE + index as u64 * CONVERSATION_LINK_STRIDE,
                     )
                 })
                 .unwrap_or_else(|| div().into())
         };
-        let mut column = div().col().gap(10.0);
+        let mut column = div().col().gap(8.0);
         for item in &timeline {
             let (verb, color) = match (item.kind, item.state.as_str()) {
                 (TimelineKind::Review, "APPROVED") => ("approved", colors.success),
@@ -382,18 +598,20 @@ impl PrItem {
             };
             let mut card = div()
                 .col()
-                .gap(8.0)
-                .p(12.0)
-                .rounded(6.0)
-                .border(1.0, colors.border_variant)
+                .gap(6.0)
+                .px(12.0)
+                .py(10.0)
+                .rounded(10.0)
+                .bg(colors.panel_background)
                 .child(
                     div()
                         .row()
+                        .h_px(16.0)
                         .gap(8.0)
                         .items_center()
                         .child(
                             label(item.author.clone())
-                                .size(13.0)
+                                .size(12.0)
                                 .weight(600)
                                 .color(colors.text),
                         )
@@ -401,7 +619,7 @@ impl PrItem {
                         .child(
                             label(short_time(&item.at))
                                 .size(12.0)
-                                .color(colors.text_muted),
+                                .color(colors.text_placeholder),
                         ),
                 );
             if !item.body.trim().is_empty() {
@@ -412,24 +630,23 @@ impl PrItem {
                     Some(line) => format!("{}:{line}", thread.path),
                     None => thread.path.clone(),
                 };
-                let mut head = div().row().gap(8.0).items_center().child(
-                    div().row().flex(1.0).items_center().child(
-                        label(place)
-                            .size(12.0)
-                            .mono()
-                            .color(colors.text_muted)
-                            .truncate_start(),
-                    ),
+                let mut head = div().row().h_px(16.0).gap(10.0).items_center().child(
+                    label(place)
+                        .size(12.0)
+                        .mono()
+                        .color(colors.text_muted)
+                        .truncate_start(),
                 );
                 if thread.resolved {
-                    head = head.child(label("Resolved").size(11.0).color(colors.success));
+                    head = head.child(label("Resolved").size(12.0).mono().color(colors.success));
                 }
                 let mut thread_box = div()
                     .col()
-                    .gap(8.0)
-                    .p(10.0)
+                    .gap(6.0)
+                    .px(8.0)
+                    .py(6.0)
                     .rounded(4.0)
-                    .bg(colors.panel_background)
+                    .bg(colors.editor_background)
                     .child(head);
                 for comment in &thread.comments {
                     thread_box = thread_box.child(
@@ -449,11 +666,11 @@ impl PrItem {
                                     )
                                     .child(
                                         label(short_time(&comment.at))
-                                            .size(11.0)
-                                            .color(colors.text_muted),
+                                            .size(12.0)
+                                            .color(colors.text_placeholder),
                                     ),
                             )
-                            .child(render_next(bodies, card_width - 2.0 * 10.0)),
+                            .child(render_next(bodies, card_width - 2.0 * 8.0)),
                     );
                 }
                 card = card.child(thread_box);
@@ -465,43 +682,73 @@ impl PrItem {
 
     fn overview(pr: &PullRequest, description: Option<Node>, conversation: Option<Node>) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(8.0);
-        if let Some((kind, color, text)) = merge_status(pr) {
-            column = column
-                .child(Self::section("MERGE"))
-                .child(
+        let section = |title: &str, body: Node| -> Node {
+            div()
+                .col()
+                .gap(6.0)
+                .child(Self::section(title))
+                .child(body)
+                .into()
+        };
+        let muted = |text: &str| -> Node {
+            label(text.to_string())
+                .size(12.0)
+                .color(colors.text_placeholder)
+                .into()
+        };
+        let mut column = div().col().gap(14.0);
+        if let Some((_, _, text)) = merge_status(pr) {
+            column = column.child(section(
+                "Merge",
+                label(text).size(12.0).color(colors.text_muted).into(),
+            ));
+        }
+        let reviewers: Node = if pr.reviewers.is_empty() {
+            muted("No reviewers")
+        } else {
+            let mut list = div().col().gap(6.0);
+            for reviewer in &pr.reviewers {
+                let (text, color) = match reviewer.state.as_str() {
+                    "approved" => ("approved", colors.success),
+                    "changes" => ("requested changes", colors.error),
+                    "pending" => ("review requested", colors.text_placeholder),
+                    _ => ("commented", colors.text_placeholder),
+                };
+                let initial: String = reviewer
+                    .name
+                    .chars()
+                    .take(1)
+                    .flat_map(char::to_uppercase)
+                    .collect();
+                list = list.child(
                     div()
                         .row()
                         .gap(8.0)
                         .items_center()
-                        .child(icon(kind).size(14.0).color(color))
-                        .child(label(text).size(13.0).color(colors.text)),
-                )
-                .child(div().h_px(8.0));
-        }
-        column = column.child(Self::section("REVIEWERS"));
-        if pr.reviewers.is_empty() {
-            column = column.child(label("No reviewers").size(13.0).color(colors.text_muted));
-        }
-        for reviewer in &pr.reviewers {
-            let (kind, color, text) = match reviewer.state.as_str() {
-                "approved" => (IconKind::Check, colors.success, "approved"),
-                "changes" => (IconKind::Warning, colors.error, "requested changes"),
-                "pending" => (IconKind::Clock, colors.warning, "review requested"),
-                _ => (IconKind::Eye, colors.text_muted, "commented"),
-            };
-            column = column.child(
-                div()
-                    .row()
-                    .gap(8.0)
-                    .items_center()
-                    .child(icon(kind).size(14.0).color(color))
-                    .child(label(reviewer.name.clone()).size(13.0).color(colors.text))
-                    .child(label(text).size(12.0).color(colors.text_muted)),
-            );
-        }
+                        .child(
+                            div()
+                                .w_px(18.0)
+                                .h_px(18.0)
+                                .rounded(9.0)
+                                .items_center()
+                                .justify_center()
+                                .bg(colors.element_hover)
+                                .child(
+                                    label(initial)
+                                        .size(10.0)
+                                        .weight(600)
+                                        .color(colors.text_muted),
+                                ),
+                        )
+                        .child(label(reviewer.name.clone()).size(12.0).color(colors.text))
+                        .child(label(text).size(12.0).color(color)),
+                );
+            }
+            list.into()
+        };
+        column = column.child(section("Reviewers", reviewers));
         if !pr.labels.is_empty() {
-            let mut chips = div().row().gap(6.0);
+            let mut chips = div().row().gap(4.0);
             for tag in &pr.labels {
                 let color = hex_color(&tag.color).unwrap_or(colors.text_muted);
                 chips = chips.child(
@@ -511,32 +758,21 @@ impl PrItem {
                         .px(8.0)
                         .items_center()
                         .rounded(10.0)
-                        .bg(Rgba::new(color.r, color.g, color.b, 0.2))
-                        .child(label(tag.name.clone()).size(12.0).color(colors.text)),
+                        .bg(color.alpha(0.2))
+                        .child(label(tag.name.clone()).size(12.0).weight(500).color(color)),
                 );
             }
-            column = column
-                .child(div().h_px(8.0))
-                .child(Self::section("LABELS"))
-                .child(chips);
+            column = column.child(section("Labels", chips.into()));
         }
-        column = column
-            .child(div().h_px(8.0))
-            .child(Self::section("DESCRIPTION"));
-        column = column.child(description.unwrap_or_else(|| {
-            label("No description.")
-                .size(13.0)
-                .color(colors.text_muted)
-                .into()
-        }));
+        column = column.child(section(
+            "Description",
+            description.unwrap_or_else(|| muted("No description.")),
+        ));
         if let Some(conversation) = conversation {
-            column = column
-                .child(div().h_px(8.0))
-                .child(Self::section(&format!(
-                    "CONVERSATION ({})",
-                    pr.timeline.len()
-                )))
-                .child(conversation);
+            column = column.child(section(
+                &format!("Conversation {}", pr.timeline.len()),
+                conversation,
+            ));
         }
         column.into()
     }
@@ -546,38 +782,52 @@ impl PrItem {
         let mut column = div().col().gap(2.0);
         if pr.status_check_rollup.is_empty() {
             return column
-                .child(label("No checks").size(13.0).color(colors.text_muted))
+                .child(label("No checks").size(12.0).color(colors.text_placeholder))
                 .into();
         }
         for (index, check) in pr.status_check_rollup.iter().enumerate() {
             let (kind, color) = match check.result.as_str() {
-                "pass" => (IconKind::Check, colors.success),
+                "pass" => (IconKind::BadgeCheck, colors.success),
                 "fail" => (IconKind::XCircle, colors.error),
                 "pending" => (IconKind::Clock, colors.warning),
                 _ => (IconKind::Dash, colors.text_disabled),
             };
             let mut row = div()
                 .row()
-                .h_px(30.0)
-                .px(8.0)
-                .gap(8.0)
+                .h_px(38.0)
+                .px(12.0)
+                .gap(10.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(6.0)
+                .bg(colors.panel_background)
                 .child(icon(kind).size(14.0).color(color))
-                .child(label(check.name.clone()).size(13.0).color(colors.text));
+                .child(
+                    label(check.name.clone())
+                        .size(12.0)
+                        .weight(500)
+                        .color(colors.text),
+                );
             if !check.workflow_name.is_empty() {
                 row = row.child(
                     label(check.workflow_name.clone())
                         .size(12.0)
-                        .color(colors.text_muted),
+                        .color(colors.text_placeholder),
                 );
             }
             row = row.child(div().row().flex(1.0));
+            let took = if check.result == "pending" {
+                Some("running".to_string())
+            } else {
+                duration(&check.started_at, &check.completed_at)
+            };
+            if let Some(took) = took {
+                row = row.child(label(took).size(12.0).color(colors.text_placeholder));
+            }
             if !check.details_url.is_empty() {
                 row = row.on_click(CHECK_BASE + index as u64).child(
                     icon(IconKind::ArrowUpRight)
                         .size(12.0)
-                        .color(colors.icon_muted),
+                        .color(colors.text_placeholder),
                 );
             }
             column = column.child(row);
@@ -593,6 +843,13 @@ impl PrItem {
                 }
             }
             REFRESH => self.load(),
+            CREATE_PR => {
+                let url = format!(
+                    "https://github.com/{}/{}/compare/{}?expand=1",
+                    self.target.owner, self.target.name, self.target.head
+                );
+                self.open(&url);
+            }
             COPY_LINK => {
                 self.copy = self
                     .pr
@@ -637,14 +894,72 @@ impl PrItem {
     }
 }
 
-/// `2026-09-17T03:53:12Z` as `2026-09-17 03:53`.
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `2026-09-17T03:53:12Z` as `Sep 17 03:53`.
 fn short_time(stamp: &str) -> String {
-    match (stamp.get(..10), stamp.get(11..16)) {
-        (Some(date), Some(time)) if stamp.as_bytes().get(10) == Some(&b'T') => {
-            format!("{date} {time}")
+    let month = stamp
+        .get(5..7)
+        .and_then(|month| month.parse::<usize>().ok())
+        .and_then(|month| MONTHS.get(month.wrapping_sub(1)));
+    let day = stamp.get(8..10).and_then(|day| day.parse::<u32>().ok());
+    match (month, day, stamp.get(11..16)) {
+        (Some(month), Some(day), Some(time)) if stamp.as_bytes().get(10) == Some(&b'T') => {
+            format!("{month} {day} {time}")
         }
         _ => stamp.to_string(),
     }
+}
+
+/// Seconds since the epoch for `2026-09-17T03:53:12Z`; days from the civil calendar, so no date crate is needed.
+fn epoch_seconds(stamp: &str) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| stamp.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let day_of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
+    let of_cycle = of_era * 365 + of_era / 4 - of_era / 100 + day_of_year;
+    let days = era * 146_097 + of_cycle - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+fn duration(started: &str, completed: &str) -> Option<String> {
+    let seconds = epoch_seconds(completed)? - epoch_seconds(started)?;
+    if seconds < 0 {
+        return None;
+    }
+    Some(if seconds >= 60 {
+        format!("{}m {}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    })
+}
+
+/// A card lifted off its layer: a 1px ring and a darker edge under it stand in for a drop shadow.
+fn raised(content: ui::Div, radius: f32) -> Node {
+    let colors = theme();
+    let shadow = match colors.appearance {
+        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
+        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
+    };
+    div()
+        .col()
+        .pb(1.0)
+        .rounded(radius + 1.0)
+        .bg(shadow)
+        .child(
+            div()
+                .col()
+                .p(1.0)
+                .rounded(radius + 1.0)
+                .bg(colors.border_variant)
+                .child(content.rounded(radius).bg(colors.element_background)),
+        )
+        .into()
 }
 
 fn hex_color(hex: &str) -> Option<Rgba> {
@@ -686,21 +1001,27 @@ impl Item for PrItem {
             .pr
             .as_ref()
             .map_or(0, |pr| pr.status_check_rollup.len());
-        let mut column = div()
-            .col()
-            .w_px(body.w / scale)
-            .p(PAD)
-            .gap(14.0)
-            .child(self.header(width));
+        let content_w = width.min(MAX_CONTENT_W);
+        let mut column = div().col().w_px(body.w / scale).px(24.0).py(18.0).gap(12.0);
+        if self.pr.is_none() {
+            column = column.child(self.state_card(width));
+        } else {
+            column = column.child(self.header(width));
+        }
         let (description, conversation) = match self.tab {
-            Tab::Overview => (self.description(width), self.conversation(width)),
+            Tab::Overview => (self.description(content_w), self.conversation(content_w)),
             Tab::Checks => (None, None),
         };
         if let Some(pr) = &self.pr {
-            column = column.child(self.tabs(checks)).child(match self.tab {
-                Tab::Overview => Self::overview(pr, description, conversation),
-                Tab::Checks => Self::checks(pr),
-            });
+            if let Some(blockers) = Self::blockers(pr) {
+                column = column.child(blockers);
+            }
+            column = column
+                .child(self.tabs(checks))
+                .child(div().col().w_px(content_w).child(match self.tab {
+                    Tab::Overview => Self::overview(pr, description, conversation),
+                    Tab::Checks => Self::checks(pr),
+                }));
         }
         let tree: Node = div()
             .col()
@@ -810,7 +1131,7 @@ fn merge_status(pr: &PullRequest) -> Option<(IconKind, Rgba, String)> {
     }
     match pr.merge_state_status.to_ascii_uppercase().as_str() {
         "BEHIND" => Some((
-            IconKind::Warning,
+            IconKind::ArrowDown,
             colors.warning,
             format!("This branch is out of date with {base}"),
         )),
@@ -883,14 +1204,14 @@ mod tests {
             .map(|text| text.text.as_str())
             .collect();
         for expected in [
-            "CONVERSATION (2)",
+            "CONVERSATION 2",
             "requested changes",
             "query",
             "src/db.rs:12",
             "Resolved",
             "N+1 here",
             "ann",
-            "2026-09-02 10:00",
+            "Sep 2 10:00",
             "notes",
         ] {
             assert!(texts.contains(&expected), "{expected}: {texts:?}");
@@ -899,6 +1220,67 @@ mod tests {
             .hits
             .iter()
             .any(|(_, id)| *id >= CONVERSATION_LINK_BASE));
+    }
+
+    #[test]
+    fn the_state_pill_and_blockers_follow_the_pull_request() {
+        let temp = tempfile::tempdir().expect("temp");
+        let texts = |pr: PullRequest| -> Vec<String> {
+            let mut item = PrItem::new(
+                StateDir::new(temp.path()),
+                "myproject".into(),
+                Arc::new(|| {}),
+                PrTarget {
+                    repo: "web".into(),
+                    owner: "acme".into(),
+                    name: "web".into(),
+                    head: "feat".into(),
+                },
+                None,
+            );
+            item.show(Some(pr));
+            item.paint_body(Rect::new(0.0, 0.0, 900.0, 1200.0, Rgba::TRANSPARENT), true)
+                .expect("painted")
+                .texts
+                .iter()
+                .map(|text| text.text.clone())
+                .collect()
+        };
+        let open = |merge: &str, mergeable: &str| PullRequest {
+            number: 7,
+            state: "OPEN".into(),
+            mergeable: mergeable.into(),
+            merge_state_status: merge.into(),
+            base_ref_name: "main".into(),
+            ..PullRequest::default()
+        };
+        let conflict = texts(PullRequest {
+            conflict: true,
+            ..open("DIRTY", "CONFLICTING")
+        });
+        assert!(conflict.iter().any(|text| text == "Open"));
+        assert!(
+            conflict.iter().any(|text| text.contains("conflicts")),
+            "{conflict:?}"
+        );
+        let behind = texts(open("BEHIND", "MERGEABLE"));
+        assert!(
+            behind.iter().any(|text| text.contains("out of date")),
+            "{behind:?}"
+        );
+        let draft = texts(PullRequest {
+            is_draft: true,
+            ..open("CLEAN", "MERGEABLE")
+        });
+        assert!(draft.iter().any(|text| text == "Draft"));
+        for (state, pill) in [("MERGED", "Merged"), ("CLOSED", "Closed")] {
+            let shown = texts(PullRequest {
+                state: state.into(),
+                ..open("CLEAN", "MERGEABLE")
+            });
+            assert!(shown.iter().any(|text| text == pill), "{shown:?}");
+            assert!(!shown.iter().any(|text| text.contains("conflicts")));
+        }
     }
 
     #[test]

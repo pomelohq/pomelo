@@ -40,6 +40,8 @@ pub struct Check {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub started_at: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    pub completed_at: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub workflow_name: String,
     /// pass / fail / pending / none.
     pub result: String,
@@ -310,7 +312,7 @@ const NODE_FIELDS: &str = "number title state url isDraft mergeable mergeStateSt
         latestReviews(first: 30) { nodes { state submittedAt author { login } } }
         commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
           __typename
-          ... on CheckRun { name status conclusion detailsUrl startedAt checkSuite { workflowRun { workflow { name } } } }
+          ... on CheckRun { name status conclusion detailsUrl startedAt completedAt checkSuite { workflowRun { workflow { name } } } }
           ... on StatusContext { context state targetUrl }
         } } } } } }
 ";
@@ -460,6 +462,7 @@ fn from_node(node: &Value) -> PullRequest {
                 conclusion: text(context, "/conclusion"),
                 details_url: text(context, "/detailsUrl"),
                 started_at: text(context, "/startedAt"),
+                completed_at: text(context, "/completedAt"),
                 workflow_name: text(context, "/checkSuite/workflowRun/workflow/name"),
                 result: String::new(),
             }
