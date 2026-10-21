@@ -311,6 +311,7 @@ impl FilesView {
             message,
             detail,
             buttons: vec![confirm.to_string(), "Cancel".to_string()],
+            warning: None,
         }
     }
 

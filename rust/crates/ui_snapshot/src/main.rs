@@ -9,6 +9,7 @@ use std::io::BufWriter;
 
 mod e2e;
 mod git_fixture;
+mod modal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
 fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
@@ -26,6 +27,16 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
         // cmd-alt-o over the window boards' workspaces, alone at the picker's width; SWITCHER is the query.
         "project-switcher" => (0, &[("SWITCHER", "")]),
+        // Each window modal alone at its width, in the board's state; MODAL names it, PROMPT a confirmation.
+        "project-create" => (0, &[("MODAL", "create")]),
+        "project-create-branch" => (0, &[("MODAL", "create-branch")]),
+        "project-create-taken" => (0, &[("MODAL", "create-taken")]),
+        "project-rename" => (0, &[("MODAL", "rename")]),
+        "project-add-repo" => (0, &[("MODAL", "add-repo")]),
+        "git-use-branch" => (0, &[("MODAL", "use-branch")]),
+        "project-delete" => (0, &[("PROMPT", "delete")]),
+        "git-discard-all" => (0, &[("PROMPT", "discard-all")]),
+        "git-discard-file" => (0, &[("PROMPT", "discard-file")]),
         "project-switcher-filtered" => (0, &[("SWITCHER", "rate")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
@@ -1852,6 +1863,52 @@ fn main() -> anyhow::Result<()> {
     }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
+    if std::env::var("MODAL").is_ok() || std::env::var("PROMPT").is_ok() {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let node = if let Ok(name) = std::env::var("MODAL") {
+            let mut modal = modal_fixture::modal(&name)
+                .ok_or_else(|| anyhow::anyhow!("unknown modal {name}"))?;
+            modal.render()
+        } else {
+            let name = std::env::var("PROMPT")?;
+            let prompt = modal_fixture::prompt(&name)
+                .ok_or_else(|| anyhow::anyhow!("unknown prompt {name}"))?;
+            workspace::prompt_card(&prompt, 0, 0)
+        };
+        // Laid out in a window taller than the crop, so a popover drops below its trigger as it would there.
+        let frame = ui::paint_frame(
+            &ui::div().col().child(node).into(),
+            ui::Rect::new(0.0, 0.0, lw, lh + 400.0, ui::Rgba::TRANSPARENT),
+        );
+        let mut layers: Vec<ui::Layer> = vec![(
+            frame.base.rects.as_slice(),
+            frame.base.tris.as_slice(),
+            frame.base.texts.as_slice(),
+            frame.base.icons.as_slice(),
+            None,
+        )];
+        for overlay in &frame.overlays {
+            layers.push((
+                overlay.painted.rects.as_slice(),
+                overlay.painted.tris.as_slice(),
+                overlay.painted.texts.as_slice(),
+                overlay.painted.icons.as_slice(),
+                overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
+            ));
+        }
+        r.render_frame(ui::theme().background, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(view) = std::env::var("PRFIXTURE") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -2650,7 +2707,6 @@ fn main() -> anyhow::Result<()> {
                 "worker",
                 "fix-checkout-page",
                 Some("fix-checkout-page"),
-                "workspace--fix-checkout-page",
                 source,
             );
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -2754,6 +2810,7 @@ fn main() -> anyhow::Result<()> {
                             .into(),
                     ),
                     buttons: vec!["Stop".into(), "Cancel".into()],
+                    warning: None,
                 })
             });
         }

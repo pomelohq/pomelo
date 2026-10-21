@@ -10,9 +10,9 @@ use std::time::Instant;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::WINDOW_MODAL_BASE;
+use workspace::{field_label, overlay_ring, text_line, WINDOW_MODAL_BASE};
 
 pub(crate) const PICKER_QUERY: u64 = WINDOW_MODAL_BASE + 9;
 pub(crate) const PICKER_REFRESH: u64 = WINDOW_MODAL_BASE + 10;
@@ -21,7 +21,7 @@ pub(crate) const ENTRY_BASE: u64 = WINDOW_MODAL_BASE + 500;
 pub(crate) const ENTRY_END: u64 = WINDOW_MODAL_BASE + 1000;
 
 const PLACEHOLDER: &str = "Switch or type to create a branch...";
-const WIDTH: f32 = 360.0;
+const WIDTH: f32 = 440.0;
 const ROWS_SHOWN: usize = 8;
 /// Height of the branch box the picker drops from, and the gap between them.
 pub(crate) const TRIGGER_HEIGHT: f32 = 26.0;
@@ -84,9 +84,11 @@ pub(crate) struct BranchPicker {
 
 impl BranchPicker {
     pub fn open(repo: &str, source: Option<&BranchSource>) -> BranchPicker {
+        let mut query = TextField::default();
+        query.set_font_size(13.0);
         let mut picker = BranchPicker {
             repo: repo.to_string(),
-            query: TextField::default(),
+            query,
             highlighted: 0,
             fetching: None,
             fetched: None,
@@ -219,120 +221,189 @@ impl BranchPicker {
         choice: Option<&str>,
     ) -> Node {
         let colors = theme();
-        let panel = self
-            .panel(
-                &format!("Branch for {}", self.repo),
-                workspace_branch,
-                branches,
-                choice,
-            )
+        let others = if workspace_branch.is_empty() {
+            "the other repos stay on the workspace branch".to_string()
+        } else {
+            format!("the other repos stay on {workspace_branch}")
+        };
+        let note = format!("Use another branch in {}; {others}", self.repo);
+        let panel = div()
+            .col()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border)
+            .rounded(10.0)
+            .border(1.0, overlay_ring())
             .bg(colors.elevated_surface_background)
-            .on_click(PICKER_SURFACE);
+            .on_click(PICKER_SURFACE)
+            .child(self.head(&format!("Branch for {}", self.repo)))
+            .child(self.query_row())
+            .child(self.list(workspace_branch, branches, choice))
+            .child(
+                div()
+                    .col()
+                    .rounded(9.0)
+                    .bg(colors.panel_background)
+                    .child(div().h_px(8.0).bg(colors.panel_background))
+                    .child(
+                        div().row().px(14.0).pb(8.0).items_center().child(
+                            label(note)
+                                .size(12.0)
+                                .color(colors.text_placeholder)
+                                .truncate(),
+                        ),
+                    ),
+            );
         deferred(panel)
             .below_or_above(TRIGGER_HEIGHT, TRIGGER_GAP)
             .priority(1)
             .into()
     }
 
-    /// The picker laid into a modal as its body, open for as long as the modal is.
+    /// The picker laid into a modal as its body: the query, then the repo's branches as one line, or what a
+    /// typed new name creates.
     pub fn render_inline(
+        &self,
+        workspace_branch: &str,
+        branches: Option<&RepoBranches>,
+        _choice: Option<&str>,
+    ) -> Node {
+        let colors = theme();
+        let entries = self.entries(workspace_branch, branches);
+        let mut names = vec![workspace_branch.to_string()];
+        names.extend(
+            branches
+                .map(|known| known.branches.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .filter(|info| info.name != workspace_branch)
+                .map(|info| info.name.clone()),
+        );
+        names.retain(|name| !name.is_empty());
+        names.truncate(4);
+        let text = match entries.get(self.highlighted) {
+            Some(Entry::Create(new)) => {
+                let base = branches.map(|known| known.base.as_str()).unwrap_or_default();
+                match base.is_empty() {
+                    true => format!("Creates {new}"),
+                    false => format!("Creates {new} from {base}"),
+                }
+            }
+            _ if names.is_empty() => "Type a branch name; a new one is created".to_string(),
+            _ => format!("{}, or type a new name to create it", names.join(", ")),
+        };
+        let hint = text_line(
+            16.0,
+            label(text)
+                .size(12.0)
+                .color(colors.text_placeholder)
+                .truncate(),
+        );
+        let mut column = div()
+            .col()
+            .gap(16.0)
+            .on_click(PICKER_SURFACE)
+            .child(self.query_box(true))
+            .child(hint);
+        let (status, color) = self.status();
+        if color == colors.warning {
+            column = column.child(text_line(16.0, label(status).size(12.0).color(color).truncate()));
+        }
+        column.into()
+    }
+
+    /// The picker's title and how fresh its branches are, with a refresh at the end.
+    fn head(&self, title: &str) -> Node {
+        div()
+            .row()
+            .items_center()
+            .gap(6.0)
+            .px(12.0)
+            .pt(10.0)
+            .pb(2.0)
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .items_center()
+                    .child(field_label(title)),
+            )
+            .child(self.status_label())
+            .into()
+    }
+
+    /// The focused query box, with a branch icon when it stands alone in a modal.
+    fn query_box(&self, leading: bool) -> Node {
+        let colors = theme();
+        let mut row = div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .h_px(30.0)
+            .px(10.0)
+            .rounded(6.0)
+            .bg(colors.editor_background)
+            .border(1.0, colors.border_focused)
+            .ring(3.0, colors.overlay_selected)
+            .on_click(PICKER_QUERY);
+        if leading {
+            row = row.child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted));
+        }
+        row.child(
+            self.query
+                .render(PLACEHOLDER, true, colors.text, 20.0, FieldFont::Ui),
+        )
+        .into()
+    }
+
+    fn query_row(&self) -> Node {
+        div().col().px(8.0).py(6.0).child(self.query_box(false)).into()
+    }
+
+    fn list(
         &self,
         workspace_branch: &str,
         branches: Option<&RepoBranches>,
         choice: Option<&str>,
     ) -> Node {
-        let divider = div().h_px(1.0).bg(theme().border_variant);
-        div()
-            .col()
-            .child(divider)
-            .child(
-                self.panel(
-                    &format!("Branches of {}", self.repo),
-                    workspace_branch,
-                    branches,
-                    choice,
-                )
-                .on_click(PICKER_SURFACE),
-            )
-            .into()
-    }
-
-    fn panel(
-        &self,
-        title: &str,
-        workspace_branch: &str,
-        branches: Option<&RepoBranches>,
-        choice: Option<&str>,
-    ) -> Div {
-        let colors = theme();
         let entries = self.entries(workspace_branch, branches);
         let base = branches
             .map(|known| known.base.as_str())
             .unwrap_or_default();
-        let query_row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .h_px(36.0)
-            .px(10.0)
-            .on_click(PICKER_QUERY)
-            .child(icon(IconKind::Search).size(13.0).color(colors.icon_muted))
-            .child(
-                self.query
-                    .render(PLACEHOLDER, true, colors.text, 20.0, FieldFont::Ui),
-            )
-            .child(
-                div()
-                    .row()
-                    .items_center()
-                    .justify_center()
-                    .w_px(22.0)
-                    .h_px(22.0)
-                    .rounded(4.0)
-                    .on_click(PICKER_REFRESH)
-                    .child(icon(IconKind::RotateCw).size(13.0).color(if self.busy() {
-                        colors.text_disabled
-                    } else {
-                        colors.icon_muted
-                    })),
-            );
         let first = self
             .highlighted
             .saturating_sub(ROWS_SHOWN - 1)
             .min(entries.len().saturating_sub(ROWS_SHOWN));
-        let mut list = div().col().p(4.0).child(
-            div().row().px(8.0).pt(4.0).pb(2.0).child(
-                label(title.to_string())
-                    .label_size(LabelSize::XSmall)
-                    .color(colors.text_placeholder),
-            ),
-        );
+        let mut list = div().col().gap(1.0).px(6.0).pb(6.0);
         for (index, entry) in entries.iter().enumerate().skip(first).take(ROWS_SHOWN) {
             list =
                 list.child(self.entry_row(entry, index, workspace_branch, branches, base, choice));
         }
-        let divider = || div().h_px(1.0).bg(colors.border_variant);
-        div()
-            .col()
-            .child(query_row)
-            .child(divider())
-            .child(list)
-            .child(divider())
-            .child(self.footer())
+        list.into()
     }
 
-    fn footer(&self) -> Node {
+    /// Whether origin was fetched, is being fetched, or failed, as a muted label; clicking it fetches again.
+    fn status_label(&self) -> Node {
         let colors = theme();
-        let (kind, color, text) = match (&self.error, self.busy(), &self.fetched) {
-            (Some(error), _, _) => (IconKind::Warning, colors.warning, error.clone()),
-            (None, true, _) => (
-                IconKind::RotateCw,
-                colors.icon_muted,
-                "Fetching origin...".to_string(),
-            ),
+        let (text, color) = self.status();
+        div()
+            .row()
+            .h_px(14.0)
+            .items_center()
+            .on_click(PICKER_REFRESH)
+            .child(label(text.to_uppercase()).size(11.0).weight(600).color(
+                if color == colors.warning {
+                    color
+                } else {
+                    colors.text_placeholder
+                },
+            ))
+            .into()
+    }
+
+    fn status(&self) -> (String, Rgba) {
+        let colors = theme();
+        match (&self.error, self.busy(), &self.fetched) {
+            (Some(error), _, _) => (error.clone(), colors.warning),
+            (None, true, _) => ("Fetching origin...".to_string(), colors.icon_muted),
             (None, false, Some(Ok(at))) => {
                 let minutes = at.elapsed().as_secs() / 60;
                 let when = match minutes {
@@ -340,35 +411,14 @@ impl BranchPicker {
                     1 => "1 minute ago".to_string(),
                     minutes => format!("{minutes} minutes ago"),
                 };
-                (
-                    IconKind::Check,
-                    colors.icon_muted,
-                    format!("Fetched {when}"),
-                )
+                (format!("Fetched {when}"), colors.icon_muted)
             }
             (None, false, Some(Err(error))) => (
-                IconKind::Warning,
-                colors.warning,
                 format!("Could not fetch origin: {error}"),
+                colors.warning,
             ),
-            (None, false, None) => (IconKind::Branch, colors.icon_muted, String::new()),
-        };
-        div()
-            .row()
-            .items_center()
-            .gap(6.0)
-            .h_px(26.0)
-            .px(10.0)
-            .child(icon(kind).size(11.0).color(color))
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(text)
-                        .label_size(LabelSize::XSmall)
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            )
-            .into()
+            (None, false, None) => (String::new(), colors.icon_muted),
+        }
     }
 
     fn entry_row(
@@ -406,12 +456,8 @@ impl BranchPicker {
                     .collect::<Vec<_>>()
                     .join(" - ");
                 (
-                    if info.remote {
-                        IconKind::Server
-                    } else {
-                        IconKind::Branch
-                    },
-                    display_name(info),
+                    IconKind::Branch,
+                    info.name.clone(),
                     subtitle,
                     choice == Some(info.name.as_str()),
                     self.fresh.contains(&info.name),
@@ -433,36 +479,33 @@ impl BranchPicker {
         } else {
             (kind, colors.icon_muted)
         };
-        let mut title_row = div().row().items_center().gap(6.0).child(
-            div().row().flex(1.0).items_center().child(
-                label(title)
-                    .label_size(LabelSize::Small)
-                    .mono()
-                    .color(colors.text)
-                    .truncate(),
-            ),
-        );
+        let remote = matches!(entry, Entry::Branch(info) if info.remote);
+        let mut title_row = div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .child(icon(kind).size(14.0).color(icon_color))
+            .child(div().row().flex(1.0).items_center().child({
+                let title = label(title).size(13.0).color(colors.text).truncate();
+                // A branch name reads as code; the create row is a sentence.
+                if matches!(entry, Entry::Create(_)) {
+                    title
+                } else {
+                    title.mono()
+                }
+            }));
         if fresh {
-            title_row = title_row.child(
-                div()
-                    .row()
-                    .items_center()
-                    .px(4.0)
-                    .rounded(3.0)
-                    .bg(colors.text_accent.alpha(0.14))
-                    .child(
-                        label("new")
-                            .label_size(LabelSize::XSmall)
-                            .color(colors.text_accent),
-                    ),
-            );
+            title_row = title_row.child(tag("new", colors.text_accent));
         }
-        let mut text = div().col().flex(1.0).child(title_row);
+        if remote {
+            title_row = title_row.child(tag("origin", colors.info));
+        }
+        let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
         if !subtitle.is_empty() {
             text = text.child(
-                div().row().items_center().child(
+                div().row().pl(22.0).items_center().child(
                     label(subtitle)
-                        .label_size(LabelSize::XSmall)
+                        .size(12.0)
                         .color(colors.text_placeholder)
                         .truncate(),
                 ),
@@ -470,25 +513,37 @@ impl BranchPicker {
         }
         div()
             .row()
-            .gap(8.0)
             .px(8.0)
-            .py(4.0)
-            .rounded(5.0)
+            .py(6.0)
+            .rounded(6.0)
             .on_click(ENTRY_BASE + index as u64)
             .bg(if index == self.highlighted {
-                colors.ghost_element_hover
+                colors.element_selected
             } else {
                 Rgba::TRANSPARENT
             })
-            .child(
-                div()
-                    .col()
-                    .pt(2.0)
-                    .child(icon(kind).size(14.0).color(icon_color)),
-            )
             .child(text)
             .into()
     }
+}
+
+/// A small pill after a branch name: a dot and the word in `color` on a faint wash.
+fn tag(text: &str, color: Rgba) -> Node {
+    let wash = match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+        ui::Appearance::Light => theme().element_active,
+    };
+    div()
+        .row()
+        .h_px(20.0)
+        .px(7.0)
+        .gap(5.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(wash)
+        .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color))
+        .child(label(text.to_string()).size(11.0).medium().color(color))
+        .into()
 }
 
 fn display_name(info: &BranchInfo) -> String {

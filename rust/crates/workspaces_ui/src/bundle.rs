@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use pom_bundle::Contents;
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
-    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
+    checkbox, ButtonKind, modal_button, modal_footer, modal_frame, modal_header, modal_section,
     outlined_button, status_line, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
@@ -64,7 +64,7 @@ impl WindowModal for ExportConfigModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let mut section = modal_section(10.0);
+        let mut section = modal_section(16.0);
         if self.secret_count > 0 {
             section = section.child(checkbox(
                 INCLUDE_SECRETS,
@@ -90,14 +90,13 @@ impl WindowModal for ExportConfigModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(CANCEL, "Cancel", Some("escape"), ButtonKind::Secondary, true))
             .child(modal_button(
                 CONFIRM,
                 "Export...",
-                Some("enter"),
-                self.can_export(),
-            ));
+                Some("enter"), ButtonKind::Primary,
+                self.can_export()));
         modal_frame(WIDTH)
             .child(modal_header("Export Config", Some(CLOSE)))
             .child(section)
@@ -324,13 +323,12 @@ impl WindowModal for ImportConfigModal {
     fn render(&mut self) -> Node {
         let colors = theme();
         let width = self.width();
-        let mut section = modal_section(10.0).child(self.file_row());
-        let mut buttons = div().row().items_center().gap(4.0).child(modal_button(
+        let mut section = modal_section(16.0).child(self.file_row());
+        let mut buttons = div().row().items_center().gap(8.0).child(modal_button(
             CANCEL,
             "Cancel",
-            Some("escape"),
-            true,
-        ));
+            Some("escape"), ButtonKind::Secondary,
+            true));
         let mut start = None;
         match &self.stage {
             Stage::Pick => {
@@ -350,9 +348,8 @@ impl WindowModal for ImportConfigModal {
                 buttons = buttons.child(modal_button(
                     CONFIRM,
                     "Unlock",
-                    Some("enter"),
-                    !self.password.text().is_empty(),
-                ));
+                    Some("enter"), ButtonKind::Primary,
+                    !self.password.text().is_empty()));
             }
             Stage::Loaded(contents) => {
                 section = section.child(Self::preview(contents));
@@ -384,7 +381,7 @@ impl WindowModal for ImportConfigModal {
                 ));
                 let applies =
                     self.write_config || (self.store_secrets && !contents.secrets.is_empty());
-                buttons = buttons.child(modal_button(CONFIRM, "Apply", Some("enter"), applies));
+                buttons = buttons.child(modal_button(CONFIRM, "Apply", Some("enter"), ButtonKind::Primary, applies));
             }
         }
         if let Some(error) = &self.error {

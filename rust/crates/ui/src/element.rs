@@ -367,6 +367,8 @@ pub struct Div {
     radius: f32,
     border: f32,
     border_color: Rgba,
+    /// A halo drawn outside the box (width, color), taking no room.
+    ring: Option<(f32, Rgba)>,
     slash: Option<(Rgba, f32)>,
     click: Option<u64>,
     debug: Option<&'static str>,
@@ -430,6 +432,7 @@ pub fn div() -> Div {
         radius: 0.0,
         border: 0.0,
         border_color: Rgba::TRANSPARENT,
+        ring: None,
         slash: None,
         click: None,
         debug: None,
@@ -616,6 +619,11 @@ impl Div {
     /// Fills the div with diagonal stripes `period` apart (see `Rect::slash_pattern`).
     pub fn slash_pattern(mut self, color: Rgba, period: f32) -> Self {
         self.slash = Some((color, period));
+        self
+    }
+    /// A halo `width` wide around the outside of the box, as a focused input shows; it does not change layout.
+    pub fn ring(mut self, width: f32, color: Rgba) -> Self {
+        self.ring = Some((rem(width), color));
         self
     }
     pub fn border(mut self, width: f32, color: Rgba) -> Self {
@@ -970,7 +978,12 @@ pub fn paint_frame(node: &Node, area: Rect) -> Frame {
         );
         i += 1;
         let mut painted = Painted::default();
+        let queued = pending.len();
         place(&p.node, p.area, viewport, &mut painted, &mut pending);
+        // A popover opened inside another (a text field's caret strip in a picker) never sinks below it.
+        for nested in &mut pending[queued..] {
+            nested.priority = nested.priority.max(p.priority);
+        }
         if let Some(clip) = p.clip {
             painted.hits.retain(|(r, _)| {
                 r.y + r.h > clip.y
@@ -1154,6 +1167,18 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
         }
         Node::Div(d) => {
             let bg = div_background(d);
+            if let Some((width, color)) = d.ring {
+                out.rects.push(Rect {
+                    x: area.x - width,
+                    y: area.y - width,
+                    w: area.w + 2.0 * width,
+                    h: area.h + 2.0 * width,
+                    color: Rgba::TRANSPARENT,
+                    radius: d.radius + width,
+                    border: width,
+                    border_color: color,
+                });
+            }
             if bg.is_some() || d.border > 0.0 {
                 out.rects.push(Rect {
                     x: area.x,

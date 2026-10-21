@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
-use workspace::{status_line, InputField, WINDOW_MODAL_BASE};
+use workspace::{field_label, status_line, text_line, InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
 
@@ -20,7 +20,7 @@ pub(crate) const SOURCE_OPTION_BASE: u64 = WINDOW_MODAL_BASE + 1000;
 pub(crate) const SOURCE_OPTION_END: u64 = WINDOW_MODAL_BASE + 1100;
 const MENU_WIDTH: f32 = 260.0;
 const SUGGESTIONS_SHOWN: usize = 8;
-const FIELD_HEIGHT: f32 = 32.0;
+const FIELD_HEIGHT: f32 = 30.0;
 const KEY_W: f32 = 86.0;
 const STATUS_W: f32 = 110.0;
 const MINE_W: f32 = 40.0;
@@ -68,7 +68,7 @@ impl TicketPicker {
     pub fn new(source: TicketSource, existing_branches: &[String]) -> TicketPicker {
         let (sender, receiver) = mpsc::channel();
         let mut picker = TicketPicker {
-            field: InputField::new("Ticket", "PROJ-101"),
+            field: InputField::new("Ticket", "PROJ-101").with_icon(IconKind::Ticket),
             board: source.board,
             list: source.start,
             source,
@@ -326,13 +326,21 @@ impl TicketPicker {
     }
 
     /// The field, with the ticket list floating `width` wide under it while `focused`.
-    pub fn render(&self, focused: bool, width: f32, hovered: Option<u64>) -> Node {
+    /// `filled` says which fields the ticket filled in; without it the hint names the typed ticket.
+    pub fn render(
+        &self,
+        focused: bool,
+        width: f32,
+        hovered: Option<u64>,
+        filled: Option<&str>,
+    ) -> Node {
         let colors = theme();
-        let mut header = div().row().items_center().gap(6.0).child(
-            label(self.field.label)
-                .label_size(LabelSize::Small)
-                .color(colors.text),
-        );
+        let mut header = div()
+            .row()
+            .items_center()
+            .gap(6.0)
+            .h_px(14.0)
+            .child(field_label(self.field.label));
         if let Some(name) = self.source_name() {
             let mut anchor = div()
                 .col()
@@ -342,17 +350,13 @@ impl TicketPicker {
             }
             header = header.child(anchor);
         }
-        header = header.child(
-            div().row().flex(1.0).items_center().child(
-                label("optional; pick one or type a key")
-                    .label_size(LabelSize::Small)
-                    .color(colors.text_muted)
-                    .truncate(),
-            ),
-        );
-        let mut anchor = div()
-            .col()
-            .child(self.field.render_input(TICKET_FIELD, focused, false));
+        let summary = self.summary_of_typed();
+        let mut anchor = div().col().child(self.field.render_input_with(
+            TICKET_FIELD,
+            focused,
+            false,
+            summary.as_deref(),
+        ));
         if focused && self.list_open && !self.menu_open {
             if let Some(list) = self.suggestion_list(width, hovered) {
                 anchor = anchor.child(
@@ -363,8 +367,20 @@ impl TicketPicker {
                 );
             }
         }
-        let mut column = div().col().gap(4.0).child(header).child(anchor);
+        let mut column = div().col().gap(6.0).child(header).child(anchor);
         let source = self.source_name().unwrap_or_else(|| "tickets".into());
+        let hint = filled
+            .map(str::to_string)
+            .unwrap_or_else(|| "optional; pick one or type a key".into());
+        if self.error.is_none() || self.loading() {
+            column = column.child(text_line(
+                16.0,
+                label(hint)
+                    .size(12.0)
+                    .color(colors.text_placeholder)
+                    .truncate(),
+            ));
+        }
         if let Some(error) = self.error.as_ref().filter(|_| !self.loading()) {
             column = column.child(status_line(
                 IconKind::Warning,
@@ -429,12 +445,12 @@ impl TicketPicker {
         let mut button =
             div()
                 .row()
-                .h_px(20.0)
-                .px(6.0)
+                .h_px(14.0)
+                .px(4.0)
                 .gap(4.0)
                 .items_center()
                 .rounded(4.0)
-                .child(label(name.to_string()).label_size(LabelSize::Small).color(
+                .child(label(name.to_string()).size(11.0).color(
                     if self.menu_open {
                         colors.text
                     } else {
@@ -512,7 +528,7 @@ impl TicketPicker {
             );
         }
         deferred(menu)
-            .below_or_above(20.0, 4.0)
+            .below_or_above(14.0, 4.0)
             .snap_to_window()
             .priority(2)
             .into()

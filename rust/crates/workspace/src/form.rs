@@ -62,34 +62,60 @@ pub trait WindowModal: 'static {
     fn take_result(&mut self) -> Option<ModalResult>;
 }
 
-/// Content height of a one-line input: 32px box minus 6px padding top and bottom.
+/// Content height of a one-line input: 30px box minus 5px padding top and bottom.
 const INPUT_HEIGHT: f32 = 20.0;
+const INPUT_FONT: f32 = 13.0;
+const MODAL_RADIUS: f32 = 10.0;
+/// Horizontal inset of the header title and the body.
+const MODAL_INSET: f32 = 18.0;
 
-/// The modal surface: elevated background, large rounding and a variant border.
+/// How a modal's button reads: the one action it is for, a plain alternative, a quiet one, or a destructive one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonKind {
+    Primary,
+    Secondary,
+    Ghost,
+    Danger,
+}
+
+/// The hairline ring around a floating surface; on light layers it needs a dark tint to stand off the page.
+pub fn overlay_ring() -> Rgba {
+    match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.08),
+        ui::Appearance::Light => Rgba::hex("#1d17301f"),
+    }
+}
+
+/// The modal surface: the overlay layer, large rounding and a hairline ring.
 pub fn modal_frame(width: f32) -> ui::Div {
-    let colors = theme();
     div()
         .col()
         .w_px(width)
-        .rounded(8.0)
-        .border(1.0, colors.border_variant)
-        .bg(colors.elevated_surface_background)
+        .rounded(MODAL_RADIUS)
+        .border(1.0, overlay_ring())
+        .bg(theme().elevated_surface_background)
 }
 
-/// Headline (muted) with an optional close button that emits `close_id`.
+/// The title (heading weight) with an optional close button that emits `close_id`.
 pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
+    let colors = theme();
     let mut row = div()
         .row()
         .items_center()
         .justify_between()
-        .px(12.0)
-        .pt(8.0)
-        .pb(4.0)
+        .pl(MODAL_INSET)
+        .pr(12.0)
+        .pt(14.0)
+        .pb(6.0)
         .gap(8.0)
         .child(
-            label(title.to_string())
-                .size(16.0)
-                .color(theme().text_muted),
+            div().row().flex(1.0).items_center().child(
+                label(title.to_string())
+                    .size(15.0)
+                    .weight(600)
+                    .color(colors.text)
+                    .truncate(),
+            ),
         );
     if let Some(id) = close_id {
         row = row.child(
@@ -97,67 +123,130 @@ pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
                 .row()
                 .items_center()
                 .justify_center()
-                .w_px(22.0)
-                .h_px(22.0)
-                .rounded(4.0)
+                .w_px(28.0)
+                .h_px(24.0)
+                .rounded(6.0)
                 .on_click(id)
-                .child(icon(IconKind::Close).size(14.0).color(theme().icon_muted)),
+                .hover_bg(colors.ghost_element_hover)
+                .child(icon(IconKind::Close).size(14.0).color(colors.icon)),
         );
     }
     row.into()
 }
 
-/// The form body: 12px sides, rows `gap` apart.
+/// The form body: the modal's inset at the sides, groups `gap` apart.
 pub fn modal_section(gap: f32) -> ui::Div {
-    div().col().px(12.0).pb(8.0).gap(gap)
+    div()
+        .col()
+        .px(MODAL_INSET)
+        .pt(10.0)
+        .pb(18.0)
+        .gap(gap)
 }
 
-/// Footer with a top border: `start` on the left, `end` on the right.
+/// The footer bar on the panel layer: `start` (a note) on the left, `end` (the buttons) on the right.
 pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
+    let colors = theme();
     let row = div()
         .row()
         .items_center()
-        .justify_between()
-        .gap(4.0)
-        .p(8.0)
-        .child(start.unwrap_or_else(|| div().into()))
+        .gap(8.0)
+        .px(14.0)
+        .pt(2.0)
+        .pb(12.0)
+        .child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .child(start.unwrap_or_else(|| div().into())),
+        )
         .child(end);
+    // The rounded bar keeps the frame's bottom corners; the strip above squares its top ones.
     div()
         .col()
-        .child(div().h_px(1.0).bg(theme().border_variant))
+        .rounded(MODAL_RADIUS - 1.0)
+        .bg(colors.panel_background)
+        .child(div().h_px(10.0).bg(colors.panel_background))
         .child(row)
         .into()
 }
 
-/// A footer button with its keystroke hint after the label.
-pub fn modal_button(id: u64, text: &str, keystroke: Option<&str>, enabled: bool) -> Node {
+/// A muted one-line note for the footer's start.
+pub fn modal_note(text: &str) -> Node {
+    label(text.to_string())
+        .size(12.0)
+        .color(theme().text_placeholder)
+        .truncate()
+        .into()
+}
+
+/// A key binding in a small cap, for buttons and footers; `on_accent` when it sits on an accent fill.
+pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
     let colors = theme();
+    let (fill, ink) = if on_accent {
+        (Rgba::new(1.0, 1.0, 1.0, 0.18), colors.on_accent)
+    } else {
+        let fill = match colors.appearance {
+            ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+            ui::Appearance::Light => colors.element_active,
+        };
+        (fill, colors.text_muted)
+    };
+    div()
+        .row()
+        .h_px(18.0)
+        .px(5.0)
+        .items_center()
+        .rounded(4.0)
+        .bg(fill)
+        .child(ui::render_keystroke_in(keystroke, 11.0, ink))
+        .into()
+}
+
+/// A footer button: its label, then the key that runs it in a chip.
+pub fn modal_button(
+    id: u64,
+    text: &str,
+    keystroke: Option<&str>,
+    kind: ButtonKind,
+    enabled: bool,
+) -> Node {
+    let colors = theme();
+    let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
+    let ink = match kind {
+        ButtonKind::Primary => colors.on_accent,
+        ButtonKind::Secondary | ButtonKind::Ghost => colors.text,
+        ButtonKind::Danger => colors.error,
+    };
     let mut button = div()
         .row()
         .items_center()
         .gap(4.0)
-        .h_px(22.0)
-        .px(4.0)
-        .rounded(4.0)
-        .child(
-            label(text.to_string())
-                .label_size(LabelSize::Default)
-                .color(if enabled {
-                    colors.text
-                } else {
-                    colors.text_disabled
-                }),
-        );
+        .h_px(28.0)
+        .px(10.0)
+        .rounded(6.0);
+    button = match kind {
+        ButtonKind::Primary => button.bg(dim(colors.accent_fill)),
+        ButtonKind::Secondary => button
+            .bg(dim(colors.element_background))
+            .border(1.0, dim(colors.border)),
+        ButtonKind::Ghost | ButtonKind::Danger => button,
+    };
     if enabled {
         button = button.on_click(id);
+        if kind != ButtonKind::Primary {
+            button = button.hover_bg(colors.ghost_element_hover);
+        }
     }
+    button = button.child(label(text.to_string()).size(13.0).medium().color(dim(ink)));
     if let Some(keystroke) = keystroke {
-        button = button.child(crate::render_keystroke(keystroke, 12.0));
+        button = button.child(key_chip(keystroke, kind == ButtonKind::Primary));
     }
     button.into()
 }
 
-/// A secondary action inside the form (outlined, small label).
+/// A secondary action inside the form, with an optional leading icon.
 pub fn outlined_button(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
     let colors = theme();
     let color = if enabled {
@@ -168,49 +257,230 @@ pub fn outlined_button(id: u64, leading: Option<IconKind>, text: &str, enabled: 
     let mut button = div()
         .row()
         .items_center()
-        .gap(4.0)
-        .h_px(22.0)
-        .px(6.0)
-        .rounded(4.0)
-        .border(1.0, colors.border_variant)
+        .gap(6.0)
+        .h_px(28.0)
+        .px(10.0)
+        .rounded(6.0)
+        .border(1.0, colors.border)
         .bg(colors.element_background);
     if enabled {
         button = button.on_click(id);
     }
     if let Some(kind) = leading {
-        button = button.child(icon(kind).size(12.0).color(if enabled {
-            colors.icon_muted
-        } else {
-            colors.text_disabled
-        }));
+        button = button.child(icon(kind).size(14.0).color(color));
     }
     button
-        .child(
-            label(text.to_string())
-                .label_size(LabelSize::Small)
-                .color(color),
-        )
+        .child(label(text.to_string()).size(13.0).medium().color(color))
         .into()
 }
 
-/// A text input with its label above, after the reference's input field: 32px box on the editor background,
-/// variant border that turns focused (or error) colored, and the error message below.
+/// An inline link-like action in the accent color, with an optional leading icon.
+pub fn accent_action(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
+    let colors = theme();
+    let color = if enabled {
+        colors.text_accent
+    } else {
+        colors.text_disabled
+    };
+    let mut action = div().row().items_center().gap(6.0).h_px(16.0);
+    if enabled {
+        action = action.on_click(id);
+    }
+    if let Some(kind) = leading {
+        action = action.child(icon(kind).size(12.0).color(color));
+    }
+    action
+        .child(label(text.to_string()).size(12.0).color(color))
+        .into()
+}
+
+/// A field's label: small, uppercase and muted, as every form labels its inputs.
+pub fn field_label(text: &str) -> Node {
+    text_line(
+        14.0,
+        label(text.to_uppercase())
+            .size(11.0)
+            .weight(600)
+            .color(theme().text_placeholder),
+    )
+}
+
+/// `text` in a box of the design's line height, so stacked lines keep the rhythm the type scale sets.
+pub fn text_line(height: f32, text: ui::Label) -> Node {
+    div().row().h_px(height).items_center().child(text).into()
+}
+
+/// The line under a field: what it is for, or what is wrong with it.
+fn field_note(hint: Option<&str>, error: Option<&str>) -> Option<Node> {
+    let colors = theme();
+    match (error, hint) {
+        (Some(error), _) => Some(text_line(
+            16.0,
+            label(error.to_string()).size(12.0).color(colors.error),
+        )),
+        // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
+        (None, Some(hint)) if !hint.is_empty() => Some(text_line(
+            16.0,
+            label(hint.to_string())
+                .size(12.0)
+                .color(colors.text_placeholder)
+                .truncate_start(),
+        )),
+        _ => None,
+    }
+}
+
+/// A labeled group in a form: the label, the control, and the hint or error under it.
+pub fn field(title: &str, control: Node, hint: Option<&str>, error: Option<&str>) -> Node {
+    let mut column = div()
+        .col()
+        .gap(6.0)
+        .child(field_label(title))
+        .child(control);
+    if let Some(note) = field_note(hint, error) {
+        column = column.child(note);
+    }
+    column.into()
+}
+
+/// Width of a confirmation in design px.
+pub const PROMPT_WIDTH: f32 = 460.0;
+
+/// Answers that lose something, so their button reads as destructive.
+const DESTRUCTIVE: [&str; 9] = [
+    "Delete", "Discard", "Remove", "Restore", "Trash", "Drop", "Reset", "Prepare", "Force",
+];
+
+/// A confirmation as a modal: the question as the title, the detail as the body (a blank line starts a
+/// paragraph, "- " a bullet), and one footer button per answer, the first (confirming) one last. Enter takes
+/// `active`, Escape the one named Cancel; button `i` emits `button_base + i`.
+pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> Node {
+    let colors = theme();
+    let text_width = PROMPT_WIDTH - 2.0 * MODAL_INSET;
+    let mut body = modal_section(10.0);
+    let detail = prompt.detail.as_deref().unwrap_or_default();
+    for paragraph in detail.split("\n\n").filter(|part| !part.trim().is_empty()) {
+        let mut lines = div().col().gap(4.0);
+        for line in paragraph.lines().filter(|line| !line.trim().is_empty()) {
+            lines = lines.child(match line.trim_start().strip_prefix("- ") {
+                Some(item) => div()
+                    .row()
+                    .gap(10.0)
+                    .pl(6.0)
+                    .child(
+                        div()
+                            .row()
+                            .h_px(20.0)
+                            .items_center()
+                            .child(div().w_px(4.0).h_px(4.0).rounded(2.0).bg(colors.text_muted)),
+                    )
+                    .child(body_text(item, text_width - 16.0))
+                    .into(),
+                None => body_text(line, text_width),
+            });
+        }
+        body = body.child(lines);
+    }
+    let mut buttons = div().row().items_center().gap(8.0);
+    for (index, text) in prompt.buttons.iter().enumerate().rev() {
+        let cancel = text == "Cancel";
+        let kind = match index {
+            0 if DESTRUCTIVE
+                .iter()
+                .any(|word| text.split_whitespace().next() == Some(*word)) =>
+            {
+                ButtonKind::Danger
+            }
+            0 => ButtonKind::Primary,
+            _ => ButtonKind::Secondary,
+        };
+        let keystroke = if index == active {
+            Some("enter")
+        } else if cancel {
+            Some("escape")
+        } else {
+            None
+        };
+        buttons = buttons.child(modal_button(
+            button_base + index as u64,
+            text,
+            keystroke,
+            kind,
+            true,
+        ));
+    }
+    let cancel = prompt
+        .buttons
+        .iter()
+        .position(|text| text == "Cancel")
+        .map(|index| button_base + index as u64);
+    if let Some(warning) = &prompt.warning {
+        body = body.child(
+            div()
+                .row()
+                .gap(8.0)
+                .px(12.0)
+                .py(10.0)
+                .rounded(6.0)
+                .bg(colors.editor_background)
+                .child(
+                    div()
+                        .row()
+                        .h_px(20.0)
+                        .items_center()
+                        .child(icon(IconKind::Warning).size(14.0).color(colors.warning)),
+                )
+                .child(
+                    label(warning.clone())
+                        .size(13.0)
+                        .color(colors.text)
+                        .wrap(text_width - 46.0),
+                ),
+        );
+    }
+    let mut card = modal_frame(PROMPT_WIDTH).child(modal_header(&prompt.message, cancel));
+    if !detail.trim().is_empty() || prompt.warning.is_some() {
+        card = card.child(body);
+    } else {
+        card = card.child(div().h_px(12.0));
+    }
+    card.child(modal_footer(None, buttons.into())).into()
+}
+
+/// Muted body copy at the body line height, wrapping only when it does not fit `width`.
+fn body_text(text: &str, width: f32) -> Node {
+    let copy = label(text.to_string())
+        .size(13.0)
+        .color(theme().text_muted);
+    if ui::measure_text_width(text, 13.0, false, ui::ui_font_weight()) / ui::ui_text_scale() <= width {
+        text_line(20.0, copy)
+    } else {
+        copy.wrap(width).into()
+    }
+}
+
+/// A text input with its label above and its hint or error below: a 30px box on the surface layer whose ring
+/// turns accent while focused (or error colored).
 pub struct InputField {
     pub field: TextField,
     pub label: &'static str,
     pub placeholder: &'static str,
     pub font: FieldFont,
     pub masked: bool,
+    pub leading: Option<IconKind>,
 }
 
 impl InputField {
     pub fn new(label: &'static str, placeholder: &'static str) -> InputField {
+        let mut field = TextField::default();
+        field.set_font_size(INPUT_FONT);
         InputField {
-            field: TextField::default(),
+            field,
             label,
             placeholder,
             font: FieldFont::Ui,
             masked: false,
+            leading: None,
         }
     }
 
@@ -225,6 +495,12 @@ impl InputField {
         self
     }
 
+    /// An icon inside the box before the text, saying what goes in it.
+    pub fn with_icon(mut self, kind: IconKind) -> InputField {
+        self.leading = Some(kind);
+        self
+    }
+
     pub fn text(&self) -> String {
         self.field.text()
     }
@@ -236,69 +512,86 @@ impl InputField {
         hint: Option<&str>,
         error: Option<&str>,
     ) -> Node {
-        let colors = theme();
-        let mut title = div().row().items_center().gap(6.0).child(
-            label(self.label.to_string())
-                .label_size(LabelSize::Small)
-                .color(colors.text),
-        );
-        if let Some(hint) = hint {
-            // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
-            title = title.child(
-                label(hint.to_string())
-                    .label_size(LabelSize::Small)
-                    .color(colors.text_muted)
-                    .truncate_start(),
-            );
-        }
-        let input = self.render_input(click_id, focused, error.is_some());
-        let mut column = div().col().gap(4.0).child(title).child(input);
-        if let Some(error) = error {
-            column = column.child(
-                label(error.to_string())
-                    .label_size(LabelSize::Small)
-                    .color(colors.error),
-            );
-        }
-        column.into()
+        field(
+            self.label,
+            self.render_input(click_id, focused, error.is_some()),
+            hint,
+            error,
+        )
     }
 }
 
 impl InputField {
     /// Just the input box, for forms that lay out the title themselves.
     pub fn render_input(&self, click_id: u64, focused: bool, error: bool) -> Node {
+        self.render_input_with(click_id, focused, error, None)
+    }
+
+    /// The input box with muted `suffix` after the text, such as what a typed key stands for.
+    pub fn render_input_with(
+        &self,
+        click_id: u64,
+        focused: bool,
+        error: bool,
+        suffix: Option<&str>,
+    ) -> Node {
         let colors = theme();
         let border = match (error, focused) {
-            (true, _) => colors.error_border,
+            (true, _) => colors.error,
             (false, true) => colors.border_focused,
-            (false, false) => colors.border_variant,
+            (false, false) => colors.border,
         };
-        div()
+        let mut row = div()
             .row()
             .items_center()
-            .h_px(INPUT_HEIGHT + 12.0)
-            .px(8.0)
+            .gap(8.0)
+            .h_px(INPUT_HEIGHT + 10.0)
+            .px(10.0)
             .rounded(6.0)
             .bg(colors.editor_background)
             .border(1.0, border)
-            .on_click(click_id)
-            .child(match self.dots() {
-                Some(dots) => dots.render(
-                    self.placeholder,
-                    focused,
-                    colors.text,
-                    INPUT_HEIGHT,
-                    self.font,
-                ),
-                None => self.field.render(
-                    self.placeholder,
-                    focused,
-                    colors.text,
-                    INPUT_HEIGHT,
-                    self.font,
-                ),
-            })
-            .into()
+            .on_click(click_id);
+        if focused && !error {
+            row = row.ring(3.0, colors.overlay_selected);
+        }
+        if let Some(kind) = self.leading {
+            row = row.child(icon(kind).size(14.0).color(colors.icon_muted));
+        }
+        // Away from the box, a known value reads with what it stands for; editing shows only the value.
+        if let Some(suffix) = suffix.filter(|_| !focused) {
+            return row
+                .child(
+                    label(self.field.text())
+                        .size(INPUT_FONT)
+                                .color(colors.text),
+                )
+                .child(
+                    div().row().flex(1.0).items_center().child(
+                        label(suffix.to_string())
+                            .size(INPUT_FONT)
+                            .color(colors.text_placeholder)
+                            .truncate(),
+                    ),
+                )
+                .into();
+        }
+        row = row.child(match self.dots() {
+            Some(dots) => dots.render(
+                self.placeholder,
+                focused,
+                colors.text,
+                INPUT_HEIGHT,
+                self.font,
+            ),
+            None => self.field.render(
+                self.placeholder,
+                focused,
+                colors.text,
+                INPUT_HEIGHT,
+                self.font,
+            ),
+        });
+        row.into()
     }
 
     fn dots(&self) -> Option<TextField> {
@@ -306,46 +599,41 @@ impl InputField {
             return None;
         }
         let mut dots = TextField::default();
+        dots.set_font_size(INPUT_FONT);
         dots.set_text(&"*".repeat(self.field.text().chars().count()));
         dots.move_to_end();
         Some(dots)
     }
 }
 
-/// A ghost checkbox (16px box, 6px to its muted label), the whole row clickable.
+/// A checkbox (14px box, accent filled when on) and its label, the whole row clickable.
 pub fn checkbox(id: u64, checked: bool, text: &str) -> Node {
     let colors = theme();
     let mut square = div()
         .row()
         .items_center()
         .justify_center()
-        .w_px(16.0)
-        .h_px(16.0)
-        .rounded(2.0)
-        .border(1.0, colors.border);
-    if checked {
-        square = square.child(icon(IconKind::Check).size(14.0).color(colors.text_accent));
-    }
-    div()
+        .w_px(14.0)
+        .h_px(14.0)
+        .rounded(4.0);
+    square = if checked {
+        square
+            .bg(colors.accent_fill)
+            .child(icon(IconKind::Check).size(10.0).color(colors.on_accent))
+    } else {
+        square.border(1.0, colors.border)
+    };
+    let mut row = div()
         .row()
         .items_center()
-        .gap(6.0)
-        .h_px(22.0)
+        .gap(8.0)
+        .h_px(16.0)
         .on_click(id)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .justify_center()
-                .w_px(20.0)
-                .child(square),
-        )
-        .child(
-            label(text.to_string())
-                .label_size(LabelSize::Default)
-                .color(colors.text_muted),
-        )
-        .into()
+        .child(square);
+    if !text.is_empty() {
+        row = row.child(label(text.to_string()).size(12.0).color(colors.text));
+    }
+    row.into()
 }
 
 /// A determinate bar: 8px track with 2px inset, filled in the info color (never below 2%).
@@ -395,53 +683,39 @@ pub fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>)
     row.into()
 }
 
-/// A small muted status line: a leading icon and truncated text.
-/// A row of mutually exclusive choices, one outlined box split by hairlines; the chosen one is tinted accent.
-/// `choices` are (click id, leading icon, label).
+/// Mutually exclusive choices on a sunken track; the chosen one sits on a raised chip. `choices` are (click id,
+/// leading icon, label).
 pub fn toggle_button_group(choices: &[(u64, Option<IconKind>, &str)], selected: usize) -> Node {
     let colors = theme();
-    let hairline = colors.border.alpha(0.6);
-    let mut group = div().row().rounded(6.0).border(1.0, hairline);
+    let mut group = div()
+        .row()
+        .p(2.0)
+        .gap(2.0)
+        .rounded(6.0)
+        .bg(colors.background);
     for (index, (id, leading, text)) in choices.iter().enumerate() {
-        if index > 0 {
-            group = group.child(div().w_px(1.0).h_px(28.0).bg(hairline));
-        }
         let chosen = index == selected;
-        let tint = if chosen {
-            colors.text_accent
-        } else {
-            colors.text
-        };
+        let ink = if chosen { colors.text } else { colors.text_muted };
         let mut cell = div()
             .row()
-            .flex(1.0)
-            .h_px(28.0)
-            .px(8.0)
+            .h_px(26.0)
+            .px(10.0)
             .gap(6.0)
             .items_center()
-            .justify_center()
+            .rounded(4.0)
             .on_click(*id);
         if chosen {
-            cell = cell.bg(colors.info_background);
+            cell = cell.bg(colors.element_background);
         }
         if let Some(kind) = leading {
-            cell = cell.child(icon(*kind).size(12.0).color(if chosen {
-                colors.text_accent
-            } else {
-                colors.icon_muted
-            }));
+            cell = cell.child(icon(*kind).size(12.0).color(ink));
         }
-        group = group.child(
-            cell.child(
-                label(text.to_string())
-                    .label_size(LabelSize::Small)
-                    .color(tint),
-            ),
-        );
+        group = group.child(cell.child(label(text.to_string()).size(12.0).color(ink)));
     }
-    group.into()
+    div().row().child(group).into()
 }
 
+/// A small muted status line: a leading icon and truncated text.
 pub fn status_line(kind: IconKind, color: Rgba, text: &str) -> Node {
     div()
         .row()

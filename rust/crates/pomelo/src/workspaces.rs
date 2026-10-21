@@ -218,6 +218,23 @@ impl App {
                 self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
             }
             workspace::RowAction::StopServices => self.stop_workspace_services(id, &target),
+            workspace::RowAction::AskDelete => {
+                let unpushed: Vec<(String, usize)> = target
+                    .repos
+                    .iter()
+                    .map(|repo| {
+                        let default = project.config.as_ref().map_or("main", |config| {
+                            config.default_branch_for(&repo.name)
+                        });
+                        let count =
+                            pom_workspace::unpushed_commits(&repo.path, &repo.branch, default);
+                        (repo.name.clone(), count)
+                    })
+                    .collect();
+                self.with_workspace_view(id, |view, _| {
+                    view.ask_to_delete_workspace(index, &unpushed)
+                });
+            }
             workspace::RowAction::Delete => self.delete_workspace(id, index, &target),
             workspace::RowAction::UpdateMain => {
                 self.queue_main_op(id, OpKind::RefreshMain, workspaces_ui::REFRESH_TITLE)
@@ -614,11 +631,6 @@ impl App {
                 }
             }
         };
-        let folder = active
-            .path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let source = branch_source(Arc::new(std::collections::HashMap::from([(
             repo.to_string(),
             checkout,
@@ -627,7 +639,6 @@ impl App {
             repo,
             project.active_branch(),
             current.as_deref(),
-            &folder,
             source,
         );
         self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
