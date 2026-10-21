@@ -10,16 +10,19 @@ use files::search::{FileResult, PathMatcher, SearchScope};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{key_chip, EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const ITEM_ID: &str = "project-search";
-const INPUT_H: f32 = 32.0;
-const BUTTON: f32 = 20.0;
-const PAD_X: f32 = 8.0;
-const PAD_Y: f32 = 6.0;
-const LINE_GAP: f32 = 8.0;
+const INPUT_H: f32 = 28.0;
+const BUTTON: f32 = 26.0;
+/// The case, word and regex toggles inside the query box.
+const OPTION: f32 = 14.0;
+const PAD_X: f32 = 12.0;
+const PAD_Y: f32 = 8.0;
+const LINE_GAP: f32 = 6.0;
 const HEADER_ROW_H: f32 = 30.0;
-const LINE_H: f32 = 20.0;
+const LINE_H: f32 = 22.0;
+const FIELD_FONT: f32 = 12.0;
 const SEPARATOR_H: f32 = 10.0;
 const CODE_FONT: f32 = 13.0;
 const GUTTER_W: f32 = 56.0;
@@ -123,7 +126,7 @@ pub struct ProjectSearch {
 
 fn font_field() -> TextField {
     let mut field = TextField::default();
-    field.set_font_size(13.0);
+    field.set_font_size(FIELD_FONT);
     field
 }
 
@@ -206,9 +209,18 @@ impl ProjectSearch {
         self.request_replace_all();
     }
 
+    /// Fills the replace and include boxes and opens both rows, as a person would before searching (previews).
+    pub fn show_scope(&mut self, replacement: &str, include: &str) {
+        self.replace_enabled = true;
+        self.filters_enabled = true;
+        self.replacement.set_text(replacement);
+        self.include.set_text(include);
+        self.search();
+    }
+
     /// Blocks until the running search ends, with the filter row shown when `filters` (previews).
     pub fn wait_for_results(&mut self, filters: bool) {
-        self.filters_enabled = filters;
+        self.filters_enabled |= filters;
         let deadline = Instant::now() + Duration::from_secs(20);
         while self.running.is_some() && Instant::now() < deadline {
             self.poll();
@@ -555,15 +567,15 @@ impl ProjectSearch {
         } else if toggled {
             colors.text_accent
         } else {
-            colors.icon
+            colors.icon_muted
         };
         let mut button = div()
             .w_px(BUTTON)
             .h_px(BUTTON)
-            .rounded(2.0)
+            .rounded(4.0)
             .items_center()
             .justify_center()
-            .child(icon(kind).size(16.0).color(color));
+            .child(icon(kind).size(14.0).color(color));
         if toggled {
             button = button.bg(colors.element_selected);
         } else if enabled && self.hovered == Some(id) {
@@ -571,6 +583,28 @@ impl ProjectSearch {
         }
         if enabled {
             button = button.on_click(id);
+        }
+        button.into()
+    }
+
+    fn option_button(&self, id: u64, kind: IconKind, toggled: bool) -> Node {
+        let colors = theme();
+        let mut button = div()
+            .w_px(OPTION)
+            .h_px(OPTION)
+            .rounded(2.0)
+            .items_center()
+            .justify_center()
+            .on_click(id)
+            .child(icon(kind).size(14.0).color(if toggled {
+                colors.text_accent
+            } else {
+                colors.text_placeholder
+            }));
+        if toggled {
+            button = button.bg(colors.element_selected);
+        } else if self.hovered == Some(id) {
+            button = button.bg(colors.ghost_element_hover);
         }
         button.into()
     }
@@ -597,20 +631,21 @@ impl ProjectSearch {
         div()
             .row()
             .h_px(INPUT_H)
-            .pl(8.0)
+            .pl(10.0)
             .pr(4.0)
-            .gap(4.0)
+            .gap(8.0)
             .items_center()
             .rounded(6.0)
+            .bg(colors.background)
             .border(1.0, border)
             .on_click(id)
-            .child(field.render(
+            .child(div().row().flex(1.0).items_center().child(field.render(
                 placeholder,
                 focused,
                 text_color,
-                INPUT_H - 2.0,
+                INPUT_H - 8.0,
                 FieldFont::Mono,
-            ))
+            )))
     }
 
     fn bar(&self, width: f32) -> Node {
@@ -620,14 +655,20 @@ impl ProjectSearch {
         let query_row = self
             .input(QUERY, Field::Query, &self.query, "Search all files...")
             .w_px(query_w)
-            .child(self.icon_button(
-                CASE,
-                IconKind::CaseSensitive,
-                self.options.case_sensitive,
-                true,
-            ))
-            .child(self.icon_button(WORD, IconKind::WholeWord, self.options.whole_word, true))
-            .child(self.icon_button(REGEX, IconKind::Regex, self.options.regex, true));
+            .child(
+                div()
+                    .row()
+                    .pr(4.0)
+                    .gap(6.0)
+                    .items_center()
+                    .child(self.option_button(
+                        CASE,
+                        IconKind::CaseSensitive,
+                        self.options.case_sensitive,
+                    ))
+                    .child(self.option_button(WORD, IconKind::WholeWord, self.options.whole_word))
+                    .child(self.option_button(REGEX, IconKind::Regex, self.options.regex)),
+            );
         let has_match = self.active_match.is_some();
         let count = match self.active_match {
             Some(index) if self.limit_reached => format!("{}/{}+", index + 1, self.matches.len()),
@@ -641,14 +682,19 @@ impl ProjectSearch {
             .items_center()
             .child(self.icon_button(FILTERS, IconKind::Filter, self.filters_enabled, true))
             .child(self.icon_button(REPLACE, IconKind::Replace, self.replace_enabled, true))
-            .child(div().w_px(1.0).h_px(BUTTON).bg(colors.border_variant))
+            .child(
+                div()
+                    .row()
+                    .px(2.0)
+                    .child(div().w_px(1.0).h_px(18.0).bg(colors.border_variant)),
+            )
             .child(self.icon_button(PREVIOUS, IconKind::ChevronLeft, false, has_match))
             .child(self.icon_button(NEXT, IconKind::ChevronRight, false, has_match))
-            .child(div().row().h_px(BUTTON).items_center().pl(8.0).child(
+            .child(div().row().h_px(BUTTON).items_center().pl(6.0).child(
                 label(count).size(12.0).color(if has_match {
-                    colors.text
+                    colors.text_muted
                 } else {
-                    colors.text_disabled
+                    colors.text_placeholder
                 }),
             ));
         if self.phase == Phase::Searching {
@@ -663,12 +709,12 @@ impl ProjectSearch {
             .gap(LINE_GAP)
             .px(PAD_X)
             .py(PAD_Y)
-            .bg(colors.toolbar_background)
+            .bg(colors.panel_background)
             .child(
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP)
+                    .gap(LINE_GAP + 2.0)
                     .items_center()
                     .child(query_row)
                     .child(mode),
@@ -677,16 +723,17 @@ impl ProjectSearch {
             bar = bar.child(
                 div()
                     .row()
-                    .pl(8.0)
+                    .pl(10.0)
                     .child(label(error.clone()).size(12.0).color(colors.error)),
             );
         }
         if self.replace_enabled {
+            let ready = !self.results.is_empty();
             bar = bar.child(
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP)
+                    .gap(LINE_GAP + 2.0)
                     .items_center()
                     .child(
                         self.input(
@@ -697,12 +744,32 @@ impl ProjectSearch {
                         )
                         .w_px(query_w),
                     )
-                    .child(self.icon_button(
-                        REPLACE_ALL,
-                        IconKind::ReplaceAll,
-                        false,
-                        !self.results.is_empty(),
-                    )),
+                    .child(
+                        div()
+                            .row()
+                            .w_px(mode_w)
+                            .gap(4.0)
+                            .items_center()
+                            .child(self.icon_button(
+                                REPLACE_ALL,
+                                IconKind::ReplaceAll,
+                                false,
+                                ready,
+                            ))
+                            .child(
+                                div()
+                                    .row()
+                                    .pl(6.0)
+                                    .gap(6.0)
+                                    .items_center()
+                                    .child(
+                                        label("Replace all")
+                                            .size(12.0)
+                                            .color(colors.text_placeholder),
+                                    )
+                                    .child(key_chip("cmd-enter", false)),
+                            ),
+                    ),
             );
         }
         if self.filters_enabled {
@@ -710,7 +777,7 @@ impl ProjectSearch {
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP)
+                    .gap(LINE_GAP + 2.0)
                     .items_center()
                     .child(
                         self.input(
@@ -754,23 +821,38 @@ impl ProjectSearch {
         };
         let mut column = div()
             .col()
-            .gap(4.0)
+            .gap(8.0)
             .items_center()
-            .child(label(heading).size(16.0).color(colors.text));
+            .child(label(heading).size(15.0).weight(600).color(colors.text));
         if let Some(detail) = detail {
+            let mut lines = div().col().items_center();
+            for line in wrap_words(detail, 12.0, 380.0) {
+                lines = lines.child(
+                    div()
+                        .row()
+                        .h_px(16.0)
+                        .items_center()
+                        .child(label(line).size(12.0).color(colors.text_muted)),
+                );
+            }
+            column = column.child(lines);
+        }
+        if self.phase == Phase::Idle {
             column = column.child(
-                label(detail)
-                    .size(12.0)
-                    .color(colors.text_muted)
-                    .wrap(360.0),
+                div()
+                    .row()
+                    .pt(8.0)
+                    .gap(6.0)
+                    .items_center()
+                    .child(key_chip("enter", false))
+                    .child(label("Search").size(12.0).color(colors.text_placeholder)),
             );
         }
         div()
             .row()
             .flex(1.0)
-            .items_center()
             .justify_center()
-            .pt(48.0)
+            .pt(64.0)
             .child(column)
             .into()
     }
@@ -838,8 +920,8 @@ impl ProjectSearch {
                 ),
             )
             .child(text_row);
-        if self.hovered == Some(id) {
-            row = row.bg(colors.editor_active_line);
+        if active.is_some() || self.hovered == Some(id) {
+            row = row.bg(colors.ghost_element_hover);
         }
         row.into()
     }
@@ -873,7 +955,7 @@ impl ProjectSearch {
                         .px(12.0)
                         .gap(6.0)
                         .items_center()
-                        .bg(colors.tab_bar_background)
+                        .bg(colors.panel_background)
                         .on_click(id)
                         .child(material_icon(crate::file_icon(&name)).size(14.0))
                         .child(label(name).size(13.0).color(colors.text))
@@ -908,6 +990,7 @@ impl ProjectSearch {
                 Row::Separator => div()
                     .row()
                     .h_px(SEPARATOR_H)
+                    .pl(GUTTER_W)
                     .items_center()
                     .child(div().row().flex(1.0).h_px(1.0).bg(colors.border_variant))
                     .into(),
@@ -1190,6 +1273,29 @@ impl Item for ProjectSearch {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
+}
+
+/// `text` broken at spaces into lines no wider than `width`, so each can be centered on its own.
+fn wrap_words(text: &str, size: f32, width: f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() {
+            word.to_string()
+        } else {
+            format!("{line} {word}")
+        };
+        if !line.is_empty() && ui::measure_text_width(&candidate, size, false, 400) > width {
+            lines.push(std::mem::take(&mut line));
+            line = word.to_string();
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
 }
 
 pub fn replace_in_text(text: &str, query: &SearchQuery) -> Option<String> {

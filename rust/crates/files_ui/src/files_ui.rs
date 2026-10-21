@@ -917,6 +917,19 @@ pub fn project_search_preview(root: PathBuf, query: &str, filters: bool) -> Box<
     Box::new(search)
 }
 
+/// A search for `query` over `root` with `replacement` and `include` typed and both of their rows open (previews).
+pub fn project_search_scoped(
+    root: PathBuf,
+    query: &str,
+    replacement: &str,
+    include: &str,
+) -> Box<dyn Item> {
+    let mut search = project_search::ProjectSearch::new(root, query);
+    search.show_scope(replacement, include);
+    search.wait_for_results(true);
+    Box::new(search)
+}
+
 fn reads_only(key: EditKey) -> bool {
     matches!(
         key,

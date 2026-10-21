@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect};
-use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::text_field::TextField;
+use workspace::{
+    modal_button, ButtonKind, EditKey, InputField, Item, ItemTick, TerminalKeyOutcome,
+};
 
-use crate::{hit_at, icon_button, EnvironmentContext};
+use crate::{action_button, hit_at, EnvironmentContext};
 
 pub const ITEM_ID: &str = "secrets";
 const ROW_H: f32 = 34.0;
@@ -17,7 +19,11 @@ const ROW_BASE: u64 = 100;
 const REVEAL: u64 = 0;
 const COPY: u64 = 1;
 const DELETE: u64 = 2;
+/// The row itself, so hovering anywhere on it shows its controls' tint.
+const ROW: u64 = 3;
 const ROW_STRIDE: u64 = 4;
+const DOC_W: f32 = 820.0;
+const NAME_W: f32 = 220.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -31,8 +37,8 @@ pub struct SecretsItem {
     revealed: HashMap<String, String>,
     /// The secret whose delete button was pressed once; a second press deletes it.
     armed: Option<String>,
-    name: TextField,
-    value: TextField,
+    name: InputField,
+    value: InputField,
     focus: Option<Focus>,
     focused: bool,
     error: Option<String>,
@@ -42,12 +48,6 @@ pub struct SecretsItem {
     hovered: Option<u64>,
 }
 
-fn field() -> TextField {
-    let mut field = TextField::default();
-    field.set_font_size(12.0);
-    field
-}
-
 impl SecretsItem {
     pub fn new(context: EnvironmentContext) -> SecretsItem {
         let mut item = SecretsItem {
@@ -55,8 +55,8 @@ impl SecretsItem {
             names: Vec::new(),
             revealed: HashMap::new(),
             armed: None,
-            name: field(),
-            value: field(),
+            name: InputField::new("Name", "NAME"),
+            value: InputField::new("Value", "value").masked(),
             focus: Some(Focus::Name),
             focused: false,
             error: None,
@@ -104,8 +104,8 @@ impl SecretsItem {
             self.error = Some(format!("Could not save {name}: {error}"));
             return;
         }
-        self.name.set_text("");
-        self.value.set_text("");
+        self.name.field.set_text("");
+        self.value.field.set_text("");
         self.focus = Some(Focus::Name);
         self.reload();
     }
@@ -153,11 +153,16 @@ impl SecretsItem {
         let hot = |id: u64| self.hovered == Some(id);
         let mut row = div()
             .row()
-            .h_px(ROW_H)
-            .px(16.0)
-            .gap(10.0)
+            .h_px(ROW_H - 1.0)
+            .px(14.0)
+            .gap(12.0)
             .items_center()
-            .child(icon(IconKind::Key).size(12.0).color(colors.icon_muted))
+            .on_click(base + ROW)
+            .child(
+                icon(IconKind::Key)
+                    .size(12.0)
+                    .color(colors.text_placeholder),
+            )
             .child(
                 label(format!("{{{{secret.{name}}}}}"))
                     .size(12.0)
@@ -169,11 +174,11 @@ impl SecretsItem {
             row = row.child(
                 div()
                     .row()
-                    .h_px(22.0)
+                    .h_px(20.0)
                     .px(8.0)
                     .items_center()
-                    .rounded(5.0)
-                    .bg(colors.editor_background)
+                    .rounded(4.0)
+                    .bg(colors.background)
                     .border(1.0, colors.border_variant)
                     .child(
                         label(if value.is_empty() {
@@ -181,7 +186,7 @@ impl SecretsItem {
                         } else {
                             value.clone()
                         })
-                        .size(11.0)
+                        .size(12.0)
                         .mono()
                         .color(colors.text_muted)
                         .truncate(),
@@ -189,37 +194,47 @@ impl SecretsItem {
             );
         }
         let revealed = self.revealed.contains_key(name);
-        row = row
-            .child(icon_button(
-                base + REVEAL,
-                IconKind::Eye,
-                if revealed {
-                    colors.text_accent
-                } else {
-                    colors.icon_muted
-                },
-                hot(base + REVEAL),
-            ))
-            .child(icon_button(
-                base + COPY,
-                IconKind::Copy,
-                colors.icon_muted,
-                hot(base + COPY),
-            ));
+        row = row.child(
+            div()
+                .row()
+                .gap(9.0)
+                .items_center()
+                .child(action_button(
+                    base + REVEAL,
+                    IconKind::Eye,
+                    if revealed {
+                        colors.text_accent
+                    } else {
+                        colors.text_placeholder
+                    },
+                    hot(base + REVEAL),
+                ))
+                .child(action_button(
+                    base + COPY,
+                    IconKind::Copy,
+                    colors.text_placeholder,
+                    hot(base + COPY),
+                )),
+        );
         if self.armed.as_deref() == Some(name) {
             row = row.child(
                 div()
                     .row()
                     .h_px(20.0)
-                    .px(6.0)
+                    .px(8.0)
                     .items_center()
                     .rounded(4.0)
                     .bg(colors.error)
                     .on_click(base + DELETE)
-                    .child(label("Delete?").size(11.0).color(colors.editor_background)),
+                    .child(
+                        label("Delete?")
+                            .size(12.0)
+                            .weight(600)
+                            .color(colors.background),
+                    ),
             );
         } else {
-            row = row.child(icon_button(
+            row = row.child(action_button(
                 base + DELETE,
                 IconKind::Trash,
                 colors.error,
@@ -230,53 +245,19 @@ impl SecretsItem {
             .hovered
             .is_some_and(|id| id >= base && id < base + ROW_STRIDE)
         {
-            row = row.bg(colors.ghost_element_hover);
+            row = row.bg(colors.element_hover);
         }
-        row.into()
-    }
-
-    fn input(
-        &self,
-        id: u64,
-        which: Focus,
-        field: &TextField,
-        placeholder: &str,
-        masked: bool,
-    ) -> ui::Div {
-        let colors = theme();
-        let focused = self.focused && self.focus == Some(which);
-        let content: Node = if masked && !field.text().is_empty() {
-            let dots = "*".repeat(field.text().chars().count().min(24));
-            let mut masked_field = TextField::default();
-            masked_field.set_font_size(12.0);
-            masked_field.set_text(&dots);
-            masked_field.move_to_end();
-            masked_field.render(placeholder, focused, colors.text, 24.0, FieldFont::Mono)
-        } else {
-            field.render(placeholder, focused, colors.text, 24.0, FieldFont::Mono)
-        };
         div()
-            .row()
-            .h_px(28.0)
-            .px(8.0)
-            .items_center()
-            .rounded(4.0)
-            .border(
-                1.0,
-                if focused {
-                    colors.border_focused
-                } else {
-                    colors.border
-                },
-            )
-            .on_click(id)
-            .child(content)
+            .col()
+            .child(row)
+            .child(div().h_px(1.0).bg(colors.border_variant))
+            .into()
     }
 
     fn field(&mut self) -> Option<&mut TextField> {
         match self.focus? {
-            Focus::Name => Some(&mut self.name),
-            Focus::Value => Some(&mut self.value),
+            Focus::Name => Some(&mut self.name.field),
+            Focus::Value => Some(&mut self.value.field),
         }
     }
 
@@ -287,8 +268,16 @@ impl SecretsItem {
 
     /// Types into the add form (tests).
     pub fn type_new(&mut self, name: &str, value: &str) {
-        self.name.set_text(name);
-        self.value.set_text(value);
+        self.name.field.set_text(name);
+        self.value.field.set_text(value);
+        self.name.field.move_to_end();
+    }
+
+    /// Shows `revealed` with its value and `armed` waiting for its second delete press (previews).
+    pub fn show_states(&mut self, revealed: (&str, &str), armed: &str) {
+        self.revealed
+            .insert(revealed.0.to_string(), revealed.1.to_string());
+        self.armed = Some(armed.to_string());
     }
 }
 
@@ -313,75 +302,76 @@ impl Item for SecretsItem {
         let colors = theme();
         let scale = ui::ui_text_scale();
         let (width, height) = (body.w / scale, body.h / scale);
-        let intro = div().col().px(16.0).pt(12.0).pb(8.0).child(
-            label("Encrypted app-local values for {{secret.NAME}} referenced in your config. Names are listed; values show only when you ask.")
-                .size(11.0)
-                .color(colors.text_muted)
-                .wrap(width - 32.0),
-        );
-        let mut list = div().col().py(4.0);
+        let doc_w = width.min(DOC_W);
+        let intro = label("Encrypted app-local values for {{secret.NAME}} referenced in your config. Names are listed; values show only when you ask.")
+            .size(12.0)
+            .color(colors.text_muted)
+            .wrap(doc_w - 48.0);
+        let mut list = div().col().rounded(6.0).bg(colors.panel_background);
         if self.names.is_empty() {
             list = list.child(
                 div()
                     .row()
-                    .px(16.0)
-                    .py(12.0)
+                    .h_px(ROW_H)
+                    .px(14.0)
+                    .items_center()
                     .child(label("No secrets yet.").size(12.0).color(colors.text_muted)),
             );
         }
         let first = (self.scroll / ROW_H) as usize;
-        let visible = ((height - 140.0) / ROW_H).max(1.0) as usize;
+        let visible = ((height - 180.0) / ROW_H).max(1.0) as usize;
         for (index, name) in self.names.iter().enumerate().skip(first).take(visible) {
             list = list.child(self.row(index, name));
         }
         let add_ready = !self.name.text().trim().is_empty() && !self.value.text().is_empty();
-        let mut add_button = div()
+        let typing = |which: Focus| self.focused && self.focus == Some(which);
+        let form = div()
             .row()
-            .h_px(28.0)
-            .px(12.0)
+            .gap(8.0)
             .items_center()
-            .rounded(4.0)
-            .bg(if add_ready {
-                colors.element_selected
-            } else {
-                colors.element_background
-            })
-            .child(label("Add").size(12.0).color(if add_ready {
-                colors.text
-            } else {
-                colors.text_disabled
-            }));
-        if add_ready {
-            add_button = add_button.on_click(ADD);
-        }
-        let mut form = div().col().gap(6.0).px(16.0).py(12.0).child(
-            div()
-                .row()
-                .gap(8.0)
-                .items_center()
-                .child(
-                    self.input(NAME_FIELD, Focus::Name, &self.name, "NAME", false)
-                        .w_px(200.0),
-                )
-                .child(
-                    self.input(VALUE_FIELD, Focus::Value, &self.value, "value", true)
-                        .flex(1.0),
-                )
-                .child(add_button),
-        );
-        if let Some(error) = &self.error {
-            form = form.child(label(error.clone()).size(12.0).color(colors.error));
-        }
+            .child(
+                div().col().w_px(NAME_W).child(self.name.render_input(
+                    NAME_FIELD,
+                    typing(Focus::Name),
+                    false,
+                )),
+            )
+            .child(
+                div().col().flex(1.0).child(self.value.render_input(
+                    VALUE_FIELD,
+                    typing(Focus::Value),
+                    false,
+                )),
+            )
+            .child(modal_button(
+                ADD,
+                "Add",
+                Some("enter"),
+                ButtonKind::Primary,
+                add_ready,
+            ));
+        let note = match &self.error {
+            Some(error) => label(error.clone()).size(12.0).color(colors.error),
+            None => label("Names use letters, digits and _ only, as in {{secret.NAME}}.")
+                .size(12.0)
+                .color(colors.text_placeholder),
+        };
+        let doc = div()
+            .col()
+            .w_px(doc_w)
+            .px(24.0)
+            .py(18.0)
+            .gap(12.0)
+            .child(intro)
+            .child(list)
+            .child(form)
+            .child(note);
         let tree: Node = div()
             .col()
             .w_px(width)
             .h_px(height)
             .bg(colors.editor_background)
-            .child(intro)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(div().col().flex(1.0).child(list))
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(form)
+            .child(doc)
             .into();
         let painted = ui::render(&tree, body);
         self.hits = painted.hits.clone();

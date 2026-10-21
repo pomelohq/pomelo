@@ -9,9 +9,11 @@ use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{Item, ItemTick};
+use workspace::{field_label, small_button, ButtonKind, Item, ItemTick};
 
-const PAD: f32 = 16.0;
+const PAD_X: f32 = 28.0;
+const PAD_Y: f32 = 20.0;
+const DOC_W: f32 = 820.0;
 const OPEN_IN_JIRA: u64 = 1;
 const RELOAD: u64 = 2;
 const COPY_LINK: u64 = 3;
@@ -153,17 +155,15 @@ impl TicketItem {
     fn header(&self, width: f32) -> Node {
         let colors = theme();
         let button = |id: u64, kind: IconKind, text: &str| {
-            div()
-                .row()
-                .h_px(24.0)
-                .px(8.0)
-                .gap(4.0)
-                .items_center()
-                .rounded(4.0)
-                .border(1.0, colors.border_variant)
-                .on_click(id)
-                .child(icon(kind).size(12.0).color(colors.icon_muted))
-                .child(label(text.to_string()).size(12.0).color(colors.text))
+            small_button(
+                id,
+                Some(kind),
+                text,
+                None,
+                ButtonKind::Secondary,
+                true,
+                None,
+            )
         };
         let mut top = div().row().gap(8.0).items_center().child(
             label(self.key.clone())
@@ -181,11 +181,16 @@ impl TicketItem {
                 div()
                     .row()
                     .h_px(20.0)
-                    .px(8.0)
+                    .px(9.0)
                     .items_center()
                     .rounded(10.0)
-                    .bg(Rgba::new(color.r, color.g, color.b, 0.16))
-                    .child(label(detail.status.clone()).size(12.0).color(color)),
+                    .bg(color.alpha(0.16))
+                    .child(
+                        label(detail.status.clone())
+                            .size(12.0)
+                            .medium()
+                            .color(color),
+                    ),
             );
         }
         top = top.child(div().row().flex(1.0));
@@ -211,12 +216,13 @@ impl TicketItem {
                 "Reload"
             },
         ));
-        let mut column = div().col().gap(6.0).child(top);
+        let mut column = div().col().gap(12.0).child(top);
         match &self.detail {
             Some(detail) => {
                 column = column.child(
                     label(detail.summary.clone())
-                        .size(18.0)
+                        .size(20.0)
+                        .weight(600)
                         .color(colors.text)
                         .wrap(width),
                 );
@@ -227,27 +233,50 @@ impl TicketItem {
                 } else {
                     format!("{} could not be loaded", self.key)
                 };
-                column = column.child(label(text).size(14.0).color(colors.text_muted));
+                column = column.child(label(text).size(13.0).color(colors.text_muted));
             }
         }
         if let Some(error) = &self.error {
-            column = column.child(
-                label(error.clone())
-                    .size(12.0)
-                    .color(colors.error)
-                    .wrap(width),
-            );
+            column = column.child(Self::callout(error, width));
         }
         column.into()
     }
 
     fn section(title: String) -> Node {
-        label(title).size(11.0).color(theme().text_muted).into()
+        div().row().pt(6.0).child(field_label(&title)).into()
+    }
+
+    fn callout(text: &str, width: f32) -> Node {
+        let colors = theme();
+        let text = label(text.to_string())
+            .size(13.0)
+            .color(colors.text)
+            .wrap(width - 3.0 - 14.0 - 14.0 - 24.0);
+        let line_h = ui::measure(&text.clone().into()).1.max(20.0);
+        div()
+            .row()
+            .w_px(width)
+            .rounded(6.0)
+            .bg(colors.panel_background)
+            .child(div().w_px(3.0).h_px(line_h + 24.0).bg(colors.info))
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .pl(11.0)
+                    .pr(14.0)
+                    .py(12.0)
+                    .gap(10.0)
+                    .items_center()
+                    .child(icon(IconKind::Info).size(14.0).color(colors.info))
+                    .child(text),
+            )
+            .into()
     }
 
     fn content(&mut self, width: f32) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(14.0).child(self.header(width));
+        let mut column = div().col().gap(12.0).child(self.header(width));
         let Some(detail) = self.detail.clone() else {
             return column.into();
         };
@@ -259,10 +288,10 @@ impl TicketItem {
                 .into(),
         };
         column = column
-            .child(Self::section("DESCRIPTION".into()))
+            .child(Self::section("Description".into()))
             .child(description);
         if !detail.web_links.is_empty() {
-            let mut links = div().col().gap(2.0);
+            let mut links = div().col().gap(6.0);
             for (index, link) in detail.web_links.iter().enumerate() {
                 let title = if link.title.is_empty() {
                     link.url.clone()
@@ -272,22 +301,22 @@ impl TicketItem {
                 links = links.child(
                     div()
                         .row()
-                        .h_px(26.0)
+                        .h_px(20.0)
                         .gap(8.0)
                         .items_center()
                         .on_click(WEB_LINK_BASE + index as u64)
                         .child(
                             icon(IconKind::ArrowUpRight)
                                 .size(12.0)
-                                .color(colors.icon_muted),
+                                .color(colors.text_accent),
                         )
                         .child(label(title).size(13.0).color(colors.text_accent).truncate()),
                 );
             }
-            column = column.child(Self::section("WEB LINKS".into())).child(links);
+            column = column.child(Self::section("Web links".into())).child(links);
         }
         column = column.child(Self::section(format!(
-            "COMMENTS ({})",
+            "Comments ({})",
             detail.comments.len()
         )));
         if detail.comments.is_empty() {
@@ -305,10 +334,11 @@ impl TicketItem {
             column = column.child(
                 div()
                     .col()
-                    .gap(8.0)
-                    .p(12.0)
+                    .gap(4.0)
+                    .px(12.0)
+                    .py(10.0)
                     .rounded(6.0)
-                    .border(1.0, colors.border_variant)
+                    .bg(colors.panel_background)
                     .child(
                         div()
                             .row()
@@ -316,14 +346,14 @@ impl TicketItem {
                             .items_center()
                             .child(
                                 label(comment.author.clone())
-                                    .size(13.0)
+                                    .size(12.0)
                                     .weight(600)
                                     .color(colors.text),
                             )
                             .child(
                                 label(short_time(&comment.created))
                                     .size(12.0)
-                                    .color(colors.text_muted),
+                                    .color(colors.text_placeholder),
                             ),
                     )
                     .child(body),
@@ -409,13 +439,14 @@ impl Item for TicketItem {
         let scale = ui::ui_text_scale();
         self.body_h = body.h / scale;
         let full = body.w / scale;
-        let width = (full - 2.0 * PAD).max(120.0);
+        let doc = full.min(DOC_W);
+        let width = (doc - 2.0 * PAD_X).max(120.0);
         let content = self.content(width);
         let tree: Node = div()
             .col()
             .w_px(full)
             .bg(theme().editor_background)
-            .child(div().col().w_px(full).p(PAD).child(content))
+            .child(div().col().w_px(doc).px(PAD_X).py(PAD_Y).child(content))
             .into();
         // The column starts `scroll` above the body; the pane clips what falls outside.
         let shifted = Rect::new(
@@ -457,7 +488,7 @@ impl Item for TicketItem {
     }
 
     fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, _modifiers: Modifiers) -> bool {
-        let max = (self.content_h + PAD - self.body_h).max(0.0);
+        let max = (self.content_h + PAD_Y - self.body_h).max(0.0);
         let next = (self.scroll - delta_y).clamp(0.0, max);
         let moved = (next - self.scroll).abs() > 0.01;
         self.scroll = next;
