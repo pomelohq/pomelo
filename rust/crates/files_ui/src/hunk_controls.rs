@@ -68,16 +68,18 @@ impl FileItem {
             content.y.min(bottom - line_h)
         };
 
-        let (stage_id, stage_text) = if hunk.staged {
-            (UNSTAGE, "Unstage hunk")
-        } else {
-            (STAGE, "Stage hunk")
+        let stage_id = if hunk.staged { UNSTAGE } else { STAGE };
+        let verb = if hunk.staged { "Unstage" } else { "Stage" };
+        let stage_text = match self.selected_change_lines(!hunk.staged) {
+            Some((_, 1)) => format!("{verb} 1 line"),
+            Some((_, count)) => format!("{verb} {count} lines"),
+            None => format!("{verb} hunk"),
         };
         let mut buttons = vec![
-            self.hunk_button(stage_id, stage_text, !hunk.staged, true),
+            self.hunk_button(stage_id, &stage_text, !hunk.staged, true),
             self.hunk_button(RESTORE, "Restore", false, !created),
         ];
-        let mut width = [stage_text, "Restore"]
+        let mut width = [stage_text.as_str(), "Restore"]
             .iter()
             .map(|text| ui::measure_text_width(text, TEXT_SIZE, false, 500) + 2.0 * BUTTON_PAD_X)
             .sum::<f32>();
@@ -167,6 +169,13 @@ impl FileItem {
         let Some(hunk) = self.hunk_under_caret() else {
             return true;
         };
+        let stage = control == STAGE;
+        if matches!(control, STAGE | UNSTAGE) {
+            if let Some((rows, _)) = self.selected_change_lines(stage) {
+                self.write_staged_lines(rows, stage);
+                return true;
+            }
+        }
         match control {
             STAGE => self.write_staged(&[hunk], true),
             UNSTAGE => self.write_staged(&[hunk], false),

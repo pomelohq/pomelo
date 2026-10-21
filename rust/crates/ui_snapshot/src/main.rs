@@ -32,6 +32,58 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "git-commit-amend" => (0, &[("GITFIXTURE", "staged"), ("GITAMEND", "1")]),
         "git-tree-view" => (0, &[("GITFIXTURE", "unstaged"), ("GITVIEW", "tree")]),
         "git-grouped-none" => (0, &[("GITFIXTURE", "staged"), ("GITVIEW", "ungrouped")]),
+        // Remote and History over api, web and worker with origins: GITPRS draws the boards' pull requests,
+        // GITREVIEWED marks branch files reviewed, GITOPEN=<repo>:<index> opens a branch commit.
+        "git-remote" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:differ"),
+                ("TAB", "remote"),
+                ("GITPRS", "1"),
+                (
+                    "GITREVIEWED",
+                    "0:app/controllers/users_controller.rb,0:spec/requests/users_spec.rb",
+                ),
+            ],
+        ),
+        "git-in-sync" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:in-sync"),
+                ("TAB", "remote"),
+                ("GITPRS", "1"),
+                (
+                    "GITREVIEWED",
+                    "0:app/controllers/users_controller.rb,0:spec/requests/users_spec.rb",
+                ),
+            ],
+        ),
+        "git-history" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:differ"),
+                ("TAB", "history"),
+                ("GITPRS", "1"),
+            ],
+        ),
+        "git-history-timeline" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:differ"),
+                ("TAB", "history"),
+                ("GITTIMELINE", "1"),
+                ("GITPRS", "1"),
+            ],
+        ),
+        "git-commit-view" => (
+            0,
+            &[
+                ("GITFIXTURE", "remote:differ"),
+                ("GITOPEN", "0:0"),
+                ("GITPRS", "1"),
+            ],
+        ),
+        "git-drift" => (0, &[("GITFIXTURE", "drift")]),
         _ => return None,
     })
 }
@@ -70,10 +122,20 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
         std::env::set_var(key, value);
     }
     if let Some((_, state)) = switches.iter().find(|(key, _)| *key == "GITFIXTURE") {
-        let Some(state) = git_fixture::State::parse(state) else {
-            anyhow::bail!("unknown git fixture state {state}");
+        let roots = if let Some(remote) = state.strip_prefix("remote:") {
+            let Some(remote) = git_fixture::RemoteState::parse(remote) else {
+                anyhow::bail!("unknown git fixture state {state}");
+            };
+            git_fixture::create_remote(remote)?
+        } else if *state == "drift" {
+            git_fixture::create_drift()?
+        } else {
+            let Some(state) = git_fixture::State::parse(state) else {
+                anyhow::bail!("unknown git fixture state {state}");
+            };
+            git_fixture::create(state)?
         };
-        let roots: Vec<String> = git_fixture::create(state)?
+        let roots: Vec<String> = roots
             .iter()
             .map(|root| root.display().to_string())
             .collect();
@@ -1388,7 +1450,12 @@ fn main() -> anyhow::Result<()> {
                 kept: false,
             })
             .collect();
+        let roots: Vec<std::path::PathBuf> =
+            sources.iter().map(|source| source.root.clone()).collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
+        if std::env::var("GITPRS").is_ok() {
+            panel = panel.with_pull_requests(board_pull_requests(&roots)?);
+        }
         panel.render(width, height);
         panel.wait_for_scan();
         // TAB=remote|history picks the tab; HOVER=<offset> hovers a panel id (a row is row * 8 + control).
@@ -1396,6 +1463,22 @@ fn main() -> anyhow::Result<()> {
             Ok("remote") => panel.set_tab(git_ui::Tab::Remote),
             Ok("history") => panel.set_tab(git_ui::Tab::History),
             _ => {}
+        }
+        if std::env::var("GITTIMELINE").is_ok() {
+            panel.set_timeline(true);
+        }
+        if let Ok(marks) = std::env::var("GITREVIEWED") {
+            for mark in marks.split(',') {
+                if let Some((repo, path)) = mark.split_once(':') {
+                    panel.mark_reviewed(repo.parse().unwrap_or_default(), path);
+                }
+            }
+        }
+        if let Some((repo, index)) = std::env::var("GITOPEN").ok().and_then(|open| {
+            let (repo, index) = open.split_once(':')?;
+            Some((repo.parse::<usize>().ok()?, index.parse::<usize>().ok()?))
+        }) {
+            panel.open_history_commit(repo, index);
         }
         match std::env::var("GITVIEW").as_deref() {
             Ok("tree") => panel.set_view(true, true),
@@ -3100,4 +3183,56 @@ fn window_usage() -> workspace::UsageInfo {
             by_workspace: Vec::new(),
         }),
     }
+}
+
+/// The pull requests the Remote boards draw: api's with CI failing and changes requested, worker's passing.
+fn board_pull_requests(
+    roots: &[std::path::PathBuf],
+) -> anyhow::Result<pull_request_ui::PullRequests> {
+    let state = std::path::Path::new("/tmp/pomelo-qa-fixture/pr-state");
+    let _ = std::fs::remove_dir_all(state);
+    let prs = pull_request_ui::PullRequests::new(
+        pom_paths::StateDir::new(state.to_path_buf()),
+        "myproject",
+        std::sync::Arc::new(|| {}),
+    );
+    let pr = |repo: &str, number: u64, title: &str, checks: &str, review: &str| {
+        let target = pom_forge::PrTarget {
+            repo: repo.into(),
+            owner: "myorg".into(),
+            name: repo.into(),
+            head: "feat-login".into(),
+        };
+        let pull = pom_forge::PullRequest {
+            number,
+            title: title.into(),
+            state: "OPEN".into(),
+            head_ref_name: "feat-login".into(),
+            base_ref_name: "main".into(),
+            checks: checks.into(),
+            review: review.into(),
+            ..Default::default()
+        };
+        (target, pull)
+    };
+    let mut shown = Vec::new();
+    for (root, (target, pull)) in roots
+        .iter()
+        .zip([
+            Some(pr(
+                "api",
+                482,
+                "Paginate the users index",
+                "fail",
+                "changes",
+            )),
+            None,
+            Some(pr("worker", 318, "Retry failed mail", "pass", "approved")),
+        ])
+        .filter_map(|(root, pr)| pr.map(|pr| (root, pr)))
+    {
+        shown.push((root.clone(), target, pull));
+    }
+    prs.show("feat-login", shown);
+    Ok(prs)
 }

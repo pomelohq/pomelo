@@ -274,6 +274,31 @@ impl GitPanel {
     }
 
     /// Turns Signoff on or off as the Commit Options menu does; for rendering a state without the menu.
+    /// Shows History as one timeline across repos instead of by repo.
+    pub fn set_timeline(&mut self, on: bool) {
+        self.timeline = on;
+    }
+
+    /// Marks a branch file reviewed as its eye would (previews and tests).
+    pub fn mark_reviewed(&mut self, repo: usize, path: &str) {
+        if !self.is_reviewed(&self.current(), repo, path) {
+            self.toggle_reviewed(repo, path);
+        }
+    }
+
+    /// Opens the `index`th commit of `repo`'s branch history, as clicking it in History would.
+    pub fn open_history_commit(&mut self, repo: usize, index: usize) {
+        let commit = self
+            .current()
+            .repos
+            .get(repo)
+            .and_then(|state| state.history.get(index).cloned());
+        if let Some(commit) = commit {
+            self.tab = Tab::History;
+            self.open_commit(repo, commit, false);
+        }
+    }
+
     pub fn set_signoff(&mut self, on: bool) {
         self.commit.signoff = on;
     }

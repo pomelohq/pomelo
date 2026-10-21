@@ -3483,7 +3483,55 @@ impl FileItem {
             return;
         }
         let stage = stage.unwrap_or_else(|| hunks.iter().any(|hunk| !hunk.staged));
+        if let Some((rows, _)) = self.selected_change_lines(stage) {
+            return self.write_staged_lines(rows, stage);
+        }
         self.write_staged(&hunks, stage);
+    }
+
+    /// The whole lines one selection spans, with how many changed lines staging them moves, when that is only
+    /// part of the changes it touches.
+    fn selected_change_lines(&self, stage: bool) -> Option<(Range<usize>, usize)> {
+        let b = self.buffer.as_ref()?;
+        let [selection] = b.selections() else {
+            return None;
+        };
+        if selection.is_empty() {
+            return None;
+        }
+        let first = b.rope.char_to_line(selection.start);
+        let end_char = selection.end.min(b.rope.len_chars());
+        let mut end = b.rope.char_to_line(end_char);
+        // A selection ending at a line's start stops before that line.
+        if b.rope.line_to_char(end) != end_char || end == first {
+            end += 1;
+        }
+        let rows = first..end;
+        let bases = self.git.bases()?;
+        let picked = git::lines_to_stage(&bases, &b.text(), rows.clone(), stage);
+        let touched: usize = self
+            .hunks_in_selections()
+            .iter()
+            .filter(|hunk| hunk.staged != stage)
+            .map(|hunk| hunk.rows.len() + hunk.base_rows.len())
+            .sum();
+        (picked > 0 && picked < touched).then_some((rows, picked))
+    }
+
+    fn write_staged_lines(&mut self, rows: Range<usize>, stage: bool) {
+        if self.is_dirty() {
+            if let Err(error) = self.save() {
+                eprintln!("git: {error}");
+                return;
+            }
+        }
+        let (Some(bases), Some(b)) = (self.git.bases(), self.buffer.as_ref()) else {
+            return;
+        };
+        if let Some(index) = git::index_with_lines(&bases, &b.text(), rows, stage) {
+            self.git
+                .write_index(self.root.join(&self.path), Some(index));
+        }
     }
 
     /// A dirty buffer is saved first, since the index gets what the file holds.
@@ -11271,6 +11319,28 @@ mod hunk_action_tests {
 
         assert!(item.popover_click(HUNK_CONTROL_BASE + 3));
         assert_eq!(caret_line(&item), 4);
+    }
+
+    #[test]
+    fn a_selection_inside_a_change_stages_just_its_lines() {
+        let repo = Repo::new("line-stage", "a\nb\n");
+        let mut item = repo.open("a\nx\ny\nb\n");
+        let whole_change = 2..6;
+        item.buffer.as_mut().unwrap().select_ranges(&[whole_change]);
+        assert_eq!(
+            item.selected_change_lines(true),
+            None,
+            "a selection over the whole change stages it as a hunk"
+        );
+        let second_added_line = 4..6;
+        item.buffer
+            .as_mut()
+            .unwrap()
+            .select_ranges(&[second_added_line]);
+        assert_eq!(item.selected_change_lines(true), Some((2..3, 1)));
+        item.input_key(EditKey::ToggleStaged, false);
+        settle(&mut item);
+        assert_eq!(repo.git(&["show", ":a.txt"]).as_deref(), Some("a\ny\nb\n"));
     }
 }
 

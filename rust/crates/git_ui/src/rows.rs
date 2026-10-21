@@ -7,19 +7,22 @@ use crate::tree::{self, TreeItem};
 use crate::widgets::ROW_H;
 use crate::{FileEntry, GitPanel, Scope, Tab};
 
-pub(crate) const COMMIT_ROW_H: f32 = 44.0;
+pub(crate) const COMMIT_ROW_H: f32 = 42.0;
 pub(crate) const CARD_HEADER_H: f32 = 32.0;
-pub(crate) const PULL_REQUEST_H: f32 = 48.0;
-pub(crate) const PROGRESS_H: f32 = 40.0;
+pub(crate) const PULL_REQUEST_H: f32 = 51.0;
+pub(crate) const PROGRESS_H: f32 = 28.0;
 pub(crate) const GAP_H: f32 = 6.0;
-pub(crate) const DAY_H: f32 = 24.0;
-pub(crate) const COMMIT_HEADER_H: f32 = 56.0;
+pub(crate) const DAY_H: f32 = 26.0;
+pub(crate) const COMMIT_HEADER_H: f32 = 78.0;
 pub(crate) const REPO_HEADER_H: f32 = 30.0;
 pub(crate) const SECTION_H: f32 = 24.0;
+pub(crate) const CREATE_PR_H: f32 = 30.0;
+pub(crate) const NOTE_H: f32 = 28.0;
 /// The space between a card's edge and its first and last rows.
 pub(crate) const CARD_PAD: f32 = 4.0;
 /// The space between rows inside a repo's changes card.
 pub(crate) const CARD_ROW_GAP: f32 = 1.0;
+pub(crate) const CARD_GROUP_GAP: f32 = 2.0;
 
 #[derive(Clone, Debug)]
 pub(crate) enum Row {
@@ -31,6 +34,7 @@ pub(crate) enum Row {
     },
     CardPad {
         repo: usize,
+        height: f32,
     },
     RepoHeader {
         repo: usize,
@@ -95,6 +99,8 @@ pub(crate) enum Row {
         with_repo: bool,
         indent: f32,
         in_card: bool,
+        /// One line (a card's commit list on Remote) instead of subject over author, time and sha.
+        compact: bool,
     },
     Day(&'static str),
     CommitHeader,
@@ -108,7 +114,18 @@ impl Row {
     /// Rows nested in a folder sit flush under it; the gap separates the card's top-level rows.
     pub fn gap_above(&self) -> f32 {
         match self {
-            Row::Section { .. } | Row::Message { repo: Some(_), .. } => CARD_ROW_GAP,
+            Row::Section { .. }
+            | Row::Message { repo: Some(_), .. }
+            | Row::Commit {
+                in_card: true,
+                compact: false,
+                ..
+            } => CARD_ROW_GAP,
+            Row::PullRequest { .. } | Row::CreatePullRequest { .. } | Row::CardNote { .. } => {
+                CARD_GROUP_GAP
+            }
+            // A group's own top pad sits under the gap that separates it from the row above.
+            Row::CommitGroup { .. } | Row::FilesHeader { .. } => 2.0 * CARD_GROUP_GAP,
             Row::File {
                 scope: Scope::Staged | Scope::Unstaged | Scope::Working,
                 depth,
@@ -130,12 +147,16 @@ impl Row {
             Row::Gap => GAP_H,
             Row::Card { .. } => CARD_HEADER_H,
             Row::PullRequest { .. } => PULL_REQUEST_H,
+            Row::Commit { compact: true, .. } => ROW_H,
             Row::Commit { .. } => COMMIT_ROW_H,
             Row::Day(_) => DAY_H,
             Row::CommitHeader => COMMIT_HEADER_H,
-            Row::CardPad { .. } => CARD_PAD,
-            Row::RepoHeader { history: false, .. } => REPO_HEADER_H,
-            Row::Section { .. } => SECTION_H,
+            Row::CardPad { height, .. } => *height,
+            Row::Message { repo: Some(_), .. } => NOTE_H,
+            Row::RepoHeader { .. } => REPO_HEADER_H,
+            Row::Section { .. } | Row::CommitGroup { .. } | Row::FilesHeader { .. } => SECTION_H,
+            Row::CreatePullRequest { .. } => CREATE_PR_H,
+            Row::CardNote { .. } => NOTE_H,
             Row::Directory {
                 scope: Scope::Staged | Scope::Unstaged | Scope::Working,
                 ..
@@ -152,12 +173,9 @@ impl Row {
             | Row::CardNote { repo, .. }
             | Row::CommitGroup { repo, .. }
             | Row::FilesHeader { repo, .. }
-            | Row::CardPad { repo }
+            | Row::CardPad { repo, .. }
             | Row::Section { repo, .. }
-            | Row::RepoHeader {
-                repo,
-                history: false,
-            }
+            | Row::RepoHeader { repo, .. }
             | Row::Message {
                 repo: Some(repo), ..
             } => Some(*repo),
@@ -331,17 +349,24 @@ impl GitPanel {
             if open.is_some() && card != open {
                 padded.push(Row::CardPad {
                     repo: open.unwrap_or_default(),
+                    height: CARD_PAD,
                 });
                 open = None;
             }
             if let (None, Some(repo)) = (open, card) {
-                padded.push(Row::CardPad { repo });
+                padded.push(Row::CardPad {
+                    repo,
+                    height: CARD_PAD,
+                });
                 open = Some(repo);
             }
             padded.push(row);
         }
         if let Some(repo) = open {
-            padded.push(Row::CardPad { repo });
+            padded.push(Row::CardPad {
+                repo,
+                height: CARD_PAD,
+            });
         }
         padded
     }
@@ -514,17 +539,21 @@ impl GitPanel {
                     published,
                 });
                 let key = format!("{}:{name}", if incoming { "in" } else { "out" });
-                if self.is_folded(&key) {
-                    continue;
+                if !self.is_folded(&key) {
+                    rows.extend(commits.into_iter().map(|commit| Row::Commit {
+                        repo: index,
+                        commit,
+                        incoming,
+                        with_repo: false,
+                        indent: 22.0,
+                        in_card: true,
+                        compact: true,
+                    }));
                 }
-                rows.extend(commits.into_iter().map(|commit| Row::Commit {
+                rows.push(Row::CardPad {
                     repo: index,
-                    commit,
-                    incoming,
-                    with_repo: false,
-                    indent: 28.0,
-                    in_card: true,
-                }));
+                    height: CARD_GROUP_GAP,
+                });
             }
             if repo.branch.files.is_empty() {
                 continue;
@@ -545,16 +574,19 @@ impl GitPanel {
                 deleted,
                 count: repo.branch.files.len(),
             });
-            if self.is_folded(&format!("rf:{name}")) {
-                continue;
+            if !self.is_folded(&format!("rf:{name}")) {
+                let entries = repo
+                    .branch
+                    .files
+                    .iter()
+                    .map(FileEntry::from_change)
+                    .collect();
+                self.file_rows(scan, index, Scope::Branch, entries, 0, rows);
             }
-            let entries = repo
-                .branch
-                .files
-                .iter()
-                .map(FileEntry::from_change)
-                .collect();
-            self.file_rows(scan, index, Scope::Branch, entries, 0, rows);
+            rows.push(Row::CardPad {
+                repo: index,
+                height: CARD_GROUP_GAP,
+            });
         }
         rows.push(Row::Gap);
     }
@@ -593,6 +625,9 @@ impl GitPanel {
             for (repo, commit) in all {
                 let label = git::history::day_label(commit.timestamp);
                 if label != day {
+                    if !day.is_empty() {
+                        rows.push(Row::Gap);
+                    }
                     day = label;
                     rows.push(Row::Day(label));
                 }
@@ -603,29 +638,38 @@ impl GitPanel {
                     with_repo: true,
                     indent: 8.0,
                     in_card: false,
+                    compact: false,
                 });
             }
             return;
         }
+        // Each repo's commits sit on a card of their own, as the Changes and Remote tabs draw repos.
         for (index, repo) in scan.repos.iter().enumerate() {
+            if index > 0 {
+                rows.push(Row::Gap);
+            }
             rows.push(Row::RepoHeader {
                 repo: index,
                 history: true,
             });
-            if self.is_folded(&format!("h:{}", self.source_name(index))) {
-                continue;
+            if !self.is_folded(&format!("h:{}", self.source_name(index))) {
+                if repo.history.is_empty() {
+                    rows.push(Row::Message {
+                        text: "No commits on this branch yet".into(),
+                        indent: 8.0,
+                        repo: Some(index),
+                    });
+                }
+                rows.extend(repo.history.iter().map(|commit| Row::Commit {
+                    repo: index,
+                    commit: commit.clone(),
+                    incoming: false,
+                    with_repo: false,
+                    indent: 8.0,
+                    in_card: true,
+                    compact: false,
+                }));
             }
-            if repo.history.is_empty() {
-                Self::message(rows, "No commits on this branch yet", 26.0);
-            }
-            rows.extend(repo.history.iter().map(|commit| Row::Commit {
-                repo: index,
-                commit: commit.clone(),
-                incoming: false,
-                with_repo: false,
-                indent: 26.0,
-                in_card: false,
-            }));
         }
     }
 }
