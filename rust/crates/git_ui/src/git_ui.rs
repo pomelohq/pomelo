@@ -474,8 +474,10 @@ impl GitPanel {
         }
     }
 
+    /// `folded` holds the rows flipped from their default: the branch files tree starts with every folder shut.
     fn is_folded(&self, key: &str) -> bool {
-        self.folded.contains(key)
+        let shut_by_default = key.starts_with("d:branch:");
+        self.folded.contains(key) != shut_by_default
     }
 
     /// Marked reviewed, and not changed since.

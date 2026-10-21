@@ -265,6 +265,8 @@ const DAY: u64 = 24 * HOUR;
 pub enum RemoteState {
     Differ,
     InSync,
+    /// One repo with a long name, branch and file names, for the panel at its narrowest.
+    Narrow,
 }
 
 impl RemoteState {
@@ -272,6 +274,7 @@ impl RemoteState {
         Some(match name {
             "differ" => RemoteState::Differ,
             "in-sync" => RemoteState::InSync,
+            "narrow" => RemoteState::Narrow,
             _ => return None,
         })
     }
@@ -293,10 +296,15 @@ fn origin(repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
 
 /// api, web and worker on feat-login against their origins: api two commits ahead, web never published,
 /// worker two behind; or, `InSync`, every one matching origin. Each has edits left uncommitted.
+pub const NARROW_BRANCH: &str = "proj-101-paginate-the-users-index-and-cache-pages";
+
 pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
     let root = Path::new(ROOT);
     if root.exists() {
         std::fs::remove_dir_all(root)?;
+    }
+    if state == RemoteState::Narrow {
+        return create_narrow();
     }
 
     let mut api = Repo::create("api")?;
@@ -396,6 +404,32 @@ pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
         "export * from \"./UserList\";\nexport * from \"./usePagination\";\n",
     )?;
     Ok(vec![api.root, web.root, worker.root])
+}
+
+fn create_narrow() -> anyhow::Result<Vec<PathBuf>> {
+    let mut api = Repo::create("myproject-api-service")?;
+    api.write("app/controllers/users_controller.rb", CONTROLLER)?;
+    api.git(&["add", "-A"])?;
+    api.commit("Initial api", 1)?;
+    origin(&api, "myproject-api-service")?;
+    api.git(&["checkout", "-q", "-b", NARROW_BRANCH])?;
+    api.write(
+        "app/services/applications/delete_application_stage_service.rb",
+        numbered("# delete stage", 24),
+    )?;
+    api.write(
+        "spec/services/applications/delete_application_stage_service_spec.rb",
+        numbered("# delete stage spec", 40),
+    )?;
+    api.commit_as("Delete an application stage with its records", "alex", DAY)?;
+    api.git(&["push", "-q", "-u", "origin", NARROW_BRANCH])?;
+    api.write("app/controllers/users_controller.rb", paginated(CONTROLLER))?;
+    api.commit_as("Paginate the users index and cache every page", "sam", HOUR)?;
+    api.write(
+        "app/controllers/users_controller.rb",
+        format!("{}# edited\n", paginated(CONTROLLER)),
+    )?;
+    Ok(vec![api.root])
 }
 
 /// The Changes boards' repos with web left on another branch.
