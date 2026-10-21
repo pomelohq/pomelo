@@ -9,17 +9,22 @@ use pom_db::Database;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
+use workspace::{
+    small_button, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
+};
 
 use crate::details::{self, Pane};
 use crate::object_item::{object_item_id, readable_time, ObjectItem};
 use crate::{DatabaseContext, Pending};
 
-const TOOLBAR_H: f32 = 36.0;
-const STATUS_H: f32 = 28.0;
-const HEAD_H: f32 = 26.0;
-const ROW_H: f32 = 28.0;
-const FIELD_H: f32 = 24.0;
+const TOOLBAR_H: f32 = 40.0;
+const STATUS_H: f32 = 32.0;
+const HEAD_H: f32 = 28.0;
+const ROW_H: f32 = 30.0;
+const FIELD_H: f32 = 28.0;
+const CARD_INSET: f32 = 8.0;
+const CARD_GAP: f32 = 6.0;
+const CARD_RADIUS: f32 = 6.0;
 const SIDE_W: f32 = 340.0;
 const SIDE_NEEDS: f32 = 640.0;
 const PAGE: usize = 500;
@@ -325,22 +330,6 @@ impl BucketItem {
         }
     }
 
-    fn text_button(&self, id: u64, text: &str) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(22.0)
-            .px(7.0)
-            .rounded(4.0)
-            .items_center()
-            .on_click(id)
-            .child(label(text.to_string()).size(12.0).color(colors.text));
-        if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
-    }
-
     fn toolbar(&self, width: f32) -> Node {
         let colors = theme();
         let wide = width > 760.0;
@@ -401,7 +390,8 @@ impl BucketItem {
         div()
             .row()
             .h_px(TOOLBAR_H)
-            .px(10.0)
+            .pl(14.0)
+            .pr(10.0)
             .gap(8.0)
             .items_center()
             .child(crumb)
@@ -410,11 +400,11 @@ impl BucketItem {
                     .row()
                     .w_px(find_w)
                     .h_px(FIELD_H)
-                    .px(6.0)
-                    .gap(6.0)
+                    .px(10.0)
+                    .gap(8.0)
                     .items_center()
-                    .rounded(4.0)
-                    .bg(colors.editor_background)
+                    .rounded(6.0)
+                    .bg(colors.background)
                     .border(
                         1.0,
                         if finding {
@@ -429,17 +419,25 @@ impl BucketItem {
                         "name in this folder",
                         finding,
                         colors.text,
-                        FIELD_H - 6.0,
+                        FIELD_H - 10.0,
                         FieldFont::Ui,
                     )),
             )
-            .child(self.text_button(UPLOAD, "Upload here"))
+            .child(small_button(
+                UPLOAD,
+                Some(IconKind::ArrowUp),
+                "Upload here",
+                None,
+                ButtonKind::Secondary,
+                true,
+                self.hovered,
+            ))
             .child(
                 div()
                     .row()
-                    .w_px(22.0)
-                    .h_px(22.0)
-                    .rounded(4.0)
+                    .w_px(24.0)
+                    .h_px(24.0)
+                    .rounded(6.0)
                     .items_center()
                     .justify_center()
                     .on_click(REFRESH)
@@ -596,7 +594,8 @@ impl BucketItem {
         div()
             .row()
             .h_px(STATUS_H)
-            .px(12.0)
+            .pl(14.0)
+            .pr(8.0)
             .gap(10.0)
             .items_center()
             .child(
@@ -731,9 +730,12 @@ impl Item for BucketItem {
         let colors = theme();
         let width = body.w / scale;
         let side_w = if width >= SIDE_NEEDS { SIDE_W } else { 0.0 };
-        let main_w = width - side_w - if side_w > 0.0 { 1.0 } else { 0.0 };
+        let main_w =
+            (width - 2.0 * CARD_INSET - if side_w > 0.0 { side_w + CARD_GAP } else { 0.0 })
+                .max(0.0);
         let height = body.h / scale;
-        let list_h = (height - TOOLBAR_H - HEAD_H - STATUS_H - 3.0).max(0.0);
+        let card_h = (height - TOOLBAR_H - CARD_GAP - STATUS_H).max(0.0);
+        let list_h = (card_h - HEAD_H - 1.0).max(0.0);
         let head = div()
             .row()
             .h_px(HEAD_H)
@@ -741,70 +743,73 @@ impl Item for BucketItem {
             .gap(10.0)
             .items_center()
             .child(div().w_px(16.0))
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .child(details::small("Name", colors.text_placeholder)),
-            )
+            .child(div().row().flex(1.0).child(workspace::field_label("Name")))
             .child(
                 div()
                     .row()
                     .w_px(110.0)
-                    .child(details::small("Size", colors.text_placeholder)),
+                    .child(workspace::field_label("Size")),
             )
             .child(
                 div()
                     .row()
                     .w_px(130.0)
-                    .child(details::small("Modified", colors.text_placeholder)),
+                    .child(workspace::field_label("Modified")),
             );
-        let main = div()
-            .col()
-            .w_px(main_w)
-            .h_px(height)
-            .child(self.toolbar(main_w))
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(div().h_px(list_h))
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(self.status_bar());
-        let mut frame = div()
+        let card = |w: f32| {
+            div()
+                .col()
+                .w_px(w)
+                .h_px(card_h)
+                .rounded(CARD_RADIUS)
+                .bg(colors.panel_background)
+        };
+        let mut cards = div()
             .row()
+            .h_px(card_h + CARD_GAP)
+            .px(CARD_INSET)
+            .pb(CARD_GAP)
+            .gap(CARD_GAP)
+            .child(
+                card(main_w)
+                    .child(head)
+                    .child(div().h_px(1.0).bg(colors.border_variant)),
+            );
+        if side_w > 0.0 {
+            cards = cards.child(card(side_w));
+        }
+        let frame: Node = div()
+            .col()
             .w_px(width)
             .h_px(height)
             .bg(colors.editor_background)
-            .child(main);
-        if side_w > 0.0 {
-            frame = frame
-                .child(div().w_px(1.0).h_px(height).bg(colors.border_variant))
-                .child(div().w_px(side_w).h_px(height).bg(colors.panel_background));
-        }
-        let frame: Node = frame.into();
+            .child(self.toolbar(width - if side_w > 0.0 { side_w + CARD_GAP } else { 0.0 }))
+            .child(cards)
+            .child(self.status_bar())
+            .into();
         let mut painted = ui::render(&frame, body);
         let list_area = Rect::new(
-            body.x,
-            body.y + (TOOLBAR_H + HEAD_H + 2.0) * scale,
+            body.x + CARD_INSET * scale,
+            body.y + (TOOLBAR_H + HEAD_H + 1.0) * scale,
             main_w * scale,
             list_h * scale,
             Rgba::TRANSPARENT,
         );
         let list = self.list_view();
         let mut list = self.list.paint(&list, list_area);
-        details::clip_right(&mut list, body.x + main_w * scale);
+        details::clip_right(&mut list, list_area.x + list_area.w);
         details::merge(&mut painted, list);
         self.side_area = None;
         if side_w > 0.0 {
             let area = Rect::new(
-                body.x + (main_w + 1.0) * scale,
-                body.y,
+                body.x + (CARD_INSET + main_w + CARD_GAP) * scale,
+                body.y + TOOLBAR_H * scale,
                 side_w * scale,
-                body.h,
+                card_h * scale,
                 Rgba::TRANSPARENT,
             );
             let side: Node = match &self.preview {
-                Some(preview) => preview.side(side_w, height),
+                Some(preview) => preview.side(side_w, card_h),
                 None => div()
                     .col()
                     .p(12.0)

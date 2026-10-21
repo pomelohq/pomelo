@@ -32,6 +32,20 @@ pub use pom_db::object_storage::CurlTransport;
 pub use render::engine_logo;
 pub use table_item::TableItem;
 
+pub fn missing_database_preview(width: f32, database: &str, repo: &str) -> ui::Node {
+    let error = pom_db::ConnectError::new(
+        pom_db::Engine::Postgres,
+        database,
+        "localhost",
+        5432,
+        "postgres",
+        format!("db error: FATAL: database \"{database}\" does not exist"),
+    );
+    let mut failure = failure::Failure::new(error, repo.to_string());
+    failure.main_copy = Some(format!("{repo}_main"));
+    failure.render(width, |action| action.offset(), None)
+}
+
 /// What the Database views need: the project's runner (ports, slots), its current config, the workspace's
 #[derive(Clone)]
 pub struct DatabaseContext {

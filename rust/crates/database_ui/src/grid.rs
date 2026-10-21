@@ -77,6 +77,7 @@ pub struct Grid {
     pub primary: Vec<bool>,
     /// Height (design px) of the row `render` puts under the header, such as filter boxes.
     pub below_header: f32,
+    pub header_fill: bool,
     /// Per column, a foreign key value's name in the table it points at (`1` reads `1 Acme`).
     pub labels: Vec<HashMap<String, String>>,
     summaries: HashMap<(usize, usize), Option<String>>,
@@ -106,6 +107,7 @@ impl Default for Grid {
             types: Vec::new(),
             primary: Vec::new(),
             below_header: 0.0,
+            header_fill: true,
             labels: Vec::new(),
             summaries: HashMap::new(),
         }
@@ -490,16 +492,21 @@ impl Grid {
         let number_width = self.row_number_width();
         let columns = self.visible_columns();
 
+        let header_background = if self.header_fill {
+            colors.panel_background
+        } else {
+            Rgba::TRANSPARENT
+        };
         let mut header = div()
             .row()
             .h_px(HEADER_H)
             .items_center()
-            .bg(colors.panel_background)
+            .bg(header_background)
             .child(
                 div()
                     .w_px(number_width)
                     .h_px(HEADER_H)
-                    .bg(colors.panel_background),
+                    .bg(header_background),
             );
         for (column, _, width) in &columns {
             let mut title = div().row().flex(1.0).gap(5.0).items_center();

@@ -8,15 +8,20 @@ use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{
+    field_label, small_button, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome,
+};
 
 use crate::details::{self, FoldAction, FoldTarget, JsonFold, Pane, FOLD_BASE, FOLD_END};
 use crate::json::{self, Json};
 use crate::{DatabaseContext, Pending};
 
-const TOOLBAR_H: f32 = 36.0;
-const STATUS_H: f32 = 28.0;
-const FIELD_H: f32 = 24.0;
+const TOOLBAR_H: f32 = 40.0;
+const STATUS_H: f32 = 32.0;
+const FIELD_H: f32 = 28.0;
+const CARD_INSET: f32 = 8.0;
+const CARD_GAP: f32 = 6.0;
+const CARD_RADIUS: f32 = 6.0;
 const ROW_H: f32 = 26.0;
 const TREE_W: f32 = 300.0;
 const KEYS_MAX: usize = 5000;
@@ -401,31 +406,12 @@ impl KeyspaceItem {
     }
 
     fn text_button(&self, id: u64, text: &str, danger: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(22.0)
-            .px(7.0)
-            .rounded(4.0)
-            .items_center()
-            .border(
-                1.0,
-                if danger {
-                    colors.error.alpha(0.4)
-                } else {
-                    colors.border_variant
-                },
-            )
-            .on_click(id)
-            .child(label(text.to_string()).size(12.0).color(if danger {
-                colors.error
-            } else {
-                colors.text
-            }));
-        if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
+        let kind = if danger {
+            ButtonKind::Danger
+        } else {
+            ButtonKind::Ghost
+        };
+        small_button(id, None, text, None, kind, true, self.hovered)
     }
 
     fn input(
@@ -441,11 +427,11 @@ impl KeyspaceItem {
             .row()
             .flex(1.0)
             .h_px(FIELD_H)
-            .px(6.0)
-            .gap(6.0)
+            .px(10.0)
+            .gap(10.0)
             .items_center()
-            .rounded(4.0)
-            .bg(colors.editor_background)
+            .rounded(6.0)
+            .bg(colors.background)
             .border(
                 1.0,
                 if focused && self.focused {
@@ -455,17 +441,12 @@ impl KeyspaceItem {
                 },
             )
             .on_click(id)
-            .child(
-                label(prefix.to_string())
-                    .size(11.0)
-                    .mono()
-                    .color(colors.text_muted),
-            )
+            .child(field_label(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,
                 colors.text,
-                FIELD_H - 6.0,
+                FIELD_H - 10.0,
                 FieldFont::Mono,
             ))
             .into()
@@ -526,7 +507,8 @@ impl KeyspaceItem {
         div()
             .row()
             .h_px(TOOLBAR_H)
-            .px(10.0)
+            .pl(14.0)
+            .pr(10.0)
             .gap(8.0)
             .items_center()
             .child(crumb)
@@ -541,9 +523,9 @@ impl KeyspaceItem {
             .child(
                 div()
                     .row()
-                    .w_px(22.0)
-                    .h_px(22.0)
-                    .rounded(4.0)
+                    .w_px(24.0)
+                    .h_px(24.0)
+                    .rounded(6.0)
                     .items_center()
                     .justify_center()
                     .on_click(REFRESH)
@@ -791,7 +773,15 @@ impl KeyspaceItem {
                 "no expiry",
                 self.focus == Focus::Ttl,
             )));
-        head = head.child(self.text_button(COPY_VALUE, "Copy value", false));
+        head = head.child(small_button(
+            COPY_VALUE,
+            Some(IconKind::Copy),
+            "Copy value",
+            None,
+            ButtonKind::Ghost,
+            true,
+            self.hovered,
+        ));
         head = if self.confirm_delete {
             head.child(self.text_button(CONFIRM_DELETE, "Delete it", true))
                 .child(self.text_button(CANCEL_DELETE, "Keep", false))
@@ -946,7 +936,8 @@ impl KeyspaceItem {
         let mut bar = div()
             .row()
             .h_px(STATUS_H)
-            .px(10.0)
+            .pl(14.0)
+            .pr(8.0)
             .gap(8.0)
             .items_center()
             .child(
@@ -1085,52 +1076,53 @@ impl Item for KeyspaceItem {
         let scale = ui::ui_text_scale();
         let colors = theme();
         let width = body.w / scale;
-        let tree_w = TREE_W.min(width * 0.42) * scale;
-        let top = body.y + (TOOLBAR_H + 1.0) * scale;
-        let middle_h = (body.h - (TOOLBAR_H + STATUS_H + 2.0) * scale).max(0.0);
+        let tree_w = TREE_W.min(width * 0.42);
+        let middle_h = (body.h / scale - TOOLBAR_H - CARD_GAP - STATUS_H).max(0.0);
+        let detail_w = (width - 2.0 * CARD_INSET - CARD_GAP - tree_w).max(0.0);
+        let card = |w: f32| {
+            div()
+                .w_px(w)
+                .h_px(middle_h)
+                .rounded(CARD_RADIUS)
+                .bg(colors.panel_background)
+        };
         let frame: Node = div()
             .col()
             .w_px(width)
             .h_px(body.h / scale)
             .bg(colors.editor_background)
             .child(self.toolbar(width))
-            .child(div().h_px(1.0).bg(colors.border_variant))
             .child(
                 div()
                     .row()
-                    .h_px(middle_h / scale)
-                    .child(
-                        div()
-                            .w_px(tree_w / scale)
-                            .h_px(middle_h / scale)
-                            .bg(colors.panel_background),
-                    )
-                    .child(
-                        div()
-                            .w_px(1.0)
-                            .h_px(middle_h / scale)
-                            .bg(colors.border_variant),
-                    ),
+                    .h_px(middle_h + CARD_GAP)
+                    .px(CARD_INSET)
+                    .pb(CARD_GAP)
+                    .gap(CARD_GAP)
+                    .child(card(tree_w))
+                    .child(card(detail_w)),
             )
-            .child(div().h_px(1.0).bg(colors.border_variant))
             .child(self.status_bar())
             .into();
         let mut painted = ui::render(&frame, body);
-        let tree_area = Rect::new(body.x, top, tree_w, middle_h, Rgba::TRANSPARENT);
+        let at = |x: f32, w: f32| {
+            Rect::new(
+                body.x + x * scale,
+                body.y + TOOLBAR_H * scale,
+                w * scale,
+                middle_h * scale,
+                Rgba::TRANSPARENT,
+            )
+        };
+        let tree_area = at(CARD_INSET, tree_w);
         let tree = self.tree_view();
         let mut tree = self.tree.paint(&tree, tree_area);
-        details::clip_right(&mut tree, body.x + tree_w);
+        details::clip_right(&mut tree, tree_area.x + tree_area.w);
         details::merge(&mut painted, tree);
-        let detail_area = Rect::new(
-            body.x + tree_w + scale,
-            top,
-            (body.w - tree_w - scale).max(0.0),
-            middle_h,
-            Rgba::TRANSPARENT,
-        );
-        let detail = self.detail_view(detail_area.w / scale, middle_h / scale);
+        let detail_area = at(CARD_INSET + tree_w + CARD_GAP, detail_w);
+        let detail = self.detail_view(detail_w, middle_h);
         let mut detail = self.detail.paint(&detail, detail_area);
-        details::clip_right(&mut detail, body.x + body.w - 2.0);
+        details::clip_right(&mut detail, detail_area.x + detail_area.w - 2.0);
         details::merge(&mut painted, detail);
         self.hits = painted.hits.clone();
         Some(painted)

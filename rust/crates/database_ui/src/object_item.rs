@@ -8,7 +8,7 @@ use pom_db::object_storage::{format_size, HttpTransport, ObjectEntry, ObjectRead
 use pom_db::Database;
 use terminal::Modifiers;
 use ui::{button, div, label, theme, ButtonStyle, IconKind, Node, Rect};
-use workspace::{Item, ItemTick};
+use workspace::{small_button, ButtonKind, Item, ItemTick};
 
 use crate::{DatabaseContext, Pending};
 
@@ -423,8 +423,8 @@ impl ObjectItem {
                     div()
                         .row()
                         .gap(6.0)
-                        .child(button(CONFIRM_DELETE, "Delete", ButtonStyle::Outlined))
-                        .child(button(CANCEL_DELETE, "Cancel", ButtonStyle::Subtle)),
+                        .child(action(CONFIRM_DELETE, None, "Delete", ButtonKind::Danger))
+                        .child(action(CANCEL_DELETE, None, "Cancel", ButtonKind::Ghost)),
                 )
                 .into()
         } else if self.deleted {
@@ -437,15 +437,25 @@ impl ObjectItem {
                     div()
                         .row()
                         .gap(6.0)
-                        .child(button(DOWNLOAD, "Download", ButtonStyle::Outlined))
-                        .child(button(COPY_URL, "Copy URL (1 hour)", ButtonStyle::Subtle)),
+                        .child(action(
+                            DOWNLOAD,
+                            Some(IconKind::Download),
+                            "Download",
+                            ButtonKind::Secondary,
+                        ))
+                        .child(action(
+                            COPY_URL,
+                            Some(IconKind::Copy),
+                            "Copy URL (1 hour)",
+                            ButtonKind::Secondary,
+                        )),
                 )
                 .child(
                     div()
                         .row()
                         .gap(6.0)
-                        .child(button(COPY_PATH, "Copy Path", ButtonStyle::Subtle))
-                        .child(button(DELETE, "Delete...", ButtonStyle::Outlined)),
+                        .child(action(COPY_PATH, None, "Copy Path", ButtonKind::Secondary))
+                        .child(action(DELETE, None, "Delete...", ButtonKind::Danger)),
                 )
                 .into()
         };
@@ -499,6 +509,10 @@ impl ObjectItem {
 }
 
 /// `2026-09-27T18:42:00.000Z` -> `2026-09-27 18:42`.
+fn action(id: u64, leading: Option<IconKind>, text: &str, kind: ButtonKind) -> Node {
+    small_button(id, leading, text, None, kind, true, None)
+}
+
 pub(crate) fn readable_time(stamp: &str) -> String {
     let text = stamp.replace('T', " ");
     text.get(..16).map_or(text.clone(), str::to_string)
