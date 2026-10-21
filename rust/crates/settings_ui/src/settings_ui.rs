@@ -635,7 +635,14 @@ pub fn chrome_flags(s: &Settings) -> ui::ChromeFlags {
     }
 }
 
-const THEMES: [&str; 4] = ["One Dark", "One Light", "Ayu Mirage", "Gruvbox Dark"];
+const THEMES: [&str; 6] = [
+    "Pomelo Dark",
+    "Pomelo Light",
+    "One Dark",
+    "One Light",
+    "Ayu Mirage",
+    "Gruvbox Dark",
+];
 
 /// The built-in themes, then the user's (a user theme named like a built-in one replaces it).
 pub fn theme_names() -> Vec<String> {
@@ -4299,7 +4306,7 @@ mod tests {
         );
         assert!(!p.rects.is_empty());
         assert!(p.texts.iter().any(|x| x.text == "Appearance"));
-        assert!(p.texts.iter().any(|x| x.text == "One Dark"));
+        assert!(p.texts.iter().any(|x| x.text == "Pomelo Dark"));
         assert!(p.texts.iter().any(|x| x.text == "Theme")); // first section header
         assert!(p.texts.iter().any(|x| x.text == "UI Font")); // second section header
                                                               // Categories + controls are all clickable.
@@ -4313,7 +4320,7 @@ mod tests {
         let mut s = Settings::default();
         // Dropdowns select a value from a popover (index into control_items).
         assert!(apply_choice(CTRL_THEME, 1, &[], &mut s));
-        assert_eq!(s.theme, "One Light");
+        assert_eq!(s.theme, "Pomelo Light");
         let fonts = vec!["Helvetica".to_string(), "Menlo".to_string()];
         assert!(apply_choice(CTRL_FONT_FAMILY, 1, &fonts, &mut s));
         assert_eq!(s.ui_font, "Menlo");

@@ -1,19 +1,72 @@
 //! Render a screen headlessly to a PNG so the UI can be eyeballed without launching a window. Usage:
 //!   cargo run -p ui_snapshot -- [out.png] [category_index]
 //! Defaults: /tmp/pomelo-ui.png, the Appearance page (all categories expanded).
+//!   cargo run -p ui_snapshot -- --scene <id> <out.png> [--theme dark|light] [--size WxH]
+//! renders the screen a design board stands for, at the board's size and a device scale of 1, so the two can
+//! be compared pixel for pixel.
 
 use std::io::BufWriter;
 
 mod e2e;
 
+/// A design board's screen: the settings category it shows and the switches that put it in the board's state.
+fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
+    Some(match id {
+        "settings-appearance" => (settings_ui::APPEARANCE, &[]),
+        "settings-keymap" => (settings_ui::KEYMAP, &[]),
+        "settings-agent" => (settings_ui::AGENT, &[]),
+        "settings-languages" => (settings_ui::LANGUAGES_TOOLS, &[]),
+        "settings-search" => (settings_ui::APPEARANCE, &[("SETTINGSSEARCH", "font")]),
+        _ => return None,
+    })
+}
+
+/// `--scene <id> <out.png> [--theme dark|light] [--size WxH]`: sets the switches the rest of `main` reads and
+/// returns the output path and category.
+fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
+    if args.get(1).map(String::as_str) != Some("--scene") {
+        return Ok(None);
+    }
+    let (Some(id), Some(out)) = (args.get(2), args.get(3)) else {
+        anyhow::bail!("usage: --scene <id> <out.png> [--theme dark|light] [--size WxH]");
+    };
+    let Some((category, switches)) = scene(id) else {
+        anyhow::bail!("unknown scene {id}");
+    };
+    let mut theme = "Pomelo Dark";
+    let mut size = "1180x760".to_string();
+    let mut rest = args[4..].iter();
+    while let Some(flag) = rest.next() {
+        match (flag.as_str(), rest.next()) {
+            ("--theme", Some(value)) if value == "light" => theme = "Pomelo Light",
+            ("--theme", Some(_)) => theme = "Pomelo Dark",
+            ("--size", Some(value)) => size = value.clone(),
+            _ => anyhow::bail!("unexpected argument {flag}"),
+        }
+    }
+    std::env::set_var("THEME", theme);
+    std::env::set_var("THEMESELECTION", "dynamic");
+    std::env::set_var("SCENESIZE", size);
+    std::env::set_var("EXPANDED", category.to_string());
+    for (key, value) in switches {
+        std::env::set_var(key, value);
+    }
+    Ok(Some((out.clone(), category)))
+}
+
 fn main() -> anyhow::Result<()> {
-    let out = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "/tmp/pomelo-ui.png".into());
-    let category = std::env::args()
-        .nth(2)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(settings_ui::APPEARANCE);
+    let args: Vec<String> = std::env::args().collect();
+    let (out, category) = match scene_args(&args)? {
+        Some(scene) => scene,
+        None => (
+            args.get(1)
+                .cloned()
+                .unwrap_or_else(|| "/tmp/pomelo-ui.png".into()),
+            args.get(2)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(settings_ui::APPEARANCE),
+        ),
+    };
     // BUFFERFEATURES='{"calt": false}': OpenType features for the code font.
     if let Ok(features) = std::env::var("BUFFERFEATURES") {
         let value: serde_json::Value = serde_json::from_str(&features)?;
@@ -1305,16 +1358,26 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let scale = 2.0_f32;
-    let (lw, lh) = match std::env::var("MAINVIEW") {
-        Ok(_) => (
+    let scene_size = std::env::var("SCENESIZE").ok().and_then(|size| {
+        let (w, h) = size.split_once('x')?;
+        Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?))
+    });
+    // A scene is compared against a board drawn at 1x, so it renders at 1x too.
+    let scale = if scene_size.is_some() {
+        1.0_f32
+    } else {
+        2.0_f32
+    };
+    let (lw, lh) = match (scene_size, std::env::var("MAINVIEW")) {
+        (Some(size), _) => size,
+        (None, Ok(_)) => (
             std::env::var("SNAPW")
                 .ok()
                 .and_then(|width| width.parse().ok())
                 .unwrap_or(1200.0_f32),
             780.0_f32,
         ),
-        Err(_) => (920.0_f32, 760.0_f32),
+        (None, Err(_)) => (920.0_f32, 760.0_f32),
     }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
@@ -2420,7 +2483,16 @@ fn main() -> anyhow::Result<()> {
         ui::set_ui_font_weight(w);
     }
     r.set_ui_font(&settings.ui_font);
-    let expanded = vec![true; settings_ui::CATEGORY_COUNT];
+    // EXPANDED=<index>: only that category open in the sidebar, as a fresh window shows it.
+    let expanded: Vec<bool> = match std::env::var("EXPANDED")
+        .ok()
+        .and_then(|index| index.parse::<usize>().ok())
+    {
+        Some(open) => (0..settings_ui::CATEGORY_COUNT)
+            .map(|index| index == open)
+            .collect(),
+        None => vec![true; settings_ui::CATEGORY_COUNT],
+    };
     // JIRA=1: the Integrations page as a configured project sees it.
     let jira = if std::env::var("JIRA").is_ok() {
         settings_ui::IntegrationsPage {
@@ -2517,7 +2589,9 @@ fn main() -> anyhow::Result<()> {
     let editing = fs_edit
         .as_deref()
         .map(|b| (settings_ui::CTRL_FONT_SIZE_EDIT, b));
-    let search = std::env::var("SEARCH").unwrap_or_default();
+    let search = std::env::var("SETTINGSSEARCH")
+        .or_else(|_| std::env::var("SEARCH"))
+        .unwrap_or_default();
 
     // With SCROLL=<px>, exercise the scissor-clipped scrolling page path.
     if let Ok(scroll) = std::env::var("SCROLL").unwrap_or_default().parse::<f32>() {

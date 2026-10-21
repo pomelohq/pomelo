@@ -149,6 +149,225 @@ pub struct ThemeColors {
     pub ignored_border: Rgba,
 }
 
+/// Pomelo Dark: the app's own theme, layered surfaces with one violet accent. Borders and element states are
+/// flattened over the panel layer because callers re-tint them with `alpha`.
+pub fn pomelo_dark() -> ThemeColors {
+    let h = Rgba::hex;
+    ThemeColors {
+        appearance: Appearance::Dark,
+        background: h("#15171c"),
+        surface_background: h("#1e2127"),
+        elevated_surface_background: h("#30343e"),
+        panel_background: h("#1e2127"),
+        border: h("#393c41"),
+        border_variant: h("#2b2e34"),
+        border_focused: h("#8e47b0"),
+        border_selected: h("#c39ae666"),
+        element_background: h("#2a2e36"),
+        element_hover: h("#292c32"),
+        element_active: h("#32353a"),
+        element_selected: h("#312e3d"),
+        ghost_element_hover: h("#292c32"),
+        ghost_element_active: h("#32353a"),
+        text: h("#e7e9ee"),
+        text_muted: h("#a9afbb"),
+        text_placeholder: h("#7c8290"),
+        text_accent: h("#c39ae6"),
+        warning: h("#e3bf6a"),
+        success: h("#8fc27a"),
+        text_disabled: h("#7c8290"),
+        icon: h("#e7e9ee"),
+        icon_muted: h("#a9afbb"),
+        icon_accent: h("#c39ae6"),
+        title_bar_background: h("#15171c"),
+        toolbar_background: h("#23262d"),
+        tab_bar_background: h("#1e2127"),
+        tab_active_background: h("#23262d"),
+        tab_inactive_background: h("#1e2127"),
+        editor_background: h("#23262d"),
+        editor_foreground: h("#e7e9ee"),
+        editor_active_line: h("#ffffff0d"),
+        editor_gutter_background: h("#23262d"),
+        editor_line_number: h("#7c8290"),
+        editor_active_line_number: h("#e7e9ee"),
+        editor_indent_guide: h("#ffffff12"),
+        editor_indent_guide_active: h("#ffffff30"),
+        player_cursor: h("#c39ae6"),
+        player_selection: h("#c39ae640"),
+        terminal_background: h("#23262d"),
+        terminal_ansi_background: h("#15171c"),
+        terminal_foreground: h("#e7e9ee"),
+        terminal_bright_foreground: h("#e7e9ee"),
+        terminal_dim_foreground: h("#7c8290"),
+        terminal_ansi: [
+            h("#2a2e36"),
+            h("#ef8a8f"),
+            h("#8fc27a"),
+            h("#e3bf6a"),
+            h("#86b6ec"),
+            h("#c39ae6"),
+            h("#6fc3c9"),
+            h("#c9ccd4"),
+            h("#7c8290"),
+            h("#f5a3a7"),
+            h("#a9d696"),
+            h("#f0d38f"),
+            h("#a5cbf5"),
+            h("#d6b6f0"),
+            h("#8fd8dd"),
+            h("#ffffff"),
+        ],
+        terminal_ansi_dim: [
+            h("#2a2e36b3"),
+            h("#ef8a8fb3"),
+            h("#8fc27ab3"),
+            h("#e3bf6ab3"),
+            h("#86b6ecb3"),
+            h("#c39ae6b3"),
+            h("#6fc3c9b3"),
+            h("#c9ccd4b3"),
+        ],
+        editor_invisible: h("#7c829080"),
+        search_match_background: h("#86b6ec4d"),
+        editor_document_highlight_bracket_background: h("#c39ae61f"),
+        version_control_added: h("#8fc27a"),
+        version_control_modified: h("#e3bf6a"),
+        version_control_deleted: h("#ef8a8f"),
+        hint: h("#7c8290"),
+        info: h("#86b6ec"),
+        ignored: h("#7c8290"),
+        link_text_hover: h("#c39ae6"),
+        editor_highlighted_line: h("#292c32"),
+        search_active_match_background: h("#f2d64b66"),
+        error: h("#ef8a8f"),
+        scrollbar_thumb_background: h("#e7e9ee33"),
+        scrollbar_thumb_border: h("#2b2e34"),
+        scrollbar_track_border: h("#2b2e34"),
+        scrollbar_thumb_hover_background: h("#e7e9ee4d"),
+        panel_indent_guide: h("#32353a"),
+        panel_focused_border: h("#8e47b0"),
+        info_background: h("#86b6ec1f"),
+        info_border: h("#3d4e62"),
+        error_background: h("#ef8a8f1f"),
+        error_border: h("#5d4146"),
+        warning_background: h("#e3bf6a1f"),
+        warning_border: h("#59513b"),
+        hint_background: h("#7c82901f"),
+        hint_border: h("#3a3e47"),
+        ignored_background: h("#7c82901f"),
+        ignored_border: h("#3a3e47"),
+    }
+}
+
+/// Pomelo Light: the app's own theme, layered surfaces with one violet accent.
+pub fn pomelo_light() -> ThemeColors {
+    let h = Rgba::hex;
+    ThemeColors {
+        appearance: Appearance::Light,
+        background: h("#e7e5ec"),
+        surface_background: h("#f4f3f7"),
+        elevated_surface_background: h("#ffffff"),
+        panel_background: h("#f4f3f7"),
+        border: h("#d4d2d9"),
+        border_variant: h("#e3e2e7"),
+        border_focused: h("#7b2f95"),
+        border_selected: h("#7b2f9566"),
+        element_background: h("#ffffff"),
+        element_hover: h("#eceaef"),
+        element_active: h("#e3e2e7"),
+        element_selected: h("#e8dfed"),
+        ghost_element_hover: h("#eceaef"),
+        ghost_element_active: h("#e3e2e7"),
+        text: h("#1f1b27"),
+        text_muted: h("#5a5466"),
+        text_placeholder: h("#827c8e"),
+        text_accent: h("#7b2f95"),
+        warning: h("#8a6400"),
+        success: h("#3f7d2e"),
+        text_disabled: h("#827c8e"),
+        icon: h("#1f1b27"),
+        icon_muted: h("#5a5466"),
+        icon_accent: h("#7b2f95"),
+        title_bar_background: h("#e7e5ec"),
+        toolbar_background: h("#ffffff"),
+        tab_bar_background: h("#f4f3f7"),
+        tab_active_background: h("#ffffff"),
+        tab_inactive_background: h("#f4f3f7"),
+        editor_background: h("#ffffff"),
+        editor_foreground: h("#1f1b27"),
+        editor_active_line: h("#1d17300a"),
+        editor_gutter_background: h("#ffffff"),
+        editor_line_number: h("#827c8e"),
+        editor_active_line_number: h("#1f1b27"),
+        editor_indent_guide: h("#00000014"),
+        editor_indent_guide_active: h("#0000002b"),
+        player_cursor: h("#7b2f95"),
+        player_selection: h("#7b2f9540"),
+        terminal_background: h("#ffffff"),
+        terminal_ansi_background: h("#e7e5ec"),
+        terminal_foreground: h("#1f1b27"),
+        terminal_bright_foreground: h("#1f1b27"),
+        terminal_dim_foreground: h("#827c8e"),
+        terminal_ansi: [
+            h("#1f1b27"),
+            h("#b3263a"),
+            h("#3f7d2e"),
+            h("#8a6400"),
+            h("#2f62b0"),
+            h("#7b2f95"),
+            h("#0f7c85"),
+            h("#d9d6e0"),
+            h("#827c8e"),
+            h("#cf3a4f"),
+            h("#4f9a3a"),
+            h("#a37a00"),
+            h("#3d78cc"),
+            h("#9440b0"),
+            h("#16939d"),
+            h("#ffffff"),
+        ],
+        terminal_ansi_dim: [
+            h("#1f1b27b3"),
+            h("#b3263ab3"),
+            h("#3f7d2eb3"),
+            h("#8a6400b3"),
+            h("#2f62b0b3"),
+            h("#7b2f95b3"),
+            h("#0f7c85b3"),
+            h("#d9d6e0b3"),
+        ],
+        editor_invisible: h("#827c8e80"),
+        search_match_background: h("#2f62b04d"),
+        editor_document_highlight_bracket_background: h("#7b2f951f"),
+        version_control_added: h("#3f7d2e"),
+        version_control_modified: h("#8a6400"),
+        version_control_deleted: h("#b3263a"),
+        hint: h("#827c8e"),
+        info: h("#2f62b0"),
+        ignored: h("#827c8e"),
+        link_text_hover: h("#7b2f95"),
+        editor_highlighted_line: h("#eceaef"),
+        search_active_match_background: h("#f2d64b66"),
+        error: h("#b3263a"),
+        scrollbar_thumb_background: h("#1f1b2733"),
+        scrollbar_thumb_border: h("#e3e2e7"),
+        scrollbar_track_border: h("#e3e2e7"),
+        scrollbar_thumb_hover_background: h("#1f1b274d"),
+        panel_indent_guide: h("#dedde1"),
+        panel_focused_border: h("#7b2f95"),
+        info_background: h("#2f62b01f"),
+        info_border: h("#b9c7e2"),
+        error_background: h("#b3263a1f"),
+        error_border: h("#e0b5be"),
+        warning_background: h("#8a64001f"),
+        warning_border: h("#d4c8ac"),
+        hint_background: h("#827c8e1f"),
+        hint_border: h("#d2cfd7"),
+        ignored_background: h("#827c8e1f"),
+        ignored_border: h("#d2cfd7"),
+    }
+}
+
 /// One Dark.
 pub fn one_dark() -> ThemeColors {
     let h = Rgba::hex;
@@ -913,7 +1132,7 @@ pub fn theme() -> ThemeColors {
         .read()
         .ok()
         .and_then(|g| *g)
-        .unwrap_or_else(one_dark)
+        .unwrap_or_else(pomelo_dark)
 }
 
 pub fn set_theme(colors: ThemeColors) {
@@ -922,17 +1141,74 @@ pub fn set_theme(colors: ThemeColors) {
     }
 }
 
-/// Resolve a theme by name, the user's themes first; unknown names fall back to One Dark.
+/// Resolve a theme by name, the user's themes first; unknown names fall back to Pomelo Dark.
 pub fn by_name(name: &str) -> ThemeColors {
     if let Some(theme) = crate::theme_file::user_theme(name) {
         return theme.colors;
     }
     match name {
+        "Pomelo Light" => pomelo_light(),
+        "One Dark" => one_dark(),
         "One Light" => one_light(),
         "Ayu Mirage" => ayu_mirage(),
         "Gruvbox Dark" => gruvbox_dark(),
-        _ => one_dark(),
+        _ => pomelo_dark(),
     }
+}
+
+/// Syntax colors a built-in theme lays over the palette of its appearance; empty for themes that use it as is.
+pub fn builtin_syntax(name: &str) -> Vec<(String, Rgba)> {
+    let palette: &[(&str, &str)] = match name {
+        "Pomelo Dark" => &[
+            ("keyword", "#c39ae6"),
+            ("preproc", "#c39ae6"),
+            ("function", "#86b6ec"),
+            ("constructor", "#86b6ec"),
+            ("type", "#6fc3c9"),
+            ("enum", "#6fc3c9"),
+            ("string", "#e2b86b"),
+            ("string.special.symbol", "#8fc27a"),
+            ("number", "#e39b7b"),
+            ("boolean", "#e39b7b"),
+            ("constant", "#e39b7b"),
+            ("comment", "#7c8290"),
+            ("property", "#ef8a8f"),
+            ("tag", "#86b6ec"),
+            ("attribute", "#c39ae6"),
+            ("title", "#c39ae6"),
+            ("variable", "#e7e9ee"),
+            ("variable.special", "#e39b7b"),
+            ("operator", "#a9afbb"),
+            ("punctuation", "#a9afbb"),
+        ],
+        "Pomelo Light" => &[
+            ("keyword", "#7b2f95"),
+            ("preproc", "#7b2f95"),
+            ("function", "#2f62b0"),
+            ("constructor", "#2f62b0"),
+            ("type", "#0f7c85"),
+            ("enum", "#0f7c85"),
+            ("string", "#8a6400"),
+            ("string.special.symbol", "#3f7d2e"),
+            ("number", "#a8502c"),
+            ("boolean", "#a8502c"),
+            ("constant", "#a8502c"),
+            ("comment", "#827c8e"),
+            ("property", "#b3263a"),
+            ("tag", "#2f62b0"),
+            ("attribute", "#7b2f95"),
+            ("title", "#7b2f95"),
+            ("variable", "#1f1b27"),
+            ("variable.special", "#a8502c"),
+            ("operator", "#5a5466"),
+            ("punctuation", "#5a5466"),
+        ],
+        _ => &[],
+    };
+    palette
+        .iter()
+        .map(|(capture, color)| (capture.to_string(), Rgba::hex(color)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -955,6 +1231,17 @@ mod tests {
         assert_eq!(Rgba::hex("#000000ff"), Rgba::new(0.0, 0.0, 0.0, 1.0));
         let half = Rgba::hex("#74ade866");
         assert_eq!(half.to_u8(), [116, 173, 232, 102]);
+    }
+
+    #[test]
+    fn pomelo_is_the_fallback_and_has_both_appearances() {
+        assert_eq!(by_name("no such theme"), pomelo_dark());
+        assert_eq!(by_name("Pomelo Light"), pomelo_light());
+        assert_eq!(pomelo_dark().appearance, Appearance::Dark);
+        assert_eq!(pomelo_light().appearance, Appearance::Light);
+        assert_ne!(pomelo_dark().background, pomelo_light().background);
+        assert!(!builtin_syntax("Pomelo Dark").is_empty());
+        assert!(builtin_syntax("One Dark").is_empty());
     }
 
     #[test]
