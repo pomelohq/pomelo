@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,7 @@ const LATENCY: Duration = Duration::from_millis(100);
 /// Watches a tree and collects the relative paths that changed; `wake` runs once per settled batch.
 pub struct TreeWatcher {
     _watcher: notify::RecommendedWatcher,
-    pending: Arc<Mutex<Vec<String>>>,
+    pending: Arc<Mutex<HashSet<String>>>,
 }
 
 impl TreeWatcher {
@@ -28,7 +29,7 @@ impl TreeWatcher {
                 Err(error) => eprintln!("file tree watcher: {error}"),
             })?;
         watcher.watch(root, RecursiveMode::Recursive)?;
-        let pending = Arc::new(Mutex::new(Vec::new()));
+        let pending = Arc::new(Mutex::new(HashSet::new()));
         let (root, collected) = (root.to_path_buf(), pending.clone());
         std::thread::Builder::new()
             .name("files-watch".into())
@@ -40,11 +41,10 @@ impl TreeWatcher {
         })
     }
 
-    /// The changed paths since the last call (relative, forward-slash), unsorted and possibly repeated.
     pub fn take_changes(&self) -> Vec<String> {
         self.pending
             .lock()
-            .map(|mut pending| std::mem::take(&mut *pending))
+            .map(|mut pending| pending.drain().collect())
             .unwrap_or_default()
     }
 }
@@ -67,7 +67,7 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
 fn collect(
     root: &Path,
     receiver: &Receiver<Vec<PathBuf>>,
-    pending: &Mutex<Vec<String>>,
+    pending: &Mutex<HashSet<String>>,
     wake: &(dyn Fn() + Send + Sync),
 ) {
     // FSEvents reports the real path; a root reached through a symlink (/tmp) must be compared in that form.
@@ -91,7 +91,7 @@ fn collect(
                     continue;
                 }
                 if let Ok(mut shared) = pending.lock() {
-                    shared.append(&mut batch);
+                    shared.extend(batch.drain(..));
                 }
                 batch.clear();
                 wake();
@@ -115,6 +115,27 @@ mod tests {
         assert_eq!(relative(root, Path::new("/work/.git/index")), None);
         assert_eq!(relative(root, Path::new("/work/api/.git/HEAD")), None);
         assert_eq!(relative(root, Path::new("/elsewhere/a")), None);
+    }
+
+    #[test]
+    fn a_path_changed_many_times_is_held_once() {
+        let (sender, receiver) = std::sync::mpsc::channel::<Vec<PathBuf>>();
+        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let collected = pending.clone();
+        let collector = std::thread::spawn(move || {
+            collect(Path::new("/work"), &receiver, &collected, &|| {});
+        });
+        for round in 0..3 {
+            for _ in 0..1000 {
+                let sent = sender.send(vec![PathBuf::from("/work/log/development.log")]);
+                assert!(sent.is_ok(), "round {round}");
+            }
+            std::thread::sleep(LATENCY * 3);
+        }
+        drop(sender);
+        assert!(collector.join().is_ok());
+        let held = pending.lock().map(|set| set.len()).unwrap_or_default();
+        assert_eq!(held, 1);
     }
 }
 

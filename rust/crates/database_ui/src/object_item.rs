@@ -91,6 +91,14 @@ pub struct ObjectItem {
     hits: Vec<(Rect, u64)>,
 }
 
+impl Drop for ObjectItem {
+    fn drop(&mut self) {
+        if let Preview::Image { id } = self.preview {
+            ui::release_image(id);
+        }
+    }
+}
+
 impl ObjectItem {
     pub fn new(
         context: DatabaseContext,
@@ -147,6 +155,9 @@ impl ObjectItem {
     }
 
     fn show(&mut self, read: Result<ObjectRead, String>) {
+        if let Preview::Image { id } = self.preview {
+            ui::release_image(id);
+        }
         let read = match read {
             Ok(read) => read,
             Err(error) => {
@@ -162,6 +173,7 @@ impl ObjectItem {
                         let rgba = picture.to_rgba8();
                         let (width, height) = rgba.dimensions();
                         let id = image_id(&self.database.name, &self.path());
+                        ui::retain_image(id);
                         ui::set_image(id, width, height, rgba.into_raw());
                         Preview::Image { id }
                     }

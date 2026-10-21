@@ -122,6 +122,9 @@ impl FoldMap {
         if version == self.synced_version {
             return;
         }
+        if !buffer.logged_since(self.synced_version) {
+            self.folds.clear();
+        }
         for batch in buffer.edits_since(self.synced_version) {
             for fold in &mut self.folds {
                 fold.start = map_offset(batch, fold.start, Bias::Right);

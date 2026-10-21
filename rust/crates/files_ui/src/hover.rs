@@ -340,7 +340,11 @@ impl FileItem {
             return;
         }
         let offset = pending.offset;
-        let Some(b) = self.buffer.as_ref() else {
+        let Some(b) = self
+            .buffer
+            .as_ref()
+            .filter(|b| b.logged_since(response.synced.buffer_version))
+        else {
             return;
         };
         let answer = response.markdown.clone().map(|markdown| {

@@ -1251,6 +1251,9 @@ impl FileItem {
             })
             .collect();
         if let Some(since) = since {
+            if !b.logged_since(since) {
+                return;
+            }
             for batch in b.edits_since(since) {
                 for entry in &mut entries {
                     entry.range.start =
@@ -1325,6 +1328,12 @@ impl FileItem {
         let version = b.version();
         if self.synced_version == Some(version) {
             return;
+        }
+        if self
+            .synced_version
+            .is_some_and(|since| !b.logged_since(since))
+        {
+            self.synced_version = None;
         }
         if let Some(since) = self.synced_version {
             for batch in b.edits_since(since) {
@@ -4792,10 +4801,10 @@ impl Item for FileItem {
         };
         if let Some(b) = self.buffer.as_mut() {
             let cursor = b.cursor();
-            let len = b.rope.len_chars();
-            b.edit(vec![(0..len, text)]);
-            b.mark_saved();
-            b.place_cursor(cursor.min(b.rope.len_chars()));
+            if b.reload(&text) {
+                b.mark_saved();
+                b.place_cursor(cursor.min(b.rope.len_chars()));
+            }
         }
         self.git.reload_bases(self.root.join(&self.path));
         self.saved_mtime = Some(disk);
@@ -6542,6 +6551,12 @@ struct ImageItem {
     state: ImageState,
 }
 
+impl Drop for ImageItem {
+    fn drop(&mut self) {
+        ui::release_image(self.id);
+    }
+}
+
 /// Decodes `file` within the memory limit and scales it down to fit `IMAGE_SIDE_LIMIT`, keeping its aspect.
 fn decode_image(file: &std::path::Path) -> Result<(DecodedImage, u32, u32, Vec<u8>), String> {
     let mut reader = image::ImageReader::open(file)
@@ -6574,6 +6589,7 @@ impl ImageItem {
     fn new(root: &std::path::Path, path: &str) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let id = image_id(path);
+        ui::retain_image(id);
         let state = if ui::has_image(id) {
             ImageState::Ready(None)
         } else {
@@ -12727,6 +12743,35 @@ mod tab_switcher_tests {
             titles(&mut view).as_deref(),
             Some("c.rs"),
             "ctrl-backspace closed the highlighted tab, so the previous one is now c.rs"
+        );
+    }
+}
+
+#[cfg(test)]
+mod disk_reload_tests {
+    use super::*;
+
+    #[test]
+    fn a_log_growing_on_disk_keeps_only_what_was_appended() {
+        let temp = tempfile::tempdir().expect("temp");
+        let root = temp.path().to_path_buf();
+        let mut text = "Started GET /users for 127.0.0.1\n".repeat(60_000);
+        std::fs::write(root.join("development.log"), &text).expect("write");
+        let mut item = FileItem::new(root.clone(), "development.log", Some(text.clone()));
+        for request in 0..50 {
+            text.push_str(&format!("Completed 200 OK request {request}\n"));
+            std::fs::write(root.join("development.log"), &text).expect("write");
+            item.saved_mtime = None;
+            item.refresh_disk_state();
+        }
+        let buffer = item.buffer.as_ref().expect("buffer");
+        assert_eq!(buffer.text(), text);
+        assert!(!buffer.is_dirty());
+        assert!(
+            buffer.history_bytes() < 64 * 1024,
+            "{} bytes held for 50 reloads of a {} byte file",
+            buffer.history_bytes(),
+            text.len()
         );
     }
 }
