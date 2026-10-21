@@ -86,8 +86,11 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
 
 use ui::{div, folder_icon, label, render, theme, Node, Painted, Rect, Rgba, Text};
 
-pub const TOP_BAR_H: f32 = 38.0;
-pub const STATUS_BAR_H: f32 = 24.0; // the thin status strip at the very bottom (a component, not a dock)
+pub const TOP_BAR_H: f32 = 40.0;
+pub const STATUS_BAR_H: f32 = 28.0; // the thin status strip at the very bottom (a component, not a dock)
+/// Panels float on the window background with this much space between them, instead of lines between regions.
+pub const PANEL_GAP: f32 = 6.0;
+pub const PANEL_RADIUS: f32 = 10.0;
 pub const RAIL_W: f32 = 56.0; // collapsed dock width — the icon rail; the dock never goes narrower than this
 pub const FUNC_BASE: u64 = 700; // function-nav click ids (bottom bar): FUNC_BASE + PaneKind index
 pub const FUNC_VIEW_BASE: u64 = 10000; // click ids owned by a feature's `FunctionView` (routed to it)
@@ -113,7 +116,8 @@ pub const AGENT_VIEW_BASE: u64 = TERMINAL_VIEW_BASE + pane_group_view::ID_SPAN;
 pub fn is_agent_id(id: u64) -> bool {
     (AGENT_VIEW_BASE..AGENT_VIEW_BASE + pane_group_view::ID_SPAN).contains(&id)
 }
-pub const FILES_TREE_W: f32 = 260.0; // default width of the Files tree dock (left of the center editor)
+/// Default width the Files tree takes, its gap to the editor included (a 280px panel).
+pub const FILES_TREE_W: f32 = 286.0;
 /// Every side panel (tree, agent, terminal, tool panels) keeps at least this width, wide enough for the
 /// widest of them (a Git repo card's name, branch and action chip on one line).
 pub const SIDE_PANEL_MIN: f32 = 320.0;
@@ -124,22 +128,13 @@ pub const BOTTOM_MIN: f32 = 100.0; // shortest expanded bottom-dock height
 pub const BOTTOM_MAX: f32 = 600.0;
 pub const DIVIDER_HIT: f32 = 5.0;
 pub const TRAFFIC_INSET: f32 = 82.0; // left space reserved for the macOS traffic lights
-const SESSION_LEFT: f32 = TRAFFIC_INSET + 14.0; // extra gap so the session trigger clears the traffic lights
+const SESSION_LEFT: f32 = TRAFFIC_INSET - 4.0; // the trigger's own padding clears the traffic lights
 const FULLSCREEN_LEFT: f32 = 8.0;
 
 // Colors resolved from the active theme so the workspace restyles with it. Placeholder content panels keep
 // fixed demo colors until real content lands.
-fn top_bar_c() -> Rgba {
-    theme().title_bar_background
-}
-fn rail_c() -> Rgba {
-    theme().tab_active_background
-}
 fn dock_c() -> Rgba {
     theme().panel_background
-}
-fn divider_c() -> Rgba {
-    theme().border
 }
 fn text_c() -> Rgba {
     theme().text
@@ -498,6 +493,8 @@ pub enum RowAction {
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
 pub const SESSION_TRIGGER: u64 = 1;
+/// The title bar's "<workspace> needs you" pill: goes to the next workspace whose agent waits.
+pub const ATTENTION_PILL: u64 = 13;
 pub const SESSION_OPEN: u64 = 3;
 pub const SESSION_SEARCH: u64 = 4;
 /// The status bar's leftmost button toggles the WORKSPACES sidebar (the sidebar toggle).
@@ -630,6 +627,9 @@ pub const CURSOR_POSITION: u64 = 11;
 /// The active file's language in the status bar, which opens the language picker.
 pub const ACTIVE_LANGUAGE: u64 = 26;
 pub const DIAGNOSTIC_MESSAGE: u64 = 12;
+/// The files panel title's search button, which opens the file finder.
+pub const FILES_SEARCH: u64 = 27;
+pub const PANEL_HEADER_H: f32 = 36.0;
 /// The status bar's language-server button and the line of server activity beside it.
 pub const LANGUAGE_SERVERS_BUTTON: u64 = 23;
 pub const LANGUAGE_ACTIVITY: u64 = 24;
@@ -1128,6 +1128,8 @@ pub struct Layout {
     pub app_menu_open: bool,
     pub usage_card_open: bool,
     pub usage_today_open: bool,
+    /// The keystroke bound to "next workspace waiting for you", shown beside the title bar's waiting pill.
+    pub attention_keys: Option<String>,
     /// What the welcome page reports about this Mac.
     pub machine: Vec<MachineCheck>,
     pub current_session: Option<usize>,
@@ -2268,6 +2270,7 @@ impl Default for Layout {
             app_menu_open: false,
             usage_card_open: false,
             usage_today_open: false,
+            attention_keys: None,
             project: None,
             sidebar_side: DockPosition::Left,
             agent_side: DockPosition::Right,
@@ -2306,6 +2309,53 @@ pub enum Shown {
     Func(PaneKind),
     Terminal,
     Agent,
+}
+
+/// The four corner pieces outside a rounded rect of `radius`, as triangle fans in `color`.
+fn corner_caps(rect: Rect, radius: f32, color: Rgba) -> Vec<ui::Tri> {
+    const STEPS: usize = 8;
+    let r = radius.min(rect.w / 2.0).min(rect.h / 2.0);
+    if r <= 0.0 {
+        return Vec::new();
+    }
+    let corners = [
+        (
+            (rect.x, rect.y),
+            (rect.x + r, rect.y + r),
+            std::f32::consts::PI,
+        ),
+        (
+            (rect.x + rect.w, rect.y),
+            (rect.x + rect.w - r, rect.y + r),
+            1.5 * std::f32::consts::PI,
+        ),
+        (
+            (rect.x + rect.w, rect.y + rect.h),
+            (rect.x + rect.w - r, rect.y + rect.h - r),
+            0.0,
+        ),
+        (
+            (rect.x, rect.y + rect.h),
+            (rect.x + r, rect.y + rect.h - r),
+            0.5 * std::f32::consts::PI,
+        ),
+    ];
+    let mut tris = Vec::with_capacity(4 * STEPS);
+    for (corner, center, start) in corners {
+        for step in 0..STEPS {
+            let a = start + std::f32::consts::FRAC_PI_2 * step as f32 / STEPS as f32;
+            let b = start + std::f32::consts::FRAC_PI_2 * (step + 1) as f32 / STEPS as f32;
+            tris.push(ui::Tri {
+                p: [
+                    [corner.0, corner.1],
+                    [center.0 + r * a.cos(), center.1 + r * a.sin()],
+                    [center.0 + r * b.cos(), center.1 + r * b.sin()],
+                ],
+                color,
+            });
+        }
+    }
+    tris
 }
 
 impl Layout {
@@ -2492,7 +2542,7 @@ impl Layout {
     }
 
     fn tree_min(&self) -> f32 {
-        SIDE_PANEL_MIN.min(FILES_TREE_MAX)
+        FILES_TREE_W.min(FILES_TREE_MAX)
     }
 
     /// Left edge of the editor area (right of the sidebar when docked left; 0 when the sidebar is on the right).
@@ -2500,7 +2550,7 @@ impl Layout {
         if self.sidebar_left() {
             self.left_w()
         } else {
-            0.0
+            PANEL_GAP
         }
     }
 
@@ -2510,7 +2560,7 @@ impl Layout {
     /// Right edge of the editor area (window edge when the sidebar is left; left of the sidebar when it's right).
     fn editor_r(&self, w: f32) -> f32 {
         if self.sidebar_left() {
-            w
+            w - PANEL_GAP
         } else {
             w - self.left_w()
         }
@@ -2598,108 +2648,35 @@ impl Layout {
         x > self.center_l() && x < self.center_r(w) && (y - top).abs() <= DIVIDER_HIT
     }
 
+    /// The window under the panels: one background, the rounded panel surfaces on it.
     pub fn build(&self, w: f32, h: f32) -> (Vec<Rect>, Vec<Text>) {
-        let lw = self.left_w();
-        let rw = self.right_w();
-        let by = TOP_BAR_H;
-        // Only the WORKSPACES panel is full height (`dock_h`); the editor-area panels sit above the status strip.
-        let dock_h = (h - TOP_BAR_H).max(0.0);
-        let content_bottom = h - STATUS_BAR_H;
-        let mut out = Painted::default();
-        let mut band = |node: Node, rect: Rect| {
-            let p = render(&node, rect);
-            out.rects.extend(p.rects);
-            out.texts.extend(p.texts);
-        };
-        let editor_h = (content_bottom - by).max(0.0);
-        let zl = self.editor_l();
-        let zr = self.editor_r(w);
-
-        let mut top = div().items_center().justify_center().bg(top_bar_c());
-        if let Some(project) = self.project.as_ref().filter(|_| ui::chrome().branch) {
-            top = top.child(label(project.active.clone()).size(14.0).color(text_dim_c()));
+        let mut rects = vec![Rect::new(0.0, 0.0, w, h, theme().background)];
+        for (rect, fill) in self.panel_rects(w, h) {
+            rects.push(Rect {
+                radius: PANEL_RADIUS,
+                ..Rect::new(rect.x, rect.y, rect.w, rect.h, fill)
+            });
         }
-        band(
-            top.into(),
-            Rect::new(0.0, 0.0, w, TOP_BAR_H, Rgba::TRANSPARENT),
-        );
-
-        let sx = if self.sidebar_left() { 0.0 } else { w - lw };
-        let side_bg = if self.left.collapsed {
-            rail_c()
-        } else {
-            dock_c()
-        };
-        band(
-            div().bg(side_bg).into(),
-            Rect::new(sx, by, lw, dock_h, Rgba::TRANSPARENT),
-        );
-
-        let tw = self.tree_w();
-        if tw > 0.0 {
-            band(
-                div().bg(dock_c()).into(),
-                Rect::new(zl, by, tw, editor_h, Rgba::TRANSPARENT),
-            );
-        }
-        if rw > 0.0 {
-            let ax = zr - rw;
-            band(
-                div().bg(dock_c()).into(),
-                Rect::new(ax, by, rw, editor_h, Rgba::TRANSPARENT),
-            );
-        }
-
-        let cx0 = self.center_l();
-        let cw = (self.center_r(w) - cx0).max(0.0);
-        let bd_h = self.bottom_h();
-        if bd_h > 0.0 {
-            band(
-                div().bg(dock_c()).into(),
-                Rect::new(cx0, content_bottom - bd_h, cw, bd_h, Rgba::TRANSPARENT),
-            );
-        }
-
-        let sw = (zr - zl).max(0.0);
-        band(
-            div().bg(top_bar_c()).into(),
-            Rect::new(zl, content_bottom, sw, STATUS_BAR_H, Rgba::TRANSPARENT),
-        );
-
-        (out.rects, out.texts)
+        (rects, Vec::new())
     }
 
-    pub fn border_lines(&self, w: f32, h: f32) -> Vec<Rect> {
-        let by = TOP_BAR_H;
-        let content_bottom = self.content_bottom(h);
-        let dock_h = (h - TOP_BAR_H).max(0.0);
-        let editor_h = (content_bottom - by).max(0.0);
-        let lw = self.left_w();
-        let rw = self.right_w();
-        let tw = self.tree_w();
-        let zl = self.editor_l();
-        let zr = self.editor_r(w);
-        let bl = zl + tw;
-        let cx0 = self.center_l();
-        let cw = (self.center_r(w) - cx0).max(0.0);
-        let c = divider_c();
-        let mut v = Vec::new();
-        let sidebar_edge = if self.sidebar_left() { lw } else { w - lw };
-        v.push(Rect::new(sidebar_edge - 1.0, by, 1.0, dock_h, c));
-        if tw > 0.0 {
-            v.push(Rect::new(bl - 1.0, by, 1.0, editor_h, c));
+    /// Drawn over the panels' content: the window background back in each panel's corners (content paints
+    /// square), and a hairline ring around each panel.
+    pub fn panel_outlines(&self, w: f32, h: f32) -> Painted {
+        let mut painted = Painted::default();
+        let ring = theme().border_variant;
+        for (rect, _) in self.panel_rects(w, h) {
+            painted
+                .tris
+                .extend(corner_caps(rect, PANEL_RADIUS, theme().background));
+            painted.rects.push(Rect {
+                radius: PANEL_RADIUS,
+                border: 1.0,
+                border_color: ring,
+                ..Rect::new(rect.x, rect.y, rect.w, rect.h, Rgba::TRANSPARENT)
+            });
         }
-        if rw > 0.0 {
-            let edge = zr - rw;
-            v.push(Rect::new(edge - 1.0, by, 1.0, editor_h, c));
-        }
-        let bd_h = self.bottom_h();
-        if bd_h > 0.0 {
-            v.push(Rect::new(cx0, content_bottom - bd_h - 1.0, cw, 1.0, c));
-        }
-        let sw = (zr - zl).max(0.0);
-        v.push(Rect::new(zl, content_bottom - 1.0, sw, 1.0, c));
-        v
+        painted
     }
 
     /// Bottom edge of the center/bottom-dock content (above the fixed status strip).
@@ -2713,7 +2690,12 @@ impl Layout {
 
     /// Right edge of the center: the editor-area right, minus the right dock.
     fn center_r(&self, w: f32) -> f32 {
-        self.editor_r(w) - self.right_w()
+        let rw = self.right_w();
+        if rw > 0.0 {
+            self.editor_r(w) - rw - PANEL_GAP
+        } else {
+            self.editor_r(w)
+        }
     }
 
     /// The WORKSPACES sidebar region — full height on its docked side; the status strip never covers it.
@@ -2740,7 +2722,7 @@ impl Layout {
         Rect::new(
             self.editor_l(),
             TOP_BAR_H,
-            self.tree_w(),
+            (self.tree_w() - PANEL_GAP).max(0.0),
             ch,
             Rgba::TRANSPARENT,
         )
@@ -2750,7 +2732,9 @@ impl Layout {
     pub fn center_region(&self, w: f32, h: f32) -> Rect {
         let cl = self.center_l();
         let cr = self.center_r(w);
-        let ch = (self.content_bottom(h) - TOP_BAR_H - self.bottom_h()).max(0.0);
+        let bh = self.bottom_h();
+        let gap = if bh > 0.0 { PANEL_GAP } else { 0.0 };
+        let ch = (self.content_bottom(h) - TOP_BAR_H - bh - gap).max(0.0);
         Rect::new(cl, TOP_BAR_H, (cr - cl).max(0.0), ch, Rgba::TRANSPARENT)
     }
 
@@ -2783,14 +2767,35 @@ impl Layout {
 
     /// The status strip region — the whole editor area (never over the sidebar).
     pub fn status_region(&self, w: f32, h: f32) -> Rect {
-        let zl = self.editor_l();
+        let (zl, zr) = if self.sidebar_left() {
+            (self.left_w(), w)
+        } else {
+            (0.0, w - self.left_w())
+        };
         Rect::new(
             zl,
             h - STATUS_BAR_H,
-            (self.editor_r(w) - zl).max(0.0),
+            (zr - zl).max(0.0),
             STATUS_BAR_H,
             Rgba::TRANSPARENT,
         )
+    }
+
+    /// Every panel showing now, as the rounded surface it sits on and its fill.
+    pub fn panel_rects(&self, w: f32, h: f32) -> Vec<(Rect, Rgba)> {
+        let mut out = Vec::new();
+        if self.tree_w() > 0.0 {
+            out.push((self.tree_region(w, h), dock_c()));
+        }
+        out.push((self.center_region(w, h), theme().editor_background));
+        if self.right_w() > 0.0 {
+            out.push((self.right_region(w, h), dock_c()));
+        }
+        if self.bottom_h() > 0.0 {
+            out.push((self.bottom_region(w, h), dock_c()));
+        }
+        out.retain(|(rect, _)| rect.w > 0.0 && rect.h > 0.0);
+        out
     }
 
     /// The interactive session switcher in the header (left, after the traffic lights): just the current
@@ -2822,9 +2827,23 @@ impl Layout {
         if active {
             trigger = trigger.bg(theme().ghost_element_hover);
         }
-        let mut bar_row = div().row().items_center().h_px(TOP_BAR_H);
+        let mut bar_row = div().row().items_center().gap(2.0).h_px(TOP_BAR_H);
         if ui::chrome().session_name {
             bar_row = bar_row.child(trigger);
+        }
+        if let Some(project) = self.project.as_ref().filter(|_| ui::chrome().branch) {
+            bar_row = bar_row.child(
+                div()
+                    .row()
+                    .items_center()
+                    .gap(4.0)
+                    .child(
+                        ui::icon(ui::IconKind::Branch)
+                            .size(12.0)
+                            .color(text_dim_c()),
+                    )
+                    .child(label(project.active.clone()).size(12.0).color(text_dim_c())),
+            );
         }
         let bar: Node = bar_row.into();
         let mut painted = render(
@@ -2854,7 +2873,39 @@ impl Layout {
         if chevron_hot {
             chevron = chevron.bg(theme().ghost_element_hover);
         }
-        let mut right = div().row().items_center().gap(4.0).h_px(TOP_BAR_H);
+        let mut right = div().row().items_center().gap(8.0).h_px(TOP_BAR_H);
+        if let Some(waiting) = self.waiting_workspace() {
+            let mut pill = div()
+                .row()
+                .items_center()
+                .h_px(20.0)
+                .px(8.0)
+                .rounded(10.0)
+                .bg(theme().search_active_match_background.alpha(1.0))
+                .on_click(ATTENTION_PILL)
+                .child(
+                    label(format!("{waiting} needs you"))
+                        .size(11.0)
+                        .weight(600)
+                        .color(Rgba::new(0.169, 0.137, 0.0, 1.0)),
+                );
+            if hovered == Some(ATTENTION_PILL) {
+                pill = pill.border(1.0, theme().text);
+            }
+            right = right.child(pill);
+            if let Some(keys) = &self.attention_keys {
+                right = right.child(
+                    div()
+                        .row()
+                        .items_center()
+                        .h_px(18.0)
+                        .px(5.0)
+                        .rounded(4.0)
+                        .bg(theme().element_hover)
+                        .child(ui::render_keystroke(keys, 11.0)),
+                );
+            }
+        }
         if let Some(update) = &self.update.button {
             right = right.child(crate::update::button(update, hovered));
         }
@@ -2870,7 +2921,7 @@ impl Layout {
         let cluster = render(
             &right,
             Rect::new(
-                (w - right_w - 10.0 * scale).max(0.0),
+                (w - right_w - 14.0 * scale).max(0.0),
                 0.0,
                 right_w,
                 TOP_BAR_H,
@@ -2883,6 +2934,27 @@ impl Layout {
         painted.icons.extend(cluster.icons);
         painted.hits.extend(cluster.hits);
         painted
+    }
+
+    /// The first other workspace whose agent waits for input, named by its ticket key or its name.
+    fn waiting_workspace(&self) -> Option<String> {
+        let project = self.project.as_ref()?;
+        project
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, branch)| **branch != project.active)
+            .find(|(_, branch)| self.agent_states.get(*branch) == Some(&AgentDot::AwaitingInput))
+            .map(|(index, branch)| {
+                crate::panel::branch_key(branch).unwrap_or_else(|| {
+                    let name = project.label(index);
+                    if name.is_empty() {
+                        branch.clone()
+                    } else {
+                        name.to_string()
+                    }
+                })
+            })
     }
 
     /// Largest pixel scroll offset for the session list (list content height minus the visible region).

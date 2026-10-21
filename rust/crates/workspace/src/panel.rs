@@ -216,6 +216,38 @@ pub fn panel_header(title: &str) -> Node {
         .into()
 }
 
+/// A docked panel's title strip: the name in small caps on the left, one icon action on the right.
+pub fn dock_title_bar(title: &str, action: Option<(IconKind, u64)>) -> Node {
+    let mut bar = div()
+        .row()
+        .h_px(crate::PANEL_HEADER_H)
+        .pl(12.0)
+        .pr(8.0)
+        .gap(8.0)
+        .items_center()
+        .child(
+            label(title.to_uppercase())
+                .size(11.0)
+                .weight(600)
+                .color(theme().text_muted),
+        )
+        .child(div().flex(1.0));
+    if let Some((kind, id)) = action {
+        bar = bar.child(
+            div()
+                .row()
+                .items_center()
+                .justify_center()
+                .w_px(24.0)
+                .h_px(24.0)
+                .rounded(6.0)
+                .on_click(id)
+                .child(icon(kind).size(14.0).color(theme().icon_muted)),
+        );
+    }
+    bar.into()
+}
+
 pub const SIDE_PANEL_BASE: u64 = 800_000_000;
 pub const SIDE_PANEL_SPAN: u64 = 100_000_000;
 
@@ -789,7 +821,7 @@ fn strip_key(name: &str, key: &str) -> String {
     }
 }
 
-fn branch_key(branch: &str) -> Option<String> {
+pub(crate) fn branch_key(branch: &str) -> Option<String> {
     let mut parts = branch
         .split(['-', '_', '/'])
         .filter(|part| !part.is_empty());
