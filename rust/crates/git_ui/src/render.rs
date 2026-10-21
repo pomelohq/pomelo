@@ -6,9 +6,9 @@ use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
-    arrow_count, avatar, checkbox, chevron, chip, chip_icon, chip_text, diff_stat, ghost_button,
-    icon_button, status_icon, text_width, tooltip, with_guides, ChipTone, SplitButton, INDENT,
-    ROW_H, SEGMENT_H, TAB_BAR_H, TOOLBAR_H,
+    arrow_count, avatar, checkbox, chevron, chip, chip_count, chip_icon, chip_text, diff_stat,
+    ghost_button, icon_button, status_icon, text_width, tooltip, with_guides, ChipTone,
+    SplitButton, INDENT, ROW_H, SEGMENT_H, TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -433,10 +433,12 @@ impl GitPanel {
     fn row_content(&self, index: usize, row: &Row, scan: &Scan, width: f32) -> Div {
         let colors = theme();
         match row {
-            Row::CardPad { .. } => div().h_px(rows::CARD_PAD),
-            Row::Message { text, indent, .. } => div()
+            Row::CardPad { height, .. } => div().h_px(*height),
+            Row::Message {
+                text, indent, repo, ..
+            } => div()
                 .row()
-                .h_px(ROW_H)
+                .h_px(if repo.is_some() { rows::NOTE_H } else { ROW_H })
                 .pl(*indent)
                 .pr(8.0)
                 .items_center()
@@ -447,11 +449,18 @@ impl GitPanel {
                         .truncate(),
                 )),
             Row::Gap => div().h_px(rows::GAP_H),
-            Row::Day(day) => div().row().h_px(rows::DAY_H).pl(10.0).items_center().child(
-                label(day.to_string())
-                    .size(11.0)
-                    .color(colors.text_placeholder),
-            ),
+            Row::Day(day) => div()
+                .row()
+                .h_px(rows::DAY_H)
+                .pl(14.0)
+                .pt(6.0)
+                .items_center()
+                .child(
+                    label(day.to_uppercase())
+                        .size(11.0)
+                        .weight(600)
+                        .color(colors.text_placeholder),
+                ),
             Row::RepoHeader { repo, history } => self.repo_header(index, *repo, *history, scan),
             Row::Section { staged, count, .. } => {
                 let (staging, tip) = if *staged {
@@ -541,100 +550,99 @@ impl GitPanel {
                 } else {
                     *reviewed as f32 / *total as f32
                 };
-                let bar_w = (width - 20.0).max(0.0);
+                const BAR_W: f32 = 90.0;
+                let fill_w = ((BAR_W - 4.0) * fraction.max(0.02)).min(BAR_W - 4.0);
+                let bar = div()
+                    .row()
+                    .w_px(BAR_W)
+                    .h_px(8.0)
+                    .p(2.0)
+                    .rounded(4.0)
+                    .bg(colors.background)
+                    .border(1.0, colors.border_variant)
+                    .child(div().w_px(fill_w).h_px(4.0).rounded(2.0).bg(colors.info));
                 div()
-                    .col()
+                    .row()
                     .h_px(rows::PROGRESS_H)
-                    .px(10.0)
-                    .pt(6.0)
-                    .gap(4.0)
+                    .px(14.0)
+                    .gap(10.0)
+                    .items_center()
                     .child(
-                        div()
-                            .row()
-                            .h_px(22.0)
-                            .items_center()
-                            .child(grow(
-                                label(format!("{reviewed} of {total} files reviewed"))
-                                    .size(12.0)
-                                    .color(colors.text_muted)
-                                    .truncate(),
-                            ))
-                            .child(ghost_button(open, None, "Open all diffs", self.hot(open))),
+                        label(format!("{reviewed} of {total} files reviewed"))
+                            .size(12.0)
+                            .color(colors.text_muted),
                     )
-                    .child(
-                        div()
-                            .row()
-                            .w_px(bar_w)
-                            .h_px(3.0)
-                            .rounded(2.0)
-                            .bg(colors.border_variant)
-                            .child(
-                                div()
-                                    .w_px(bar_w * fraction)
-                                    .h_px(3.0)
-                                    .rounded(2.0)
-                                    .bg(colors.success),
-                            ),
-                    )
+                    .child(bar)
+                    .child(div().row().flex(1.0))
+                    .child(div().row().h_px(22.0).items_center().on_click(open).child(
+                        label("Open all diffs").size(12.0).color(if self.hot(open) {
+                            colors.text
+                        } else {
+                            colors.text_accent
+                        }),
+                    ))
             }
             Row::Card { repo } => self.card_header(index, *repo, scan, width),
             Row::PullRequest { repo, pull_request } => {
                 self.pull_request_block(index, *repo, pull_request)
             }
-            Row::CreatePullRequest { .. } => self
-                .row_base(index, ROW_H)
-                .pl(26.0)
-                .child(icon(IconKind::Plus).size(13.0).color(colors.text_accent))
-                .child(grow(
-                    label("Create Pull Request")
-                        .size(12.0)
-                        .color(colors.text_accent)
-                        .truncate(),
-                )),
-            Row::CardNote { repo, text } => {
-                let unpublished = scan
-                    .repos
-                    .get(*repo)
-                    .is_some_and(|state| state.outgoing.is_none());
-                let mut note = div()
+            Row::CreatePullRequest { .. } => {
+                let mut button = div()
                     .row()
-                    .h_px(ROW_H)
-                    .pl(26.0)
-                    .pr(8.0)
+                    .h_px(30.0)
+                    .px(8.0)
                     .gap(6.0)
-                    .items_center();
-                if unpublished {
-                    note = note.child(
-                        icon(IconKind::Clock)
-                            .size(13.0)
-                            .color(colors.text_placeholder),
-                    );
+                    .rounded(6.0)
+                    .items_center()
+                    .border(1.0, colors.text_accent.alpha(0.4))
+                    .on_click(self.id(index, Control::Main))
+                    .child(icon(IconKind::Plus).size(12.0).color(colors.text_accent))
+                    .child(grow(
+                        label("Create Pull Request")
+                            .size(12.0)
+                            .color(colors.text_accent)
+                            .truncate(),
+                    ));
+                if self.hovered_row() == Some(index) {
+                    button = button.bg(colors.ghost_element_hover);
                 }
-                note.child(grow(
+                self.mark_keyboard_row(
+                    index,
+                    div().col().h_px(rows::CREATE_PR_H).px(2.0).child(button),
+                )
+            }
+            Row::CardNote { text, .. } => div()
+                .row()
+                .h_px(rows::NOTE_H)
+                .pl(8.0)
+                .pr(8.0)
+                .items_center()
+                .child(grow(
                     label(text.clone())
                         .size(12.0)
                         .color(colors.text_placeholder)
                         .truncate(),
-                ))
-            }
+                )),
             Row::CommitGroup {
-                repo,
                 incoming,
                 count,
                 published,
+                ..
             } => {
-                let name = self.source_name_of(*repo);
-                let open =
-                    !self.is_folded(&format!("{}:{name}", if *incoming { "in" } else { "out" }));
-                let (title, arrow, color) = match (incoming, published) {
-                    (true, _) => ("On origin, not pulled", IconKind::ArrowDown, colors.warning),
-                    (false, true) => ("Not pushed", IconKind::ArrowUp, colors.text_accent),
-                    (false, false) => ("Not published", IconKind::ArrowUp, colors.text_accent),
+                let (title, arrow) = match (incoming, published) {
+                    (true, _) => ("On origin, not pulled", IconKind::ArrowDown),
+                    (false, true) => ("Not pushed", IconKind::ArrowUp),
+                    (false, false) => ("Not published", IconKind::ArrowUp),
                 };
-                self.row_base(index, ROW_H)
-                    .child(chevron(open))
-                    .child(grow(label(title).size(11.0).color(colors.text_placeholder)))
-                    .child(arrow_count(arrow, *count, color))
+                self.row_base(index, rows::SECTION_H)
+                    .gap(6.0)
+                    .child(icon(arrow).size(11.0).color(colors.text_muted))
+                    .child(label(title).size(12.0).medium().color(colors.text_muted))
+                    .child(grow(
+                        label(count.to_string())
+                            .size(12.0)
+                            .color(colors.text_placeholder),
+                    ))
             }
             Row::FilesHeader {
                 repo,
@@ -642,30 +650,30 @@ impl GitPanel {
                 deleted,
                 count,
             } => {
-                let name = self.source_name_of(*repo);
-                let open = !self.is_folded(&format!("rf:{name}"));
                 let base = self
                     .sources
                     .get(*repo)
                     .map(|source| source.default_branch.clone())
                     .unwrap_or_default();
-                self.row_base(index, ROW_H)
-                    .child(chevron(open))
-                    .child(grow(
-                        label("Files changed on this branch")
-                            .size(11.0)
-                            .color(colors.text_placeholder)
-                            .truncate(),
-                    ))
+                self.row_base(index, rows::SECTION_H)
+                    .gap(6.0)
+                    .child(icon(IconKind::FileGit).size(11.0).color(colors.text_muted))
                     .child(
-                        label(format!("vs {base}"))
-                            .size(11.0)
-                            .color(colors.text_placeholder),
+                        label("Files changed on this branch")
+                            .size(12.0)
+                            .medium()
+                            .color(colors.text_muted)
+                            .truncate(),
                     )
-                    .child(diff_stat(Some(*added), Some(*deleted), 11.0))
+                    .child(grow(
+                        label(format!("vs {base}"))
+                            .size(12.0)
+                            .color(colors.text_placeholder),
+                    ))
+                    .child(diff_stat(Some(*added), Some(*deleted), 11.5))
                     .child(
                         label(count.to_string())
-                            .size(11.0)
+                            .size(12.0)
                             .color(colors.text_placeholder),
                     )
             }
@@ -675,82 +683,107 @@ impl GitPanel {
                 incoming,
                 with_repo,
                 indent,
-                ..
+                compact,
+                in_card,
             } => {
                 let unpushed = !incoming
                     && scan
                         .repos
                         .get(*repo)
                         .is_some_and(|state| state.is_unpushed(&commit.sha));
-                let mut first = div().row().h_px(18.0).gap(6.0).items_center().child(grow(
-                    label(commit.subject.clone()).color(colors.text).truncate(),
-                ));
+                if *compact {
+                    return self
+                        .row_base(index, ROW_H)
+                        .pl(*indent)
+                        .child(avatar(&commit.author))
+                        .child(grow(
+                            label(commit.subject.clone())
+                                .size(12.0)
+                                .color(colors.text)
+                                .truncate(),
+                        ))
+                        .child(
+                            label(git::history::relative_time(commit.timestamp))
+                                .size(12.0)
+                                .color(colors.text_placeholder),
+                        )
+                        .child(
+                            label(commit.short_sha.clone())
+                                .size(11.5)
+                                .mono()
+                                .color(colors.text_placeholder),
+                        );
+                }
+                // A ring for a commit only this checkout has, a filled dot once origin has it too.
+                let dot = div().w_px(9.0).h_px(9.0).rounded(4.5);
+                let dot = if unpushed {
+                    dot.border(2.0, colors.text_accent)
+                } else {
+                    dot.bg(colors.text_accent)
+                };
+                let text = div()
+                    .col()
+                    .flex(1.0)
+                    .gap(2.0)
+                    .child(
+                        label(commit.subject.clone())
+                            .size(12.0)
+                            .color(colors.text)
+                            .truncate(),
+                    )
+                    .child(
+                        div()
+                            .row()
+                            .gap(4.0)
+                            .items_center()
+                            .child(
+                                label(format!(
+                                    "{} - {} -",
+                                    commit.author,
+                                    git::history::relative_time(commit.timestamp)
+                                ))
+                                .size(12.0)
+                                .color(colors.text_placeholder)
+                                .truncate(),
+                            )
+                            .child(
+                                label(commit.short_sha.clone())
+                                    .size(11.5)
+                                    .mono()
+                                    .color(colors.text_placeholder),
+                            ),
+                    );
+                let mut row = self
+                    .row_base(index, rows::COMMIT_ROW_H)
+                    .pl(*indent)
+                    .gap(10.0)
+                    .child(dot)
+                    .child(text);
                 if *with_repo {
-                    first = first.child(
+                    row = row.child(
                         div()
                             .row()
                             .h_px(16.0)
-                            .px(5.0)
-                            .rounded(3.0)
+                            .px(6.0)
+                            .rounded(8.0)
                             .items_center()
-                            .bg(colors.text.alpha(0.05))
+                            .bg(colors.element_hover)
                             .child(
                                 label(self.source_name_of(*repo))
                                     .size(10.5)
+                                    .mono()
                                     .color(colors.text_muted),
                             ),
                     );
                 }
                 if unpushed {
-                    first = first.child(
-                        div()
-                            .w_px(16.0)
-                            .h_px(16.0)
-                            .rounded(3.0)
-                            .items_center()
-                            .justify_center()
-                            .border(1.0, colors.border)
-                            .bg(colors.element_background)
-                            .child(icon(IconKind::ArrowUp).size(10.0).color(colors.text_accent)),
-                    );
+                    row = row.child(icon(IconKind::ArrowUp).size(11.0).color(colors.warning));
                 }
-                let second = div()
-                    .row()
-                    .h_px(16.0)
-                    .gap(6.0)
-                    .items_center()
-                    .child(avatar(&commit.author))
-                    .child(
-                        label(commit.author.clone())
-                            .size(11.5)
-                            .color(colors.text_muted)
-                            .truncate(),
-                    )
-                    .child(
-                        label(git::history::relative_time(commit.timestamp))
-                            .size(11.5)
-                            .color(colors.text_placeholder),
-                    )
-                    .child(
-                        label(commit.short_sha.clone())
-                            .size(11.0)
-                            .mono()
-                            .color(colors.text_placeholder),
-                    );
-                let mut row = div()
-                    .col()
-                    .h_px(rows::COMMIT_ROW_H)
-                    .pl(*indent)
-                    .pr(8.0)
-                    .pt(4.0)
-                    .gap(2.0)
-                    .on_click(self.id(index, Control::Main))
-                    .child(first)
-                    .child(second);
-                if self.hovered_row() == Some(index) {
-                    row = row.bg(colors.ghost_element_hover);
+                if *in_card {
+                    row
+                } else {
+                    div().row().px(6.0).child(row.flex(1.0))
                 }
-                self.mark_keyboard_row(index, row)
             }
             Row::CommitHeader => self.commit_header(scan),
         }
@@ -767,7 +800,7 @@ impl GitPanel {
         let colors = theme();
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("{}:{name}", if history { "h" } else { "c" }));
-        let height = if history { ROW_H } else { rows::REPO_HEADER_H };
+        let height = rows::REPO_HEADER_H;
         let mut header = self
             .row_base(index, height)
             .gap(7.0)
@@ -805,14 +838,21 @@ impl GitPanel {
                 .iter()
                 .filter(|commit| state.is_unpushed(&commit.sha))
                 .count();
-            if unpushed > 0 {
-                header = header.child(arrow_count(IconKind::ArrowUp, unpushed, colors.text_muted));
-            }
-            return header.child(
-                label(state.history.len().to_string())
-                    .size(11.0)
+            let commits = state.history.len();
+            return header
+                .child(arrow_count(
+                    IconKind::ArrowUp,
+                    unpushed,
+                    colors.text_placeholder,
+                ))
+                .child(
+                    label(format!(
+                        "{commits} commit{}",
+                        if commits == 1 { "" } else { "s" }
+                    ))
+                    .size(12.0)
                     .color(colors.text_placeholder),
-            );
+                );
         }
         let (added, deleted) = state
             .uncommitted
@@ -845,6 +885,9 @@ impl GitPanel {
         if !flat {
             row = with_guides(row, depth.saturating_sub(1))
                 .pl(10.0 + depth.saturating_sub(1) as f32 * INDENT);
+        } else if scope == Scope::Branch {
+            // Lines up with the commit rows above, under their group's title.
+            row = row.pl(22.0).pr(4.0);
         }
         let (folder, name) = match entry.path.rsplit_once('/') {
             Some((folder, name)) => (Some(folder.to_string()), name.to_string()),
@@ -863,7 +906,9 @@ impl GitPanel {
             };
             row = row.child(self.check(index, shown, tip));
         }
-        let name_color = if deleted || reviewed {
+        let name_color = if reviewed {
+            colors.text_placeholder
+        } else if deleted {
             colors.text_muted
         } else {
             colors.text
@@ -899,15 +944,13 @@ impl GitPanel {
                 .items_center()
                 .justify_center()
                 .on_click(eye)
-                .child(
-                    icon(IconKind::Eye)
-                        .size(13.0)
-                        .color(if reviewed || self.hot(eye) {
-                            colors.icon_muted
-                        } else {
-                            colors.icon_muted.alpha(0.25)
-                        }),
-                );
+                .child(icon(IconKind::Eye).size(13.0).color(if reviewed {
+                    colors.success
+                } else if self.hot(eye) {
+                    colors.icon_muted
+                } else {
+                    colors.text_placeholder
+                }));
             if self.hot(eye) {
                 button = tooltip(
                     button.bg(colors.element_selected),
@@ -919,7 +962,8 @@ impl GitPanel {
                     false,
                 );
             }
-            row = row.child(button);
+            // A branch file only says what is left to review; its stats live in the diff it opens.
+            return row.child(button);
         }
         row.child(diff_stat(entry.added, entry.deleted, 11.5))
             .child(status_icon(entry.status))
@@ -947,8 +991,7 @@ impl GitPanel {
         } else {
             branch
         })
-        .size(11.0)
-        .mono()
+        .size(12.0)
         .color(branch_color)
         .truncate();
         let mut trailing: Vec<Node> = Vec::new();
@@ -970,12 +1013,10 @@ impl GitPanel {
                 parts.push(chip_icon(IconKind::ExpandUp, tone));
             }
             if behind > 0 {
-                parts.push(chip_icon(IconKind::ArrowDown, tone));
-                parts.push(chip_text(behind.to_string(), tone));
+                parts.push(chip_count(IconKind::ArrowDown, behind, tone));
             }
             if ahead > 0 {
-                parts.push(chip_icon(IconKind::ArrowUp, tone));
-                parts.push(chip_text(ahead.to_string(), tone));
+                parts.push(chip_count(IconKind::ArrowUp, ahead, tone));
             }
             parts.push(chip_text(text.to_string(), tone));
             let button = div().child(chip(chip_id, tone, parts, self.hot(chip_id)));
@@ -992,9 +1033,9 @@ impl GitPanel {
         trailing.push(icon_button(menu, IconKind::ChevronDown, self.hot(menu), true).into());
         // A long repo name is cut to what the row leaves after the chevron, the action chip and the menu,
         // keeping room for a little of the branch; the chip and the menu always fit.
-        const GAP: f32 = 6.0;
-        let fixed = 8.0
-            + 6.0
+        const GAP: f32 = 7.0;
+        let fixed = 6.0
+            + 4.0
             + 12.0
             + GAP
             + trailing
@@ -1006,12 +1047,13 @@ impl GitPanel {
         let branch_room = 48.0;
         let mut header = self
             .row_base(index, rows::CARD_HEADER_H)
-            .pl(8.0)
-            .pr(6.0)
+            .pl(6.0)
+            .pr(4.0)
+            .gap(7.0)
             .child(chevron(open));
         header = if name_w + GAP + branch_room <= room {
             header
-                .child(label(name).weight(600).color(colors.text))
+                .child(label(name).size(12.0).weight(600).color(colors.text))
                 .child(grow(branch_label))
         } else {
             header
@@ -1019,7 +1061,13 @@ impl GitPanel {
                     div()
                         .row()
                         .w_px((room - GAP - branch_room).max(40.0).min(name_w))
-                        .child(label(name).weight(600).color(colors.text).truncate()),
+                        .child(
+                            label(name)
+                                .size(12.0)
+                                .weight(600)
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                 )
                 .child(grow(branch_label))
         };
@@ -1032,67 +1080,93 @@ impl GitPanel {
     fn pull_request_block(&self, index: usize, _repo: usize, pr: &pom_forge::PullRequest) -> Div {
         let colors = theme();
         let hovered = self.hovered_row() == Some(index);
-        let failing = pr.checks == "fail";
-        let (kind, color) = if failing {
-            (IconKind::XCircle, colors.error)
-        } else if pr.state == "MERGED" {
-            (IconKind::Merged, workspace::PrSeverity::Merged.color())
-        } else {
-            (IconKind::PullRequest, pr_color(pr))
-        };
-        let external = self.id(index, Control::External);
-        let mut first = div()
-            .row()
-            .h_px(26.0)
-            .pl(26.0)
-            .pr(8.0)
-            .gap(6.0)
-            .items_center()
-            .child(icon(kind).size(13.0).color(color))
-            .child(grow(
-                label(format!("#{} {}", pr.number, pr.title))
-                    .size(12.0)
-                    .color(colors.text)
-                    .truncate(),
-            ));
-        if hovered {
-            let mut link = icon_button(external, IconKind::ArrowUpRight, self.hot(external), true);
-            if self.hot(external) {
-                link = tooltip(link, "Open in Browser", false);
-            }
-            first = first.child(link);
-        }
         let (checks, checks_color) = match pr.checks.as_str() {
             "fail" => ("CI failed", colors.error),
             "pending" => ("Checks pending", colors.warning),
             "pass" => ("Checks passing", colors.success),
             _ => ("No checks", colors.text_placeholder),
         };
-        let (review, review_color) = match pr.review.as_str() {
-            "approved" => ("Approved", colors.success),
-            "changes" => ("Changes requested", colors.error),
-            _ => ("Review pending", colors.text_placeholder),
+        let kind = if pr.state == "MERGED" {
+            IconKind::Merged
+        } else {
+            IconKind::PullRequest
         };
-        let mut second = div().row().h_px(20.0).pl(26.0).gap(8.0).items_center();
+        let tone = if pr.state == "MERGED" {
+            workspace::PrSeverity::Merged.color()
+        } else if pr.conflict {
+            colors.error
+        } else {
+            checks_color
+        };
+        let review = match pr.review.as_str() {
+            "approved" => "Approved",
+            "changes" => "Changes requested",
+            _ => "Review pending",
+        };
+        let dash = || label("-").size(12.0).color(colors.text_placeholder);
+        let mut second = div().row().h_px(18.0).gap(6.0).items_center();
         if pr.conflict {
-            second = second.child(label("Merge conflict").size(12.0).color(colors.error));
+            second = second
+                .child(label("Merge conflict").size(12.0).color(colors.error))
+                .child(dash());
         }
         second = second
             .child(label(checks).size(12.0).color(checks_color))
-            .child(label(review).size(12.0).color(review_color));
+            .child(dash())
+            .child(label(review).size(12.0).color(colors.text));
         if pr.is_draft {
-            second = second.child(label("Draft").size(12.0).color(colors.text_placeholder));
+            second = second
+                .child(dash())
+                .child(label("Draft").size(12.0).color(colors.text_placeholder));
         }
-        let mut block = div()
+        let text = div()
             .col()
-            .h_px(rows::PULL_REQUEST_H)
-            .on_click(self.id(index, Control::Main))
-            .child(first)
+            .flex(1.0)
+            .gap(1.0)
+            .child(
+                label(format!("#{} {}", pr.number, pr.title))
+                    .size(12.0)
+                    .medium()
+                    .color(colors.text)
+                    .truncate(),
+            )
             .child(second);
+        let mut card = div()
+            .row()
+            .h_px(rows::PULL_REQUEST_H - 1.0)
+            .px(8.0)
+            .gap(8.0)
+            .rounded(6.0)
+            .items_center()
+            .bg(if hovered {
+                colors.element_hover
+            } else {
+                colors.element_background
+            })
+            .on_click(self.id(index, Control::Main))
+            .child(icon(kind).size(14.0).color(tone))
+            .child(text);
         if hovered {
-            block = block.bg(colors.ghost_element_hover);
+            let external = self.id(index, Control::External);
+            let mut link = icon_button(external, IconKind::ArrowUpRight, self.hot(external), true);
+            if self.hot(external) {
+                link = tooltip(link, "Open in Browser", false);
+            }
+            card = card.child(link);
         }
-        self.mark_keyboard_row(index, block)
+        // The pull request sits on a raised card of its own inside the repo's card.
+        self.mark_keyboard_row(
+            index,
+            div().col().h_px(rows::PULL_REQUEST_H).px(2.0).child(
+                // A line under the card stands in for the drop shadow that lifts it off the repo's card.
+                div()
+                    .col()
+                    .pb(1.0)
+                    .rounded(6.0)
+                    .bg(colors.border)
+                    .child(card),
+            ),
+        )
     }
 
     fn commit_header(&self, scan: &Scan) -> Div {
@@ -1100,56 +1174,59 @@ impl GitPanel {
         let Some(opened) = &self.opened else {
             return div();
         };
-        let where_it_is = if opened.incoming {
-            "on origin, not pulled yet"
+        let (where_it_is, where_color) = if opened.incoming {
+            ("on origin, not pulled yet", colors.warning)
         } else if scan
             .repos
             .get(opened.repo)
             .is_some_and(|state| state.is_unpushed(&opened.commit.sha))
         {
-            "not pushed yet"
+            ("not pushed yet", colors.warning)
         } else {
-            "pushed"
+            ("pushed", colors.text_placeholder)
         };
-        div()
+        let card = div()
             .col()
-            .h_px(rows::COMMIT_HEADER_H)
-            .px(10.0)
-            .pt(6.0)
-            .gap(6.0)
+            .p(8.0)
+            .gap(4.0)
+            .rounded(10.0)
+            .bg(colors.editor_background)
             .child(
-                div().row().h_px(20.0).items_center().child(grow(
-                    label(opened.commit.subject.clone())
-                        .size(14.0)
-                        .color(colors.text)
-                        .truncate(),
-                )),
+                label(opened.commit.subject.clone())
+                    .size(12.0)
+                    .weight(600)
+                    .color(colors.text)
+                    .truncate(),
             )
             .child(
                 div()
                     .row()
-                    .h_px(16.0)
-                    .gap(10.0)
+                    .gap(4.0)
                     .items_center()
                     .child(
-                        label(opened.commit.author.clone())
-                            .size(12.0)
-                            .color(colors.text_muted)
-                            .truncate(),
-                    )
-                    .child(
-                        label(git::history::relative_time(opened.commit.timestamp))
-                            .size(12.0)
-                            .color(colors.text_muted),
+                        label(format!(
+                            "{} - {} -",
+                            opened.commit.author,
+                            git::history::relative_time(opened.commit.timestamp)
+                        ))
+                        .size(12.0)
+                        .color(colors.text_placeholder)
+                        .truncate(),
                     )
                     .child(
                         label(opened.commit.short_sha.clone())
-                            .size(11.0)
+                            .size(11.5)
                             .mono()
                             .color(colors.text_placeholder),
-                    )
-                    .child(label(where_it_is).size(12.0).color(colors.text_muted)),
+                    ),
             )
+            .child(label(where_it_is).size(12.0).color(where_color));
+        div()
+            .col()
+            .h_px(rows::COMMIT_HEADER_H)
+            .px(6.0)
+            .pb(6.0)
+            .child(card)
     }
 
     /// The workspace branch (with how many repos are on it), a link on the right, and below it a chip naming
@@ -1518,17 +1595,5 @@ impl GitPanel {
             height += FOOTER_GAP + LAST_COMMIT_H;
         }
         (rows, height)
-    }
-}
-
-fn pr_color(pr: &pom_forge::PullRequest) -> Rgba {
-    let colors = theme();
-    match (pr.state.as_str(), pr.is_draft) {
-        ("MERGED", _) => workspace::PrSeverity::Merged.color(),
-        ("CLOSED", _) => colors.error,
-        (_, true) => colors.text_muted,
-        _ if pr.conflict || pr.checks == "fail" || pr.review == "changes" => colors.error,
-        _ if pr.checks == "pending" || pr.review == "review" => colors.warning,
-        _ => colors.success,
     }
 }

@@ -403,9 +403,9 @@ fn history_groups_by_repo_or_runs_as_one_timeline() {
     panel.click(options);
     menu_pick(&mut panel, "One Timeline");
     let shown = texts(&mut panel);
-    assert!(shown.contains("Today"), "{shown}");
+    assert!(shown.contains("TODAY"), "{shown}");
     assert_eq!(
-        shown.matches("|api|").count(),
+        shown.split('|').filter(|text| *text == "api").count(),
         2,
         "each row names its repo: {shown}"
     );
@@ -713,7 +713,7 @@ fn a_pull_request_block_opens_it_in_the_app() {
     panel.set_tab(Tab::Remote);
     let shown = texts(&mut panel);
     assert!(
-        shown.contains("#42 Login page|CI failed|Review pending"),
+        shown.contains("#42 Login page|CI failed|-|Review pending"),
         "{shown}"
     );
     click(&mut panel, "#42 Login page");

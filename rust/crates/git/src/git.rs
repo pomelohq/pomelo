@@ -10,11 +10,13 @@ use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
 
 mod blame;
 mod branch_changes;
+mod line_staging;
 pub use blame::{blame, entry_for_row, inline_text, relative_timestamp, BlameEntry};
 pub use branch_changes::{
     branch_changes, discard_uncommitted, file_at, uncommitted_changes, ChangeStatus, FileChange,
     RepoChanges,
 };
+pub use line_staging::{index_with_lines, lines_to_stage};
 pub mod history;
 pub mod working_copy;
 
@@ -83,7 +85,7 @@ pub struct DiffHunk {
     pub staged: bool,
 }
 
-fn line_count(text: &str) -> usize {
+pub(crate) fn line_count(text: &str) -> usize {
     lines(text).count()
 }
 

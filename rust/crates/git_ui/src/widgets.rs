@@ -289,21 +289,23 @@ pub(crate) enum ChipTone {
 pub(crate) fn chip(id: u64, tone: ChipTone, parts: Vec<Node>, hot: bool) -> Node {
     let colors = theme();
     let fill = match tone {
-        ChipTone::Push => colors.text_accent.alpha(0.12),
-        ChipTone::Pull => colors.warning.alpha(0.12),
-        ChipTone::Quiet => Rgba::TRANSPARENT,
+        ChipTone::Push | ChipTone::Pull => colors.accent_fill,
+        ChipTone::Quiet => colors.element_hover,
     };
     let mut chip = div()
         .row()
-        .h_px(20.0)
-        .px(7.0)
-        .gap(3.0)
-        .rounded(4.0)
+        .h_px(24.0)
+        .px(10.0)
+        .gap(5.0)
+        .rounded(12.0)
         .items_center()
         .on_click(id)
-        .bg(if hot { fill.alpha(fill.a + 0.08) } else { fill });
-    if tone == ChipTone::Quiet {
-        chip = chip.border(1.0, colors.border_variant);
+        .bg(fill);
+    if hot {
+        chip = chip.bg(match tone {
+            ChipTone::Quiet => colors.element_active,
+            _ => colors.accent_fill.alpha(0.85),
+        });
     }
     for part in parts {
         chip = chip.child(part);
@@ -312,7 +314,29 @@ pub(crate) fn chip(id: u64, tone: ChipTone, parts: Vec<Node>, hot: bool) -> Node
 }
 
 pub(crate) fn chip_text(text: String, tone: ChipTone) -> Node {
-    label(text).size(11.5).color(tone_color(tone)).into()
+    let mut text = label(text).size(12.0).color(tone_color(tone));
+    text = if tone == ChipTone::Quiet {
+        text.medium()
+    } else {
+        text.weight(600)
+    };
+    text.into()
+}
+
+/// A count inside a chip, in the code font so the digits line up.
+pub(crate) fn chip_count(arrow: IconKind, count: u32, tone: ChipTone) -> Node {
+    div()
+        .row()
+        .gap(1.0)
+        .items_center()
+        .child(chip_icon(arrow, tone))
+        .child(
+            label(count.to_string())
+                .size(11.0)
+                .mono()
+                .color(tone_color(tone)),
+        )
+        .into()
 }
 
 pub(crate) fn chip_icon(kind: IconKind, tone: ChipTone) -> Node {
@@ -322,42 +346,31 @@ pub(crate) fn chip_icon(kind: IconKind, tone: ChipTone) -> Node {
 fn tone_color(tone: ChipTone) -> Rgba {
     let colors = theme();
     match tone {
-        ChipTone::Push => colors.text_accent,
-        ChipTone::Pull => colors.warning,
-        ChipTone::Quiet => colors.text_placeholder,
+        ChipTone::Push | ChipTone::Pull => colors.on_accent,
+        ChipTone::Quiet => colors.text_muted,
     }
 }
 
-/// A round avatar with the author's initial, tinted from the name so each author keeps a color.
 pub(crate) fn avatar(author: &str) -> Node {
     let colors = theme();
-    let palette = [
-        colors.text_accent,
-        colors.success,
-        colors.warning,
-        colors.version_control_deleted,
-        colors.info,
-    ];
-    let hash = author.bytes().fold(0usize, |hash, byte| {
-        hash.wrapping_mul(31).wrapping_add(byte as usize)
-    });
-    let tint = palette
-        .get(hash % palette.len())
-        .copied()
-        .unwrap_or(colors.text_accent);
     let initial: String = author
         .chars()
         .next()
         .map(|first| first.to_uppercase().collect())
         .unwrap_or_default();
     div()
-        .w_px(14.0)
-        .h_px(14.0)
-        .rounded(7.0)
+        .w_px(18.0)
+        .h_px(18.0)
+        .rounded(9.0)
         .items_center()
         .justify_center()
-        .bg(tint)
-        .child(label(initial).size(8.0).color(colors.background))
+        .bg(colors.element_hover)
+        .child(
+            label(initial)
+                .size(10.0)
+                .weight(600)
+                .color(colors.text_muted),
+        )
         .into()
 }
 
