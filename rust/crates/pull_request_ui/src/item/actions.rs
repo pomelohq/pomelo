@@ -172,6 +172,13 @@ impl PrItem {
         true
     }
 
+    /// The merge section after Merge was pressed once, asking to confirm; for the snapshot tool.
+    pub fn confirming_merge_box(&mut self, width: f32) -> Option<Node> {
+        self.confirm_merge = true;
+        let pr = self.pr.clone()?;
+        self.merge_box(&pr, width)
+    }
+
     pub(super) fn merge_box(&self, pr: &PullRequest, width: f32) -> Option<Node> {
         if pr.state != "OPEN" {
             return None;
@@ -227,13 +234,15 @@ impl PrItem {
         let mut main = div()
             .row()
             .h_px(30.0)
-            .px(12.0)
+            .pl(12.0)
+            .pr(4.0)
             .items_center()
             .child(label(text).size(12.0).weight(600).color(ink));
         let mut chevron = div()
             .row()
             .h_px(30.0)
-            .px(8.0)
+            .pl(4.0)
+            .pr(12.0)
             .items_center()
             .child(icon(IconKind::ChevronDown).size(12.0).color(ink));
         if enabled {
@@ -258,8 +267,7 @@ impl PrItem {
             .row()
             .w_px(width)
             .px(16.0)
-            .pt(11.0)
-            .pb(13.0)
+            .py(12.0)
             .gap(12.0)
             .items_center()
             .child(icon(kind).size(16.0).color(color))
@@ -270,16 +278,24 @@ impl PrItem {
                     .child(
                         div()
                             .row()
-                            .h_px(15.0)
+                            .h_px(16.0)
                             .items_center()
                             .child(label(title).size(12.0).weight(600).color(colors.text)),
                     )
-                    .child(
-                        label(detail)
+                    .child({
+                        let detail_label = label(detail.clone())
                             .size(12.0)
-                            .color(colors.text_placeholder)
-                            .wrap(text_w),
-                    ),
+                            .color(colors.text_placeholder);
+                        // One line keeps the 16px rhythm of the title above; a longer one wraps.
+                        if ui::measure_text_width(&detail, 12.0, false, ui::ui_font_weight())
+                            / ui::ui_text_scale()
+                            <= text_w
+                        {
+                            Node::from(div().row().h_px(16.0).items_center().child(detail_label))
+                        } else {
+                            detail_label.wrap(text_w).into()
+                        }
+                    }),
             )
             .child(actions);
         let mut column = div().col().gap(6.0).child(raised(row, 10.0));

@@ -491,6 +491,7 @@ impl BranchPicker {
         let remote = matches!(entry, Entry::Branch(info) if info.remote);
         let mut title_row = div()
             .row()
+            .h_px(20.0)
             .items_center()
             .gap(8.0)
             .child(icon(kind).size(14.0).color(icon_color))
@@ -512,7 +513,7 @@ impl BranchPicker {
         let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
         if !subtitle.is_empty() {
             text = text.child(
-                div().row().pl(22.0).items_center().child(
+                div().row().h_px(16.0).pl(22.0).items_center().child(
                     label(subtitle)
                         .size(12.0)
                         .color(colors.text_placeholder)
@@ -527,7 +528,7 @@ impl BranchPicker {
             .rounded(6.0)
             .on_click(ENTRY_BASE + index as u64)
             .bg(if index == self.highlighted {
-                colors.element_selected
+                colors.overlay_selected
             } else {
                 Rgba::TRANSPARENT
             })
