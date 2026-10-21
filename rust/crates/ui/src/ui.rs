@@ -10,7 +10,7 @@ pub mod theme_file;
 pub use app::*;
 pub use components::*;
 pub use element::*;
-pub use key_binding::render_keystroke;
+pub use key_binding::{render_keystroke, render_keystroke_in};
 pub use theme::*;
 
 // Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).

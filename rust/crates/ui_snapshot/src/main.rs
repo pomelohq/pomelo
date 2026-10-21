@@ -20,6 +20,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // The main window as the window boards draw it: rail folded, the Files tree, three tabs, the agent dock.
         "window-proposed" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
         "project-sidebar-window" => (0, &[("MAINVIEW", "window")]),
+        "project-sidebar-window-folded" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
+        // The strip over an agent someone else drives while a tool call waits, at the dock's width.
+        "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
         _ => return None,
     })
 }
@@ -1431,6 +1434,45 @@ fn main() -> anyhow::Result<()> {
     }; // logical
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
+    if std::env::var("AGENTSTRIP").is_ok() {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        workspace::keymap::set_key_hints(&[
+            (workspace::keymap::Action::AgentAllow, "cmd-k y".into()),
+            (workspace::keymap::Action::AgentDeny, "cmd-k n".into()),
+        ]);
+        let pending = pom_agent::PendingApproval {
+            request: "1".into(),
+            tool: "Bash".into(),
+            summary: "bundle exec rspec spec/requests/users_spec.rb".into(),
+        };
+        let node = terminal_ui::lease_strip(0, Some("an orchestrator"), Some(&pending), lw)
+            .unwrap_or_else(|| ui::div().into());
+        let painted = ui::render(
+            &node,
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().panel_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(mode) = std::env::var("MAINVIEW") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -2142,6 +2184,47 @@ fn main() -> anyhow::Result<()> {
             let modal = workspaces_ui::RenameWorkspaceModal::new("feat-login", "Login page", namer);
             entity.update(app.app_mut(), |view, _| {
                 view.open_window_modal(Box::new(modal))
+            });
+        }
+        // The window boards group the list by ticket status and show one workspace being created.
+        if window {
+            use workspace::{OpStatus, StageState, WorkspaceOp};
+            let stages = [
+                "Validating config and hosts",
+                "Provisioning workspace",
+                "Creating git worktrees",
+                "Configuring repos",
+                "Running setup commands",
+                "Seeding databases",
+                "Starting services",
+                "Saving the baseline snapshot",
+            ];
+            let op = WorkspaceOp {
+                id: 1,
+                branch: "proj-118-export-audit-log".into(),
+                title: "PROJ-118 Export audit log".into(),
+                status: OpStatus::Running,
+                stages: stages
+                    .iter()
+                    .enumerate()
+                    .map(|(at, name)| {
+                        let state = match at {
+                            0..=3 => StageState::Done,
+                            4 => StageState::Running,
+                            _ => StageState::Pending,
+                        };
+                        (name.to_string(), state)
+                    })
+                    .collect(),
+                retryable: true,
+                ..Default::default()
+            };
+            let folded: Vec<String> = std::env::var("FOLDED")
+                .map(|keys| keys.split(',').map(str::to_string).collect())
+                .unwrap_or_default();
+            entity.update(app.app_mut(), |view, _| {
+                view.set_workspace_grouping(Some(workspace::Grouping::from_keys(&[], &folded)));
+                view.set_workspace_ops(vec![op]);
             });
         }
         // MAINVIEW=sidebar GROUPED=1: the list grouped by ticket status, Done folded.

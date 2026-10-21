@@ -1,4 +1,4 @@
-use crate::{div, icon, label, theme, IconKind, Node};
+use crate::{div, icon, label, theme, IconKind, Node, Rgba};
 
 /// Split `cmd-shift-k` into its modifiers and key; the key may itself be `-` (`ctrl--`).
 fn parse_keystroke(keystroke: &str) -> (Vec<&str>, &str) {
@@ -71,21 +71,22 @@ pub fn keystroke_words(keystroke: &str) -> String {
 /// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key; Linux and
 /// Windows spell it out instead.
 pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
+    render_keystroke_in(keystroke, size, theme().text_muted)
+}
+
+/// [`render_keystroke`] in `muted`, for keys drawn on a filled button.
+pub fn render_keystroke_in(keystroke: &str, size: f32, muted: Rgba) -> Node {
     if !cfg!(target_os = "macos") {
         let words: Vec<String> = keystroke.split_whitespace().map(keystroke_words).collect();
-        return label(words.join(", "))
-            .size(size)
-            .color(theme().text_muted)
-            .into();
+        return label(words.join(", ")).size(size).color(muted).into();
     }
     if keystroke.trim().contains(' ') {
-        let mut chord = div().row().items_center().gap(size * 0.4);
+        let mut chord = div().row().items_center().gap(size * 0.45);
         for stroke in keystroke.split_whitespace() {
-            chord = chord.child(render_keystroke(stroke, size));
+            chord = chord.child(render_keystroke_in(stroke, size, muted));
         }
         return chord.into();
     }
-    let muted = theme().text_muted;
     let (modifiers, key) = parse_keystroke(keystroke);
     let glyph = |kind: IconKind| -> Node {
         div()
@@ -97,7 +98,7 @@ pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
             .child(icon(kind).size(size).color(muted))
             .into()
     };
-    let mut row = div().row().items_center();
+    let mut row = div().row().items_center().gap(1.0);
     for (name, kind) in [
         ("ctrl", IconKind::Control),
         ("alt", IconKind::Option),
@@ -111,16 +112,9 @@ pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
     if let Some(kind) = key_icon(key) {
         return row.child(glyph(kind)).into();
     }
-    let text = key_label(key);
-    // The key keeps its own line height and the row centers it on the glyphs; boxed to the glyph size it
-    // would sit below them.
+    // The key keeps its own line height and the row centers it on the glyphs; unboxed it would sit below them.
     let key_box = div().row().items_center();
-    let key_box = if text.chars().count() == 1 {
-        key_box.w_px(size).justify_center()
-    } else {
-        key_box.px(2.0)
-    };
-    row.child(key_box.child(label(text).size(size).color(muted)))
+    row.child(key_box.child(label(key_label(key)).size(size).medium().color(muted)))
         .into()
 }
 

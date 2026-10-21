@@ -5761,6 +5761,7 @@ dependencies = [
  "settings",
  "settings_ui",
  "terminal",
+ "terminal_ui",
  "ui",
  "workspace",
  "workspace_hack",

@@ -399,7 +399,7 @@ pub trait SidePanelView: 'static {
     }
 }
 
-/// What a workspace's coding agent is doing, as the dot on its row shows it.
+/// What a workspace's coding agent is doing, as its tile and row show it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentDot {
     Idle,
@@ -410,16 +410,6 @@ pub enum AgentDot {
 }
 
 impl AgentDot {
-    fn color(self) -> Rgba {
-        match self {
-            AgentDot::Idle => theme().success,
-            AgentDot::Thinking => theme().warning,
-            AgentDot::ToolUse => theme().info,
-            AgentDot::Compacting => theme().text_accent,
-            AgentDot::AwaitingInput => theme().error,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             AgentDot::Idle => "Idle",
@@ -518,26 +508,35 @@ impl Panel for ProjectPanel {
     }
 
     fn render(&mut self) -> Node {
+        let colors = theme();
         let header = div()
             .row()
+            .h_px(32.0)
+            .pl(8.0)
+            .pr(2.0)
             .items_center()
             .justify_between()
-            .child(panel_header(self.title()))
+            .child(
+                label(self.title())
+                    .size(11.0)
+                    .weight(600)
+                    .color(colors.text_placeholder),
+            )
             .child(
                 div()
                     .row()
                     .items_center()
                     .justify_center()
-                    .w_px(22.0)
-                    .h_px(22.0)
+                    .w_px(24.0)
+                    .h_px(24.0)
                     .rounded(4.0)
                     .on_click(crate::WORKSPACE_NEW)
-                    .child(icon(IconKind::Plus).size(14.0).color(theme().icon_muted)),
+                    .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
             );
-        let mut col = div().col().px(10.0).py(10.0).gap(2.0).child(header);
+        let mut col = div().col().px(8.0).pt(4.0).pb(8.0).gap(2.0).child(header);
         let upkeep = upkeep_of(&self.ops, &self.expanded, self.upkeep_done);
         // Panel padding and a row's own insets.
-        let inner_w = (self.width - 20.0 - 26.0).max(120.0);
+        let inner_w = (self.width - 16.0 - 16.0).max(120.0);
         let row_node = |row: &WorkspaceRow, upkeep: Upkeep<'_>| {
             let id = crate::WORKSPACE_ROW_BASE + row.index as u64;
             workspace_row(
@@ -613,6 +612,7 @@ fn sections<'r>(rows: &'r [WorkspaceRow], grouping: Option<&crate::Grouping>) ->
     out
 }
 
+/// A group's header in the list: its name in small caps and its count, with a chevron only while folded.
 fn group_header(
     group: crate::TicketGroup,
     count: usize,
@@ -623,79 +623,77 @@ fn group_header(
     let id = crate::WORKSPACE_GROUP_BASE + group.index() as u64;
     let mut header = div()
         .row()
-        .h_px(24.0)
+        .h_px(20.0)
         .px(8.0)
         .gap(6.0)
         .items_center()
-        .rounded(5.0)
+        .rounded(4.0)
         .on_click(id)
         .child(
-            icon(if folded {
-                IconKind::ChevronRight
-            } else {
-                IconKind::ChevronDown
-            })
-            .size(10.0)
-            .color(colors.text_placeholder),
-        )
-        .child(
-            label(group.label())
-                .size(11.0)
+            label(group.label().to_uppercase())
+                .size(10.5)
+                .weight(600)
                 .color(colors.text_placeholder),
         )
-        .child(div().row().flex(1.0))
         .child(
             label(count.to_string())
-                .size(11.0)
+                .size(10.5)
+                .color(with_alpha(colors.text_placeholder, 0.8)),
+        );
+    if folded {
+        header = header.child(
+            icon(IconKind::ChevronRight)
+                .size(10.0)
                 .color(colors.text_placeholder),
         );
+    }
     if hovered == Some(id) {
         header = header.bg(colors.element_hover);
     }
-    div().col().pt(8.0).child(header).into()
+    div().col().pt(12.0).child(header).into()
 }
 
-/// A group on the rail: a rule in its colour either side of its count; dimmer and on a chip when folded.
-fn group_marker(
-    group: crate::TicketGroup,
-    count: usize,
-    folded: bool,
-    cell_w: f32,
-    hovered: bool,
-) -> Node {
-    let color = group.color();
-    let rule_alpha = if folded { 0.35 } else { 0.7 };
-    let rule = || {
-        div()
-            .row()
-            .flex(1.0)
-            .h_px(2.0)
-            .rounded(1.0)
-            .bg(with_alpha(color, rule_alpha))
-    };
+/// A group on the rail: a hairline above its tiles, or a chip with its count once folded away.
+fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
+    let colors = theme();
     let mut marker = div()
         .row()
-        .w_px(36.0)
-        .gap(4.0)
         .items_center()
-        .child(rule())
-        .child(label(count.to_string()).size(9.5).weight(600).color(color))
-        .child(rule());
-    // The padding is always there so hovering or folding only changes the fill, never the rail's layout.
-    marker = marker.py(3.0).rounded(6.0);
-    if hovered {
-        marker = marker.bg(theme().element_hover);
-    } else if folded {
-        marker = marker.bg(with_alpha(theme().text, 0.04));
-    }
-    div()
-        .row()
-        .w_px(cell_w)
-        .pt(4.0)
         .justify_center()
-        .on_click(crate::WORKSPACE_GROUP_BASE + group.index() as u64)
-        .child(marker)
-        .into()
+        .rounded(9.0)
+        .on_click(id);
+    if folded {
+        marker = marker
+            .h_px(18.0)
+            .px(6.0)
+            .gap(2.0)
+            .bg(if hovered {
+                colors.element_hover
+            } else {
+                with_alpha(colors.text, 0.05)
+            })
+            .child(
+                icon(IconKind::ChevronRight)
+                    .size(9.0)
+                    .color(colors.text_placeholder),
+            )
+            .child(
+                label(count.to_string())
+                    .size(10.0)
+                    .medium()
+                    .color(colors.text_placeholder),
+            );
+    } else {
+        // The hairline keeps a taller hit area so the group stays easy to fold from the rail.
+        marker = marker
+            .w_px(36.0)
+            .h_px(9.0)
+            .child(div().w_px(20.0).h_px(1.0).bg(colors.border));
+        if hovered {
+            marker = marker.bg(colors.element_hover);
+        }
+    }
+    div().row().pt(4.0).justify_center().child(marker).into()
 }
 
 /// What a rail cell calls a workspace, as two short lines. A workspace with a Jira ticket shows its project
@@ -736,15 +734,16 @@ pub fn rail_label(row: &WorkspaceRow) -> (String, String) {
     }
 }
 
-/// The WORKSPACES panel folded to a rail: a new-workspace button, then one cell per workspace with its short
-/// label and, under it, its agent and running-services dots. Cells click like the rows they stand for.
+/// The WORKSPACES panel folded to a rail: a new-workspace button, then one tile per workspace that only raises
+/// what needs you. Cells click like the rows they stand for.
 pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
     let colors = theme();
-    let cell_w = (width - 8.0).max(24.0);
+    let cell_w = width.max(24.0);
     let mut column = div()
         .col()
         .w_px(width)
-        .py(8.0)
+        .pt(4.0)
+        .pb(8.0)
         .gap(4.0)
         .items_center()
         .child(
@@ -752,8 +751,8 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 .row()
                 .items_center()
                 .justify_center()
-                .w_px(cell_w)
-                .h_px(26.0)
+                .w_px(RAIL_TILE)
+                .h_px(28.0)
                 .rounded(4.0)
                 .on_click(crate::WORKSPACE_NEW)
                 .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
@@ -774,7 +773,9 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
         for (position, op) in list.ops.iter().enumerate().filter(|(_, op)| !op.quiet) {
             column = column.child(op_tile(op, position, cell_w));
         }
-        column = column.child(div().w_px(20.0).h_px(1.0).bg(theme().border_variant));
+        if list.grouping.is_none() {
+            column = column.child(div().w_px(20.0).h_px(1.0).bg(colors.border));
+        }
     }
     for section in sections(list.rows, list.grouping) {
         column = column.child(match section {
@@ -783,13 +784,10 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 group,
                 count,
                 folded,
-            } => group_marker(
-                group,
-                count,
-                folded,
-                cell_w,
-                list.hovered == Some(crate::WORKSPACE_GROUP_BASE + group.index() as u64),
-            ),
+            } => {
+                let id = crate::WORKSPACE_GROUP_BASE + group.index() as u64;
+                group_marker(count, folded, id, list.hovered == Some(id))
+            }
         });
     }
     column.into()
@@ -841,39 +839,12 @@ fn with_alpha(color: Rgba, alpha: f32) -> Rgba {
     Rgba::new(color.r, color.g, color.b, alpha)
 }
 
-fn trouble_icon(trouble: crate::PrTrouble) -> IconKind {
-    match trouble {
-        crate::PrTrouble::Pending => IconKind::Clock,
-        crate::PrTrouble::ChangesRequested => IconKind::Undo,
-        crate::PrTrouble::ChecksFailed => IconKind::Close,
-        crate::PrTrouble::Conflict => IconKind::Warning,
-    }
-}
-
-fn trouble_badge(trouble: crate::PrTrouble) -> IconKind {
-    match trouble {
-        crate::PrTrouble::ChecksFailed => IconKind::BadgeClose,
-        crate::PrTrouble::Conflict => IconKind::BadgeAlert,
-        other => trouble_icon(other),
-    }
-}
-
 /// A PR shown on the default branch says nothing (every PR targets it), so main never carries one.
 fn shown_pr(row: &WorkspaceRow) -> Option<crate::PrSummary> {
     row.pr.filter(|_| row.index != 0)
 }
 
-fn category_color(category: &str) -> Rgba {
-    let colors = theme();
-    match category {
-        "done" => colors.success,
-        "indeterminate" => colors.text_accent,
-        _ => colors.text_placeholder,
-    }
-}
-
-/// One workspace folded into a tile that only raises what needs you: a ring while its agent works or waits,
-/// a pill with the reason and count when its PRs are in trouble, a strip along the bottom while services run.
+/// One workspace on the rail: its tile, with the bar at the left edge marking the current one.
 fn rail_cell(
     row: &WorkspaceRow,
     current: bool,
@@ -881,61 +852,8 @@ fn rail_cell(
     cell_w: f32,
     upkeep: Upkeep<'_>,
 ) -> Node {
-    const TILE: f32 = 36.0;
     let colors = theme();
-    let (top, bottom) = rail_label(row);
-    let name = if bottom.is_empty() { top } else { bottom };
-    let size = if name.chars().count() > 4 { 9.5 } else { 11.0 };
-    let mut tile = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(TILE)
-        .h_px(TILE)
-        .rounded(8.0)
-        .bg(if current {
-            colors.element_selected
-        } else if hovered {
-            colors.element_hover
-        } else {
-            with_alpha(colors.text, 0.04)
-        })
-        .child(
-            label(name)
-                .size(size)
-                .medium()
-                .color(if current || hovered {
-                    colors.text
-                } else {
-                    colors.text_muted
-                }),
-        );
-    if let Some(agent) = row.agent.filter(|agent| *agent != AgentDot::Idle) {
-        tile = tile.border(1.5, agent.color());
-        if agent == AgentDot::AwaitingInput && !current {
-            tile = tile.bg(with_alpha(agent.color(), 0.12));
-        }
-    }
-    if row.running > 0 {
-        tile = tile.pin(
-            Corner::BottomLeft,
-            8.0,
-            -3.0,
-            TILE - 16.0,
-            2.0,
-            div().rounded(1.0).bg(colors.success),
-        );
-    }
-    if let Some((pr, trouble)) =
-        shown_pr(row).and_then(|pr| pr.trouble.map(|trouble| (pr, trouble)))
-    {
-        tile = pin_pill(
-            tile,
-            Some(trouble_badge(trouble)),
-            Some(pr.count.to_string()),
-            trouble.color(),
-        );
-    }
+    let mut tile = workspace_tile(row, RAIL_TILE, current, hovered, false);
     // Main never shows PRs, so its corner carries its background update instead.
     tile = match upkeep {
         Upkeep::Running(_) => pin_pill(tile, Some(IconKind::RotateCw), None, colors.text_accent),
@@ -954,20 +872,175 @@ fn rail_cell(
         .items_center()
         .justify_center()
         .w_px(cell_w)
-        .h_px(TILE + 6.0)
+        .h_px(RAIL_TILE + 6.0)
         .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
         .child(tile);
     if current {
         cell = cell.pin(
             Corner::TopLeft,
             0.0,
-            12.0,
+            13.0,
             3.0,
-            TILE - 18.0,
+            16.0,
             div().rounded(1.5).bg(colors.text_accent),
         );
     }
     cell.into()
+}
+
+const LIST_TILE: f32 = 32.0;
+const RAIL_TILE: f32 = 36.0;
+const TILE_RADIUS: f32 = 10.0;
+
+fn agent_working(agent: Option<AgentDot>) -> bool {
+    matches!(
+        agent,
+        Some(AgentDot::Thinking | AgentDot::ToolUse | AgentDot::Compacting)
+    )
+}
+
+/// A PR problem that needs someone: failing checks, a conflict or changes asked for. Checks still running
+/// is only news, not trouble.
+fn pr_trouble(row: &WorkspaceRow) -> Option<(crate::PrSummary, crate::PrTrouble)> {
+    shown_pr(row).and_then(|pr| {
+        pr.trouble
+            .filter(|trouble| *trouble != crate::PrTrouble::Pending)
+            .map(|trouble| (pr, trouble))
+    })
+}
+
+/// What a tile calls a workspace: the ticket's project key over its number, else the last part of its branch.
+fn tile_label(row: &WorkspaceRow) -> (Option<String>, String) {
+    if let Some((project, number)) = ticket_key(row)
+        .as_deref()
+        .and_then(|key| key.split_once('-'))
+    {
+        return (Some(project.chars().take(4).collect()), number.to_string());
+    }
+    let (top, bottom) = rail_label(row);
+    (None, if bottom.is_empty() { top } else { bottom })
+}
+
+/// The label centred on a tile: a small key over the number, or the number alone.
+fn tile_text(prefix: Option<String>, name: String, ink: Rgba) -> Div {
+    let size = if name.chars().count() > 4 { 10.0 } else { 11.5 };
+    // Boxes as tall as the glyphs (line height 1), so key and number sit as tightly as designed.
+    let line = |node: Node, h: f32| {
+        div()
+            .row()
+            .h_px(h)
+            .items_center()
+            .justify_center()
+            .child(node)
+    };
+    let mut text = div().col().items_center().gap(1.0);
+    if let Some(prefix) = prefix {
+        text = text.child(line(
+            label(prefix)
+                .size(8.0)
+                .weight(600)
+                .color(with_alpha(ink, ink.a * 0.6))
+                .into(),
+            8.0,
+        ));
+    }
+    text.child(line(
+        label(name).size(size).medium().color(ink).into(),
+        size,
+    ))
+}
+
+/// What runs, along the tile's floor in its own ink: a moving bar while the agent works, else a dot per
+/// running service (three at most).
+fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running: usize) -> Div {
+    if working {
+        let track = size - 18.0;
+        let scan = div()
+            .row()
+            .rounded(1.0)
+            .bg(with_alpha(ink, ink.a * 0.18))
+            .child(div().w_px(track * 0.4).h_px(2.0).rounded(1.0).bg(bar));
+        return tile.pin(Corner::BottomLeft, 9.0, -3.0, track, 2.0, scan);
+    }
+    if running == 0 {
+        return tile;
+    }
+    let mut pips = div().row().justify_center().gap(2.0);
+    for _ in 0..running.min(3) {
+        pips = pips.child(
+            div()
+                .w_px(3.0)
+                .h_px(3.0)
+                .rounded(1.5)
+                .bg(with_alpha(ink, ink.a * 0.55)),
+        );
+    }
+    tile.pin(Corner::BottomLeft, 0.0, -3.0, size, 3.0, pips)
+}
+
+/// A ring standing off the tile, for a PR in trouble or a creation that failed.
+fn danger_ring(tile: Div, size: f32) -> Div {
+    let gap = 3.5;
+    tile.pin(
+        Corner::TopLeft,
+        -gap,
+        -gap,
+        size + 2.0 * gap,
+        size + 2.0 * gap,
+        div().rounded(TILE_RADIUS + gap).border(1.5, theme().error),
+    )
+}
+
+/// One workspace as a square, shared by the list and the rail so folding only hides the text beside it. On the
+/// rail (`quiet` off) the whole tile turns yellow while its agent waits and gets a red ring while a PR is in
+/// trouble; in the list the line beside it says so instead.
+fn workspace_tile(row: &WorkspaceRow, size: f32, current: bool, hovered: bool, quiet: bool) -> Div {
+    let colors = theme();
+    let waiting = !quiet && row.agent == Some(AgentDot::AwaitingInput);
+    let (bg, ink) = if waiting {
+        (colors.attention, colors.on_attention)
+    } else if current {
+        (colors.accent_fill, colors.on_accent)
+    } else if hovered && !quiet {
+        (colors.element_hover, colors.text)
+    } else {
+        (with_alpha(colors.text, 0.06), colors.text_muted)
+    };
+    let working = !quiet && agent_working(row.agent);
+    let floor = working || row.running > 0;
+    let mut tile = div()
+        .row()
+        .items_center()
+        .justify_center()
+        .w_px(size)
+        .h_px(size)
+        .rounded(TILE_RADIUS)
+        .bg(bg);
+    // A floor lifts the label so the two never touch.
+    if floor {
+        tile = tile.pb(4.0);
+    }
+    if waiting && colors.appearance == ui::Appearance::Light {
+        tile = tile.border(1.0, with_alpha(colors.on_attention, 0.22));
+    }
+    tile = if row.index == 0 {
+        tile.child(icon(IconKind::Branch).size(14.0).color(ink))
+    } else {
+        let (prefix, name) = tile_label(row);
+        tile.child(tile_text(prefix, name, ink))
+    };
+    let bar = if waiting {
+        colors.on_attention
+    } else if current {
+        colors.on_accent
+    } else {
+        colors.info
+    };
+    tile = tile_floor(tile, size, ink, bar, working, row.running);
+    if !quiet && !waiting && pr_trouble(row).is_some() {
+        tile = danger_ring(tile, size);
+    }
+    tile
 }
 
 /// Hangs a pill off a tile's top-right corner: a glyph, a count, or both, on `bg` with a ring of the panel colour
@@ -1018,79 +1091,97 @@ fn pin_pill_with(
     tile.pin(Corner::TopRight, 8.0 + RING, -6.0 - RING, w, h, pill)
 }
 
-/// A workspace being created, folded into an ordinary tile with a dim name: a progress strip while it runs, a
-/// clock while it waits, a red corner when it failed.
+/// A workspace being created, as a dim tile that fills from the bottom as its stages finish; a red ring when
+/// it failed, a clock while it waits its turn.
 fn op_tile(op: &crate::WorkspaceOp, position: usize, cell_w: f32) -> Node {
-    use crate::OpStatus;
-    const TILE: f32 = 36.0;
-    let colors = theme();
-    let mut parts = op
-        .branch
-        .split(['-', '_', '/'])
-        .filter(|part| !part.is_empty());
-    let number = parts
-        .nth(1)
-        .filter(|part| part.chars().all(|c| c.is_ascii_digit()));
-    let name: String = match number {
-        Some(number) => number.to_string(),
-        None => op
-            .title
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .take(4)
-            .collect(),
-    };
-    let mut tile = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(TILE)
-        .h_px(TILE)
-        .rounded(8.0)
-        .bg(with_alpha(colors.text, 0.03))
-        .child(
-            label(name)
-                .size(11.0)
-                .medium()
-                .color(colors.text_placeholder),
-        );
-    match op.status {
-        OpStatus::Running => {
-            let done = op_progress(op).clamp(0.02, 1.0);
-            let strip = div()
-                .row()
-                .rounded(1.0)
-                .bg(with_alpha(colors.text_accent, 0.25))
-                .child(
-                    div()
-                        .h_px(2.0)
-                        .flex(done)
-                        .rounded(1.0)
-                        .bg(colors.text_accent),
-                )
-                .child(div().h_px(2.0).flex(1.0 - done));
-            tile = tile.pin(Corner::BottomLeft, 8.0, -3.0, TILE - 16.0, 2.0, strip);
-        }
-        OpStatus::Queued => {
-            tile = pin_pill(tile, Some(IconKind::Clock), None, colors.text_placeholder);
-        }
-        OpStatus::Failed => {
-            tile = pin_pill(tile, Some(IconKind::BadgeAlert), None, colors.error);
-        }
-        OpStatus::Done => {}
-    }
     let mut cell = div()
         .row()
         .items_center()
         .justify_center()
         .w_px(cell_w)
-        .h_px(TILE + 6.0)
-        .child(tile);
+        .h_px(RAIL_TILE + 6.0)
+        .child(creation_tile(op, RAIL_TILE));
     // Only a failure has something to open; a running or queued tile is just there to be seen.
-    if op.status == OpStatus::Failed {
+    if op.status == crate::OpStatus::Failed {
         cell = cell.on_click(op_base(position) + crate::WORKSPACE_OP_POPOVER);
     }
     cell.into()
+}
+
+fn creation_tile(op: &crate::WorkspaceOp, size: f32) -> Div {
+    use crate::OpStatus;
+    let colors = theme();
+    let (prefix, name) = match op_ticket_key(op)
+        .as_deref()
+        .and_then(|key| key.split_once('-'))
+    {
+        Some((project, number)) => (
+            Some(project.chars().take(4).collect::<String>()),
+            number.to_string(),
+        ),
+        None => {
+            let mut parts = op
+                .branch
+                .split(['-', '_', '/'])
+                .filter(|part| !part.is_empty());
+            let number = parts
+                .nth(1)
+                .filter(|part| part.chars().all(|c| c.is_ascii_digit()));
+            let name = match number {
+                Some(number) => number.to_string(),
+                None => op
+                    .title
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .take(4)
+                    .collect(),
+            };
+            (None, name)
+        }
+    };
+    // Opaque so the level's flat top and rounded bottom can overlap without doubling the tint; the panel sits
+    // on the app background.
+    let face = with_alpha(colors.text, 0.06).over(colors.background);
+    let mut tile = div().w_px(size).h_px(size).rounded(TILE_RADIUS).bg(face);
+    if op.status == OpStatus::Running {
+        let level = size * op_progress(op).clamp(0.0, 1.0);
+        let fill = with_alpha(colors.text_accent, 0.28).over(face);
+        tile = tile
+            .pin(
+                Corner::BottomLeft,
+                0.0,
+                0.0,
+                size,
+                level,
+                div().rounded(TILE_RADIUS.min(level / 2.0)).bg(fill),
+            )
+            .pin(
+                Corner::BottomLeft,
+                0.0,
+                -(level - TILE_RADIUS.min(level)),
+                size,
+                TILE_RADIUS.min(level),
+                div().bg(fill),
+            );
+    }
+    // Pinned after the level so the label stays readable above it.
+    tile = tile.pin(
+        Corner::TopLeft,
+        0.0,
+        0.0,
+        size,
+        size,
+        div().row().items_center().justify_center().child(tile_text(
+            prefix,
+            name,
+            colors.text_placeholder,
+        )),
+    );
+    match op.status {
+        OpStatus::Failed => danger_ring(tile, size),
+        OpStatus::Queued => pin_pill(tile, Some(IconKind::Clock), None, colors.text_placeholder),
+        _ => tile,
+    }
 }
 
 fn op_base(position: usize) -> u64 {
@@ -1129,9 +1220,8 @@ pub fn failure_popover(op: &crate::WorkspaceOp, position: usize, manual_open: bo
         .into()
 }
 
-/// One workspace in the list. The name has the first line to itself (the PR count at its end); the second line
-/// carries the ticket key, its status, why a PR needs you and how many services run. An agent at work is a dot
-/// at the left edge.
+/// One workspace in the list: its tile, its name, and at most one line saying what needs you or what is going on.
+/// A quiet workspace is just its name.
 fn workspace_row(
     row: &WorkspaceRow,
     current: bool,
@@ -1142,34 +1232,21 @@ fn workspace_row(
 ) -> Node {
     let colors = theme();
     let key = ticket_key(row);
-    let pr = shown_pr(row);
-    let trouble = pr.and_then(|pr| pr.trouble);
-    let name_color = if current || hovered {
-        colors.text
-    } else {
-        colors.text_muted
-    };
+    let trouble = pr_trouble(row);
+    let waiting = row.agent == Some(AgentDot::AwaitingInput);
     let mut name = label(title(row, key.as_deref()))
+        .size(13.0)
         .truncate()
-        .color(name_color);
+        .color(if current || hovered {
+            colors.text
+        } else {
+            colors.text_muted
+        });
     if current {
         name = name.medium();
     }
-    let mut first = div()
-        .row()
-        .h_px(18.0)
-        .gap(6.0)
-        .items_center()
-        .child(div().row().flex(1.0).items_center().child(name));
-    if let Some(pr) = pr {
-        first = first.child(pr_pill(row.index, pr));
-    }
-
-    let mut details = div().row().h_px(16.0).gap(8.0).items_center();
-    let mut has_details = false;
-    // Main's update takes its second line while it runs, has just finished, or failed.
-    let upkeep_line = match upkeep {
-        Upkeep::None => None,
+    // Main's update and its missing clones come first; then the one thing that matters most about the work.
+    let line: Option<Node> = match upkeep {
         Upkeep::Running(op) => Some(status_line(
             IconKind::RotateCw,
             colors.text_accent,
@@ -1184,104 +1261,56 @@ fn workspace_row(
             op,
             position,
             expanded,
-        } => {
-            let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
-            Some(failure_line(
-                format!("Update failed - {}", op.error),
-                base,
-                expanded,
-            ))
-        }
+        } => Some(failure_line(
+            format!("Update failed - {}", op.error),
+            op_base(position),
+            expanded,
+        )),
+        Upkeep::None if !row.missing.is_empty() => Some(headline(
+            format!("not cloned: {}", row.missing.join(", ")),
+            colors.warning,
+        )),
+        Upkeep::None if waiting => Some(attention_pill("Waiting for you")),
+        Upkeep::None => match trouble {
+            Some((_, trouble)) => Some(headline(trouble.label().into(), colors.error)),
+            None if agent_working(row.agent) => Some(headline("Agent working".into(), colors.info)),
+            None if shown_pr(row).and_then(|pr| pr.trouble) == Some(crate::PrTrouble::Pending) => {
+                Some(headline("Checks running".into(), colors.warning))
+            }
+            None => None,
+        },
     };
-    if let Some(line) = upkeep_line {
-        details = details.child(line);
-        has_details = true;
-    } else if let Some(key) = &key {
-        details = details.child(
-            label(key.clone())
-                .size(10.5)
-                .mono()
-                .color(colors.text_placeholder),
-        );
-        has_details = true;
+    // A pill is taller than a line of text, so its row grows to fit it.
+    let line_h: f32 = if waiting && matches!(upkeep, Upkeep::None) && row.missing.is_empty() {
+        20.0
+    } else {
+        14.0
+    };
+    let content_h = if line.is_some() { 44.0 } else { 40.0 };
+    let mut text = div()
+        .col()
+        .flex(1.0)
+        .gap(3.0)
+        .child(div().row().h_px(16.0).items_center().child(name));
+    if let Some(line) = line {
+        text = text.child(div().row().h_px(line_h).items_center().child(line));
     }
-    if matches!(upkeep, Upkeep::None) && !row.missing.is_empty() {
-        details = details.child(
-            div().row().flex(1.0).items_center().child(
-                label(format!("not cloned: {}", row.missing.join(", ")))
-                    .size(11.0)
-                    .color(colors.warning)
-                    .truncate(),
-            ),
-        );
-        has_details = true;
-    } else if matches!(upkeep, Upkeep::None) && !row.ticket.is_empty() {
-        // A PR problem outranks the status name; the status keeps its colour square either way.
-        let square = div()
-            .w_px(6.0)
-            .h_px(6.0)
-            .rounded(2.0)
-            .bg(category_color(&row.ticket_category));
-        let mut status = div()
-            .row()
-            .gap(5.0)
-            .items_center()
-            .on_click(crate::WORKSPACE_TICKET_BASE + row.index as u64)
-            .child(square);
-        if trouble.is_none() {
-            status = status.child(
-                label(row.ticket.clone())
-                    .size(11.0)
-                    .color(colors.text_muted)
-                    .truncate(),
-            );
-            // Only the status itself opens the ticket; the rest of the line selects the workspace.
-            details = details.child(div().row().flex(1.0).items_center().child(status));
-        } else {
-            details = details.child(status);
-        }
-        has_details = true;
-    } else if matches!(upkeep, Upkeep::None) && row.branch != row.label && row.running > 0 {
-        details = details.child(
-            label(row.branch.clone())
-                .size(10.5)
-                .mono()
-                .color(colors.text_placeholder)
-                .truncate(),
-        );
-        has_details = true;
-    }
-    if let Some(trouble) = trouble {
-        details = details.child(
-            div().row().flex(1.0).items_center().child(
-                label(trouble.label())
-                    .size(11.0)
-                    .color(trouble.color())
-                    .truncate(),
-            ),
-        );
-        has_details = true;
-    } else if has_details && row.ticket.is_empty() && matches!(upkeep, Upkeep::None) {
-        // Push the running count to the end only when something sits before it.
-        details = details.child(div().row().flex(1.0));
-    }
-    if row.running > 0 && !matches!(upkeep, Upkeep::Failed { .. }) {
-        let text = if key.is_some() {
-            row.running.to_string()
-        } else {
-            format!("{} running", row.running)
-        };
-        details = details.child(
+    let mut main_line = div()
+        .row()
+        .h_px(content_h)
+        .gap(10.0)
+        .items_center()
+        .child(workspace_tile(row, LIST_TILE, current, hovered, true))
+        .child(text);
+    if let Some((pr, _)) = trouble {
+        main_line = main_line.child(
             div()
-                .row()
-                .gap(4.0)
-                .items_center()
-                .child(div().w_px(5.0).h_px(5.0).rounded(2.5).bg(colors.success))
-                .child(label(text).size(11.0).color(colors.text_placeholder)),
+                .col()
+                .h_px(content_h)
+                .pt(6.0)
+                .child(pr_pill(row.index, pr)),
         );
-        has_details = true;
     }
-
     let open_failure = match upkeep {
         Upkeep::Failed {
             op,
@@ -1290,22 +1319,13 @@ fn workspace_row(
         } => Some((op, position)),
         _ => None,
     };
-    let height = if has_details { 42.0 } else { 30.0 };
-    let mut item = div().col();
-    if open_failure.is_none() {
-        item = item.h_px(height);
-    }
-    let mut item = item
-        .gap(2.0)
-        .pl(18.0)
-        .pr(8.0)
-        .py(if has_details { 4.0 } else { 6.0 })
+    let mut item = div()
+        .col()
+        .px(8.0)
+        .py(5.0)
         .rounded(6.0)
         .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
-        .child(first);
-    if has_details {
-        item = item.child(details);
-    }
+        .child(main_line);
     if let Some((op, position)) = open_failure {
         let manual_open = manual == Some(op.id);
         item = item
@@ -1313,30 +1333,43 @@ fn workspace_row(
             .child(op_details(op, position, inner_w, false, manual_open));
     }
     if current {
-        item = item.bg(colors.element_selected).pin_left_edge(
-            0.0,
-            9.0,
-            2.0,
-            div().rounded(1.0).bg(colors.text_accent),
-        );
+        item = item.bg(colors.element_selected);
     } else if hovered {
         item = item.bg(colors.element_hover);
     }
-    if let Some(agent) = row.agent {
-        let dot = div().w_px(6.0).h_px(6.0).rounded(3.0).bg(agent.color());
-        if agent != AgentDot::Idle {
-            item = item.pin(
-                Corner::TopLeft,
-                4.0,
-                7.0,
-                12.0,
-                12.0,
-                div().rounded(6.0).bg(with_alpha(agent.color(), 0.2)),
-            );
-        }
-        item = item.pin(Corner::TopLeft, 7.0, 10.0, 6.0, 6.0, dot);
-    }
     item.into()
+}
+
+/// A row's second line: one short phrase in its tone.
+fn headline(text: String, color: Rgba) -> Node {
+    div()
+        .row()
+        .flex(1.0)
+        .items_center()
+        .child(label(text).size(11.5).color(color).truncate())
+        .into()
+}
+
+/// The one thing that needs you, as a filled pill so it is found at a glance.
+fn attention_pill(text: &str) -> Node {
+    let colors = theme();
+    let mut pill = div()
+        .row()
+        .h_px(20.0)
+        .px(7.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(colors.attention)
+        .child(
+            label(text.to_string())
+                .size(11.0)
+                .medium()
+                .color(colors.on_attention),
+        );
+    if colors.appearance == ui::Appearance::Light {
+        pill = pill.border(1.0, with_alpha(colors.on_attention, 0.22));
+    }
+    div().row().child(pill).into()
 }
 
 /// The row lifted off the list while it is dragged: the same row on an elevated card.
@@ -1369,39 +1402,26 @@ pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
         .into()
 }
 
-/// The PR count: a coloured icon and a muted number while all is well; on a red tint with the reason's icon when a
-/// PR is failing, in conflict or sent back.
+/// The PR count, shown only while a PR is in trouble: on a red tint so it reads as the problem it is.
 fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
     let colors = theme();
-    let failing = pr
-        .trouble
-        .filter(|trouble| *trouble != crate::PrTrouble::Pending);
-    let (glyph, glyph_color, text_color, bg) = match failing {
-        Some(trouble) => (
-            trouble_icon(trouble),
-            colors.error,
-            colors.error,
-            with_alpha(colors.error, 0.12),
-        ),
-        None => (
-            IconKind::PullRequest,
-            pr.severity.color(),
-            colors.text_muted,
-            Rgba::TRANSPARENT,
-        ),
-    };
-    div()
+    let pill = div()
         .row()
-        .h_px(18.0)
-        .px(5.0)
+        .h_px(20.0)
+        .px(6.0)
         .gap(3.0)
         .items_center()
-        .rounded(4.0)
-        .bg(bg)
+        .rounded(10.0)
+        .bg(with_alpha(colors.error, 0.14))
         .on_click(crate::WORKSPACE_PR_BASE + index as u64)
-        .child(icon(glyph).size(11.0).color(glyph_color))
-        .child(label(pr.count.to_string()).size(11.0).color(text_color))
-        .into()
+        .child(icon(IconKind::PullRequest).size(12.0).color(colors.error))
+        .child(
+            label(pr.count.to_string())
+                .size(11.0)
+                .medium()
+                .color(colors.error),
+        );
+    pill.into()
 }
 
 /// Main's background update as its row shows it.
@@ -1747,8 +1767,7 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
     menu.into()
 }
 
-/// A workspace being created or deleted, as a row where it will land: its name, then its ticket key and the step
-/// it is on with a thin progress bar, its place in the queue, or the error with a toggle to open the details.
+/// A workspace being created, as a list row: its filling tile, its name, the step it is on, and how far along.
 fn op_row(
     op: &crate::WorkspaceOp,
     position: usize,
@@ -1759,32 +1778,22 @@ fn op_row(
 ) -> Node {
     use crate::OpStatus;
     let colors = theme();
-    let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
+    let base = op_base(position);
     let key = op_ticket_key(op);
     let line = match op.status {
-        OpStatus::Running => status_line(IconKind::RotateCw, colors.text_accent, op_step(op)),
-        OpStatus::Queued => status_line(
-            IconKind::Clock,
-            colors.text_placeholder,
+        OpStatus::Running => headline(op_step(op), colors.text_placeholder),
+        OpStatus::Queued => headline(
             if ahead > 1 {
                 format!("Queued - {ahead} ahead")
             } else {
                 "Queued - next".into()
             },
+            colors.text_placeholder,
         ),
-        OpStatus::Done => status_line(IconKind::Check, colors.success, "Done".into()),
+        OpStatus::Done => headline("Done".into(), colors.success),
         OpStatus::Failed => failure_line(op.error.clone(), base, expanded),
     };
-    let mut second = div().row().h_px(16.0).gap(8.0).items_center();
-    if let Some(key) = &key {
-        second = second.child(
-            label(key.clone())
-                .size(10.5)
-                .mono()
-                .color(colors.text_placeholder),
-        );
-    }
-    second = second.child(line);
+    let mut second = div().row().h_px(14.0).gap(8.0).items_center().child(line);
     if op.status == OpStatus::Queued {
         second = second.child(
             div()
@@ -1797,59 +1806,47 @@ fn op_row(
                 .child(label("Cancel").size(10.5).color(colors.text_muted)),
         );
     }
-    let title_color = if op.status == OpStatus::Queued {
-        colors.text_placeholder
-    } else {
-        colors.text_muted
-    };
     let name = match &key {
         Some(key) => strip_key(&op.title, key),
         None => op.title.clone(),
     };
-    let mut row = div()
+    let text = div()
         .col()
-        .gap(2.0)
-        .pl(18.0)
-        .pr(8.0)
-        .py(4.0)
-        .rounded(6.0)
+        .flex(1.0)
+        .gap(3.0)
         .child(
-            div()
-                .row()
-                .h_px(18.0)
-                .items_center()
-                .child(label(name).truncate().color(title_color)),
+            div().row().h_px(16.0).items_center().child(
+                label(name)
+                    .size(13.0)
+                    .truncate()
+                    .color(colors.text_placeholder),
+            ),
         )
         .child(second);
+    let mut main_line = div()
+        .row()
+        .h_px(44.0)
+        .gap(10.0)
+        .items_center()
+        .child(creation_tile(op, LIST_TILE))
+        .child(text);
+    if op.status == OpStatus::Running {
+        let percent = (op_progress(op) * 100.0).round() as u32;
+        main_line = main_line.child(
+            div().col().h_px(44.0).pt(8.0).child(
+                label(format!("{percent}%"))
+                    .size(11.0)
+                    .mono()
+                    .color(colors.text_placeholder),
+            ),
+        );
+    }
+    let mut row = div().col().px(8.0).py(5.0).rounded(6.0).child(main_line);
     if expanded && op.status == OpStatus::Failed {
         row = row
             .pb(8.0)
             .bg(with_alpha(colors.error, 0.06))
             .child(op_details(op, position, width, true, manual_open));
-    } else {
-        row = row.h_px(if op.status == OpStatus::Running {
-            46.0
-        } else {
-            42.0
-        });
-    }
-    if op.status == OpStatus::Running {
-        // Two growing halves split the width by progress, so the bar follows the row at any sidebar width.
-        let done = op_progress(op).clamp(0.02, 1.0);
-        let bar = div()
-            .row()
-            .h_px(2.0)
-            .rounded(1.0)
-            .bg(colors.border_variant)
-            .child(
-                div()
-                    .h_px(2.0)
-                    .flex(done)
-                    .rounded(1.0)
-                    .bg(colors.text_accent),
-            )
-            .child(div().h_px(2.0).flex(1.0 - done));
-        row = row.child(bar);
     }
     row.into()
 }
@@ -2206,7 +2203,8 @@ mod tests {
             ui::Rect::new(0.0, 0.0, 280.0, 600.0, ui::Rgba::TRANSPARENT),
         );
         let text: Vec<String> = painted.texts.iter().map(|t| t.text.clone()).collect();
-        for expected in ["Email open tracking", "PROJ-101", "CI failed", "3"] {
+        // The key shows on the tile as its project over its number.
+        for expected in ["Email open tracking", "PROJ", "101", "CI failed", "3"] {
             assert!(
                 text.contains(&expected.to_string()),
                 "{expected} in {text:?}"
@@ -2297,7 +2295,7 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_status_opens_the_ticket() {
+    fn a_ticket_status_leaves_the_row_one_target() {
         let mut p = ProjectPanel::default();
         let mut with_ticket = row(1, "web", None);
         with_ticket.ticket = "In Progress".into();
@@ -2309,18 +2307,10 @@ mod tests {
             ui::Rect::new(0.0, 0.0, 240.0, 600.0, ui::Rgba::TRANSPARENT),
         );
         let ids: Vec<u64> = painted.hits.iter().map(|(_, id)| *id).collect();
-        assert!(ids.contains(&(crate::WORKSPACE_TICKET_BASE + 1)));
-        assert!(!ids.contains(&crate::WORKSPACE_TICKET_BASE));
-        let status = painted
-            .hits
-            .iter()
-            .find(|(_, id)| *id == crate::WORKSPACE_TICKET_BASE + 1)
-            .map(|(rect, _)| *rect)
-            .expect("status hit");
+        assert!(ids.contains(&(crate::WORKSPACE_ROW_BASE + 1)));
         assert!(
-            status.w < 120.0,
-            "only the status opens the ticket: {}",
-            status.w
+            !ids.contains(&(crate::WORKSPACE_TICKET_BASE + 1)),
+            "the ticket opens from the row menu"
         );
     }
 
