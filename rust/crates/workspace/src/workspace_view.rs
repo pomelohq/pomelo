@@ -65,8 +65,7 @@ pub fn delete_workspace_detail(label: &str, branch: &str) -> String {
     };
     format!(
         "{named}. Pomelo will:\n- stop its services and release its ports and slots\n- run its pre-delete \
-         commands\n- remove its worktrees and databases\n\nLocal branches with commits that are not pushed \
-         stay."
+         commands\n- remove its worktrees and databases"
     )
 }
 const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;

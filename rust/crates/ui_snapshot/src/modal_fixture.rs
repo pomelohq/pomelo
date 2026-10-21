@@ -177,7 +177,7 @@ pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
         )),
         "add-repo" => {
             let mut modal = AddRepoModal::new(
-                vec!["proj-101-fix-login".into(), "proj-107-new-sidebar".into()],
+                vec!["PROJ-101 Fix login".into(), "PROJ-107 New sidebar".into()],
                 vec!["api".into(), "web".into()],
                 Box::new(Vec::new),
                 true,
@@ -188,12 +188,8 @@ pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
             Box::new(modal)
         }
         "use-branch" => {
-            let mut modal = UseBranchModal::new(
-                "web",
-                "feat-login",
-                Some("feat-login"),
-                branches_of(true),
-            );
+            let mut modal =
+                UseBranchModal::new("web", "feat-login", Some("feat-login"), branches_of(true));
             settle(&mut modal);
             modal.text("ana/checkout-ui");
             Box::new(modal)

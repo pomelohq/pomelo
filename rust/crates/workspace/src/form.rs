@@ -92,7 +92,7 @@ pub fn modal_frame(width: f32) -> ui::Div {
         .col()
         .w_px(width)
         .rounded(MODAL_RADIUS)
-        .border(1.0, overlay_ring())
+        .ring(1.0, overlay_ring())
         .bg(theme().elevated_surface_background)
 }
 
@@ -136,12 +136,7 @@ pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
 
 /// The form body: the modal's inset at the sides, groups `gap` apart.
 pub fn modal_section(gap: f32) -> ui::Div {
-    div()
-        .col()
-        .px(MODAL_INSET)
-        .pt(10.0)
-        .pb(18.0)
-        .gap(gap)
+    div().col().px(MODAL_INSET).pt(10.0).pb(18.0).gap(gap)
 }
 
 /// The footer bar on the panel layer: `start` (a note) on the left, `end` (the buttons) on the right.
@@ -165,7 +160,7 @@ pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
     // The rounded bar keeps the frame's bottom corners; the strip above squares its top ones.
     div()
         .col()
-        .rounded(MODAL_RADIUS - 1.0)
+        .rounded(MODAL_RADIUS)
         .bg(colors.panel_background)
         .child(div().h_px(10.0).bg(colors.panel_background))
         .child(row)
@@ -351,35 +346,49 @@ const DESTRUCTIVE: [&str; 9] = [
     "Delete", "Discard", "Remove", "Restore", "Trash", "Drop", "Reset", "Prepare", "Force",
 ];
 
-/// A confirmation as a modal: the question as the title, the detail as the body (a blank line starts a
-/// paragraph, "- " a bullet), and one footer button per answer, the first (confirming) one last. Enter takes
+/// A confirmation as a modal: the question as the title, the detail as the body (one line each, "- " a
+/// bullet), and one footer button per answer, the first (confirming) one last. Enter takes
 /// `active`, Escape the one named Cancel; button `i` emits `button_base + i`.
 pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> Node {
     let colors = theme();
     let text_width = PROMPT_WIDTH - 2.0 * MODAL_INSET;
     let mut body = modal_section(10.0);
     let detail = prompt.detail.as_deref().unwrap_or_default();
-    for paragraph in detail.split("\n\n").filter(|part| !part.trim().is_empty()) {
-        let mut lines = div().col().gap(4.0);
-        for line in paragraph.lines().filter(|line| !line.trim().is_empty()) {
-            lines = lines.child(match line.trim_start().strip_prefix("- ") {
-                Some(item) => div()
+    let bullet = |item: &str| -> Node {
+        div()
+            .row()
+            .gap(10.0)
+            .pl(6.0)
+            .child(
+                div()
                     .row()
-                    .gap(10.0)
-                    .pl(6.0)
-                    .child(
-                        div()
-                            .row()
-                            .h_px(20.0)
-                            .items_center()
-                            .child(div().w_px(4.0).h_px(4.0).rounded(2.0).bg(colors.text_muted)),
-                    )
-                    .child(body_text(item, text_width - 16.0))
-                    .into(),
-                None => body_text(line, text_width),
-            });
+                    .h_px(20.0)
+                    .items_center()
+                    .child(div().w_px(4.0).h_px(4.0).rounded(2.0).bg(colors.text_muted)),
+            )
+            .child(body_text(item, text_width - 20.0))
+            .into()
+    };
+    // Lines stand 10px apart; a run of bullets holds together 4px apart.
+    let mut list: Option<ui::Div> = None;
+    for line in detail.lines().filter(|line| !line.trim().is_empty()) {
+        match line.trim_start().strip_prefix("- ") {
+            Some(item) => {
+                list = Some(
+                    list.unwrap_or_else(|| div().col().gap(4.0))
+                        .child(bullet(item)),
+                );
+            }
+            None => {
+                if let Some(done) = list.take() {
+                    body = body.child(done);
+                }
+                body = body.child(body_text(line, text_width));
+            }
         }
-        body = body.child(lines);
+    }
+    if let Some(done) = list {
+        body = body.child(done);
     }
     let mut buttons = div().row().items_center().gap(8.0);
     for (index, text) in prompt.buttons.iter().enumerate().rev() {
@@ -449,10 +458,10 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
 
 /// Muted body copy at the body line height, wrapping only when it does not fit `width`.
 fn body_text(text: &str, width: f32) -> Node {
-    let copy = label(text.to_string())
-        .size(13.0)
-        .color(theme().text_muted);
-    if ui::measure_text_width(text, 13.0, false, ui::ui_font_weight()) / ui::ui_text_scale() <= width {
+    let copy = label(text.to_string()).size(13.0).color(theme().text_muted);
+    if ui::measure_text_width(text, 13.0, false, ui::ui_font_weight()) / ui::ui_text_scale()
+        <= width
+    {
         text_line(20.0, copy)
     } else {
         copy.wrap(width).into()
@@ -560,11 +569,7 @@ impl InputField {
         // Away from the box, a known value reads with what it stands for; editing shows only the value.
         if let Some(suffix) = suffix.filter(|_| !focused) {
             return row
-                .child(
-                    label(self.field.text())
-                        .size(INPUT_FONT)
-                                .color(colors.text),
-                )
+                .child(label(self.field.text()).size(INPUT_FONT).color(colors.text))
                 .child(
                     div().row().flex(1.0).items_center().child(
                         label(suffix.to_string())
@@ -695,7 +700,11 @@ pub fn toggle_button_group(choices: &[(u64, Option<IconKind>, &str)], selected: 
         .bg(colors.background);
     for (index, (id, leading, text)) in choices.iter().enumerate() {
         let chosen = index == selected;
-        let ink = if chosen { colors.text } else { colors.text_muted };
+        let ink = if chosen {
+            colors.text
+        } else {
+            colors.text_muted
+        };
         let mut cell = div()
             .row()
             .h_px(26.0)

@@ -3,8 +3,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use ui::{div, label, theme, IconKind, Node};
 use workspace::{
-    checkbox, text_line, ButtonKind, modal_button, modal_footer, modal_frame, modal_header, modal_section, status_line,
-    EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section, status_line,
+    text_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 460.0;
@@ -88,12 +88,20 @@ impl WindowModal for RenameAliasModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), ButtonKind::Secondary, true))
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Rename",
-                Some("enter"), ButtonKind::Primary,
-                self.can_rename()));
+                Some("enter"),
+                ButtonKind::Primary,
+                self.can_rename(),
+            ));
         modal_frame(WIDTH)
             .child(modal_header(
                 &format!("Rename Alias of {}", self.repo),
@@ -194,8 +202,20 @@ impl WindowModal for RemoveRepoModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), ButtonKind::Secondary, true))
-            .child(modal_button(CONFIRM, "Remove", Some("enter"), ButtonKind::Danger, true));
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
+            .child(modal_button(
+                CONFIRM,
+                "Remove",
+                Some("enter"),
+                ButtonKind::Danger,
+                true,
+            ));
         modal_frame(WIDTH)
             .child(modal_header(&format!("Remove {}?", self.repo), Some(CLOSE)))
             .child(section)
@@ -300,12 +320,20 @@ impl WindowModal for PickReposModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), ButtonKind::Secondary, true))
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Add",
-                Some("enter"), ButtonKind::Primary,
-                !self.picked().is_empty()));
+                Some("enter"),
+                ButtonKind::Primary,
+                !self.picked().is_empty(),
+            ));
         modal_frame(WIDTH)
             .child(modal_header(
                 &format!("Add Repos to {}", self.branch),

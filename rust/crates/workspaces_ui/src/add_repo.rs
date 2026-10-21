@@ -179,7 +179,11 @@ impl WindowModal for AddRepoModal {
                 toggle_button_group(
                     &[
                         (USE_AI, None, "Let Claude wire its env and shared services"),
-                        (REVIEW_LATER, None, "Review its entry in the config afterwards"),
+                        (
+                            REVIEW_LATER,
+                            None,
+                            "Review its entry in the config afterwards",
+                        ),
                     ],
                     usize::from(!self.use_ai),
                 ),
@@ -386,12 +390,20 @@ impl WindowModal for CloneReposModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), ButtonKind::Secondary, true))
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Clone",
-                Some("enter"), ButtonKind::Primary,
-                !self.sources().is_empty()));
+                Some("enter"),
+                ButtonKind::Primary,
+                !self.sources().is_empty(),
+            ));
         modal_frame(WIDTH)
             .child(modal_header("Clone Missing Repos", Some(CLOSE)))
             .child(section)

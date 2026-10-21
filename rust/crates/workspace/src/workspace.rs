@@ -20,10 +20,10 @@ mod welcome;
 mod workspace_view;
 pub use form::{
     accent_action, checkbox, field, field_label, is_window_modal_id, key_chip, modal_button,
-    modal_footer, modal_frame, modal_header, modal_note, modal_section, outlined_button, overlay_ring, text_line,
-    progress_bar, prompt_card, segmented, status_line, toggle_button_group, ButtonKind, InputField,
-    PROMPT_WIDTH,
-    ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    modal_footer, modal_frame, modal_header, modal_note, modal_section, outlined_button,
+    overlay_ring, progress_bar, prompt_card, segmented, status_line, text_line,
+    toggle_button_group, ButtonKind, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
+    WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
@@ -49,8 +49,8 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    delete_workspace_detail, unpushed_warning, ParkedWorkspace, ResizeCursor, SessionRequest, TitlebarGesture, WorkspaceEffects,
-    WorkspaceRequests, WorkspaceView,
+    delete_workspace_detail, unpushed_warning, ParkedWorkspace, ResizeCursor, SessionRequest,
+    TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the

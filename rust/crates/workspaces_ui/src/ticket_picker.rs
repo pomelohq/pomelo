@@ -442,26 +442,23 @@ impl TicketPicker {
 
     fn source_button(&self, name: &str, hovered: bool) -> Node {
         let colors = theme();
-        let mut button =
-            div()
-                .row()
-                .h_px(14.0)
-                .px(4.0)
-                .gap(4.0)
-                .items_center()
-                .rounded(4.0)
-                .child(label(name.to_string()).size(11.0).color(
-                    if self.menu_open {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    },
-                ))
-                .child(
-                    icon(IconKind::ChevronDown)
-                        .size(10.0)
-                        .color(colors.icon_muted),
-                );
+        let mut button = div()
+            .row()
+            .h_px(14.0)
+            .px(4.0)
+            .gap(4.0)
+            .items_center()
+            .rounded(4.0)
+            .child(label(name.to_string()).size(11.0).color(if self.menu_open {
+                colors.text
+            } else {
+                colors.text_muted
+            }))
+            .child(
+                icon(IconKind::ChevronDown)
+                    .size(10.0)
+                    .color(colors.icon_muted),
+            );
         if self.menu_open || (hovered && self.boards_known) {
             button = button.bg(colors.ghost_element_hover);
         }

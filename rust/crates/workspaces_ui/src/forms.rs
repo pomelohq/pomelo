@@ -1397,7 +1397,7 @@ mod tests {
     fn painted_text(modal: &mut dyn WindowModal) -> String {
         let painted = ui::render(
             &modal.render(),
-            ui::Rect::new(0.0, 0.0, WIDTH, 800.0, ui::Rgba::TRANSPARENT),
+            ui::Rect::new(0.0, 0.0, CREATE_WIDTH, 800.0, ui::Rgba::TRANSPARENT),
         );
         painted.texts.iter().map(|t| t.text.clone()).collect()
     }
@@ -1485,10 +1485,7 @@ mod tests {
         modal.key(EditKey::Enter, false);
         assert!(modal.picker.is_none(), "picking closes the picker");
         let text = painted_text(&mut modal);
-        assert!(
-            text.contains("taken over from origin"),
-            "{text}"
-        );
+        assert!(text.contains("taken over from origin"), "{text}");
 
         modal.click(BRANCH_BOX_BASE);
         modal.text("ana/new-api");
@@ -1811,7 +1808,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("3 repos - 1 installs once - databases copied from main - local"),
+            text.contains("3 repos, 1 installs once, databases copied from main, local"),
             "{text}"
         );
         modal.click(ENVIRONMENT_BASE + 1);
@@ -1819,7 +1816,7 @@ mod tests {
         modal.click(REPO_BASE + 1);
         let text = painted_text(&mut modal);
         assert!(
-            text.contains("2 repos - all instant - databases seeded empty - staging"),
+            text.contains("2 repos, all instant, databases seeded empty, staging"),
             "{text}"
         );
         modal.click(REPO_BASE);

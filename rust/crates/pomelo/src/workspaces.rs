@@ -223,9 +223,10 @@ impl App {
                     .repos
                     .iter()
                     .map(|repo| {
-                        let default = project.config.as_ref().map_or("main", |config| {
-                            config.default_branch_for(&repo.name)
-                        });
+                        let default = project
+                            .config
+                            .as_ref()
+                            .map_or("main", |config| config.default_branch_for(&repo.name));
                         let count =
                             pom_workspace::unpushed_commits(&repo.path, &repo.branch, default);
                         (repo.name.clone(), count)

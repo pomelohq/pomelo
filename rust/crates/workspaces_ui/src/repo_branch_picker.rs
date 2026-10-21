@@ -231,7 +231,7 @@ impl BranchPicker {
             .col()
             .w_px(WIDTH)
             .rounded(10.0)
-            .border(1.0, overlay_ring())
+            .ring(1.0, overlay_ring())
             .bg(colors.elevated_surface_background)
             .on_click(PICKER_SURFACE)
             .child(self.head(&format!("Branch for {}", self.repo)))
@@ -240,7 +240,7 @@ impl BranchPicker {
             .child(
                 div()
                     .col()
-                    .rounded(9.0)
+                    .rounded(10.0)
                     .bg(colors.panel_background)
                     .child(div().h_px(8.0).bg(colors.panel_background))
                     .child(
@@ -281,7 +281,9 @@ impl BranchPicker {
         names.truncate(4);
         let text = match entries.get(self.highlighted) {
             Some(Entry::Create(new)) => {
-                let base = branches.map(|known| known.base.as_str()).unwrap_or_default();
+                let base = branches
+                    .map(|known| known.base.as_str())
+                    .unwrap_or_default();
                 match base.is_empty() {
                     true => format!("Creates {new}"),
                     false => format!("Creates {new} from {base}"),
@@ -305,7 +307,10 @@ impl BranchPicker {
             .child(hint);
         let (status, color) = self.status();
         if color == colors.warning {
-            column = column.child(text_line(16.0, label(status).size(12.0).color(color).truncate()));
+            column = column.child(text_line(
+                16.0,
+                label(status).size(12.0).color(color).truncate(),
+            ));
         }
         column.into()
     }
@@ -355,7 +360,12 @@ impl BranchPicker {
     }
 
     fn query_row(&self) -> Node {
-        div().col().px(8.0).py(6.0).child(self.query_box(false)).into()
+        div()
+            .col()
+            .px(8.0)
+            .py(6.0)
+            .child(self.query_box(false))
+            .into()
     }
 
     fn list(
@@ -413,10 +423,9 @@ impl BranchPicker {
                 };
                 (format!("Fetched {when}"), colors.icon_muted)
             }
-            (None, false, Some(Err(error))) => (
-                format!("Could not fetch origin: {error}"),
-                colors.warning,
-            ),
+            (None, false, Some(Err(error))) => {
+                (format!("Could not fetch origin: {error}"), colors.warning)
+            }
             (None, false, None) => (String::new(), colors.icon_muted),
         }
     }
