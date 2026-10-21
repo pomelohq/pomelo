@@ -24,6 +24,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "project-sidebar-window-folded" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
         // The strip over an agent someone else drives while a tool call waits, at the dock's width.
         "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
+        // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
+        "agent-dock-tabs" => (0, &[("TABBAR", "agent")]),
+        "components-tabs" => (0, &[("TABBAR", "sample")]),
         // The Git panel over scratch repos in the board's state; GITVIEW=tree|ungrouped, GITAMEND=1, GITSELECT=<rows down>.
         "git-changes" => (0, &[("GITFIXTURE", "unstaged"), ("GITSELECT", "2")]),
         "git-staged" => (0, &[("GITFIXTURE", "staged")]),
@@ -1780,6 +1783,106 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(which) = std::env::var("TABBAR") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let mut pane = workspace::pane::Pane::new(1);
+        let mut buttons = Vec::new();
+        if which == "agent" {
+            pane.add_item(Box::new(SampleTab {
+                title: "Main",
+                icon: Some(ui::IconKind::Sparkle),
+                material: None,
+                dirty: false,
+            }));
+            pane.toggle_pin(0);
+            for (index, icon) in [
+                ui::IconKind::Plus,
+                ui::IconKind::Clock,
+                ui::IconKind::Maximize,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                buttons.push(workspace::pane::TabBarButton {
+                    icon,
+                    id: 900 + index as u64,
+                    selected: false,
+                    disabled: false,
+                });
+            }
+        } else {
+            for (title, icon, material, dirty) in [
+                (
+                    "users_controller.rb",
+                    None,
+                    Some(ui::MaterialIcon::Ruby),
+                    true,
+                ),
+                ("routes.rb", None, Some(ui::MaterialIcon::Ruby), false),
+                ("api > server", Some(ui::IconKind::Server), None, false),
+            ] {
+                pane.add_item(Box::new(SampleTab {
+                    title,
+                    icon,
+                    material,
+                    dirty,
+                }));
+                pane.keep_preview();
+            }
+            pane.activate_user(0);
+        }
+        let config = workspace::pane::TabBarConfig {
+            show_nav: false,
+            buttons,
+            toolbar: Vec::new(),
+        };
+        let ids = workspace::pane::PaneClickIds {
+            tab_activate: 100,
+            tab_close: 200,
+            nav_back: 300,
+            nav_forward: 301,
+            search: 302,
+        };
+        let (nav, _) = workspace::pane::tab_bar_edges(&config);
+        let bar = ui::render(
+            &workspace::pane::render_pane(&pane, &config, ids, lw),
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        let strip = ui::render(
+            &workspace::pane::render_tab_strip(&pane, ids, None),
+            ui::Rect::new(nav, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            ui::theme().panel_background,
+            &[
+                (
+                    bar.rects.as_slice(),
+                    bar.tris.as_slice(),
+                    bar.texts.as_slice(),
+                    bar.icons.as_slice(),
+                    None,
+                ),
+                (
+                    strip.rects.as_slice(),
+                    strip.tris.as_slice(),
+                    strip.texts.as_slice(),
+                    strip.icons.as_slice(),
+                    None,
+                ),
+            ],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if std::env::var("AGENTSTRIP").is_ok() {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -3265,6 +3368,35 @@ fn main() -> anyhow::Result<()> {
     enc.write_header()?.write_image_data(&rgba)?;
     println!("wrote {out} ({w}x{h})");
     Ok(())
+}
+
+/// A tab with nothing behind it, for the tab bar scenes.
+struct SampleTab {
+    title: &'static str,
+    icon: Option<ui::IconKind>,
+    material: Option<ui::MaterialIcon>,
+    dirty: bool,
+}
+
+impl workspace::Item for SampleTab {
+    fn id(&self) -> Option<String> {
+        Some(self.title.to_string())
+    }
+    fn title(&self) -> String {
+        self.title.to_string()
+    }
+    fn icon(&self) -> Option<ui::MaterialIcon> {
+        self.material
+    }
+    fn tab_icon(&self) -> Option<ui::IconKind> {
+        self.icon
+    }
+    fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    fn render(&mut self) -> ui::Node {
+        ui::div().into()
+    }
 }
 
 /// Canned object storage answers for the Database snapshots.

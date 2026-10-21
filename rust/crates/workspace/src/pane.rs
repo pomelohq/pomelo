@@ -2,7 +2,7 @@
 //! plus the tab bar every pane draws. Owners (the editor center, the terminal panel, later other features)
 //! configure which controls the tab bar shows and hand in the click ids for this pane.
 
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
+use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rgba};
 
 use crate::pane_group::{PaneId, SplitDirection};
 use crate::search_bar::{SearchBar, Searchable};
@@ -14,7 +14,7 @@ const TAB_PILL_H: f32 = 26.0;
 /// Space between the bar's ends and its clusters, and between neighbours inside a cluster.
 const BAR_PAD: f32 = 6.0;
 const BAR_GAP: f32 = 2.0;
-const BAR_BUTTON_W: f32 = 26.0;
+const BAR_BUTTON_W: f32 = 28.0;
 const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -503,23 +503,27 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
         let activate_id = ids.tab_activate + index as u64;
         let close_id = ids.tab_close + index as u64;
         let hovered = hover == Some(activate_id) || hover == Some(close_id);
-        // The close slot keeps its width whether or not the glyph shows, so hovering never shifts the tab.
+        let dirty_dot = item.is_dirty() && !hovered && !pane.is_pinned(index);
         let mut close_slot = div()
-            .w_px(16.0)
+            .w_px(if dirty_dot { 7.0 } else { 12.0 })
             .h_px(16.0)
             .rounded(4.0)
             .items_center()
             .justify_center()
             .on_click(close_id);
-        // A pinned tab trades its close button for an always-shown pin that unpins it.
+        // A pinned tab trades its close button for a pin that unpins it; unsaved changes show as a dot there,
+        // which hovering turns back into the close button.
+        let end_color = if hovered {
+            theme().icon_muted
+        } else {
+            theme().text_placeholder
+        };
         if pane.is_pinned(index) {
-            close_slot = close_slot.child(icon(IconKind::Pin).size(11.0).color(theme().icon_muted));
-        } else if hovered {
-            close_slot =
-                close_slot.child(icon(IconKind::Close).size(11.0).color(theme().icon_muted));
+            close_slot = close_slot.child(icon(IconKind::Pin).size(12.0).color(end_color));
+        } else if !dirty_dot {
+            close_slot = close_slot.child(icon(IconKind::Close).size(12.0).color(end_color));
         }
-        // The end slot: unsaved changes show as a dot there, which hovering turns into the close button.
-        if item.is_dirty() && !hovered && !pane.is_pinned(index) {
+        if dirty_dot {
             let color = if item.has_conflict() {
                 theme().warning
             } else {
@@ -536,7 +540,14 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .justify_center()
                 .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(color))
                 .into(),
-            (None, Some(kind)) => icon(kind).size(14.0).color(theme().icon_muted).into(),
+            (None, Some(kind)) => icon(kind)
+                .size(14.0)
+                .color(if is_active {
+                    theme().text
+                } else {
+                    theme().icon_muted
+                })
+                .into(),
             (None, None) => material_icon(item.icon().unwrap_or(MaterialIcon::Document))
                 .size(14.0)
                 .into(),
@@ -558,13 +569,12 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .items_center()
                 .child(glyph)
                 .child({
-                    let title = label(trail_off(&item.title(), MAX_TAB_TITLE_CHARS))
-                        .size(13.0)
-                        .color(if is_active {
-                            theme().text
-                        } else {
-                            theme().text_muted
-                        });
+                    let title = label(trail_off(&item.title(), MAX_TAB_TITLE_CHARS)).size(13.0);
+                    let title = if is_active {
+                        title.medium().color(theme().text)
+                    } else {
+                        title.color(theme().text_muted)
+                    };
                     if pane.is_preview(index) {
                         title.italic()
                     } else {
@@ -586,22 +596,30 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
             .rounded(6.0)
             .on_click(activate_id)
             .child(content);
+        // Every tab bar draws the same raised surface for its active tab, whatever the body under it.
         if is_active {
-            pill = pill.bg(item.body_background());
+            pill = pill.bg(theme().editor_background);
         } else if hovered {
             pill = pill.bg(theme().element_hover);
         }
-        // The active pill sits on a one-pixel darker edge, the way a raised card casts its shadow.
+        // The active pill sits on a one-pixel shadow edge below it, the way a raised card casts its shadow; the
+        // pill itself stays centered in the bar.
         let cell = if is_active {
-            div()
-                .col()
-                .h_px(TAB_PILL_H + 1.0)
-                .pb(1.0)
-                .rounded(7.0)
-                .bg(theme().border)
-                .child(pill)
+            let shadow = match theme().appearance {
+                ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
+                ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.1),
+            };
+            div().col().h_px(TAB_PILL_H + 2.0).pt(1.0).child(
+                div()
+                    .col()
+                    .h_px(TAB_PILL_H + 1.0)
+                    .pb(1.0)
+                    .rounded(7.0)
+                    .bg(shadow)
+                    .child(pill),
+            )
         } else {
-            div().col().h_px(TAB_PILL_H + 1.0).child(pill)
+            div().col().h_px(TAB_PILL_H + 2.0).pt(1.0).child(pill)
         };
         if index > 0 {
             strip = strip.child(div().w_px(BAR_GAP));
@@ -736,7 +754,7 @@ fn tab_bar_button(button: &TabBarButton) -> Node {
         .rounded(4.0)
         .items_center()
         .justify_center()
-        .child(icon(button.icon).size(13.0).color(color));
+        .child(icon(button.icon).size(14.0).color(color));
     if !button.disabled {
         face = face.on_click(button.id);
     }
