@@ -44,6 +44,7 @@ mod git_diff;
 mod go_to_line;
 mod grammar_suggest;
 mod hover;
+mod hunk_controls;
 mod language_selector;
 mod language_servers;
 mod list_scrollbar;
@@ -494,6 +495,7 @@ const PALETTE_BASE: u64 = FUNC_VIEW_BASE + 14_500_000; // + PaletteClick
 const OUTLINE_BASE: u64 = FUNC_VIEW_BASE + 14_600_000; // + row
 const COMPLETION_BASE: u64 = FUNC_VIEW_BASE + 14_700_000; // + row
 const HOVER_BASE: u64 = FUNC_VIEW_BASE + 14_800_000; // + popover
+const HUNK_CONTROL_BASE: u64 = FUNC_VIEW_BASE + 14_900_000; // + control
 const MODAL_END: u64 = FUNC_VIEW_BASE + 15_000_000;
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
@@ -763,6 +765,8 @@ struct FileItem {
     split_left: Vec<SplitLeft>,
     /// Changes shown expanded, as char ranges carried through edits.
     expanded: Vec<Range<usize>>,
+    /// The hunk control the pointer is over, so it can light up.
+    hunk_control_hover: Option<u64>,
     /// The committed text expanded changes show their removed lines from.
     base: Option<BaseText>,
     /// Whether `rows` holds removed lines of expanded changes.
@@ -1126,6 +1130,7 @@ impl FileItem {
             split_room: true,
             split_left: Vec::new(),
             expanded: Vec::new(),
+            hunk_control_hover: None,
             base: None,
             has_virtual_rows: false,
             completions: None,
@@ -3500,6 +3505,10 @@ impl FileItem {
     /// Put the changes under the selections back to their committed text, unstaging them first.
     fn restore_hunks(&mut self) {
         let hunks = self.hunks_in_selections();
+        self.restore_hunk_list(hunks);
+    }
+
+    fn restore_hunk_list(&mut self, hunks: Vec<git::DiffHunk>) {
         let Some(bases) = self.git.bases() else {
             return;
         };
@@ -4618,7 +4627,9 @@ impl Item for FileItem {
     }
 
     fn hover_popovers(&self, content: Rect) -> Vec<(Node, f32, f32)> {
-        self.hover_popover_nodes(content)
+        let mut popovers = self.hover_popover_nodes(content);
+        popovers.extend(self.hunk_controls(content));
+        popovers
     }
 
     fn scroll_hover(&mut self, index: usize, dy: f32) -> bool {
@@ -4631,6 +4642,9 @@ impl Item for FileItem {
     }
 
     fn hover_completion(&mut self, id: Option<u64>) {
+        self.hunk_control_hover = id.filter(|id| {
+            (HUNK_CONTROL_BASE..HUNK_CONTROL_BASE + hunk_controls::CONTROL_COUNT).contains(id)
+        });
         if let Some(menu) = self.completions.as_mut() {
             menu.hovered = id.filter(|id| (COMPLETION_BASE..HOVER_BASE).contains(id));
         }
@@ -4641,7 +4655,10 @@ impl Item for FileItem {
             self.click_completion((id - COMPLETION_BASE) as usize);
             return true;
         }
-        if (HOVER_BASE..MODAL_END).contains(&id) {
+        if self.click_hunk_control(id) {
+            return true;
+        }
+        if (HOVER_BASE..HUNK_CONTROL_BASE).contains(&id) {
             self.hover_clicked();
             return true;
         }
@@ -8322,7 +8339,7 @@ pub(crate) const EXTENSION_ICONS: &[(&[&str], MaterialIcon)] = &[
 
 /// The Material file-type icon for a filename, by full name then extension (mirrors material-icon-theme's
 /// `fileNames`/`fileExtensions`). Falls back to a generic document.
-fn file_icon(name: &str) -> MaterialIcon {
+pub fn file_icon(name: &str) -> MaterialIcon {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
         "cargo.lock" | "package-lock.json" | "yarn.lock" | "pnpm-lock.yaml" => {
@@ -11221,6 +11238,39 @@ mod hunk_action_tests {
             repo.git(&["show", ":a.txt"]).as_deref(),
             Some("a\nb\nc\nd\ne\n")
         );
+    }
+
+    #[test]
+    fn hunk_controls_show_over_the_expanded_change_and_stage_it() {
+        let repo = Repo::new("hunk-controls", "a\nb\nc\nd\ne\n");
+        let mut item = repo.open("a\nB\nc\nd\nE\n");
+        let content = Rect::new(0.0, 0.0, 600.0, 10.0 * edit_line_h(), Rgba::TRANSPARENT);
+        item.buffer.as_mut().unwrap().place_cursor(2);
+        assert!(
+            item.hunk_controls(content).is_none(),
+            "a folded change has no strip"
+        );
+
+        item.input_key(EditKey::ExpandAllDiffHunks, false);
+        item.ensure_visible();
+        let (_, _, y) = item.hunk_controls(content).expect("strip over the change");
+        assert_eq!(
+            y,
+            edit_line_h(),
+            "it sits on the removed line above the change"
+        );
+
+        assert!(item.popover_click(HUNK_CONTROL_BASE));
+        settle(&mut item);
+        assert_eq!(
+            repo.git(&["show", ":a.txt"]).as_deref(),
+            Some("a\nB\nc\nd\ne\n")
+        );
+        let staged: Vec<bool> = item.git.hunks().iter().map(|h| h.staged).collect();
+        assert_eq!(staged, vec![true, false]);
+
+        assert!(item.popover_click(HUNK_CONTROL_BASE + 3));
+        assert_eq!(caret_line(&item), 4);
     }
 }
 

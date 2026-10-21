@@ -38,6 +38,7 @@ impl GitPanel {
             Row::Message { .. }
                 | Row::Progress { .. }
                 | Row::Gap
+                | Row::CardPad { .. }
                 | Row::CardNote { .. }
                 | Row::Day(_)
                 | Row::CommitHeader

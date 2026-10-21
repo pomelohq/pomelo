@@ -8,7 +8,7 @@ use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
     arrow_count, avatar, checkbox, chevron, chip, chip_icon, chip_text, diff_stat, ghost_button,
     icon_button, status_icon, text_width, tooltip, with_guides, ChipTone, SplitButton, INDENT,
-    ROW_H, TAB_BAR_H, TOOLBAR_H,
+    ROW_H, SEGMENT_H, TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -16,10 +16,17 @@ use crate::{
     SYNC, SYNC_MENU, TAB_CHANGES, TAB_HISTORY, TAB_REMOTE, UNCOMMIT, VIEW_DIFF, VIEW_OPTIONS,
 };
 
-const BRANCH_ROW_H: f32 = 30.0;
-const COMMIT_ROW_H: f32 = 34.0;
+const BRANCH_ROW_H: f32 = 24.0;
+const COMMIT_ROW_H: f32 = 28.0;
 const LAST_COMMIT_H: f32 = 30.0;
+const WHY_H: f32 = 20.0;
+const FOOTER_PAD: f32 = 10.0;
+const FOOTER_GAP: f32 = 8.0;
+/// The list's side padding; cards sit this far in from the panel's edges.
 const CARD_INSET: f32 = 6.0;
+/// A card's own padding around its rows.
+const CARD_PAD_X: f32 = 4.0;
+const CARD_RADIUS: f32 = 10.0;
 
 fn fill(row: Div) -> Div {
     row.child(div().row().flex(1.0))
@@ -44,9 +51,9 @@ impl GitPanel {
         let mut row = div()
             .row()
             .h_px(height)
-            .pl(10.0)
-            .pr(4.0)
-            .gap(6.0)
+            .px(8.0)
+            .gap(8.0)
+            .rounded(6.0)
             .items_center()
             .on_click(self.id(index, Control::Main));
         if self.hovered_row() == Some(index) {
@@ -58,7 +65,7 @@ impl GitPanel {
     fn mark_keyboard_row(&self, index: usize, row: Div) -> Div {
         if self.keyboard_row() == Some(index) {
             row.bg(theme().element_selected)
-                .border(1.0, theme().panel_focused_border)
+                .border(1.0, theme().text_accent)
         } else {
             row
         }
@@ -84,11 +91,19 @@ impl GitPanel {
             theme().warning
         };
         Some(
-            label(format!("on {branch}"))
-                .size(11.0)
-                .mono()
-                .color(color)
-                .truncate()
+            div()
+                .row()
+                .h_px(18.0)
+                .px(6.0)
+                .rounded(9.0)
+                .items_center()
+                .bg(color.alpha(0.14))
+                .child(
+                    label(format!("on {branch}"))
+                        .size(12.0)
+                        .color(color)
+                        .truncate(),
+                )
                 .into(),
         )
     }
@@ -98,7 +113,7 @@ impl GitPanel {
         self.rows = self.build_rows(&scan);
         self.settle_selection();
         let (footer, footer_h) = self.render_footer(width, &scan);
-        let list_h = (height - TAB_BAR_H - 1.0 - TOOLBAR_H - footer_h).max(0.0);
+        let list_h = (height - TAB_BAR_H - TOOLBAR_H - footer_h).max(0.0);
         self.viewport_h = list_h;
         let max_scroll = (rows::content_height(&self.rows) - list_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
@@ -106,21 +121,50 @@ impl GitPanel {
         let mut first_top = None;
         let mut shown_h = 0.0;
         let mut shown = div().col().w_px(width);
+        // Each card is one rounded surface drawn behind its rows: (repo, top, height) in list coordinates.
+        let mut cards: Vec<(usize, f32, f32)> = Vec::new();
         for (index, row) in self.rows.iter().enumerate() {
             let row_h = row.height();
+            if let Some(repo) = row.card() {
+                match cards.last_mut() {
+                    Some((last, start, height))
+                        if *last == repo && (*start + *height - top).abs() < 0.5 =>
+                    {
+                        *height += row_h
+                    }
+                    _ => cards.push((repo, top, row_h)),
+                }
+            }
             if top + row_h <= self.scroll {
                 top += row_h;
                 continue;
             }
             if top >= self.scroll + list_h {
-                break;
+                top += row_h;
+                continue;
             }
             first_top.get_or_insert(top);
             shown = shown.child(self.render_row(index, row, &scan, width));
             shown_h += row_h;
             top += row_h;
         }
-        let offset = first_top.unwrap_or(0.0) - self.scroll;
+        let first = first_top.unwrap_or(0.0);
+        let mut layer = div().col().w_px(width).h_px(shown_h);
+        for (_, start, height) in cards {
+            if start + height <= first || start >= first + shown_h {
+                continue;
+            }
+            layer = layer.pin(
+                Corner::TopLeft,
+                CARD_INSET,
+                start - first,
+                width - 2.0 * CARD_INSET,
+                height,
+                div().rounded(CARD_RADIUS).bg(theme().editor_background),
+            );
+        }
+        let shown = layer.pin(Corner::TopLeft, 0.0, 0.0, width, shown_h, shown);
+        let offset = first - self.scroll;
         // Rows scroll by the pixel, so the first and last can be cut; the overlay's clip cuts them.
         let viewport = div().col().w_px(width).h_px(list_h).pin(
             Corner::TopLeft,
@@ -143,7 +187,6 @@ impl GitPanel {
             .w_px(width)
             .h_px(height)
             .child(self.render_tab_bar(width, &scan))
-            .child(line(theme().border))
             .child(self.render_toolbar(width, &scan))
             .child(list)
             .child(footer)
@@ -165,33 +208,49 @@ impl GitPanel {
                     .is_some_and(|pr| pr.checks == "fail")
             })
         });
+        // A segmented control: the tabs share one track, the chosen one lifted onto it.
         let tab = |id: u64, tab: Tab, title: &str, count: usize, dot: bool| -> Node {
             let active = self.tab == tab;
             let mut cell = div()
                 .row()
                 .flex(1.0)
-                .h_px(TAB_BAR_H)
-                .gap(4.0)
+                .h_px(SEGMENT_H)
+                .gap(6.0)
+                .rounded(4.0)
                 .items_center()
                 .justify_center()
                 .on_click(self.fixed(id));
-            cell = if self.hot(self.fixed(id)) && !active {
-                cell.bg(colors.element_hover)
-            } else if active {
-                cell.bg(colors.panel_background)
-            } else {
-                cell.bg(colors.editor_background.alpha(0.6))
-            };
-            cell = cell.child(label(title.to_string()).size(13.0).color(if active {
+            if active {
+                cell = cell
+                    .bg(colors.element_background)
+                    .border(1.0, colors.border_variant);
+            } else if self.hot(self.fixed(id)) {
+                cell = cell.bg(colors.element_hover);
+            }
+            let mut text = label(title.to_string()).size(12.0).color(if active {
                 colors.text
             } else {
                 colors.text_muted
-            }));
+            });
+            if active {
+                text = text.medium();
+            }
+            cell = cell.child(text);
             if count > 0 {
                 cell = cell.child(
-                    label(format!("({count})"))
-                        .size(12.0)
-                        .color(colors.text_placeholder),
+                    div()
+                        .row()
+                        .h_px(16.0)
+                        .px(5.0)
+                        .rounded(8.0)
+                        .items_center()
+                        .bg(colors.element_hover)
+                        .child(
+                            label(count.to_string())
+                                .size(10.5)
+                                .mono()
+                                .color(colors.text_muted),
+                        ),
                 );
             }
             if dot {
@@ -199,22 +258,24 @@ impl GitPanel {
             }
             cell.into()
         };
-        let divider = || -> Node {
-            div()
-                .w_px(1.0)
-                .h_px(TAB_BAR_H)
-                .bg(colors.border_variant)
-                .into()
-        };
         div()
             .row()
             .w_px(width)
             .h_px(TAB_BAR_H)
-            .child(tab(TAB_CHANGES, Tab::Changes, "Changes", changes, false))
-            .child(divider())
-            .child(tab(TAB_REMOTE, Tab::Remote, "Remote", differ, failing))
-            .child(divider())
-            .child(tab(TAB_HISTORY, Tab::History, "History", 0, false))
+            .pt(8.0)
+            .px(8.0)
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .p(2.0)
+                    .gap(2.0)
+                    .rounded(6.0)
+                    .bg(colors.background)
+                    .child(tab(TAB_CHANGES, Tab::Changes, "Changes", changes, false))
+                    .child(tab(TAB_REMOTE, Tab::Remote, "Remote", differ, failing))
+                    .child(tab(TAB_HISTORY, Tab::History, "History", 0, false)),
+            )
             .into()
     }
 
@@ -234,8 +295,7 @@ impl GitPanel {
             .row()
             .w_px(width)
             .h_px(TOOLBAR_H)
-            .pl(4.0)
-            .pr(8.0)
+            .px(8.0)
             .gap(4.0)
             .items_center();
         if let Some(opened) = &self.opened {
@@ -285,7 +345,7 @@ impl GitPanel {
                     self.hot(view_diff),
                 );
                 if added + deleted > 0 {
-                    diff_button = diff_button.child(diff_stat(Some(added), Some(deleted), 12.0));
+                    diff_button = diff_button.child(diff_stat(Some(added), Some(deleted), 11.5));
                 }
                 if self.hot(view_diff) {
                     diff_button =
@@ -303,6 +363,7 @@ impl GitPanel {
                     note: None,
                     enabled: scan.repos.iter().any(|repo| !repo.status.is_empty()),
                     hover: self.hover,
+                    primary: false,
                 };
                 let main = split.main_half();
                 fill(bar.child(diff_button))
@@ -355,38 +416,25 @@ impl GitPanel {
     }
 
     fn render_row(&self, index: usize, row: &Row, scan: &Scan, width: f32) -> Node {
-        let Some(repo) = row.card() else {
+        if row.card().is_none() {
             return self.row_content(index, row, scan, width).w_px(width).into();
-        };
-        let inner_w = width - 2.0 * CARD_INSET;
-        let edge = theme().border_variant;
-        let first = matches!(row, Row::Card { .. });
-        let last = self.rows.get(index + 1).and_then(Row::card) != Some(repo);
-        let height = row.height();
-        let mut inner = self
-            .row_content(index, row, scan, inner_w)
-            .w_px(inner_w)
-            .pin_left_edge(0.0, 0.0, 1.0, div().bg(edge))
-            .pin(Corner::TopRight, 0.0, 0.0, 1.0, height, div().bg(edge));
-        if first {
-            inner = inner.pin(Corner::TopLeft, 0.0, 0.0, inner_w, 1.0, div().bg(edge));
         }
-        if last {
-            inner = inner.pin(Corner::BottomLeft, 0.0, 0.0, inner_w, 1.0, div().bg(edge));
-        }
+        let inner_w = width - 2.0 * (CARD_INSET + CARD_PAD_X);
         div()
             .row()
             .w_px(width)
-            .h_px(height)
-            .px(CARD_INSET)
-            .child(inner)
+            .h_px(row.height())
+            .pt(row.gap_above())
+            .px(CARD_INSET + CARD_PAD_X)
+            .child(self.row_content(index, row, scan, inner_w).w_px(inner_w))
             .into()
     }
 
     fn row_content(&self, index: usize, row: &Row, scan: &Scan, width: f32) -> Div {
         let colors = theme();
         match row {
-            Row::Message { text, indent } => div()
+            Row::CardPad { .. } => div().h_px(rows::CARD_PAD),
+            Row::Message { text, indent, .. } => div()
                 .row()
                 .h_px(ROW_H)
                 .pl(*indent)
@@ -405,35 +453,30 @@ impl GitPanel {
                     .color(colors.text_placeholder),
             ),
             Row::RepoHeader { repo, history } => self.repo_header(index, *repo, *history, scan),
-            Row::Section {
-                repo,
-                staged,
-                count,
-            } => {
-                let name = self.source_name_of(*repo);
-                let open = !self.is_folded(&format!("s:{name}:{staged}"));
-                let mut header = self
-                    .row_base(index, ROW_H)
-                    .child(chevron(open))
-                    .child(grow(
+            Row::Section { staged, count, .. } => {
+                let (staging, tip) = if *staged {
+                    (Staging::Staged, "Unstage everything in this repo")
+                } else {
+                    (Staging::Unstaged, "Stage everything in this repo")
+                };
+                let mut header = self.row_base(index, rows::SECTION_H).gap(7.0);
+                header = if *count > 0 {
+                    header.child(self.check(index, staging, tip))
+                } else {
+                    header.child(div().w_px(14.0))
+                };
+                header
+                    .child(
                         label(if *staged { "Staged" } else { "Not staged" })
                             .size(12.0)
+                            .medium()
                             .color(colors.text_muted),
-                    ))
-                    .child(
+                    )
+                    .child(grow(
                         label(count.to_string())
-                            .size(11.0)
+                            .size(12.0)
                             .color(colors.text_placeholder),
-                    );
-                if *count > 0 {
-                    let (staging, tip) = if *staged {
-                        (Staging::Staged, "Unstage everything in this repo")
-                    } else {
-                        (Staging::Unstaged, "Stage everything in this repo")
-                    };
-                    header = header.child(self.check(index, staging, tip));
-                }
-                header
+                    ))
             }
             Row::Directory {
                 repo,
@@ -446,20 +489,33 @@ impl GitPanel {
             } => {
                 let name = self.source_name_of(*repo);
                 let open = !self.is_folded(&format!("d:{}:{name}:{path}", scope.key()));
-                let mut row = with_guides(self.row_base(index, ROW_H), *depth)
-                    .pl(10.0 + *depth as f32 * INDENT)
-                    .child(chevron(open))
+                let mut row =
+                    with_guides(self.row_base(index, row.height()), depth.saturating_sub(1))
+                        .gap(6.0)
+                        .pl(8.0 + depth.saturating_sub(1) as f32 * INDENT)
+                        .child(chevron(open));
+                if let Some(staging) = staging {
+                    let tip = match (scope, staging) {
+                        (Scope::Staged, _) | (_, Staging::Staged) => "Unstage folder",
+                        _ => "Stage folder",
+                    };
+                    row = row.child(self.check(index, *staging, tip));
+                }
+                row = row
                     .child(
                         icon(if open {
                             IconKind::FolderOpen
                         } else {
                             IconKind::Folder
                         })
-                        .size(14.0)
+                        .size(13.0)
                         .color(colors.icon_muted),
                     )
                     .child(grow(
-                        label(text.clone()).color(colors.text_muted).truncate(),
+                        label(text.clone())
+                            .size(12.0)
+                            .color(colors.text_muted)
+                            .truncate(),
                     ));
                 if let Some(left) = left_to_review {
                     let text = if *left == 0 {
@@ -468,13 +524,6 @@ impl GitPanel {
                         format!("{left} to review")
                     };
                     row = row.child(label(text).size(11.0).color(colors.text_placeholder));
-                }
-                if let Some(staging) = staging {
-                    let tip = match (scope, staging) {
-                        (Scope::Staged, _) | (_, Staging::Staged) => "Unstage folder",
-                        _ => "Stage folder",
-                    };
-                    row = row.child(self.check(index, *staging, tip));
                 }
                 row
             }
@@ -718,9 +767,26 @@ impl GitPanel {
         let colors = theme();
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("{}:{name}", if history { "h" } else { "c" }));
-        let mut header = self.row_base(index, ROW_H).child(chevron(open)).child(
+        let height = if history { ROW_H } else { rows::REPO_HEADER_H };
+        let mut header = self
+            .row_base(index, height)
+            .gap(7.0)
+            .px(6.0)
+            .child(chevron(open));
+        if !history {
+            if let Some(state) = scan.repos.get(repo) {
+                let staging = rows::repo_staging(state);
+                let tip = if staging == Staging::Staged {
+                    "Unstage everything in this repo"
+                } else {
+                    "Stage everything in this repo"
+                };
+                header = header.child(self.check(index, staging, tip));
+            }
+        }
+        header = header.child(
             label(name)
-                .size(13.0)
+                .size(12.0)
                 .weight(600)
                 .color(colors.text)
                 .truncate(),
@@ -757,15 +823,7 @@ impl GitPanel {
                     deleted + file.deleted.unwrap_or(0),
                 )
             });
-        let staging = rows::repo_staging(state);
-        let tip = if staging == Staging::Staged {
-            "Unstage everything in this repo"
-        } else {
-            "Stage everything in this repo"
-        };
-        header
-            .child(diff_stat(Some(added), Some(deleted), 12.0))
-            .child(self.check(index, staging, tip))
+        header.child(diff_stat(Some(added), Some(deleted), 11.5))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -782,48 +840,56 @@ impl GitPanel {
         let colors = theme();
         let reviewed = scope == Scope::Branch && self.is_reviewed(scan, repo, &entry.path);
         let deleted = entry.status == ChangeStatus::Deleted;
-        let mut row = self
-            .row_base(index, ROW_H)
-            .pl(10.0 + depth as f32 * INDENT + if flat { 0.0 } else { 18.0 });
+        let working = matches!(scope, Scope::Staged | Scope::Unstaged | Scope::Working);
+        let mut row = self.row_base(index, ROW_H);
         if !flat {
-            row = with_guides(row, depth);
+            row = with_guides(row, depth.saturating_sub(1))
+                .pl(10.0 + depth.saturating_sub(1) as f32 * INDENT);
         }
         let (folder, name) = match entry.path.rsplit_once('/') {
             Some((folder, name)) => (Some(folder.to_string()), name.to_string()),
             None => (None, entry.path.clone()),
         };
-        let name_color = if deleted {
-            colors.text_disabled
-        } else if reviewed {
+        // The staging box leads the row, where the eye starts reading, as it does in the file tree.
+        if let (Some(staging), true) = (entry.staging, working) {
+            let shown = match (scope, staging) {
+                (Scope::Staged, Staging::Unstaged) => Staging::Staged,
+                (Scope::Unstaged, Staging::Staged) => Staging::Unstaged,
+                (_, staging) => staging,
+            };
+            let tip = match (scope, staging) {
+                (Scope::Staged, _) | (Scope::Working, Staging::Staged) => "Unstage",
+                _ => "Stage",
+            };
+            row = row.child(self.check(index, shown, tip));
+        }
+        let name_color = if deleted || reviewed {
             colors.text_muted
         } else {
             colors.text
         };
-        let mut name_label = label(name).color(name_color).truncate();
+        let mut name_label = label(name.clone()).size(12.0).color(name_color);
         if deleted {
-            name_label = name_label.strikethrough(colors.text_disabled);
+            name_label = name_label.strikethrough(colors.text_muted);
         }
         let mut path = div()
             .row()
             .flex(1.0)
-            .gap(6.0)
+            .gap(8.0)
             .items_center()
+            .child(ui::material_icon(files_ui::file_icon(&name)).size(14.0))
             .child(name_label);
         if flat {
             if let Some(folder) = folder {
                 path = path.child(
                     label(folder)
                         .size(12.0)
-                        .color(if deleted {
-                            colors.text_disabled
-                        } else {
-                            colors.text_muted
-                        })
+                        .color(colors.text_placeholder)
                         .truncate_start(),
                 );
             }
         }
-        row = row.child(status_icon(entry.status)).child(path);
+        row = row.child(path);
         if scope == Scope::Branch {
             let eye = self.id(index, Control::Eye);
             let mut button = div()
@@ -855,22 +921,8 @@ impl GitPanel {
             }
             row = row.child(button);
         }
-        row = row.child(diff_stat(entry.added, entry.deleted, 12.0));
-        if let (Some(staging), Scope::Staged | Scope::Unstaged | Scope::Working) =
-            (entry.staging, scope)
-        {
-            let shown = match (scope, staging) {
-                (Scope::Staged, Staging::Unstaged) => Staging::Staged,
-                (Scope::Unstaged, Staging::Staged) => Staging::Unstaged,
-                (_, staging) => staging,
-            };
-            let tip = match (scope, staging) {
-                (Scope::Staged, _) | (Scope::Working, Staging::Staged) => "Unstage",
-                _ => "Stage",
-            };
-            row = row.child(self.check(index, shown, tip));
-        }
-        row
+        row.child(diff_stat(entry.added, entry.deleted, 11.5))
+            .child(status_icon(entry.status))
     }
 
     fn card_header(&self, index: usize, repo: usize, scan: &Scan, width: f32) -> Div {
@@ -1100,7 +1152,9 @@ impl GitPanel {
             )
     }
 
-    fn branch_row(&self, width: f32, scan: &Scan, link: Option<String>) -> Node {
+    /// The workspace branch (with how many repos are on it), a link on the right, and below it a chip naming
+    /// the repos on another branch. Returns the rows and their height.
+    fn branch_row(&self, width: f32, scan: &Scan, link: Option<String>) -> (Node, f32) {
         let colors = theme();
         let workspace_branch = self.workspace_branch(scan);
         let total = self.sources.len();
@@ -1116,27 +1170,25 @@ impl GitPanel {
             }
         }
         let count = if kept > 0 {
-            format!(" + {kept} other")
+            format!("+ {kept} other")
         } else {
-            format!(" in {} of {total}", total - drifted.len())
+            format!("in {} of {total}", total - drifted.len())
         };
         let pick = self.fixed(BRANCH_MENU);
         let mut picker = div()
             .row()
-            .h_px(20.0)
-            .px(4.0)
+            .h_px(BRANCH_ROW_H)
+            .px(6.0)
+            .gap(5.0)
             .rounded(4.0)
             .items_center()
             .on_click(pick)
+            .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
-                label(workspace_branch.clone())
-                    .size(12.0)
+                label(workspace_branch)
+                    .size(13.0)
+                    .medium()
                     .color(colors.text),
-            )
-            .child(
-                label(count.clone())
-                    .size(12.0)
-                    .color(colors.text_placeholder),
             );
         if self.hot(pick) {
             picker = tooltip(
@@ -1145,57 +1197,29 @@ impl GitPanel {
                 true,
             );
         }
-        let picker_w =
-            8.0 + text_width(&workspace_branch, 12.0, false) + text_width(&count, 12.0, false);
-        let link_id = self.fixed(BRANCH_LINK);
-        let link_w = link
-            .as_ref()
-            .map_or(0.0, |text| 8.0 + text_width(text, 12.0, false));
         let mut row = div()
             .row()
             .w_px(width)
             .h_px(BRANCH_ROW_H)
-            .px(8.0)
-            .gap(4.0)
+            .gap(6.0)
             .items_center()
-            .child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted))
-            .child(picker);
-        if !drifted.is_empty() {
-            let text = drifted.join(", ");
-            let room = (width - 16.0 - 14.0 - picker_w - link_w - 16.0).max(24.0);
-            let natural = 6.0 + 11.0 + 3.0 + text_width(&text, 11.0, false) + 6.0;
-            let chip_id = self.fixed(DRIFT_CHIP);
-            let mut chip = div()
-                .row()
-                .w_px(natural.min(room))
-                .h_px(18.0)
-                .px(6.0)
-                .gap(3.0)
-                .rounded(4.0)
-                .items_center()
-                .on_click(chip_id)
-                .bg(colors
-                    .warning
-                    .alpha(if self.hot(chip_id) { 0.2 } else { 0.12 }))
-                .child(icon(IconKind::Warning).size(11.0).color(colors.warning))
-                .child(grow(
-                    label(text).size(11.0).color(colors.warning).truncate(),
-                ));
-            if self.hot(chip_id) {
-                chip = tooltip(chip, "Some repos are on another branch", true);
-            }
-            row = row.child(chip);
-        }
-        row = fill(row);
+            .child(picker)
+            .child(grow(
+                label(count)
+                    .size(13.0)
+                    .color(colors.text_placeholder)
+                    .truncate(),
+            ));
         if let Some(text) = link {
+            let link_id = self.fixed(BRANCH_LINK);
             let mut link = div()
                 .row()
-                .h_px(20.0)
+                .h_px(BRANCH_ROW_H)
                 .px(4.0)
                 .rounded(4.0)
                 .items_center()
                 .on_click(link_id)
-                .child(label(text).size(12.0).color(colors.text_accent));
+                .child(label(text).size(13.0).color(colors.text_accent));
             if self.hot(link_id) {
                 link = tooltip(
                     link.bg(colors.ghost_element_hover),
@@ -1205,18 +1229,45 @@ impl GitPanel {
             }
             row = row.child(link);
         }
-        row.into()
+        if drifted.is_empty() {
+            return (row.into(), BRANCH_ROW_H);
+        }
+        let text = drifted.join(", ");
+        let chip_id = self.fixed(DRIFT_CHIP);
+        let natural = 7.0 + 11.0 + 4.0 + text_width(&text, 13.0, false) + 7.0;
+        let mut chip = div()
+            .row()
+            .w_px(natural.min(width))
+            .h_px(20.0)
+            .px(7.0)
+            .gap(4.0)
+            .rounded(10.0)
+            .items_center()
+            .on_click(chip_id)
+            .bg(colors
+                .warning
+                .alpha(if self.hot(chip_id) { 0.22 } else { 0.14 }))
+            .child(icon(IconKind::Warning).size(11.0).color(colors.warning))
+            .child(grow(
+                label(text).size(13.0).color(colors.warning).truncate(),
+            ));
+        if self.hot(chip_id) {
+            chip = tooltip(chip, "Some repos are on another branch", true);
+        }
+        let rows = div()
+            .col()
+            .w_px(width)
+            .gap(FOOTER_GAP)
+            .child(row)
+            .child(div().row().h_px(BRANCH_ROW_H).items_center().child(chip));
+        (rows.into(), 2.0 * BRANCH_ROW_H + FOOTER_GAP)
     }
 
     fn render_footer(&mut self, width: f32, scan: &Scan) -> (Node, f32) {
         let colors = theme();
-        let footer = div()
-            .col()
-            .w_px(width)
-            .bg(colors.panel_background)
-            .child(line(colors.border));
-        match self.tab {
-            Tab::Changes => self.changes_footer(width, scan, footer),
+        let inner = width - 2.0 * FOOTER_PAD;
+        let (rows, height): (Vec<Node>, f32) = match self.tab {
+            Tab::Changes => self.changes_footer(inner, scan),
             Tab::Remote => {
                 let differ = scan
                     .repos
@@ -1245,6 +1296,7 @@ impl GitPanel {
                     note: None,
                     enabled: differ > 0 && !self.commit.busy(),
                     hover: self.hover,
+                    primary: true,
                 };
                 let mut main = split.main_half();
                 if self.hot(self.fixed(SYNC)) && split.enabled {
@@ -1252,34 +1304,45 @@ impl GitPanel {
                 }
                 let sync_row = div()
                     .row()
-                    .w_px(width)
-                    .h_px(BRANCH_ROW_H)
-                    .px(8.0)
-                    .gap(4.0)
+                    .w_px(inner)
+                    .h_px(COMMIT_ROW_H)
+                    .gap(8.0)
                     .items_center()
                     .child(grow(
                         label(summary)
-                            .size(12.0)
-                            .color(colors.text_placeholder)
+                            .size(13.0)
+                            .color(colors.text_muted)
                             .truncate(),
                     ))
                     .child(split.finish(main));
-                let node = footer
-                    .child(self.branch_row(width, scan, None))
-                    .child(line(colors.border_variant))
-                    .child(sync_row);
-                (node.into(), 1.0 + BRANCH_ROW_H + 1.0 + BRANCH_ROW_H)
+                let (branch, branch_h) = self.branch_row(inner, scan, None);
+                (
+                    vec![branch, sync_row.into()],
+                    branch_h + FOOTER_GAP + COMMIT_ROW_H,
+                )
             }
             Tab::History => {
                 let unpushed: usize = scan.repos.iter().map(RepoScan::unpushed).sum();
                 let link = (unpushed > 0).then(|| format!("{unpushed} not pushed"));
-                let node = footer.child(self.branch_row(width, scan, link));
-                (node.into(), 1.0 + BRANCH_ROW_H)
+                let (branch, branch_h) = self.branch_row(inner, scan, link);
+                (vec![branch], branch_h)
             }
+        };
+        let mut footer = div()
+            .col()
+            .w_px(width)
+            .bg(colors.editor_background)
+            .child(line(colors.border_variant));
+        let mut body = div().col().w_px(width).p(FOOTER_PAD).gap(FOOTER_GAP);
+        for row in rows {
+            body = body.child(row);
         }
+        footer = footer.child(body);
+        (footer.into(), 1.0 + 2.0 * FOOTER_PAD + height)
     }
 
-    fn changes_footer(&mut self, width: f32, scan: &Scan, footer: Div) -> (Node, f32) {
+    /// The Changes footer's rows (branch, message, commit, why it can't, last commit) and their height.
+    fn changes_footer(&mut self, width: f32, scan: &Scan) -> (Vec<Node>, f32) {
         let colors = theme();
         let to_push = scan
             .repos
@@ -1304,32 +1367,33 @@ impl GitPanel {
         let editor = self
             .commit
             .render_editor(width, &placeholder, self.fixed(COMMIT_EDITOR));
-        let plan_node: Node = if staged.is_empty() {
-            label("nothing staged")
-                .size(11.0)
-                .color(colors.text_placeholder)
-                .into()
-        } else {
+        let plan_node: Node = {
+            let summary = if staged.is_empty() {
+                "nothing staged".to_string()
+            } else {
+                plan.summary.clone()
+            };
             let id = self.fixed(PLAN);
             let mut pick = div()
                 .row()
-                .h_px(20.0)
-                .px(4.0)
-                .gap(3.0)
+                .h_px(22.0)
+                .gap(4.0)
                 .rounded(4.0)
                 .items_center()
-                .on_click(id)
-                .child(grow(
-                    label(plan.summary.clone())
-                        .size(11.0)
-                        .color(colors.text_muted)
+                .child(
+                    label(summary)
+                        .size(13.0)
+                        .color(colors.text_accent)
                         .truncate(),
-                ))
+                )
                 .child(
                     icon(IconKind::ChevronDown)
-                        .size(9.0)
-                        .color(colors.icon_muted),
+                        .size(10.0)
+                        .color(colors.text_accent),
                 );
+            if !staged.is_empty() {
+                pick = pick.on_click(id);
+            }
             if self.hot(id) {
                 pick = tooltip(
                     pick.bg(colors.ghost_element_hover),
@@ -1347,7 +1411,7 @@ impl GitPanel {
         .filter(|(on, _)| *on)
         .map(|(_, text)| *text)
         .collect();
-        let note = (!options.is_empty()).then(|| format!(" +{}", options.join(", ")));
+        let note = (!options.is_empty()).then(|| format!("+{}", options.join(", ")));
         let split = SplitButton {
             main: self.fixed(COMMIT),
             menu: self.fixed(COMMIT_MENU),
@@ -1355,52 +1419,52 @@ impl GitPanel {
             note: note.as_deref(),
             enabled: plan.enabled,
             hover: self.hover,
+            primary: true,
         };
         let mut main = split.main_half();
-        if self.hot(self.fixed(COMMIT)) || (!plan.enabled && self.hot(self.fixed(COMMIT))) {
+        if self.hot(self.fixed(COMMIT)) {
             main = tooltip(main, &plan.hint, true);
         }
-        let commit_button = split.finish(main);
-        let button_w = 16.0
-            + text_width(plan.title, 12.0, false)
-            + note
-                .as_deref()
-                .map_or(0.0, |note| text_width(note, 11.0, false))
-            + 22.0;
         let commit_row = div()
             .row()
             .w_px(width)
             .h_px(COMMIT_ROW_H)
-            .px(6.0)
-            .gap(4.0)
+            .gap(8.0)
             .items_center()
-            .bg(colors.editor_background)
-            .child(
+            .child(grow(plan_node))
+            .child(split.finish(main));
+        let (branch, branch_h) = self.branch_row(width, scan, link);
+        let mut rows = vec![branch, editor, commit_row.into()];
+        let mut height =
+            branch_h + FOOTER_GAP + self.commit.editor_height() + FOOTER_GAP + COMMIT_ROW_H;
+        // Say why the button is off right under it, not only in its tooltip.
+        if !plan.enabled && !plan.hint.is_empty() {
+            rows.push(
                 div()
                     .row()
-                    .w_px((width - 12.0 - 8.0 - button_w).max(40.0))
+                    .w_px(width)
+                    .h_px(WHY_H)
+                    .gap(6.0)
                     .items_center()
-                    .child(plan_node),
-            )
-            .child(div().row().flex(1.0))
-            .child(commit_button);
-        let mut node = footer
-            .child(self.branch_row(width, scan, link))
-            .child(line(colors.border))
-            .child(editor)
-            .child(line(colors.border_variant))
-            .child(commit_row);
-        let mut height =
-            1.0 + BRANCH_ROW_H + 1.0 + self.commit.editor_height() + 1.0 + COMMIT_ROW_H;
+                    .child(icon(IconKind::Info).size(12.0).color(colors.icon_muted))
+                    .child(grow(
+                        label(plan.hint.clone())
+                            .size(13.0)
+                            .color(colors.text_placeholder)
+                            .truncate(),
+                    ))
+                    .into(),
+            );
+            height += FOOTER_GAP + WHY_H;
+        }
         if let Some((repo, commit)) = self.last_commit(scan) {
             let pushed = !Self::can_uncommit(scan, repo, &commit);
             let subject = self.fixed(LAST_COMMIT);
             let mut open = div()
                 .row()
                 .flex(1.0)
-                .h_px(20.0)
-                .px(4.0)
-                .rounded(3.0)
+                .h_px(22.0)
+                .rounded(4.0)
                 .items_center()
                 .on_click(subject)
                 .child(grow(
@@ -1409,7 +1473,7 @@ impl GitPanel {
                         commit.subject,
                         self.source_name_of(repo)
                     ))
-                    .size(12.0)
+                    .size(13.0)
                     .color(if self.hot(subject) {
                         colors.text
                     } else {
@@ -1431,24 +1495,29 @@ impl GitPanel {
                 undo_button = tooltip(undo_button, tip, true);
             }
             let last = div()
-                .row()
+                .col()
                 .w_px(width)
-                .h_px(LAST_COMMIT_H)
-                .pl(8.0)
-                .pr(6.0)
-                .gap(6.0)
-                .items_center()
+                .child(line(colors.border_variant))
                 .child(
-                    label("Last commit")
-                        .size(12.0)
-                        .color(colors.text_placeholder),
-                )
-                .child(open)
-                .child(undo_button);
-            node = node.child(line(colors.border)).child(last);
-            height += 1.0 + LAST_COMMIT_H;
+                    div()
+                        .row()
+                        .w_px(width)
+                        .h_px(LAST_COMMIT_H - 1.0)
+                        .pt(5.0)
+                        .gap(8.0)
+                        .items_center()
+                        .child(
+                            label("Last commit")
+                                .size(13.0)
+                                .color(colors.text_placeholder),
+                        )
+                        .child(open)
+                        .child(undo_button),
+                );
+            rows.push(last.into());
+            height += FOOTER_GAP + LAST_COMMIT_H;
         }
-        (node.into(), height)
+        (rows, height)
     }
 }
 

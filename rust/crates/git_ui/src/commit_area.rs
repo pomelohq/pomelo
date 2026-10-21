@@ -11,9 +11,13 @@ use ui::{div, theme, Node};
 use workspace::text_field::TextArea;
 use workspace::PanelRequest;
 
-const EDITOR_ROWS: usize = 6;
+/// The message box shows three lines and grows with the message up to six.
+const EDITOR_MIN_ROWS: usize = 3;
+const EDITOR_MAX_ROWS: usize = 6;
 const EDITOR_FONT: f32 = 13.0;
 const EDITOR_PAD: f32 = 8.0;
+const EDITOR_PAD_X: f32 = 10.0;
+const EDITOR_MIN_H: f32 = 80.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
@@ -141,8 +145,16 @@ impl CommitArea {
         self.running.as_ref().and_then(|running| running.remote)
     }
 
+    fn editor_rows(&self) -> usize {
+        self.editor
+            .text()
+            .lines()
+            .count()
+            .clamp(EDITOR_MIN_ROWS, EDITOR_MAX_ROWS)
+    }
+
     pub fn editor_height(&self) -> f32 {
-        EDITOR_PAD + self.editor.line_height() * EDITOR_ROWS as f32
+        (2.0 * EDITOR_PAD + self.editor.line_height() * self.editor_rows() as f32).max(EDITOR_MIN_H)
     }
 
     /// `staged` lists every repo with staged files; `amend_target` is the repo whose last commit an amend
@@ -331,20 +343,28 @@ impl CommitArea {
     }
 
     pub fn render_editor(&mut self, width: f32, placeholder: &str, click_id: u64) -> Node {
-        let rows_h = self.editor.line_height() * EDITOR_ROWS as f32;
+        let colors = theme();
+        let rows = self.editor_rows();
         let text = self.editor.render(
             placeholder,
             self.focused,
-            (width - 2.0 * EDITOR_PAD).max(40.0),
-            EDITOR_ROWS,
+            (width - 2.0 * EDITOR_PAD_X).max(40.0),
+            rows,
         );
+        let ring = if self.focused || !self.editor.text().is_empty() {
+            colors.text_accent
+        } else {
+            colors.border_variant
+        };
         div()
             .col()
             .w_px(width)
-            .h_px(EDITOR_PAD + rows_h)
-            .pt(EDITOR_PAD)
-            .px(EDITOR_PAD)
-            .bg(theme().editor_background)
+            .h_px(self.editor_height())
+            .py(EDITOR_PAD)
+            .px(EDITOR_PAD_X)
+            .rounded(6.0)
+            .bg(colors.panel_background)
+            .border(1.0, ring)
             .on_click(click_id)
             .child(text)
             .into()

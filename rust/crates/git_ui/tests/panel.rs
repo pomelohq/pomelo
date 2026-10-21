@@ -190,11 +190,11 @@ fn ticking_in_not_staged_stages_and_unticking_in_staged_unstages() {
     write(&root, "src/deep/new.rs", "a\n");
     let mut panel = panel(vec![source("api", &root, "feat")]);
     let shown = texts(&mut panel);
-    assert!(shown.contains("Changes|(2)"), "{shown}");
+    assert!(shown.contains("Changes|2"), "{shown}");
     assert!(shown.contains("|api|"), "{shown}");
     assert!(
-        shown.contains("Staged|0|Nothing staged yet - tick a file below|Not staged|2"),
-        "{shown}"
+        shown.contains("|Not staged|2") && !shown.contains("|Staged|"),
+        "an empty side has no section: {shown}"
     );
     assert!(
         shown.contains("src/deep"),
@@ -487,7 +487,7 @@ fn the_branch_row_points_out_repos_on_another_branch() {
         source("web", &web, "feat-login"),
     ]);
     let shown = texts(&mut panel);
-    assert!(shown.contains("feat-login| in 1 of 2"), "{shown}");
+    assert!(shown.contains("feat-login|in 1 of 2"), "{shown}");
     assert!(shown.contains("|web on ana/mail"), "{shown}");
 
     click(&mut panel, "feat-login");
@@ -539,7 +539,7 @@ fn the_branch_row_points_out_repos_on_another_branch() {
         [PanelRequest::KeepBranch { repo, branch }] if repo == "web" && branch == "ana/mail-retry"
     ));
     let shown = texts(&mut panel);
-    assert!(shown.contains("feat-login| + 1 other"), "{shown}");
+    assert!(shown.contains("feat-login|+ 1 other"), "{shown}");
     assert!(
         !shown.contains("web on ana/mail"),
         "kept is not drift: {shown}"
