@@ -39,6 +39,13 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "git-discard-file" => (0, &[("PROMPT", "discard-file")]),
         "git-pr-merge-confirm" => (0, &[("MERGECONFIRM", "1")]),
         "project-switcher-filtered" => (0, &[("SWITCHER", "rate")]),
+        // The New project tab's page alone, at the size of the board's page; ONBOARDSCENE is its state.
+        "system-onboarding-repos" => (0, &[("ONBOARDSCENE", "repos")]),
+        "system-onboarding-setup" => (0, &[("ONBOARDSCENE", "setup")]),
+        "system-onboarding-review" => (0, &[("ONBOARDSCENE", "review")]),
+        "system-onboarding-running" => (0, &[("ONBOARDSCENE", "progress")]),
+        "system-onboarding-repair" => (0, &[("ONBOARDSCENE", "fixing")]),
+        "system-onboarding-done" => (0, &[("ONBOARDSCENE", "done")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
         "services-running" => (0, &[("SERVICES", "api/server"), ("FACTS", "674")]),
@@ -1925,6 +1932,44 @@ fn main() -> anyhow::Result<()> {
             ui::theme().background
         };
         r.render_frame(backdrop, &layers)?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
+    if let Ok(which) = std::env::var("ONBOARDSCENE") {
+        use workspace::Item;
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let mut page = onboarding_ui::preview_page(&which);
+        let body = ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT);
+        let painted = page.paint_body(body, true).unwrap_or_default();
+        let footer = page.paint_popover(body).unwrap_or_default();
+        r.render_frame(
+            ui::theme().editor_background,
+            &[
+                (
+                    painted.rects.as_slice(),
+                    painted.tris.as_slice(),
+                    painted.texts.as_slice(),
+                    painted.icons.as_slice(),
+                    None,
+                ),
+                (
+                    footer.rects.as_slice(),
+                    footer.tris.as_slice(),
+                    footer.texts.as_slice(),
+                    footer.icons.as_slice(),
+                    None,
+                ),
+            ],
+        )?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;
         let mut enc = png::Encoder::new(BufWriter::new(file), w, h);

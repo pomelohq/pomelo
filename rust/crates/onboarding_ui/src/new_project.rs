@@ -1,80 +1,74 @@
 //! The new project form: repositories, who sets it up and how, then a review before creating it.
 
 use pom_agent::AgentCli;
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, Node};
 use workspace::text_field::FieldFont;
+use workspace::{field, outlined_button, ButtonKind};
 
 use crate::ids::*;
 use crate::model::{home_relative, AddMode, Field, Form, Onboarding, Request, Step};
-use crate::view::{self, Tone};
+use crate::view;
 
 pub(crate) fn render(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
     let form = &state.form;
-    let hot = |id: u64| hovered == Some(id);
-    let cancel = view::button(
-        CANCEL,
-        None,
-        "Cancel",
-        Tone::Ghost,
-        hot(CANCEL),
-        true,
-        Some("esc"),
-    );
+    let titles: Vec<&str> = Step::ALL.iter().map(|step| step.title()).collect();
+    let current = Step::ALL
+        .iter()
+        .position(|step| *step == form.step)
+        .unwrap_or(0);
     let body = match form.step {
         Step::Repositories => repositories(state, width, hovered),
-        Step::Setup => setup(state, width, hovered),
+        Step::Setup => setup(state, width),
         Step::Review => review(state, width),
     };
-    let mut footer = div().row().items_center().gap(8.0);
-    if form.step != Step::Repositories {
-        footer = footer.child(view::button(
-            BACK,
-            None,
-            "Back",
-            Tone::Plain,
-            hot(BACK),
-            true,
-            None,
-        ));
-    }
-    footer = footer.child(div().flex(1.0));
-    if form.step == Step::Repositories && form.repos.is_empty() {
-        footer = footer.child(view::hint("Add at least one repository"));
-    }
-    footer = footer.child(match form.step {
-        Step::Review => view::button(
-            CREATE,
-            None,
-            &format!("Create {}", form.name()),
-            Tone::Primary,
-            hot(CREATE),
-            state.can_create(),
-            Some("cmd-enter"),
-        ),
-        step => view::button(
-            NEXT,
-            None,
-            "Continue",
-            Tone::Primary,
-            hot(NEXT),
-            step_ready(state, step),
-            Some("enter"),
-        ),
-    });
     div()
         .col()
         .w_px(width)
         .gap(view::PAGE_GAP)
-        .child(view::header(
-            "New project",
-            "Repos in, a runnable environment for every branch out",
-            vec![cancel],
-        ))
-        .child(stepper(form.step))
+        .child(view::steps(&titles, current, false))
         .child(body)
-        .child(view::divider())
-        .child(footer)
         .into()
+}
+
+pub(crate) fn footer(state: &Onboarding) -> Node {
+    let form = &state.form;
+    let mut buttons = Vec::new();
+    if form.step == Step::Repositories {
+        buttons.push(view::button(
+            CANCEL,
+            "Cancel",
+            Some("escape"),
+            ButtonKind::Secondary,
+            true,
+        ));
+    } else {
+        buttons.push(view::button(
+            BACK,
+            "Back",
+            None,
+            ButtonKind::Secondary,
+            true,
+        ));
+    }
+    buttons.push(match form.step {
+        Step::Review => view::button(
+            CREATE,
+            &format!("Create {}", form.name()),
+            Some("cmd-enter"),
+            ButtonKind::Primary,
+            state.can_create(),
+        ),
+        step => view::button(
+            NEXT,
+            "Continue",
+            Some("enter"),
+            ButtonKind::Primary,
+            step_ready(state, step),
+        ),
+    });
+    let note = (form.step == Step::Repositories && form.repos.is_empty())
+        .then_some("Add at least one repository");
+    view::footer(note, Vec::new(), buttons)
 }
 
 fn step_ready(state: &Onboarding, step: Step) -> bool {
@@ -88,65 +82,14 @@ fn step_ready(state: &Onboarding, step: Step) -> bool {
     }
 }
 
-fn stepper(current: Step) -> Node {
-    let colors = theme();
-    let mut row = div().row().items_center().gap(8.0);
-    for (index, step) in Step::ALL.iter().enumerate() {
-        if index > 0 {
-            row = row.child(div().w_px(30.0).h_px(1.0).bg(colors.border));
-        }
-        let number = step.number();
-        let (mark, color) = if number < current.number() {
-            (view::StepMark::Done, colors.text_muted)
-        } else if *step == current {
-            (view::StepMark::Current(number), colors.text)
-        } else {
-            (view::StepMark::Todo(number), colors.text_placeholder)
-        };
-        row = row.child(
-            div()
-                .row()
-                .items_center()
-                .gap(7.0)
-                .on_click(STEP_BASE + index as u64)
-                .child(view::step_mark(mark, 20.0))
-                .child(label(step.title()).size(view::TEXT).color(color)),
-        );
-    }
-    row.into()
-}
-
-fn labeled(title: &str, field: Node, note: Node) -> ui::Div {
-    div()
-        .col()
-        .gap(5.0)
-        .child(
-            label(title.to_string())
-                .size(view::HINT)
-                .color(theme().text_muted),
-        )
-        .child(field)
-        .child(note)
-}
-
-fn note(text: &str, error: Option<String>, mono: bool) -> Node {
-    match error {
-        Some(error) => label(error).size(view::HINT).color(theme().error).into(),
-        None if mono => view::hint(text).mono().into(),
-        None => view::hint(text).into(),
-    }
-}
-
 fn text_input(
     form: &Form,
     id: u64,
     field: Field,
     placeholder: &str,
-    width: Option<f32>,
-    height: f32,
+    error: bool,
     font: FieldFont,
-) -> Node {
-    let focused = form.focus == Some(field);
+) -> ui::Div {
     let text = match field {
         Field::Name => &form.name,
         Field::Branch => &form.branch,
@@ -157,59 +100,60 @@ fn text_input(
             None => &form.name,
         },
     };
-    let size = if font == FieldFont::Mono { 12.5 } else { 13.0 };
-    let content = div().row().flex(1.0).items_center().child(text.render(
+    view::input(
+        id,
+        text,
         placeholder,
-        focused,
-        theme().text,
-        size * 1.4,
+        form.focus == Some(field),
+        error,
         font,
-    ));
-    view::input(id, content.into(), focused, width, height)
+    )
 }
 
 fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
-    let colors = theme();
     let form = &state.form;
     let hot = |id: u64| hovered == Some(id);
     let location = home_relative(&state.sessions_root.join(match form.name().as_str() {
         "" => "...".to_string(),
         name => name.to_string(),
     }));
+    let name_error = state.name_error();
+    let branch_error = state.branch_error();
+    let half = (width - view::PAGE_GAP) / 2.0;
     let names = div()
         .row()
-        .gap(14.0)
+        .gap(view::PAGE_GAP)
         .child(
-            labeled(
+            div().col().w_px(half).child(field(
                 "Session name",
                 text_input(
                     form,
                     NAME,
                     Field::Name,
                     "myproject",
-                    None,
-                    30.0,
+                    name_error.is_some(),
                     FieldFont::Ui,
-                ),
-                note(&location, state.name_error(), true),
-            )
-            .flex(1.0),
+                )
+                .into(),
+                Some(&location),
+                name_error.as_deref(),
+            )),
         )
         .child(
-            labeled(
+            div().col().w_px(half).child(field(
                 "Default branch",
                 text_input(
                     form,
                     BRANCH,
                     Field::Branch,
                     "main",
-                    Some(200.0),
-                    30.0,
+                    branch_error.is_some(),
                     FieldFont::Mono,
-                ),
-                note("main's branch in every repo", state.branch_error(), false),
-            )
-            .w_px(200.0),
+                )
+                .into(),
+                Some("main's branch in every repo"),
+                branch_error.as_deref(),
+            )),
         );
     let mode = view::segmented(
         &[
@@ -219,250 +163,201 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
         usize::from(form.add_mode == AddMode::Urls),
     );
     let mut adder = div().row().items_center().gap(8.0).child(mode);
-    adder = match form.add_mode {
-        AddMode::Folders => adder
-            .child(view::button(
+    let adder_hint = match form.add_mode {
+        AddMode::Folders => {
+            adder = adder.child(outlined_button(
                 CHOOSE,
-                Some(IconKind::Folder),
+                Some(IconKind::FolderOpen),
                 "Choose folders...",
-                Tone::Plain,
-                hot(CHOOSE),
                 true,
-                None,
-            ))
-            .child(view::hint(
-                "A folder with a .git inside, or a folder of repos",
-            )),
-        AddMode::Urls => adder
-            .child(text_input(
-                form,
-                URL,
-                Field::Url,
-                "git@github.com:acme/api.git - paste several at once",
-                None,
-                30.0,
-                FieldFont::Mono,
-            ))
-            .child(view::button(
-                ADD_URL,
-                None,
-                "Add",
-                Tone::Plain,
-                hot(ADD_URL),
-                !form.url.text().trim().is_empty(),
-                None,
-            )),
+            ));
+            "A folder with a .git inside, or a folder of repos"
+        }
+        AddMode::Urls => {
+            adder = adder
+                .child(
+                    text_input(
+                        form,
+                        URL,
+                        Field::Url,
+                        "git@github.com:acme/api.git",
+                        false,
+                        FieldFont::Mono,
+                    )
+                    .flex(1.0),
+                )
+                .child(outlined_button(
+                    ADD_URL,
+                    None,
+                    "Add",
+                    !form.url.text().trim().is_empty(),
+                ));
+            "Paste one or several git URLs to clone"
+        }
     };
     let list = if form.repos.is_empty() {
-        view::rows(vec![view::row()
-            .child(view::hint(
-                "No repositories yet. Add the folders you already work in, or git URLs to clone.",
-            ))
-            .into()])
+        view::panel_list(
+            vec![div()
+                .row()
+                .h_px(36.0)
+                .px(10.0)
+                .items_center()
+                .child(view::muted(
+                    "No repositories yet. Add the folders you already work in, or git URLs to clone.",
+                ))
+                .into()],
+            4.0,
+        )
     } else {
-        view::rows(
-            form.repos
-                .iter()
-                .enumerate()
-                .map(|(index, _)| repo_row(form, index, width, hot(REMOVE_BASE + index as u64)))
+        view::panel_list(
+            (0..form.repos.len())
+                .map(|index| repo_row(form, index, hot(REMOVE_BASE + index as u64)))
                 .collect(),
+            4.0,
         )
     };
-    let count = label(format!("{} added", form.repos.len()))
-        .size(view::HINT)
-        .color(colors.text_placeholder);
     let mut column = div()
         .col()
         .gap(view::PAGE_GAP)
+        .child(view::head(
+            "New project",
+            Some("Repos in, a runnable environment for every branch out"),
+        ))
         .child(names)
-        .child(view::section(
-            "Repositories",
-            Some(count.into()),
-            vec![adder.into(), list],
-        ));
+        .child(field("Repositories", adder.into(), Some(adder_hint), None))
+        .child(list);
     let infra = form.infra();
     if !infra.is_empty() {
-        let mut chips: Vec<Node> = infra
-            .iter()
-            .map(|name| {
-                div()
-                    .row()
-                    .h_px(20.0)
-                    .px(7.0)
-                    .gap(4.0)
-                    .items_center()
-                    .rounded(4.0)
-                    .border(1.0, colors.border_variant)
-                    .child(view::dot(colors.text_accent, 8.0))
-                    .child(label(name.clone()).size(11.5).color(colors.text))
-                    .into()
-            })
-            .collect();
-        chips.push(view::hint("One container of each serves every workspace").into());
-        column = column.child(view::section(
+        let mut chips = div().row().gap(6.0).items_center();
+        for name in &infra {
+            chips = chips.child(view::chip(name, true));
+        }
+        column = column.child(field(
             "Shared services found in compose files",
+            chips.into(),
+            Some("One container of each serves every workspace"),
             None,
-            vec![view::pack(chips, width, 6.0)],
         ));
     }
     column.into()
 }
 
-fn repo_row(form: &Form, index: usize, width: f32, remove_hot: bool) -> Node {
-    let colors = theme();
+fn repo_row(form: &Form, index: usize, remove_hot: bool) -> Node {
     let repo = &form.repos[index];
     let mut chips: Vec<Node> = Vec::new();
-    match &repo.scan {
+    let stack: Vec<String> = match &repo.scan {
         Some(scan) => {
             chips.extend(scan.stack.iter().map(|stack| view::chip(stack, true)));
             if let Some(compose) = &scan.compose {
-                chips.push(view::chip(compose, false));
+                chips.push(view::chip(compose, true));
             }
-            chips.push(view::chip(
-                &match scan.env_files {
-                    1 => "1 .env file".to_string(),
-                    count => format!("{count} .env files"),
-                },
-                false,
-            ));
+            if scan.env_files > 0 {
+                chips.push(view::chip(
+                    &match scan.env_files {
+                        1 => "1 .env file".to_string(),
+                        count => format!("{count} .env files"),
+                    },
+                    true,
+                ));
+            }
+            scan.stack.clone()
         }
-        None => chips.push(view::chip("detected after cloning", false)),
-    }
-    let text_w = width - 24.0 - 14.0 - 110.0 - 24.0 - 30.0;
-    let source = div()
-        .col()
-        .flex(1.0)
-        .gap(5.0)
-        .child(
-            label(home_relative(std::path::Path::new(&repo.source)))
-                .size(12.0)
-                .mono()
-                .color(colors.text_muted)
-                .truncate_start(),
-        )
-        .child(view::pack(chips, text_w, 5.0));
+        None => {
+            chips.push(view::chip("detected after cloning", false));
+            Vec::new()
+        }
+    };
     let placeholder = repo
         .scan
         .as_ref()
         .map(|scan| scan.name.clone())
         .unwrap_or_else(|| crate::model::repo_name(&repo.source));
-    let remove = div()
-        .row()
-        .w_px(20.0)
-        .h_px(20.0)
-        .rounded(3.0)
-        .items_center()
-        .justify_center()
-        .bg(if remove_hot {
-            colors.element_hover
-        } else {
-            ui::Rgba::TRANSPARENT
-        })
-        .on_click(REMOVE_BASE + index as u64)
-        .child(
-            icon(IconKind::Close)
-                .size(11.0)
-                .color(colors.text_placeholder),
-        );
-    view::row()
-        .child(
-            icon(if repo.remote() {
-                IconKind::Branch
+    let alias_id = ALIAS_BASE + index as u64;
+    // The name is the repo's alias: it reads as plain text and turns into an input when clicked.
+    let name: Node = if form.focus == Some(Field::Alias(index)) {
+        div()
+            .row()
+            .child(
+                text_input(
+                    form,
+                    alias_id,
+                    Field::Alias(index),
+                    &placeholder,
+                    false,
+                    FieldFont::Mono,
+                )
+                .w_px(180.0)
+                .h_px(22.0),
+            )
+            .into()
+    } else {
+        let shown = form.alias_of(repo);
+        div()
+            .row()
+            .on_click(alias_id)
+            .child(view::strong_line(if shown.is_empty() {
+                &placeholder
             } else {
-                IconKind::Folder
-            })
-            .size(14.0)
-            .color(colors.text_placeholder),
-        )
-        .child(text_input(
-            form,
-            ALIAS_BASE + index as u64,
-            Field::Alias(index),
-            &placeholder,
-            Some(110.0),
-            24.0,
-            FieldFont::Mono,
-        ))
-        .child(source)
-        .child(remove)
-        .into()
+                &shown
+            }))
+            .into()
+    };
+    let mut chip_row = div().row().gap(6.0).items_center();
+    for chip in chips {
+        chip_row = chip_row.child(chip);
+    }
+    view::repo_row(
+        view::repo_icon(&stack, repo.remote()),
+        name,
+        &home_relative(std::path::Path::new(&repo.source)),
+        vec![
+            chip_row.into(),
+            view::icon_button(REMOVE_BASE + index as u64, IconKind::Close, remove_hot),
+        ],
+    )
 }
 
-fn setup(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
+fn setup(state: &Onboarding, width: f32) -> Node {
     let colors = theme();
     let form = &state.form;
     let any_agent = state.any_agent();
     let agent_on = form.with_agent && any_agent;
-    let inner_w = width - 28.0 - 28.0;
-    let choice =
-        |id: u64, on: bool, kind: IconKind, title: Node, text: &str, extra: Option<Node>| {
-            let mut body = div()
-                .col()
-                .flex(1.0)
-                .gap(3.0)
-                .child(
-                    div()
-                        .row()
-                        .items_center()
-                        .gap(8.0)
-                        .child(icon(kind).size(14.0).color(colors.icon_muted))
-                        .child(title),
-                )
-                .child(
-                    label(text.to_string())
-                        .size(view::SMALL)
-                        .color(colors.text_muted)
-                        .wrap(inner_w),
-                );
-            if let Some(extra) = extra {
-                body = body.child(div().pt(6.0).child(extra));
-            }
-            let frame = div()
-                .row()
-                .gap(12.0)
-                .p(14.0)
-                .rounded(8.0)
-                .border(
-                    1.0,
-                    if on {
-                        colors.info_border
-                    } else {
-                        colors.border_variant
-                    },
-                )
-                .on_click(id)
-                .child(div().col().pt(2.0).child(view::radio(on)))
-                .child(body);
-            let frame = if on {
-                frame.bg(colors.text_accent.alpha(0.06))
-            } else if hovered == Some(id) {
-                frame.bg(colors.ghost_element_hover)
-            } else {
-                frame
-            };
-            Node::from(frame)
-        };
+    let text_w = width - 28.0 - 14.0 - 12.0;
+    let choice = |id: u64, on: bool, title: Node, text: &str, extra: Option<Node>| -> Node {
+        let mut body = div()
+            .col()
+            .flex(1.0)
+            .gap(8.0)
+            .child(title)
+            .child(view::note_paragraph(text, text_w));
+        if let Some(extra) = extra {
+            body = body.child(extra);
+        }
+        view::card_frame(on)
+            .row()
+            .gap(12.0)
+            .p(14.0)
+            .on_click(id)
+            .child(div().col().pt(3.0).child(view::radio(on)))
+            .child(body)
+            .into()
+    };
     let agent_title: Node = div()
         .row()
+        .h_px(20.0)
         .items_center()
         .gap(8.0)
         .child(
             label("Set up with an agent CLI")
-                .size(14.0)
+                .size(13.0)
+                .medium()
                 .color(if any_agent {
                     colors.text
                 } else {
                     colors.text_muted
                 }),
         )
-        .child(
-            div()
-                .row()
-                .px(6.0)
-                .rounded(4.0)
-                .border(1.0, colors.success.alpha(0.45))
-                .child(label("recommended").size(11.0).color(colors.success)),
-        )
+        .child(view::pill("recommended", colors.success))
         .into();
     let picker: Node = if any_agent {
         let options: Vec<(u64, &str, bool)> = AgentCli::ALL
@@ -480,108 +375,94 @@ fn setup(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
             .iter()
             .position(|cli| *cli == form.agent)
             .unwrap_or(0);
-        div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .child(
-                label("Agent")
-                    .size(view::HINT)
-                    .color(colors.text_placeholder),
-            )
-            .child(view::segmented(&options, selected))
-            .child(view::hint("only installed CLIs can be picked"))
-            .into()
+        field(
+            "Agent",
+            view::segmented(&options, selected),
+            Some("only installed CLIs can be picked"),
+            None,
+        )
     } else {
-        view::hint("Install Claude Code, Codex or Gemini CLI to set up with an agent").into()
+        view::muted("Install Claude Code, Codex or Gemini CLI to set up with an agent").into()
     };
-    let who = view::section(
-        "Who writes pom.yml",
-        None,
-        vec![
-            choice(
-                SETUP_AGENT,
-                agent_on,
-                IconKind::Sparkle,
-                agent_title,
-                "The agent reads every repo, writes a complete pom.yml (services, setup, migrations, env wiring), then Pomelo checks it installs and boots, and hands problems back to the agent until it is clean. It runs as a CLI in the agent dock: watch it, type to it, or stop it and finish yourself.",
-                Some(picker),
-            ),
-            choice(
-                SETUP_MANUAL,
-                !agent_on,
-                IconKind::Folder,
-                label("Set up manually")
-                    .size(14.0)
-                    .color(colors.text)
-                    .into(),
-                "Pomelo drafts pom.yml from what it detected (0 tokens) and opens it with the config doctor's findings. You finish it.",
-                None,
-            ),
-        ],
-    );
     let infra = form.infra();
     let shared_text = if infra.is_empty() {
         "Whatever pom.yml declares, in one Docker project".to_string()
     } else {
         format!("{} in one Docker project", infra.join(", "))
     };
-    let branch_row: Node = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .child(view::hint("branch"))
-        .child(text_input(
+    let secrets_text = format!(
+        "{}. Values stay encrypted on this machine; the agent only sees their names.",
+        match form.env_files() {
+            1 => "1 file".to_string(),
+            count => format!("{count} files"),
+        }
+    );
+    let option = |id: u64, on: bool, text: &str, detail: Node| -> Node {
+        div()
+            .col()
+            .gap(4.0)
+            .child(workspace::checkbox(id, on, text))
+            .child(div().col().pl(22.0).child(detail))
+            .into()
+    };
+    let branch_error = state.workspace_branch_error();
+    let mut branch_row = div().row().items_center().gap(8.0).child(
+        text_input(
             form,
             WORKSPACE_BRANCH,
             Field::WorkspaceBranch,
             "feat-login",
-            Some(200.0),
-            24.0,
+            branch_error.is_some(),
             FieldFont::Mono,
-        ))
-        .child(match state.workspace_branch_error() {
-            Some(error) => label(error).size(view::HINT).color(colors.error).into(),
-            None => Node::from(div()),
-        })
-        .into();
-    let options = view::section(
-        "Options",
-        None,
-        vec![
-            view::check(
-                OPT_SECRETS,
-                form.import_secrets,
-                "Import gitignored .env values as secrets",
-                Some(
-                    view::hint(&format!(
-                        "{}. Values stay encrypted on this Mac; the agent only sees their names.",
-                        match form.env_files() {
-                            1 => "1 file".to_string(),
-                            count => format!("{count} files"),
-                        }
-                    ))
-                    .into(),
-                ),
-            ),
-            view::check(
-                OPT_SHARED,
-                form.start_shared,
-                "Start the shared services when done",
-                Some(view::hint(&shared_text).into()),
-            ),
-            view::check(
-                OPT_WORKSPACE,
-                form.first_workspace,
-                "Create a first workspace",
-                Some(branch_row),
-            ),
-        ],
+        )
+        .w_px(220.0),
     );
+    if let Some(error) = branch_error {
+        branch_row = branch_row.child(label(error).size(12.0).color(colors.error));
+    }
+    let options = div()
+        .col()
+        .gap(12.0)
+        .child(option(
+            OPT_SECRETS,
+            form.import_secrets,
+            "Import gitignored .env values as secrets",
+            view::muted(&secrets_text).into(),
+        ))
+        .child(option(
+            OPT_SHARED,
+            form.start_shared,
+            "Start the shared services when done",
+            view::muted(&shared_text).into(),
+        ))
+        .child(option(
+            OPT_WORKSPACE,
+            form.first_workspace,
+            "Create a first workspace",
+            if form.first_workspace {
+                branch_row.into()
+            } else {
+                view::muted("A branch of every repo, set up right after").into()
+            },
+        ));
     div()
         .col()
         .gap(view::PAGE_GAP)
-        .child(who)
+        .child(view::head("Who writes pom.yml", None))
+        .child(choice(
+            SETUP_AGENT,
+            agent_on,
+            agent_title,
+            "The agent reads every repo, writes a complete pom.yml (services, setup, migrations, env wiring), then Pomelo checks it installs and boots, and hands problems back to the agent until it is clean. It runs as a CLI in the agent dock: watch it, type to it, or stop it and finish yourself.",
+            Some(picker),
+        ))
+        .child(choice(
+            SETUP_MANUAL,
+            !agent_on,
+            view::strong_line("Set up manually"),
+            "Pomelo drafts pom.yml from what it detected (0 tokens) and opens it with the config doctor's findings. You finish it.",
+            None,
+        ))
         .child(options)
         .into()
 }
@@ -645,31 +526,37 @@ fn review(state: &Onboarding, width: f32) -> Node {
             },
         ),
     ];
+    let value_w = width - 8.0 - 20.0 - 120.0 - 12.0;
     let rows = items
         .into_iter()
         .map(|(key, value)| {
-            view::row()
-                .child(
-                    div()
-                        .w_px(120.0)
-                        .child(label(key).size(view::TEXT).color(colors.text_placeholder)),
-                )
-                .child(
-                    label(value)
-                        .size(view::TEXT)
-                        .color(colors.text)
-                        .wrap(width - 170.0),
-                )
+            div()
+                .row()
+                .gap(12.0)
+                .px(10.0)
+                .py(8.0)
+                .child(div().w_px(120.0).child(workspace::text_line(
+                    20.0,
+                    label(key).size(13.0).color(colors.text_placeholder),
+                )))
+                .child(workspace::paragraph(
+                    &value,
+                    13.0,
+                    20.0,
+                    value_w,
+                    colors.text,
+                ))
                 .into()
         })
         .collect();
     div()
         .col()
-        .gap(10.0)
-        .child(view::rows(rows))
-        .child(view::hint(
-            "Nothing in your repos changes: Pomelo works in its own worktrees under the session folder.",
+        .gap(view::PAGE_GAP)
+        .child(view::head(
+            &format!("Create {}", form.name()),
+            Some("Nothing in your repos changes: Pomelo works in its own worktrees under the session folder"),
         ))
+        .child(view::panel_list(rows, 4.0))
         .into()
 }
 
