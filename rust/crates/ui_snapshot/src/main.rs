@@ -46,6 +46,11 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "system-onboarding-running" => (0, &[("ONBOARDSCENE", "progress")]),
         "system-onboarding-repair" => (0, &[("ONBOARDSCENE", "fixing")]),
         "system-onboarding-done" => (0, &[("ONBOARDSCENE", "done")]),
+        "data-store" => (0, &[("PAGESCENE", "store")]),
+        "data-store-measuring" => (0, &[("PAGESCENE", "store-measuring")]),
+        "data-store-optimize" => (0, &[("PAGESCENE", "store-optimize")]),
+        "services-requests" => (0, &[("PAGESCENE", "requests")]),
+        "services-requests-empty" => (0, &[("PAGESCENE", "requests-empty")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
         "services-running" => (0, &[("SERVICES", "api/server"), ("FACTS", "674")]),
@@ -1942,12 +1947,24 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if let Ok(which) = std::env::var("ONBOARDSCENE") {
+    if let Ok(which) = std::env::var("ONBOARDSCENE").or_else(|_| std::env::var("PAGESCENE")) {
         use workspace::Item;
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
         }
-        let mut page = onboarding_ui::preview_page(&which);
+        let mut page: Box<dyn Item> = match which.as_str() {
+            "store" => Box::new(module_store_ui::board_page("store")),
+            "store-measuring" => Box::new(module_store_ui::board_page("measuring")),
+            "store-optimize" => {
+                let mut page = module_store_ui::board_page("store");
+                page.paint_body(ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT), true);
+                page.press_optimize();
+                Box::new(page)
+            }
+            "requests" => Box::new(dev_services_ui::board_page(true)),
+            "requests-empty" => Box::new(dev_services_ui::board_page(false)),
+            _ => Box::new(onboarding_ui::preview_page(&which)),
+        };
         let body = ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT);
         let painted = page.paint_body(body, true).unwrap_or_default();
         let footer = page.paint_popover(body).unwrap_or_default();

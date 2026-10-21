@@ -241,6 +241,66 @@ pub fn modal_button(
     button.into()
 }
 
+pub fn small_button(
+    id: u64,
+    leading: Option<IconKind>,
+    text: &str,
+    keystroke: Option<&str>,
+    kind: ButtonKind,
+    enabled: bool,
+    hovered: Option<u64>,
+) -> Node {
+    let colors = theme();
+    let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
+    let ink = match kind {
+        ButtonKind::Primary => colors.on_accent,
+        ButtonKind::Secondary | ButtonKind::Ghost => colors.text,
+        ButtonKind::Danger => colors.error,
+    };
+    let mut button = div()
+        .row()
+        .items_center()
+        .gap(4.0)
+        .h_px(24.0)
+        .px(8.0)
+        .rounded(6.0);
+    button = match kind {
+        ButtonKind::Primary => button.bg(dim(colors.accent_fill)),
+        ButtonKind::Secondary => button
+            .bg(dim(colors.element_background))
+            .border(1.0, dim(colors.border)),
+        ButtonKind::Ghost | ButtonKind::Danger => button,
+    };
+    if enabled {
+        button = button.on_click(id);
+        if kind != ButtonKind::Primary && hovered == Some(id) {
+            button = button.bg(colors.ghost_element_hover);
+        }
+    }
+    if let Some(kind) = leading {
+        button = button.child(icon(kind).size(12.0).color(dim(ink)));
+    }
+    button = button.child(label(text.to_string()).size(12.0).medium().color(dim(ink)));
+    if let Some(keystroke) = keystroke {
+        button = button.child(key_chip(keystroke, kind == ButtonKind::Primary));
+    }
+    button.into()
+}
+
+pub fn status_pill(text: &str, color: Rgba) -> Node {
+    div()
+        .row()
+        .items_center()
+        .gap(5.0)
+        .h_px(20.0)
+        .px(7.0)
+        .rounded(10.0)
+        .bg(theme().ghost_element_hover)
+        .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color))
+        .child(label(text.to_string()).size(11.0).medium().color(color))
+        .into()
+}
+
 /// A secondary action inside the form, with an optional leading icon.
 pub fn outlined_button(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
     let colors = theme();

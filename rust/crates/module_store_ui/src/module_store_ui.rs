@@ -6,7 +6,7 @@ use std::time::Instant;
 use module_store::{format_size, Holding, Overview, RepoState, User, Version};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
-use workspace::{Item, ItemTick};
+use workspace::{paragraph, small_button, status_pill, text_line, ButtonKind, Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
@@ -20,11 +20,12 @@ const CANCEL_OPTIMIZE: u64 = 7;
 const ACTION_BASE: u64 = 1_000;
 const LINE_BASE: u64 = 50_000;
 const MORE_BASE: u64 = 100_000;
-const CONTENT_MAX_W: f32 = 1040.0;
-const PAD_X: f32 = 32.0;
-const LABEL_W: f32 = 250.0;
+const CONTENT_MAX_W: f32 = 1004.0;
+const PAD_X: f32 = 28.0;
+const ROW_PAD_X: f32 = 14.0;
+const LABEL_W: f32 = 280.0;
 const SIZE_W: f32 = 76.0;
-const ACTION_W: f32 = 150.0;
+const ACTION_W: f32 = 140.0;
 const CHIP_GAP: f32 = 4.0;
 const TOP_BAR_H: f32 = 2.0;
 /// Seconds a finished action's note and highlight stay.
@@ -302,7 +303,7 @@ fn plan_frees(overview: &Overview, steps: &[Request]) -> u64 {
 }
 
 const SWAP_POPOVER_W: f32 = 340.0;
-const OPTIMIZE_POPOVER_W: f32 = 400.0;
+const OPTIMIZE_POPOVER_W: f32 = 404.0;
 
 /// The floating card a confirmation sits in, styled like the app's other popovers.
 fn popover_frame(width: f32) -> ui::Div {
@@ -310,11 +311,38 @@ fn popover_frame(width: f32) -> ui::Div {
     div()
         .col()
         .w_px(width)
-        .gap(6.0)
+        .gap(8.0)
         .p(12.0)
-        .rounded(8.0)
+        .rounded(10.0)
         .border(1.0, colors.border)
-        .bg(colors.elevated_surface_background)
+        .bg(colors.element_background)
+}
+
+fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>) -> Node {
+    div()
+        .row()
+        .gap(6.0)
+        .pt(4.0)
+        .child(div().flex(1.0))
+        .child(small_button(
+            cancel,
+            None,
+            "Cancel",
+            Some("escape"),
+            ButtonKind::Secondary,
+            true,
+            hovered,
+        ))
+        .child(small_button(
+            confirm,
+            None,
+            action,
+            Some("enter"),
+            ButtonKind::Primary,
+            true,
+            hovered,
+        ))
+        .into()
 }
 
 /// The open confirmation, as a card to float by its button.
@@ -394,67 +422,42 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
         })
         .collect();
     let mut column = popover_frame(OPTIMIZE_POPOVER_W)
-        .child(
-            label(format!("Optimize: {}", parts.join(", ")))
-                .size(13.0)
-                .color(colors.text)
-                .wrap(OPTIMIZE_POPOVER_W - 24.0),
-        )
-        .child(
-            small(
-                format!(
-                    "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
-                    format_size(plan_frees(overview, &steps))
-                ),
-                colors.text_muted,
-            )
-            .wrap(OPTIMIZE_POPOVER_W - 24.0),
-        );
+        .child(paragraph(
+            &format!("Optimize: {}", parts.join(", ")),
+            13.0,
+            20.0,
+            OPTIMIZE_POPOVER_W - 24.0,
+            colors.text,
+        ))
+        .child(paragraph(
+            &format!(
+                "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
+                format_size(plan_frees(overview, &steps))
+            ),
+            12.0,
+            16.0,
+            OPTIMIZE_POPOVER_W - 24.0,
+            colors.text_muted,
+        ));
     if !restarted.is_empty() {
-        column = column.child(
-            small(
-                format!(
-                    "Services are stopped and started again in {}.",
-                    restarted.join(", ")
-                ),
-                colors.warning,
-            )
-            .wrap(OPTIMIZE_POPOVER_W - 24.0),
-        );
+        column = column.child(paragraph(
+            &format!(
+                "Services are stopped and started again in {}.",
+                restarted.join(", ")
+            ),
+            12.0,
+            16.0,
+            OPTIMIZE_POPOVER_W - 24.0,
+            colors.warning,
+        ));
     }
-    let choice = |id: u64, text: &str, primary: bool| {
-        let color = if primary {
-            colors.text_accent
-        } else {
-            colors.text_muted
-        };
-        let mut part = div()
-            .row()
-            .items_center()
-            .px(10.0)
-            .h_px(24.0)
-            .rounded(5.0)
-            .on_click(id)
-            .child(small(text.to_string(), color));
-        if primary {
-            let mut border = colors.text_accent;
-            border.a *= 0.5;
-            part = part.border(1.0, border);
-        }
-        if hovered == Some(id) {
-            part = part.bg(colors.ghost_element_hover);
-        }
-        part
-    };
     column
-        .child(
-            div()
-                .row()
-                .gap(8.0)
-                .child(div().flex(1.0))
-                .child(choice(CANCEL_OPTIMIZE, "Cancel", false))
-                .child(choice(CONFIRM_OPTIMIZE, "Optimize", true)),
-        )
+        .child(confirm_buttons(
+            CANCEL_OPTIMIZE,
+            CONFIRM_OPTIMIZE,
+            "Optimize",
+            hovered,
+        ))
         .into()
 }
 
@@ -484,11 +487,14 @@ fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).label_size(LabelSize::Small).color(color)
 }
 
-fn section_label(text: &str) -> ui::Label {
-    label(text.to_uppercase())
-        .size(11.0)
-        .weight(600)
-        .color(theme().text_placeholder)
+fn section_label(text: &str) -> Node {
+    text_line(
+        14.0,
+        label(text.to_uppercase())
+            .size(11.0)
+            .weight(600)
+            .color(theme().text_placeholder),
+    )
 }
 
 /// 0..1, repeating every `period` seconds.
@@ -508,22 +514,9 @@ fn pulse(clock: f32) -> Node {
 
 /// A size still being measured.
 fn shimmer(clock: f32, width: f32) -> Node {
-    let mut color = theme().border;
-    color.a *= 0.45 + 0.55 * wave(clock, 1.2);
-    div().w_px(width).h_px(10.0).rounded(4.0).bg(color).into()
-}
-
-fn pill(text: &str, color: Rgba) -> Node {
-    let mut border = color;
-    border.a *= 0.45;
-    div()
-        .row()
-        .px(9.0)
-        .py(2.0)
-        .rounded(10.0)
-        .border(1.0, border)
-        .child(small(text, color))
-        .into()
+    let mut color = theme().ghost_element_hover;
+    color.a *= 0.6 + 0.4 * wave(clock, 1.2);
+    div().w_px(width).h_px(10.0).rounded(5.0).bg(color).into()
 }
 
 fn chip(text: &str, highlight: bool) -> Node {
@@ -533,17 +526,24 @@ fn chip(text: &str, highlight: bool) -> Node {
     } else {
         colors.border_variant
     };
-    let mut part = div()
+    let ink = if text == "main" {
+        colors.text
+    } else {
+        colors.text_muted
+    };
+    div()
         .row()
         .px(7.0)
-        .py(1.0)
-        .rounded(5.0)
+        .py(2.0)
+        .rounded(4.0)
         .border(1.0, border)
-        .child(label(text.to_string()).size(11.5).color(colors.text));
-    if highlight {
-        part = part.bg(colors.info_background);
-    }
-    part.into()
+        .bg(if highlight {
+            colors.info_background
+        } else {
+            colors.element_background
+        })
+        .child(label(text.to_string()).size(11.5).mono().color(ink))
+        .into()
 }
 
 /// As many chips as fit in `width`, then "+N more" (or all of them, wrapped, with "Show less").
@@ -617,7 +617,6 @@ fn chips(
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Look {
-    /// Outlined, accent text: the action a row is there for.
     Primary,
     /// Plain text, only while the row is hovered.
     Ghost,
@@ -645,38 +644,22 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
             .child(small(spec.working, colors.text_muted))
             .into();
     }
-    let idle = state.busy.is_none();
     if spec.look == Look::Ghost && !row_hovered && hovered != Some(spec.id) {
         return div().into();
     }
-    let color = match (idle, spec.look) {
-        (false, _) => colors.text_disabled,
-        (true, Look::Primary) => colors.text_accent,
-        (true, Look::Ghost) => colors.text_muted,
+    let kind = match spec.look {
+        Look::Primary => ButtonKind::Secondary,
+        Look::Ghost => ButtonKind::Ghost,
     };
-    let mut part = div()
-        .row()
-        .items_center()
-        .px(10.0)
-        .h_px(24.0)
-        .rounded(5.0)
-        .child(small(spec.text, color));
-    if spec.look == Look::Primary {
-        let mut border = if idle {
-            colors.text_accent
-        } else {
-            colors.border_variant
-        };
-        border.a *= 0.5;
-        part = part.border(1.0, border);
-    }
-    if idle {
-        part = part.on_click(spec.id);
-        if hovered == Some(spec.id) {
-            part = part.bg(colors.ghost_element_hover);
-        }
-    }
-    part.into()
+    small_button(
+        spec.id,
+        None,
+        spec.text,
+        None,
+        kind,
+        state.busy.is_none(),
+        hovered,
+    )
 }
 
 struct Line {
@@ -693,29 +676,30 @@ struct Line {
 
 fn line(line: Line, state: &StoreState, hovered: Option<u64>) -> Node {
     let colors = theme();
-    let (title, detail) = if line.faded {
-        (colors.text_muted, colors.text_placeholder)
+    let title = if line.faded {
+        colors.text_muted
     } else {
-        (colors.text, colors.text_muted)
+        colors.text
     };
+    let detail = colors.text_placeholder;
     let mut row = div()
         .row()
         .items_center()
         .gap(10.0)
-        .px(12.0)
-        .py(7.0)
+        .px(ROW_PAD_X)
+        .pt(10.0)
+        .pb(9.0)
         .on_click(line.id)
         .child(
             div()
                 .col()
                 .w_px(LABEL_W)
-                .gap(1.0)
-                .child(
-                    div()
-                        .row()
-                        .child(label(line.title).size(13.0).color(title).truncate()),
-                )
-                .child(div().row().child(small(line.detail, detail).truncate())),
+                .gap(2.0)
+                .child(text_line(
+                    20.0,
+                    label(line.title).size(13.0).color(title).truncate(),
+                ))
+                .child(text_line(16.0, small(line.detail, detail).truncate())),
         )
         .child(div().row().w_px(SIZE_W).justify_end().child(line.size))
         .child(div().row().flex(1.0).child(line.users))
@@ -774,9 +758,9 @@ impl Ids {
 
 fn size_or_shimmer(state: &StoreState, size: Option<u64>) -> Node {
     match size {
-        Some(0) | None if state.measuring > 0 => shimmer(state.clock, 44.0),
-        Some(size) => small(format_size(size), theme().text).into(),
-        None => small("-", theme().text_muted).into(),
+        Some(0) | None if state.measuring > 0 => shimmer(state.clock, 60.0),
+        Some(size) => small(format_size(size), theme().text).mono().into(),
+        None => small("-", theme().text).mono().into(),
     }
 }
 
@@ -802,60 +786,22 @@ fn confirm_strip(
     });
     let mut column = popover_frame(SWAP_POPOVER_W)
         .child(
-            label(format!("Use the shared copy in {workspace}?"))
-                .size(13.0)
-                .color(colors.text)
-                .wrap(SWAP_POPOVER_W - 24.0),
+            paragraph(&format!("Use the shared copy in {workspace}?"), 13.0, 20.0, SWAP_POPOVER_W - 24.0, colors.text),
         )
-        .child(small(
-            format!(
+        .child(paragraph(&format!(
                 "Its node_modules is replaced by a clone of the stored copy; the old folder is kept until the new one is in place.{freed}"
-            ),
-            colors.text_muted,
-        )
-        .wrap(SWAP_POPOVER_W - 24.0));
+            ), 12.0, 16.0, SWAP_POPOVER_W - 24.0, colors.text_muted));
     if running {
-        column = column.child(
-            small(
-                "Its services are running: they are stopped first and started again after.",
-                colors.warning,
-            )
-            .wrap(SWAP_POPOVER_W - 24.0),
-        );
+        column = column.child(paragraph(
+            "Its services are running: they are stopped first and started again after.",
+            12.0,
+            16.0,
+            SWAP_POPOVER_W - 24.0,
+            colors.warning,
+        ));
     }
-    let choice = |id: u64, text: &str, primary: bool| {
-        let color = if primary {
-            colors.text_accent
-        } else {
-            colors.text_muted
-        };
-        let mut part = div()
-            .row()
-            .items_center()
-            .px(10.0)
-            .h_px(24.0)
-            .rounded(5.0)
-            .on_click(id)
-            .child(small(text.to_string(), color));
-        if primary {
-            let mut border = colors.text_accent;
-            border.a *= 0.5;
-            part = part.border(1.0, border);
-        }
-        if hovered == Some(id) {
-            part = part.bg(colors.ghost_element_hover);
-        }
-        part
-    };
     column
-        .child(
-            div()
-                .row()
-                .gap(8.0)
-                .child(div().flex(1.0))
-                .child(choice(CANCEL_SWAP, "Cancel", false))
-                .child(choice(CONFIRM_SWAP, "Swap", true)),
-        )
+        .child(confirm_buttons(CANCEL_SWAP, CONFIRM_SWAP, "Swap", hovered))
         .into()
 }
 
@@ -921,14 +867,14 @@ fn version_rows(
             )
         }
         None if version.stored.is_some() && version.on_main => {
-            pill("New workspaces", colors.success)
+            status_pill("New workspaces", colors.success)
         }
-        None if version.stored.is_none() => pill("Installs once", colors.text_muted),
+        None if version.stored.is_none() => status_pill("Installs once", colors.text_muted),
         None => div().into(),
     };
     let size = match &version.stored {
         Some(entry) => size_or_shimmer(state, Some(entry.size)),
-        None => small("-", colors.text_muted).into(),
+        None => small("-", colors.text).mono().into(),
     };
     let mut rows = vec![line(
         Line {
@@ -1010,16 +956,16 @@ fn group(head: Node, rows: Vec<Node>) -> Node {
     let colors = theme();
     let mut column = div()
         .col()
-        .rounded(8.0)
+        .rounded(10.0)
         .border(1.0, colors.border_variant)
+        .bg(colors.panel_background)
         .child(
             div()
                 .row()
                 .items_center()
                 .gap(8.0)
-                .px(14.0)
+                .px(ROW_PAD_X)
                 .h_px(36.0)
-                .bg(colors.panel_background)
                 .child(head),
         );
     for row in rows {
@@ -1053,10 +999,11 @@ fn group_head(name: &str, manager: &str, total: Option<u64>) -> Node {
 fn note_row(text: String) -> Node {
     div()
         .row()
-        .px(12.0)
-        .h_px(34.0)
+        .px(ROW_PAD_X)
+        .pt(9.0)
+        .pb(10.0)
         .items_center()
-        .child(small(text, theme().text_muted))
+        .child(text_line(16.0, small(text, theme().text_muted)))
         .into()
 }
 
@@ -1129,7 +1076,8 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         .gap(10.0)
         .child(
             label("node_modules Store")
-                .label_size(LabelSize::Large)
+                .size(15.0)
+                .weight(600)
                 .color(colors.text),
         )
         .child(small(summary, colors.text_muted));
@@ -1165,40 +1113,24 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         }
     }
     let idle = state.busy.is_none() && state.overview.is_some();
-    let top_button = |id: u64, text: String, primary: bool| {
-        let color = if !idle {
-            colors.text_disabled
-        } else if primary {
-            colors.text
-        } else {
-            colors.text_muted
-        };
-        let mut part = div()
-            .row()
-            .items_center()
-            .px(10.0)
-            .h_px(24.0)
-            .rounded(5.0)
-            .child(small(text, color));
-        if primary {
-            part = part.border(1.0, colors.border);
-        }
-        if idle {
-            part = part.on_click(id);
-            if hovered == Some(id) {
-                part = part.bg(colors.ghost_element_hover);
-            }
-        }
-        part
-    };
-    head = head
-        .child(div().flex(1.0))
-        .child(top_button(REFRESH, "Refresh".into(), false));
+    head = head.child(div().flex(1.0)).child(small_button(
+        REFRESH,
+        Some(IconKind::RotateCw),
+        "Refresh",
+        None,
+        ButtonKind::Ghost,
+        idle,
+        hovered,
+    ));
     if unused > 0 && state.measuring == 0 {
-        head = head.child(top_button(
+        head = head.child(small_button(
             FREE_UNUSED,
-            format!("Free {} unused", format_size(unused)),
-            false,
+            None,
+            &format!("Free {} unused", format_size(unused)),
+            None,
+            ButtonKind::Ghost,
+            idle,
+            hovered,
         ));
     }
     let can_optimize = state.measuring == 0
@@ -1207,28 +1139,15 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .as_ref()
             .is_some_and(|overview| !plan(overview).is_empty());
     if can_optimize {
-        let color = if idle {
-            colors.text_accent
-        } else {
-            colors.text_disabled
-        };
-        let mut border = color;
-        border.a *= 0.5;
-        let mut part = div()
-            .row()
-            .items_center()
-            .px(10.0)
-            .h_px(24.0)
-            .rounded(5.0)
-            .border(1.0, border)
-            .child(small("Optimize", color));
-        if idle {
-            part = part.on_click(OPTIMIZE);
-            if hovered == Some(OPTIMIZE) {
-                part = part.bg(colors.ghost_element_hover);
-            }
-        }
-        head = head.child(part);
+        head = head.child(small_button(
+            OPTIMIZE,
+            None,
+            "Optimize",
+            None,
+            ButtonKind::Primary,
+            idle,
+            hovered,
+        ));
     }
     head.into()
 }
@@ -1237,11 +1156,12 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
 pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) -> Node {
     let colors = theme();
     let content_w = (width - PAD_X * 2.0).clamp(0.0, CONTENT_MAX_W);
-    let users_w = (content_w - LABEL_W - SIZE_W - ACTION_W - 3.0 * 10.0 - 24.0).max(80.0);
+    let users_w =
+        (content_w - LABEL_W - SIZE_W - ACTION_W - 3.0 * 10.0 - 2.0 * ROW_PAD_X).max(80.0);
     let mut column = div()
         .col()
         .w_px(content_w)
-        .gap(14.0)
+        .gap(12.0)
         .child(header(state, hovered));
     let Some(overview) = &state.overview else {
         return frame(column);
@@ -1250,7 +1170,7 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
         div()
             .row()
             .gap(10.0)
-            .px(12.0)
+            .px(ROW_PAD_X)
             .child(
                 div()
                     .row()
@@ -1330,22 +1250,23 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
             vec![row],
         ));
     }
+    let mut notes = div().col().gap(4.0).pt(4.0);
     for note in [
         "One copy per lockfile, patches/ folder, Node major version and platform.".to_string(),
         "A new workspace with a matching one gets it in seconds; otherwise it installs once and that install is kept.".to_string(),
         format!("Stored in {root}"),
     ] {
-        column = column.child(
+        notes = notes.child(
             div()
                 .row()
                 .child(small(note, colors.text_placeholder).truncate()),
         );
     }
-    frame(column)
+    frame(column.child(notes))
 }
 
 fn frame(column: ui::Div) -> Node {
-    div().col().items_center().py(24.0).child(column).into()
+    div().col().items_center().py(18.0).child(column).into()
 }
 
 fn click(state: &mut StoreState, id: u64) {
@@ -1471,6 +1392,20 @@ impl StorePage {
         click(&mut self.shared.borrow_mut(), id);
     }
 
+    fn press(&mut self, id: u64) {
+        self.anchor = self
+            .hits
+            .iter()
+            .rev()
+            .find(|(_, hit)| *hit == id)
+            .map(|(rect, _)| *rect);
+        self.click(id);
+    }
+
+    pub fn press_optimize(&mut self) {
+        self.press(OPTIMIZE);
+    }
+
     fn popover_open(&self) -> bool {
         let state = self.shared.borrow();
         state.confirm.is_some() || state.confirm_optimize
@@ -1588,13 +1523,7 @@ impl Item for StorePage {
             return true;
         }
         if let Some(id) = self.hit(x, y) {
-            self.anchor = self
-                .hits
-                .iter()
-                .rev()
-                .find(|(_, hit)| *hit == id)
-                .map(|(rect, _)| *rect);
-            self.click(id);
+            self.press(id);
         }
         true
     }
@@ -1650,7 +1579,10 @@ impl Item for StorePage {
             (anchor.y - h - gap).max(body.y)
         };
         let area = Rect::new(x, y, w, h, Rgba::TRANSPARENT);
-        let painted = ui::render(&node, area);
+        let mut painted = ui::render(&node, area);
+        let mut rects = workspace::elevation_shadow(area, workspace::Elevation::Overlay);
+        rects.append(&mut painted.rects);
+        painted.rects = rects;
         self.popover_rect = Some(area);
         self.popover_hits = painted.hits.clone();
         Some(painted)
@@ -1819,6 +1751,143 @@ pub fn preview_page() -> StorePage {
     StorePage::new(
         Rc::new(RefCell::new(state)),
         "~/.local/state/pom/nm-store".into(),
+    )
+}
+
+pub fn board_page(which: &str) -> StorePage {
+    use module_store::{Entry, Manager, Method, RepoOverview};
+    let measuring = which == "measuring";
+    let mb = |size: u64| if measuring { 0 } else { size << 20 };
+    let now = 1_800_000_000;
+    let day = 86_400;
+    let entry = |repo: &str, key: &str, manager: &str, size: u64| Entry {
+        repo: repo.into(),
+        key: key.into(),
+        manager: manager.into(),
+        method: Method::Clone,
+        size,
+        created: now - 30 * day,
+        last_used: now - day,
+        workspaces: Vec::new(),
+    };
+    let user = |repo: &str, name: &str, holding: Holding| User {
+        workspace: name.into(),
+        is_main: name == "main",
+        path: PathBuf::from(format!("/work/{name}/{repo}")),
+        holding,
+    };
+    let shared = |repo: &str, names: &[&str]| -> Vec<User> {
+        names
+            .iter()
+            .map(|name| user(repo, name, Holding::Shared))
+            .collect()
+    };
+    let mut web_main = shared(
+        "web",
+        &[
+            "main",
+            "feat-login",
+            "feat-react",
+            "PROJ-101",
+            "PROJ-104",
+            "fix-cart",
+            "fix-tax",
+        ],
+    );
+    web_main.push(user(
+        "web",
+        "spike-cache",
+        Holding::Own {
+            size: (!measuring).then(|| mb(975)),
+        },
+    ));
+    let web = RepoOverview {
+        repo: "web".into(),
+        state: RepoState::Versions {
+            manager: Manager::Npm,
+            versions: vec![
+                Version {
+                    key: "w1".into(),
+                    lockfile: "package-lock.json".into(),
+                    changed: Some(now - 6 * day),
+                    on_main: true,
+                    stored: Some(entry("web", "w1", "npm", mb(980))),
+                    users: web_main,
+                },
+                Version {
+                    key: "w2".into(),
+                    lockfile: "package-lock.json".into(),
+                    changed: Some(now - 2 * day),
+                    on_main: false,
+                    stored: Some(entry("web", "w2", "npm", mb(412))),
+                    users: shared("web", &["feat-vite"]),
+                },
+            ],
+            old: vec![
+                entry("web", "o1", "npm", mb(520)),
+                entry("web", "o2", "npm", mb(606)),
+            ],
+        },
+    };
+    let worker = RepoOverview {
+        repo: "worker".into(),
+        state: RepoState::Versions {
+            manager: Manager::Yarn,
+            versions: vec![
+                Version {
+                    key: "k1".into(),
+                    lockfile: "yarn.lock".into(),
+                    changed: Some(now - 21 * day),
+                    on_main: true,
+                    stored: Some(entry("worker", "k1", "yarn", mb(310))),
+                    users: shared("worker", &["main", "feat-login"]),
+                },
+                Version {
+                    key: "k2".into(),
+                    lockfile: "yarn.lock".into(),
+                    changed: Some(now - 3 * day),
+                    on_main: false,
+                    stored: None,
+                    users: vec![user(
+                        "worker",
+                        "feat-queue",
+                        Holding::Own {
+                            size: Some(mb(298)),
+                        },
+                    )],
+                },
+            ],
+            old: Vec::new(),
+        },
+    };
+    let overview = Overview {
+        repos: vec![
+            web,
+            worker,
+            RepoOverview {
+                repo: "admin".into(),
+                state: RepoState::SelfManaged("pnpm"),
+            },
+            RepoOverview {
+                repo: "api".into(),
+                state: RepoState::NoLockfile,
+            },
+        ],
+        others: Vec::new(),
+    };
+    let (left, total) = if measuring { (4, 7) } else { (0, 0) };
+    let state = StoreState {
+        method: "copy-on-write, workspaces take no extra disk".into(),
+        overview: Some(overview),
+        measuring: left,
+        measure_total: total,
+        running: vec![("web".into(), "spike-cache".into())],
+        now,
+        ..StoreState::default()
+    };
+    StorePage::new(
+        Rc::new(RefCell::new(state)),
+        "~/Library/Application Support/Pomelo/modules".into(),
     )
 }
 

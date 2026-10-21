@@ -21,6 +21,7 @@ settings_ui = { path = "../settings_ui" }
 auto_update = { path = "../auto_update" }
 auto_update_ui = { path = "../auto_update_ui" }
 workspace = { path = "../workspace" }
+git = { path = "../git" }
 git_ui = { path = "../git_ui" }
 files = { path = "../files" }
 files_ui = { path = "../files_ui" }

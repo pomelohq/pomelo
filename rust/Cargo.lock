@@ -5737,6 +5737,7 @@ dependencies = [
  "environment_ui",
  "files",
  "files_ui",
+ "git",
  "git_ui",
  "jira_ui",
  "module_store",
