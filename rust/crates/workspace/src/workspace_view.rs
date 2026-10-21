@@ -3331,60 +3331,22 @@ impl WorkspaceView {
         else {
             return Vec::new();
         };
-        let item = |id: u64, label: &'static str, sep: bool| MenuItem {
-            id,
-            label: label.into(),
-            checked: false,
-            sep,
-            disabled: false,
-            danger: false,
-            icon: None,
-            hint: None,
-            color: None,
-            header: false,
-        };
-        let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
-        if project
-            .tickets
-            .get(index)
-            .is_some_and(|ticket| !ticket.is_empty())
-        {
-            items.push(item(crate::MENU_WS_OPEN_TICKET, "Open Ticket", false));
-        }
-        if project
-            .running
-            .get(index)
-            .is_some_and(|running| *running > 0)
-        {
-            items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
-        }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
-        if is_main
-            && project
+        workspace_row_menu(RowMenuFacts {
+            ticket: project
+                .tickets
+                .get(index)
+                .is_some_and(|ticket| !ticket.is_empty()),
+            running: project
+                .running
+                .get(index)
+                .is_some_and(|running| *running > 0),
+            main: is_main,
+            missing: project
                 .missing
                 .get(index)
-                .is_some_and(|missing| !missing.is_empty())
-        {
-            items.push(item(
-                crate::MENU_WS_ADD_MISSING,
-                "Clone Missing Repos...",
-                false,
-            ));
-        }
-        if !is_main {
-            items.push(item(crate::MENU_WS_ADD_REPOS, "Add Repos...", false));
-        }
-        if is_main {
-            items.push(item(
-                crate::MENU_WS_UPDATE_MAIN,
-                "Update Main from Origin",
-                true,
-            ));
-            items.push(item(crate::MENU_WS_PREPARE_MAIN, "Prepare Main...", false));
-        } else {
-            items.push(item(crate::MENU_WS_DELETE, "Delete Workspace", true));
-        }
-        items
+                .is_some_and(|missing| !missing.is_empty()),
+        })
     }
 
     fn apply_workspace_row_menu(&mut self, item: u64) {
@@ -8588,6 +8550,58 @@ fn server_notification(notice: crate::ServerNotice) -> Notification {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowMenuFacts {
+    pub ticket: bool,
+    pub running: bool,
+    pub main: bool,
+    pub missing: bool,
+}
+
+pub fn workspace_row_menu(facts: RowMenuFacts) -> Vec<MenuItem> {
+    let item = |id: u64, label: &'static str, sep: bool| MenuItem {
+        id,
+        label: label.into(),
+        checked: false,
+        sep,
+        disabled: false,
+        danger: false,
+        icon: None,
+        hint: None,
+        color: None,
+        header: false,
+    };
+    let mut items = vec![item(crate::MENU_WS_RENAME, "Rename...", false)];
+    if facts.ticket {
+        items.push(item(crate::MENU_WS_OPEN_TICKET, "Open Ticket", false));
+    }
+    if facts.running {
+        items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
+    }
+    if facts.main && facts.missing {
+        items.push(item(
+            crate::MENU_WS_ADD_MISSING,
+            "Clone Missing Repos...",
+            false,
+        ));
+    }
+    if facts.main {
+        items.push(item(
+            crate::MENU_WS_UPDATE_MAIN,
+            "Update Main from Origin",
+            true,
+        ));
+        items.push(item(crate::MENU_WS_PREPARE_MAIN, "Prepare Main...", false));
+    } else {
+        items.push(item(crate::MENU_WS_ADD_REPOS, "Add Repos...", false));
+        items.push(MenuItem {
+            danger: true,
+            ..item(crate::MENU_WS_DELETE, "Delete Workspace", true)
+        });
+    }
+    items
+}
+
 fn invalid_config_notification(
     message: String,
     config_path: &std::path::Path,
@@ -9738,7 +9752,7 @@ mod tests {
         let text = frame_text(&frame);
         for expected in [
             "Welcome to Pomelo",
-            "GET STARTED",
+            "New project",
             "Open a project folder",
             "RECENT",
             "alpha",

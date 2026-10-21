@@ -42,16 +42,16 @@ pub use usage::{
     USAGE_OPEN, USAGE_REFRESH, USAGE_STATUS,
 };
 pub use welcome::{
-    is_welcome_id, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT,
-    WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
-    WELCOME_RECHECK,
+    is_welcome_id, welcome_page, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE,
+    WELCOME_NEW_PROJECT, WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,
+    WELCOME_RECENT_BASE, WELCOME_RECHECK,
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
     delete_workspace_detail, elevation_shadow, notification_preview, toast_preview,
-    unpushed_warning, ParkedWorkspace, ResizeCursor, SessionRequest, TitlebarGesture,
-    WorkspaceEffects, WorkspaceRequests, WorkspaceView,
+    unpushed_warning, workspace_row_menu, ParkedWorkspace, ResizeCursor, RowMenuFacts,
+    SessionRequest, TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
@@ -3692,22 +3692,19 @@ impl MenuItem {
     }
 }
 
-/// A right-click context menu anchored above `(ax, ay)`, clamped to stay inside `viewport_w`.
-#[allow(clippy::too_many_arguments)]
-pub fn context_menu(
-    ax: f32,
-    atop: f32,
-    abottom: f32,
-    viewport_w: f32,
-    viewport_h: f32,
-    items: &[MenuItem],
-    hovered: Option<u64>,
-    flip_left_at: Option<f32>,
-) -> Painted {
-    let scale = ui::ui_text_scale();
+fn raised_hover() -> Rgba {
+    match theme().appearance {
+        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+        ui::Appearance::Light => Rgba::new(0.0, 0.0, 0.0, 0.04),
+    }
+}
+
+pub fn context_menu_card(items: &[MenuItem], hovered: Option<u64>) -> (Node, f32, f32) {
     let row_h = 26.0_f32;
     let pad = 4.0_f32;
     let wght = ui::ui_font_weight();
+    let marks = items.iter().any(|it| it.checked || it.icon.is_some());
+    let mark_w = if marks { 12.0 + 6.0 } else { 0.0 };
     let mut content_w = 0.0_f32;
     for it in items {
         let label_w = ui::measure_text_width(&it.label, 13.0, false, wght);
@@ -3729,7 +3726,7 @@ pub fn context_menu(
         };
         content_w = content_w.max(label_w + right);
     }
-    let mw = (16.0 + 6.0 + content_w + 16.0 + 2.0 * pad).max(200.0);
+    let mw = (16.0 + mark_w + content_w + 2.0 * pad).max(200.0);
     // Count only the separators actually drawn (a leading `sep` on the first item is skipped).
     let seps = items
         .iter()
@@ -3737,21 +3734,6 @@ pub fn context_menu(
         .filter(|(i, it)| it.sep && *i > 0)
         .count() as f32;
     let mh = pad * 2.0 + row_h * items.len() as f32 + 5.0 * seps;
-    let margin = 6.0 * scale;
-    let mwpx = mw * scale;
-    let x = match flip_left_at {
-        Some(left) if ax + mwpx + margin > viewport_w => (left - mwpx).max(margin),
-        _ => ax.min(viewport_w - mwpx - margin).max(margin),
-    };
-    // Open below the anchored button when there is room; flip above if it would spill off the bottom (editor).
-    let gap = 4.0 * scale;
-    let mhpx = mh * scale;
-    let y = if abottom + gap + mhpx + 6.0 * scale <= viewport_h {
-        abottom + gap
-    } else {
-        (atop - gap - mhpx).max(6.0 * scale)
-    };
-
     let mut col = div()
         .col()
         .p(pad)
@@ -3786,7 +3768,7 @@ pub fn context_menu(
             .rounded(5.0)
             .on_click(item.id);
         if hovered == Some(item.id) && !item.disabled {
-            row = row.bg(theme().element_hover);
+            row = row.bg(raised_hover());
         }
         let label_color = if item.disabled {
             theme().text_disabled
@@ -3816,9 +3798,10 @@ pub fn context_menu(
                 .size(12.0)
                 .color(Rgba::TRANSPARENT),
         };
-        row = row
-            .child(mark)
-            .child(label(item.label.to_string()).size(13.0).color(label_color));
+        if marks {
+            row = row.child(mark);
+        }
+        row = row.child(label(item.label.to_string()).size(13.0).color(label_color));
         if is_submenu(item.id) {
             row = row.child(div().flex(1.0));
             if let Some(hint) = &item.hint {
@@ -3839,6 +3822,35 @@ pub fn context_menu(
         }
         col = col.child(row);
     }
+    (col.w_px(mw).into(), mw, mh)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn context_menu(
+    ax: f32,
+    atop: f32,
+    abottom: f32,
+    viewport_w: f32,
+    viewport_h: f32,
+    items: &[MenuItem],
+    hovered: Option<u64>,
+    flip_left_at: Option<f32>,
+) -> Painted {
+    let scale = ui::ui_text_scale();
+    let (card, mw, mh) = context_menu_card(items, hovered);
+    let margin = 6.0 * scale;
+    let mwpx = mw * scale;
+    let x = match flip_left_at {
+        Some(left) if ax + mwpx + margin > viewport_w => (left - mwpx).max(margin),
+        _ => ax.min(viewport_w - mwpx - margin).max(margin),
+    };
+    let gap = 4.0 * scale;
+    let mhpx = mh * scale;
+    let y = if abottom + gap + mhpx + 6.0 * scale <= viewport_h {
+        abottom + gap
+    } else {
+        (atop - gap - mhpx).max(6.0 * scale)
+    };
     let mut out = Painted::default();
     out.rects.push(Rect {
         x: x - 2.0 * scale,
@@ -3852,7 +3864,7 @@ pub fn context_menu(
     });
     push_into(
         &mut out,
-        &col.into(),
+        &card,
         Rect::new(x, y, mw * scale, mh * scale, Rgba::TRANSPARENT),
     );
     out

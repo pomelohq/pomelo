@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 use crate::Session;
 
@@ -16,9 +16,9 @@ pub const WELCOME_RECENT_MAX: usize = 5;
 const WELCOME_RECENT_END: u64 = 1100;
 const WELCOME_FIX_END: u64 = 620;
 
-const CONTENT_MAX_W: f32 = 780.0;
+const CONTENT_MAX_W: f32 = 640.0;
 const PAD_X: f32 = 40.0;
-const GAP: f32 = 22.0;
+const GAP: f32 = 24.0;
 
 /// One thing the Mac needs before a project can run (Docker, git, an agent CLI), as the welcome page shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,110 +43,110 @@ pub fn is_welcome_id(id: u64) -> bool {
         || (WELCOME_FIX_BASE..WELCOME_FIX_END).contains(&id)
 }
 
-fn button(id: u64, kind: Option<IconKind>, text: &str, primary: bool, keys: Option<&str>) -> Node {
+const LOGO_IMAGE: u64 = 0x0057_454c_434f_4d45;
+const LOGO_PNG: &[u8] = include_bytes!("../assets/logo.png");
+
+/// The app's mark, decoded once and kept registered for the life of the process.
+fn logo() -> Option<u64> {
+    static DECODED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ready = *DECODED.get_or_init(|| {
+        let Ok(decoded) = image::load_from_memory_with_format(LOGO_PNG, image::ImageFormat::Png)
+        else {
+            return false;
+        };
+        let rgba = decoded.to_rgba8();
+        let (width, height) = rgba.dimensions();
+        ui::retain_image(LOGO_IMAGE);
+        ui::set_image(LOGO_IMAGE, width, height, rgba.into_raw());
+        true
+    });
+    ready.then_some(LOGO_IMAGE)
+}
+
+/// A way to start: its icon, name and what it does, lit while the pointer is over it.
+fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot: bool) -> Node {
     let colors = theme();
-    let (bg, border) = if primary {
-        (colors.info_background, colors.info_border)
+    let fill = if hot {
+        colors.element_hover
     } else {
-        (colors.element_background, colors.border)
+        colors.element_background
     };
-    let mut row = div()
-        .row()
-        .h_px(28.0)
-        .px(12.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(5.0)
-        .bg(bg)
-        .border(1.0, border)
-        .on_click(id);
-    if let Some(kind) = kind {
-        row = row.child(icon(kind).size(13.0).color(colors.text));
-    }
-    row = row.child(label(text.to_string()).size(13.0).color(colors.text));
-    if let Some(keys) = keys {
-        row = row.child(
-            label(keys.to_string())
-                .size(11.0)
-                .mono()
-                .color(colors.text_placeholder),
-        );
-    }
-    row.into()
-}
-
-fn section(title: &str, trailing: Option<Node>, body: Node) -> Node {
-    let mut head = div().row().items_center().child(
-        div().row().flex(1.0).child(
-            label(title.to_uppercase())
-                .size(11.0)
-                .weight(600)
-                .color(theme().text_placeholder),
-        ),
-    );
-    if let Some(trailing) = trailing {
-        head = head.child(trailing);
-    }
-    div().col().gap(10.0).child(head).child(body).into()
-}
-
-fn rows(items: Vec<Node>) -> Node {
-    let colors = theme();
-    let mut column = div().col().rounded(8.0).border(1.0, colors.border_variant);
-    for (index, item) in items.into_iter().enumerate() {
-        if index > 0 {
-            column = column.child(div().h_px(1.0).bg(colors.border_variant));
-        }
-        column = column.child(item);
-    }
-    column.into()
-}
-
-fn row() -> ui::Div {
-    div().row().items_center().gap(10.0).px(12.0).py(9.0)
-}
-
-fn card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot: bool) -> Node {
-    let colors = theme();
     div()
         .col()
         .w_px(width)
         .p(14.0)
         .gap(6.0)
-        .rounded(8.0)
-        .border(
-            1.0,
-            if hot {
-                colors.border
-            } else {
-                colors.border_variant
-            },
-        )
-        .bg(if hot {
-            colors.element_hover
-        } else {
-            Rgba::new(0.0, 0.0, 0.0, 0.08)
-        })
+        .rounded(10.0)
+        .bg(fill)
         .on_click(id)
         .child(
             div()
-                .row()
-                .items_center()
-                .gap(8.0)
-                .child(icon(kind).size(14.0).color(colors.icon_muted))
-                .child(label(title.to_string()).size(14.0).color(colors.text)),
+                .pb(4.0)
+                .child(icon(kind).size(18.0).color(colors.text_accent)),
+        )
+        .child(
+            label(title.to_string())
+                .size(13.0)
+                .medium()
+                .color(colors.text),
         )
         .child(
             label(text.to_string())
-                .size(12.5)
+                .size(12.0)
                 .color(colors.text_muted)
                 .wrap(width - 28.0),
         )
         .into()
 }
 
-/// The page shown in the editor area while no project is open: ways to start one, the recent sessions, and
-/// whether this Mac has what a project needs.
+/// A check this computer fails, with its fix and a way to look again.
+fn banner(index: usize, check: &MachineCheck, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    let mut line = div()
+        .row()
+        .items_center()
+        .gap(10.0)
+        .pt(10.0)
+        .pb(10.0)
+        .pl(14.0)
+        .pr(10.0)
+        .rounded(10.0)
+        .bg(colors.element_background)
+        .child(icon(IconKind::Warning).size(16.0).color(colors.warning))
+        .child(
+            div().row().flex(1.0).child(
+                label(check.detail.clone())
+                    .size(12.0)
+                    .color(colors.text_muted)
+                    .truncate(),
+            ),
+        );
+    if let Some(fix) = &check.fix {
+        line = line.child(crate::small_button(
+            WELCOME_FIX_BASE + index as u64,
+            None,
+            fix,
+            None,
+            crate::ButtonKind::Secondary,
+            true,
+            hovered,
+        ));
+    } else {
+        line = line.child(crate::small_button(
+            WELCOME_RECHECK,
+            None,
+            "Check again",
+            None,
+            crate::ButtonKind::Ghost,
+            true,
+            hovered,
+        ));
+    }
+    line.into()
+}
+
+/// The page shown in the editor area while no project is open: who it is, what this computer still needs,
+/// ways to start a project and the recent ones.
 pub fn welcome_page(
     sessions: &[Session],
     checks: &[MachineCheck],
@@ -155,63 +155,44 @@ pub fn welcome_page(
 ) -> Node {
     let colors = theme();
     let width = (area_w - 2.0 * PAD_X).clamp(200.0, CONTENT_MAX_W);
-    let logo = div()
-        .row()
-        .w_px(40.0)
-        .h_px(40.0)
-        .rounded(10.0)
-        .items_center()
-        .justify_center()
-        .bg(Rgba::hex("#a63d9e"))
-        .child(
-            label("P")
-                .size(18.0)
-                .weight(600)
-                .color(Rgba::new(1.0, 1.0, 1.0, 1.0)),
-        );
-    let header = div()
-        .row()
-        .items_center()
-        .gap(16.0)
-        .child(logo)
-        .child(
-            div()
-                .col()
-                .flex(1.0)
-                .gap(2.0)
-                .child(
-                    label("Welcome to Pomelo")
-                        .size(20.0)
-                        .weight(600)
-                        .color(colors.text),
-                )
-                .child(
-                    label("Every branch a full, running dev environment")
-                        .size(12.5)
-                        .italic()
-                        .color(colors.text_muted),
-                ),
-        )
-        .child(button(
-            WELCOME_NEW_PROJECT,
-            Some(IconKind::Plus),
-            "New project",
-            true,
-            Some("cmd-shift-n"),
-        ));
-    let card_w = (width - 20.0) / 3.0;
+    let mark: Node = match logo() {
+        Some(id) => div().w_px(48.0).h_px(48.0).image(id).into(),
+        None => div()
+            .w_px(48.0)
+            .h_px(48.0)
+            .rounded(10.0)
+            .bg(colors.text_accent)
+            .into(),
+    };
+    let hero = div().row().items_center().gap(16.0).child(mark).child(
+        div()
+            .col()
+            .gap(4.0)
+            .child(
+                label("Welcome to Pomelo")
+                    .size(20.0)
+                    .weight(600)
+                    .color(colors.text),
+            )
+            .child(
+                label("Every branch a full, running dev environment")
+                    .size(12.0)
+                    .color(colors.text_muted),
+            ),
+    );
+    let card_w = (width - 24.0) / 3.0;
     let cards = div()
         .row()
-        .gap(10.0)
-        .child(card(
+        .gap(12.0)
+        .child(action_card(
             WELCOME_NEW_PROJECT_CARD,
             IconKind::Plus,
             "New project",
-            "Point at your repos (folders or git URLs). Pomelo clones them, detects the stack and writes pom.yml.",
+            "Repos in, a runnable environment for every branch out",
             card_w,
             hovered == Some(WELCOME_NEW_PROJECT_CARD),
         ))
-        .child(card(
+        .child(action_card(
             WELCOME_OPEN_PROJECT,
             IconKind::FolderOpen,
             "Open a project folder",
@@ -219,11 +200,11 @@ pub fn welcome_page(
             card_w,
             hovered == Some(WELCOME_OPEN_PROJECT),
         ))
-        .child(card(
+        .child(action_card(
             WELCOME_IMPORT_BUNDLE,
             IconKind::Package,
             "Import a bundle",
-            "A teammate's exported project: config, and secrets if they shared them.",
+            "A .pombundle exported from another project, secrets included.",
             card_w,
             hovered == Some(WELCOME_IMPORT_BUNDLE),
         ));
@@ -234,17 +215,31 @@ pub fn welcome_page(
         .take(WELCOME_RECENT_MAX)
         .map(|(index, session)| {
             let id = WELCOME_RECENT_BASE + index as u64;
-            let mut line = row()
+            let mut line = div()
+                .row()
+                .items_center()
+                .gap(12.0)
+                .h_px(44.0)
+                .px(8.0)
+                .rounded(6.0)
                 .on_click(id)
-                .child(icon(IconKind::Folder).size(14.0).color(colors.icon_muted))
-                .child(label(session.name.clone()).size(13.0).color(colors.text))
-                .child(div().flex(1.0))
+                .child(icon(IconKind::Folder).size(16.0).color(colors.icon_muted))
                 .child(
-                    label(home_relative(&session.path))
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_placeholder)
-                        .truncate_start(),
+                    div()
+                        .col()
+                        .flex(1.0)
+                        .child(
+                            label(session.name.clone())
+                                .size(13.0)
+                                .medium()
+                                .color(colors.text),
+                        )
+                        .child(
+                            label(home_relative(&session.path))
+                                .size(12.0)
+                                .color(colors.text_placeholder)
+                                .truncate_start(),
+                        ),
                 );
             if hovered == Some(id) {
                 line = line.bg(colors.ghost_element_hover);
@@ -252,83 +247,40 @@ pub fn welcome_page(
             line.into()
         })
         .collect();
-    let recent = if recent.is_empty() {
-        rows(vec![row()
-            .child(
-                label("No projects yet. Created and opened projects show here.")
-                    .size(13.0)
-                    .color(colors.text_placeholder),
-            )
-            .into()])
-    } else {
-        rows(recent)
-    };
-    let mut column = div()
-        .col()
-        .w_px(width)
-        .gap(GAP)
-        .child(header)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .child(section("Get started", None, cards.into()))
-        .child(section("Recent", None, recent));
-    if !checks.is_empty() {
-        let lines = checks
-            .iter()
-            .enumerate()
-            .map(|(index, check)| {
-                let mut line = row()
-                    .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(if check.ok {
-                        colors.success
-                    } else {
-                        colors.error
-                    }))
-                    .child(
-                        div()
-                            .w_px(110.0)
-                            .child(label(check.name.clone()).size(13.0).color(colors.text)),
-                    )
-                    .child(
-                        div().row().flex(1.0).child(
-                            label(check.detail.clone())
-                                .size(12.0)
-                                .color(if check.ok {
-                                    colors.text_muted
-                                } else {
-                                    colors.error
-                                })
-                                .truncate(),
-                        ),
-                    );
-                if let Some(fix) = &check.fix {
-                    line = line.child(button(
-                        WELCOME_FIX_BASE + index as u64,
-                        None,
-                        fix,
-                        false,
-                        None,
-                    ));
-                }
-                line.into()
-            })
-            .collect();
-        let again = div()
-            .row()
-            .h_px(22.0)
-            .px(8.0)
-            .items_center()
-            .rounded(4.0)
-            .bg(if hovered == Some(WELCOME_RECHECK) {
-                colors.element_hover
-            } else {
-                Rgba::TRANSPARENT
-            })
-            .on_click(WELCOME_RECHECK)
-            .child(label("Check again").size(12.0).color(colors.text_muted));
-        column = column.child(section("This Mac", Some(again.into()), rows(lines)));
+    let mut head = div()
+        .row()
+        .items_center()
+        .justify_between()
+        .px(8.0)
+        .pb(6.0)
+        .child(
+            label("RECENT")
+                .size(11.0)
+                .weight(600)
+                .color(colors.text_placeholder),
+        );
+    if let Some(keys) = crate::keymap::key_hint(crate::keymap::Action::OpenProject) {
+        head = head.child(crate::key_chip(&keys, false));
     }
+    let list = if recent.is_empty() {
+        div().col().gap(2.0).child(head).child(
+            div().row().px(8.0).py(6.0).child(
+                label("No projects yet. Created and opened projects show here.")
+                    .size(12.0)
+                    .color(colors.text_placeholder),
+            ),
+        )
+    } else {
+        div().col().gap(2.0).child(head).children(recent)
+    };
+    let mut column = div().col().w_px(width).gap(GAP).child(hero);
+    for (index, check) in checks.iter().enumerate().filter(|(_, check)| !check.ok) {
+        column = column.child(banner(index, check, hovered));
+    }
+    column = column.child(cards).child(list);
     div()
         .col()
-        .pt(44.0)
+        .pt(72.0)
         .pb(60.0)
         .items_center()
         .bg(colors.editor_background)
