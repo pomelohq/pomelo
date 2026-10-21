@@ -4,6 +4,27 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-10-21
+
+### Added
+- Merge a pull request from the app: squash, merge commit or rebase, with the reasons shown when merging is blocked. (#240)
+- Review a pull request in the app: reply to and resolve threads, and submit Comment, Request changes or Approve. (#240)
+- Resolve merge conflicts in the editor with Use ours / Use theirs / Use both per conflict, Mark Resolved in the Git panel, or Ask Claude to merge. (#240)
+- Stage or unstage just the selected lines of a change, and a strip over the change under the caret to stage, restore or jump between hunks. (#237, #238)
+- New themes: Catppuccin Mocha, Macchiato, Frappe and Latte, Tokyo Night, Nord and Rose Pine Dawn, each with its own code colors. (#245)
+
+### Changed
+- New look: Pomelo Dark and Pomelo Light are the default themes, and panels sit as rounded surfaces with gaps instead of lines. One Dark, One Light, Ayu Mirage and Gruvbox Dark are rebuilt on the same layers. (#234, #235, #245)
+- The title bar shows the branch and a pill for the workspace that needs you; every tab bar uses one tab style. (#235, #243)
+- The workspaces sidebar says one thing per workspace, and the folded rail flags only what needs you: a waiting agent, PR trouble, running services. (#236)
+- The Git panel is redesigned: repo cards in Changes, a clearer commit footer, Remote cards that say what to do next, and History by repo or as one timeline. (#237, #238)
+- The pull request tab shows its state, blockers, checks and conversation more clearly. (#239)
+- The Settings window uses inset panels with collapsible categories, and a service tab shows its facts as one card. (#241, #244, #246)
+
+### Fixed
+- The Git panel stays readable when narrow, and branch file folders start collapsed. (#242)
+- Translucent colors blend like a browser, so highlights are no longer too strong. (#236)
+
 ## [0.8.9] - 2026-10-09
 
 ### Changed
