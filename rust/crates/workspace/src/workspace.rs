@@ -19,9 +19,11 @@ mod usage;
 mod welcome;
 mod workspace_view;
 pub use form::{
-    checkbox, is_window_modal_id, modal_button, modal_footer, modal_frame, modal_header,
-    modal_section, outlined_button, progress_bar, segmented, status_line, toggle_button_group,
-    InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    accent_action, checkbox, field, field_label, is_window_modal_id, key_chip, modal_button,
+    modal_footer, modal_frame, modal_header, modal_note, modal_section, outlined_button,
+    overlay_ring, progress_bar, prompt_card, segmented, status_line, text_line,
+    toggle_button_group, ButtonKind, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
+    WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
@@ -47,8 +49,8 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    ParkedWorkspace, ResizeCursor, SessionRequest, TitlebarGesture, WorkspaceEffects,
-    WorkspaceRequests, WorkspaceView,
+    delete_workspace_detail, unpushed_warning, ParkedWorkspace, ResizeCursor, SessionRequest,
+    TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
@@ -482,6 +484,8 @@ pub enum OpAction {
 pub enum RowAction {
     Rename,
     StopServices,
+    /// Confirm a delete; the app first looks up which repos have commits on no remote.
+    AskDelete,
     Delete,
     UpdateMain,
     PrepareMain,
@@ -1038,6 +1042,8 @@ pub struct Prompt {
     pub message: String,
     pub detail: Option<String>,
     pub buttons: Vec<String>,
+    /// Something the answer puts at risk, shown boxed under the detail.
+    pub warning: Option<String>,
 }
 
 pub fn is_submenu(id: u64) -> bool {

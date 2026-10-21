@@ -10,9 +10,9 @@ use module_store::Outlook;
 use pom_agent::NameSuggestion;
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
-    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
-    outlined_button, status_line, toggle_button_group, EditKey, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE,
+    accent_action, checkbox, field, modal_button, modal_footer, modal_frame, modal_header,
+    modal_note, modal_section, status_line, toggle_button_group, ButtonKind, EditKey, InputField,
+    ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 use crate::repo_branch_picker::{
@@ -25,13 +25,17 @@ use crate::ticket_picker::{
 };
 use crate::{humanize_branch, slugify, Namer, TicketSource};
 
-/// The repo name column of the create form's repo rows.
-const REPO_NAME_W: f32 = 168.0;
+/// The repo name column of the create form's repo rows: as wide as the longest name, within these bounds.
+const REPO_NAME_MIN_W: f32 = 80.0;
+const REPO_NAME_MAX_W: f32 = 200.0;
 const MODULES_W: f32 = 130.0;
-const WIDTH: f32 = 544.0;
+const WIDTH: f32 = 460.0;
 /// The create form also lays out each repo's node_modules and the environment and data choices.
-const CREATE_WIDTH: f32 = 720.0;
-const SECTION_PADDING: f32 = 12.0;
+const CREATE_WIDTH: f32 = 620.0;
+const SECTION_PADDING: f32 = 18.0;
+const GROUP_GAP: f32 = 16.0;
+/// Up to this many environment profiles show side by side; more go in a dropdown.
+const ENVIRONMENT_CHOICES: usize = 3;
 
 const CLOSE: u64 = WINDOW_MODAL_BASE + 1;
 const NAME_FIELD: u64 = WINDOW_MODAL_BASE + 2;
@@ -42,7 +46,6 @@ const CONFIRM: u64 = WINDOW_MODAL_BASE + 6;
 const FORM_SURFACE: u64 = WINDOW_MODAL_BASE + 12;
 const REPO_BASE: u64 = WINDOW_MODAL_BASE + 100;
 const BRANCH_BOX_BASE: u64 = WINDOW_MODAL_BASE + 300;
-const RESET_BASE: u64 = WINDOW_MODAL_BASE + 400;
 const ENVIRONMENT_BASE: u64 = WINDOW_MODAL_BASE + 20;
 const ENVIRONMENT_END: u64 = WINDOW_MODAL_BASE + 40;
 const DATA_FROM_MAIN: u64 = WINDOW_MODAL_BASE + 41;
@@ -177,7 +180,7 @@ impl CreateWorkspaceModal {
     pub fn new(repos: Vec<String>, existing: Vec<String>, namer: Namer) -> CreateWorkspaceModal {
         CreateWorkspaceModal {
             name: InputField::new("Name", "Display name"),
-            branch: InputField::new("Branch", "feat-login").mono(),
+            branch: InputField::new("Branch", "feat-login"),
             branch_edited: false,
             focus: CreateFocus::Name,
             repos: repos
@@ -559,33 +562,8 @@ impl CreateWorkspaceModal {
             .any(|row| row.picked && self.seeded_from_main.contains(&row.name))
     }
 
-    /// The ticket a still-untouched field was filled from.
-    fn filled_from(&self, untouched: bool) -> Option<String> {
-        let ticket = self.ticket_text().to_uppercase();
-        (untouched && !ticket.is_empty()).then(|| format!("from {ticket}"))
-    }
-
     fn options_row(&self) -> Option<Node> {
-        let colors = theme();
-        let heading = |title: &str, hint: &str| {
-            div()
-                .row()
-                .gap(6.0)
-                .child(
-                    label(title.to_string())
-                        .label_size(LabelSize::Small)
-                        .color(colors.text),
-                )
-                .child(
-                    div().row().flex(1.0).items_center().child(
-                        label(hint.to_string())
-                            .label_size(LabelSize::Small)
-                            .color(colors.text_muted)
-                            .truncate(),
-                    ),
-                )
-        };
-        let mut row = div().row().gap(12.0);
+        let mut row = div().row().gap(GROUP_GAP);
         let mut any = false;
         if !self.environments.is_empty() {
             let names: Vec<&str> = std::iter::once("local")
@@ -593,36 +571,41 @@ impl CreateWorkspaceModal {
                 .collect();
             let content = CREATE_WIDTH - 2.0 * SECTION_PADDING;
             let available = if self.offers_data_choice() {
-                (content - 12.0) / 2.0
+                (content - GROUP_GAP) / 2.0
             } else {
                 content
             };
-            let control = self.environment_select(&names, available);
-            row = row.child(
-                div()
-                    .col()
-                    .flex(1.0)
-                    .gap(4.0)
-                    .child(heading("Environment", "what the services point at"))
-                    .child(control),
-            );
+            let control = if names.len() <= ENVIRONMENT_CHOICES {
+                let choices: Vec<(u64, Option<IconKind>, &str)> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
+                    .collect();
+                toggle_button_group(&choices, self.environment)
+            } else {
+                self.environment_select(&names, available)
+            };
+            row = row.child(div().col().flex(1.0).child(field(
+                "Environment",
+                control,
+                Some("what the services point at"),
+                None,
+            )));
             any = true;
         }
         if self.offers_data_choice() {
-            row = row.child(
-                div()
-                    .col()
-                    .flex(1.0)
-                    .gap(4.0)
-                    .child(heading("Data", "the workspace's databases"))
-                    .child(toggle_button_group(
-                        &[
-                            (DATA_FROM_MAIN, None, "Copy from main"),
-                            (DATA_FRESH, None, "Empty, run seeds"),
-                        ],
-                        usize::from(self.fresh_databases),
-                    )),
-            );
+            row = row.child(div().col().flex(1.0).child(field(
+                "Data",
+                toggle_button_group(
+                    &[
+                        (DATA_FROM_MAIN, None, "Copy from main"),
+                        (DATA_FRESH, None, "Empty, run seeds"),
+                    ],
+                    usize::from(self.fresh_databases),
+                ),
+                Some("the workspace's databases"),
+                None,
+            )));
             any = true;
         }
         any.then(|| row.into())
@@ -707,7 +690,6 @@ impl CreateWorkspaceModal {
 
     /// What Create is about to make, in one line: repos, installs, databases, environment.
     fn summary(&self) -> Node {
-        let colors = theme();
         let picked: Vec<&RepoRow> = self.repos.iter().filter(|row| row.picked).collect();
         let mut parts = Vec::new();
         let outlook_of = |row: &&RepoRow| self.outlooks.get(&row.name).copied();
@@ -745,64 +727,44 @@ impl CreateWorkspaceModal {
         if !self.environments.is_empty() {
             parts.push(self.environment_name().unwrap_or("local").to_string());
         }
-        let count = if self.repos.is_empty() {
-            String::new()
-        } else {
-            format!("{} {}", picked.len(), verb(picked.len(), "repo", "repos"))
-        };
-        let rest = parts
-            .iter()
-            .map(|part| format!(" - {part}"))
-            .collect::<String>();
-        div()
-            .row()
-            .flex(1.0)
-            .items_center()
-            .px(4.0)
-            .child(label(count).label_size(LabelSize::Small).color(colors.text))
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(rest)
-                        .label_size(LabelSize::Small)
-                        .color(colors.text_muted)
-                        .truncate(),
-                ),
-            )
-            .into()
+        if !self.repos.is_empty() {
+            parts.insert(
+                0,
+                format!("{} {}", picked.len(), verb(picked.len(), "repo", "repos")),
+            );
+        }
+        modal_note(&parts.join(", "))
     }
 
     fn repos_list(&self) -> Node {
-        let colors = theme();
-        let mut list = div().col().rounded(6.0).border(1.0, colors.border_variant);
-        for (index, row) in self.repos.iter().enumerate() {
-            if index > 0 {
-                list = list.child(div().h_px(1.0).bg(colors.border_variant));
-            }
-            list = list.child(self.repo_row(index, row));
-        }
-        div()
+        let name_width = self.repo_name_width();
+        let mut list = div()
             .col()
-            .gap(4.0)
-            .child(
-                div()
-                    .row()
-                    .gap(6.0)
-                    .child(
-                        label("Repos")
-                            .label_size(LabelSize::Small)
-                            .color(colors.text),
-                    )
-                    .child(
-                        label("click a branch to use another one in that repo")
-                            .label_size(LabelSize::Small)
-                            .color(colors.text_muted),
-                    ),
-            )
-            .child(list)
-            .into()
+            .gap(2.0)
+            .p(4.0)
+            .rounded(6.0)
+            .bg(theme().editor_background);
+        for (index, row) in self.repos.iter().enumerate() {
+            list = list.child(self.repo_row(index, row, name_width));
+        }
+        field(
+            "Repos",
+            list.into(),
+            Some("click a branch to use another one in that repo"),
+            None,
+        )
     }
 
-    fn repo_row(&self, index: usize, row: &RepoRow) -> Node {
+    /// Fits the longest repo name so names don't cut short while the branches still get most of the row.
+    fn repo_name_width(&self) -> f32 {
+        self.repos
+            .iter()
+            .map(|row| ui::measure_text_width(&row.name, LabelSize::Small.px(), true, 400))
+            .fold(REPO_NAME_MIN_W, f32::max)
+            .min(REPO_NAME_MAX_W)
+    }
+
+    fn repo_row(&self, index: usize, row: &RepoRow, name_width: f32) -> Node {
         let colors = theme();
         let workspace_branch = self.branch_text();
         let open = self
@@ -823,7 +785,7 @@ impl CreateWorkspaceModal {
         let name_color = match (row.picked, row.choice.is_some()) {
             (false, _) => colors.text_disabled,
             (true, true) => colors.warning,
-            (true, false) => colors.text,
+            (true, false) => colors.text_muted,
         };
         let shown = if name.is_empty() {
             "workspace branch".to_string()
@@ -835,91 +797,70 @@ impl CreateWorkspaceModal {
             .items_center()
             .gap(6.0)
             .h_px(TRIGGER_HEIGHT)
-            .pl(8.0)
-            .pr(6.0)
-            .rounded(5.0)
+            .px(6.0)
+            .rounded(4.0)
             .on_click(BRANCH_BOX_BASE + index as u64)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
+                label(shown)
+                    .label_size(LabelSize::Small)
+                    .mono()
+                    .color(name_color)
+                    .truncate(),
+            );
+        if let Some(how) = how.filter(|how| !how.is_empty()) {
+            branch_box = branch_box.child(
                 div().row().flex(1.0).items_center().child(
-                    label(shown)
+                    label(how)
                         .label_size(LabelSize::Small)
-                        .mono()
-                        .color(name_color)
+                        .color(colors.text_placeholder)
                         .truncate(),
                 ),
             );
-        branch_box = match open {
-            Some(_) => branch_box
-                .border(1.0, colors.border_variant)
-                .bg(colors.ghost_element_hover),
-            None => branch_box.border(1.0, Rgba::TRANSPARENT),
-        };
-        if let Some(how) = how.filter(|how| !how.is_empty()) {
-            branch_box = branch_box.child(
-                label(how)
-                    .label_size(LabelSize::XSmall)
-                    .color(colors.text_placeholder),
-            );
+        } else {
+            branch_box = branch_box.child(div().row().flex(1.0));
         }
-        branch_box = branch_box.child(
-            icon(IconKind::ChevronDown)
-                .size(10.0)
-                .color(colors.icon_muted),
-        );
+        if open.is_some() || self.hovered == Some(BRANCH_BOX_BASE + index as u64) {
+            branch_box = branch_box.bg(colors.ghost_element_hover);
+        }
         let mut anchor = div().col().flex(1.0).child(branch_box);
         if let Some(picker) = open {
             anchor = anchor.child(picker.render(&workspace_branch, known, row.choice.as_deref()));
         }
+        // The branch box's own padding makes up the rest of the gap after the name.
         let mut line = div()
             .row()
             .items_center()
-            .gap(8.0)
-            .h_px(36.0)
-            .pl(6.0)
-            .pr(8.0)
+            .h_px(34.0)
+            .px(8.0)
+            .rounded(4.0)
+            .child(checkbox(REPO_BASE + index as u64, row.picked, ""))
+            .child(div().w_px(10.0))
             .child(
-                // A long repo name ends in an ellipsis instead of running under the branch box.
                 div()
                     .row()
-                    .w_px(REPO_NAME_W)
+                    .w_px(name_width + 4.0)
                     .items_center()
                     .on_click(REPO_BASE + index as u64)
-                    .child(checkbox(REPO_BASE + index as u64, row.picked, ""))
                     .child(
-                        div().row().flex(1.0).items_center().child(
-                            label(row.name.clone())
-                                .label_size(LabelSize::Default)
-                                .color(if row.picked {
-                                    colors.text
-                                } else {
-                                    colors.text_muted
-                                })
-                                .truncate(),
-                        ),
+                        label(row.name.clone())
+                            .label_size(LabelSize::Small)
+                            .mono()
+                            .color(if row.picked {
+                                colors.text
+                            } else {
+                                colors.text_muted
+                            })
+                            .truncate(),
                     ),
             )
             .child(anchor);
-        if row.choice.is_some() && !workspace_branch.is_empty() {
-            let text = format!("use {workspace_branch}");
-            let width =
-                ui::measure_text_width(&text, LabelSize::XSmall.px(), false, 400).min(140.0);
-            line = line.child(
-                div()
-                    .row()
-                    .items_center()
-                    .w_px(width + 2.0)
-                    .h_px(TRIGGER_HEIGHT)
-                    .on_click(RESET_BASE + index as u64)
-                    .child(
-                        label(text)
-                            .label_size(LabelSize::XSmall)
-                            .color(colors.text_accent)
-                            .truncate(),
-                    ),
-            );
+        if open.is_some() {
+            line = line.bg(colors.element_selected);
         }
-        line.child(self.modules_cell(row)).into()
+        line.child(div().w_px(10.0))
+            .child(self.modules_cell(row))
+            .into()
     }
 
     fn modules_cell(&self, row: &RepoRow) -> Node {
@@ -928,14 +869,16 @@ impl CreateWorkspaceModal {
             (false, _) | (_, None | Some(Outlook::NotNode)) => None,
             (_, Some(Outlook::FromStore)) => Some(("node_modules instant".into(), colors.success)),
             (_, Some(Outlook::InstallsOnce)) => Some(("installs once".into(), colors.warning)),
-            (_, Some(Outlook::Installs)) => Some(("installs".into(), colors.text_muted)),
-            (_, Some(Outlook::SelfManaged(name))) => Some((name.to_string(), colors.text_muted)),
+            (_, Some(Outlook::Installs)) => Some(("installs".into(), colors.text_placeholder)),
+            (_, Some(Outlook::SelfManaged(name))) => {
+                Some((name.to_string(), colors.text_placeholder))
+            }
         };
         let mut cell = div().row().w_px(MODULES_W).items_center().justify_end();
         if let Some((text, color)) = shown {
             cell = cell.child(
                 label(text)
-                    .label_size(LabelSize::XSmall)
+                    .label_size(LabelSize::Small)
                     .color(color)
                     .truncate(),
             );
@@ -951,7 +894,7 @@ impl WindowModal for CreateWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let branch_error = self.branch_error();
-        let mut refine_row = div().row().items_center().gap(8.0).child(outlined_button(
+        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine name & branch with Claude",
@@ -961,42 +904,43 @@ impl WindowModal for CreateWorkspaceModal {
         if let Some(status) = refine_status(self.refining.is_some(), self.refine_error.as_deref()) {
             refine_row = refine_row.child(status);
         }
-        let mut section = modal_section(10.0);
+        let ticket = self.ticket_text().to_uppercase();
+        let name_filled = self.auto_name.is_some()
+            && self.auto_name.as_deref() == Some(self.name.text().as_str());
+        let branch_filled = !self.branch_edited && !ticket.is_empty();
+        let filled = match (name_filled, branch_filled) {
+            (true, true) => Some(format!("Name and branch from {ticket}")),
+            (true, false) => Some(format!("Name from {ticket}")),
+            (false, true) => Some(format!("Branch from {ticket}")),
+            (false, false) => None,
+        };
+        let mut section = modal_section(GROUP_GAP);
         if let Some(tickets) = &self.tickets {
             section = section.child(tickets.render(
-                self.focus == CreateFocus::Ticket,
+                self.picker.is_none() && self.focus == CreateFocus::Ticket,
                 CREATE_WIDTH - 2.0 * SECTION_PADDING,
                 self.hovered,
+                filled.as_deref(),
             ));
         }
-        let name_from = self.filled_from(
-            self.auto_name.is_some()
-                && self.auto_name.as_deref() == Some(self.name.text().as_str()),
-        );
-        let branch_from = self.filled_from(!self.branch_edited);
+        let branch_hint = (!branch_filled).then_some("of every repo, unless set below");
+        // An open branch picker takes the keys, so the fields don't show a caret meanwhile.
+        let typing = self.picker.is_none();
         let names = div()
             .row()
-            .gap(12.0)
+            .gap(GROUP_GAP)
             .child(div().col().flex(1.0).child(self.name.render(
                 NAME_FIELD,
-                self.focus == CreateFocus::Name,
-                name_from.as_deref(),
+                typing && self.focus == CreateFocus::Name,
+                None,
                 None,
             )))
-            .child(
-                div().col().flex(1.0).child(
-                    self.branch.render(
-                        BRANCH_FIELD,
-                        self.focus == CreateFocus::Branch,
-                        Some(
-                            branch_from
-                                .as_deref()
-                                .unwrap_or("of every repo, unless set below"),
-                        ),
-                        branch_error.as_deref(),
-                    ),
-                ),
-            );
+            .child(div().col().flex(1.0).child(self.branch.render(
+                BRANCH_FIELD,
+                typing && self.focus == CreateFocus::Branch,
+                branch_hint,
+                branch_error.as_deref(),
+            )));
         section = section.child(names).child(refine_row);
         if !self.repos.is_empty() {
             section = section.child(self.repos_list());
@@ -1007,12 +951,19 @@ impl WindowModal for CreateWorkspaceModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Create",
                 Some("enter"),
+                ButtonKind::Primary,
                 self.can_create(),
             ));
         modal_frame(CREATE_WIDTH)
@@ -1100,11 +1051,6 @@ impl WindowModal for CreateWorkspaceModal {
             id if (REPO_BASE..REPO_BASE + PER_REPO).contains(&id) => {
                 if let Some(row) = self.repos.get_mut((id - REPO_BASE) as usize) {
                     row.picked = !row.picked;
-                }
-            }
-            id if (RESET_BASE..RESET_BASE + PER_REPO).contains(&id) => {
-                if let Some(row) = self.repos.get_mut((id - RESET_BASE) as usize) {
-                    row.choice = None;
                 }
             }
             _ => {}
@@ -1300,21 +1246,7 @@ impl WindowModal for RenameWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let note = div()
-            .row()
-            .gap(4.0)
-            .child(
-                label("Only the display name changes; the branch stays")
-                    .label_size(LabelSize::Small)
-                    .color(colors.text_muted),
-            )
-            .child(
-                label(self.branch.clone())
-                    .label_size(LabelSize::Small)
-                    .mono()
-                    .color(colors.text),
-            );
-        let mut refine_row = div().row().items_center().gap(8.0).child(outlined_button(
+        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine with Claude",
@@ -1323,19 +1255,48 @@ impl WindowModal for RenameWorkspaceModal {
         if let Some(status) = refine_status(self.refining.is_some(), self.refine_error.as_deref()) {
             refine_row = refine_row.child(status);
         }
+        let branch = div()
+            .row()
+            .items_center()
+            .gap(6.0)
+            .h_px(16.0)
+            .child(ui::material_icon(ui::MaterialIcon::Git).size(12.0))
+            .child(
+                label(self.branch.clone())
+                    .size(12.0)
+                    .color(colors.text_placeholder)
+                    .truncate(),
+            );
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
-            .child(modal_button(CONFIRM, "Save", Some("enter"), true));
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
+            .child(modal_button(
+                CONFIRM,
+                "Save",
+                Some("enter"),
+                ButtonKind::Primary,
+                true,
+            ));
         modal_frame(WIDTH)
             .child(modal_header("Rename Workspace", Some(CLOSE)))
             .child(
-                modal_section(10.0)
-                    .child(note)
-                    .child(self.name.render(NAME_FIELD, true, None, None))
-                    .child(refine_row),
+                modal_section(GROUP_GAP)
+                    .child(self.name.render(
+                        NAME_FIELD,
+                        true,
+                        Some("Only the display name changes; the branch stays"),
+                        None,
+                    ))
+                    .child(refine_row)
+                    .child(branch),
             )
             .child(modal_footer(None, buttons.into()))
             .into()
@@ -1436,7 +1397,7 @@ mod tests {
     fn painted_text(modal: &mut dyn WindowModal) -> String {
         let painted = ui::render(
             &modal.render(),
-            ui::Rect::new(0.0, 0.0, WIDTH, 800.0, ui::Rgba::TRANSPARENT),
+            ui::Rect::new(0.0, 0.0, CREATE_WIDTH, 800.0, ui::Rgba::TRANSPARENT),
         );
         painted.texts.iter().map(|t| t.text.clone()).collect()
     }
@@ -1509,7 +1470,7 @@ mod tests {
         settle(&mut modal);
         let text = painted_text(&mut modal);
         assert!(
-            text.contains("Branch for web") && text.contains("Fetched just now"),
+            text.contains("BRANCH FOR WEB") && text.contains("FETCHED JUST NOW"),
             "{text}"
         );
         assert!(
@@ -1524,10 +1485,7 @@ mod tests {
         modal.key(EditKey::Enter, false);
         assert!(modal.picker.is_none(), "picking closes the picker");
         let text = painted_text(&mut modal);
-        assert!(
-            text.contains("taken over from origin") && text.contains("use fix-checkout-page"),
-            "{text}"
-        );
+        assert!(text.contains("taken over from origin"), "{text}");
 
         modal.click(BRANCH_BOX_BASE);
         modal.text("ana/new-api");
@@ -1565,7 +1523,8 @@ mod tests {
         modal.text("ana/mail-retry");
         modal.key(EditKey::Enter, false);
         assert_eq!(modal.repos[0].choice.as_deref(), Some("ana/mail-retry"));
-        modal.click(RESET_BASE);
+        modal.click(BRANCH_BOX_BASE);
+        modal.click(ENTRY_BASE);
         modal.key(EditKey::Enter, false);
         let created = submitted::<CreateWorkspace>(modal.take_result()).expect("submitted");
         assert!(created.repo_branches.is_empty() && created.repos.is_empty());
@@ -1818,12 +1777,11 @@ mod tests {
         settle(&mut modal);
         modal.key(EditKey::Enter, false);
         let text = painted_text(&mut modal);
-        assert_eq!(text.matches("from PROJ-2").count(), 2, "{text}");
+        assert!(text.contains("Name and branch from PROJ-2"), "{text}");
         modal.key(EditKey::Backspace, false);
         let text = painted_text(&mut modal);
-        assert_eq!(
-            text.matches("from PROJ-2").count(),
-            1,
+        assert!(
+            text.contains("Branch from PROJ-2") && !text.contains("Name and branch"),
             "the edited name drops it: {text}"
         );
     }
@@ -1850,7 +1808,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("3 repos - 1 installs once - databases copied from main - local"),
+            text.contains("3 repos, 1 installs once, databases copied from main, local"),
             "{text}"
         );
         modal.click(ENVIRONMENT_BASE + 1);
@@ -1858,7 +1816,7 @@ mod tests {
         modal.click(REPO_BASE + 1);
         let text = painted_text(&mut modal);
         assert!(
-            text.contains("2 repos - all instant - databases seeded empty - staging"),
+            text.contains("2 repos, all instant, databases seeded empty, staging"),
             "{text}"
         );
         modal.click(REPO_BASE);

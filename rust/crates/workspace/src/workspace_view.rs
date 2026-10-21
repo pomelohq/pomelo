@@ -35,6 +35,39 @@ const CLOSE_PROMPT_TOKENS: u64 = 1 << 40;
 const FORGET_PROMPT_TOKENS: u64 = 1 << 41;
 const PANEL_PROMPT_TOKENS: u64 = 1 << 42;
 const DELETE_WORKSPACE_PROMPT_TOKENS: u64 = 1 << 43;
+/// Which repos keep commits that are on no remote, so deleting the workspace leaves them on local branches.
+pub fn unpushed_warning(unpushed: &[(String, usize)]) -> Option<String> {
+    let kept: Vec<&(String, usize)> = unpushed.iter().filter(|(_, count)| *count > 0).collect();
+    match kept.as_slice() {
+        [] => None,
+        [(repo, 1)] => Some(format!(
+            "{repo} has 1 commit that is not pushed. It stays on the local branch."
+        )),
+        [(repo, count)] => Some(format!(
+            "{repo} has {count} commits that are not pushed. They stay on the local branch."
+        )),
+        many => Some(format!(
+            "{} have commits that are not pushed. They stay on their local branches.",
+            many.iter()
+                .map(|(repo, _)| repo.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// What deleting the workspace `label` on `branch` does, as its confirmation lists it.
+pub fn delete_workspace_detail(label: &str, branch: &str) -> String {
+    let named = if label == branch {
+        branch.to_string()
+    } else {
+        format!("{label} on {branch}")
+    };
+    format!(
+        "{named}. Pomelo will:\n- stop its services and release its ports and slots\n- run its pre-delete \
+         commands\n- remove its worktrees and databases"
+    )
+}
 const PREPARE_MAIN_PROMPT_TOKEN: u64 = 1 << 44;
 /// The gap a zoomed view leaves around it (on its dock's inner side only, for a dock panel).
 const ZOOM_PADDING: f32 = 8.0;
@@ -3443,7 +3476,9 @@ impl WorkspaceView {
             crate::MENU_WS_ADD_REPOS => {
                 self.workspace_requests.row = Some((index, crate::RowAction::AddRepos));
             }
-            crate::MENU_WS_DELETE => self.ask_to_delete_workspace(index),
+            crate::MENU_WS_DELETE => {
+                self.workspace_requests.row = Some((index, crate::RowAction::AskDelete));
+            }
             crate::MENU_WS_UPDATE_MAIN => {
                 self.workspace_requests.row = Some((index, crate::RowAction::UpdateMain));
             }
@@ -3457,27 +3492,25 @@ impl WorkspaceView {
                             .into(),
                     ),
                     buttons: vec!["Prepare Main".into(), "Cancel".into()],
+                    warning: None,
                 });
             }
             _ => {}
         }
     }
 
-    /// The reference's destructive-confirmation shape: the question names the target, the detail says what
-    /// goes, and the confirming answer comes first.
-    fn ask_to_delete_workspace(&mut self, index: usize) {
+    /// Asks before deleting the workspace at `index`; `unpushed` are its repos with commits only it has.
+    pub fn ask_to_delete_workspace(&mut self, index: usize, unpushed: &[(String, usize)]) {
         let Some(project) = self.layout.project.as_ref() else {
             return;
         };
+        let branch = project.workspaces.get(index).map_or("", String::as_str);
         self.pending_prompt = Some(crate::Prompt {
             token: DELETE_WORKSPACE_PROMPT_TOKENS + index as u64,
-            message: format!("Delete workspace \"{}\"?", project.label(index)),
-            detail: Some(
-                "Stops its services and removes its worktrees, databases and folder. Local branches \
-                 with unpushed commits are kept. This cannot be undone."
-                    .into(),
-            ),
+            message: "Delete Workspace".into(),
+            detail: Some(delete_workspace_detail(project.label(index), branch)),
             buttons: vec!["Delete".into(), "Cancel".into()],
+            warning: unpushed_warning(unpushed),
         });
     }
 
@@ -3917,6 +3950,7 @@ impl WorkspaceView {
                     message,
                     detail,
                     buttons,
+                    warning: None,
                 });
             }
             crate::PanelRequest::OpenItem(item) => {
@@ -7512,6 +7546,7 @@ impl WorkspaceView {
                 message,
                 detail: None,
                 buttons: buttons(["Save", "Don't Save", "Cancel"]),
+                warning: None,
             };
         }
         let mut names: Vec<String> = request
@@ -7539,6 +7574,7 @@ impl WorkspaceView {
             message: "Do you want to save changes to the following files?".to_string(),
             detail: Some(detail),
             buttons: buttons(["Save all", "Discard all", "Cancel"]),
+            warning: None,
         }
     }
 
@@ -7774,6 +7810,7 @@ impl WorkspaceView {
             message: format!("Remove \"{}\" from the session list?", session.name),
             detail: Some("Files on disk are left untouched.".into()),
             buttons: vec!["Remove".into(), "Cancel".into()],
+            warning: None,
         });
     }
 
@@ -8233,11 +8270,7 @@ const PALETTE_PANEL_STRIDE: u64 = 100_000;
 const PROMPT_BUTTON_BASE: u64 = 999_000_000;
 const PROMPT_BUTTON_SPAN: u64 = 16;
 const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
-/// The reference prompt's `w_80`.
-const PROMPT_W: f32 = 320.0;
 
-/// A confirmation over a dimmed window, after the reference's in-app prompt: message, muted detail, and one
-/// full-width button per answer with the highlighted one tinted.
 /// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
 fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
     let colors = ui::theme();
@@ -8277,55 +8310,16 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
     list.into()
 }
 
+/// A confirmation over a dimmed window, centered.
 fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Painted {
-    let colors = ui::theme();
     let scale = ui::ui_text_scale();
-    let text_w = PROMPT_W - 32.0;
-    let mut buttons = ui::div().col().gap(4.0);
-    for (index, text) in prompt.buttons.iter().enumerate() {
-        let style = if index == active {
-            ui::ButtonStyle::TintedAccent
-        } else {
-            ui::ButtonStyle::Outlined
-        };
-        buttons = buttons.child(
-            ui::button_sized(
-                PROMPT_BUTTON_BASE + index as u64,
-                text.clone(),
-                style,
-                ui::ButtonSize::Medium,
-            )
-            .justify_center(),
-        );
-    }
-    let mut dialog = ui::div()
-        .col()
-        .w_px(PROMPT_W)
-        .p(16.0)
-        .gap(16.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border_variant)
-        .child(
-            ui::label(prompt.message.clone())
-                .color(colors.text)
-                .wrap(text_w),
-        );
-    if let Some(detail) = prompt.detail.as_ref().filter(|detail| !detail.is_empty()) {
-        dialog = dialog.child(
-            ui::label(detail.clone())
-                .label_size(ui::LabelSize::Small)
-                .color(colors.text_muted)
-                .wrap(text_w),
-        );
-    }
-    let dialog: ui::Node = dialog.child(buttons).into();
+    let dialog = crate::prompt_card(prompt, active, PROMPT_BUTTON_BASE);
     let measured = ui::render(
         &ui::div().col().child(dialog.clone()).into(),
-        Rect::new(0.0, 0.0, PROMPT_W * scale, h, Rgba::TRANSPARENT),
+        Rect::new(0.0, 0.0, crate::PROMPT_WIDTH * scale, h, Rgba::TRANSPARENT),
     );
     let dialog_h = measured.rects.iter().map(|r| r.y + r.h).fold(0.0, f32::max);
-    let dialog_w = PROMPT_W * scale;
+    let dialog_w = crate::PROMPT_WIDTH * scale;
     let rect = Rect::new(
         ((w - dialog_w) / 2.0).max(8.0),
         ((h - dialog_h) / 2.0).max(8.0),

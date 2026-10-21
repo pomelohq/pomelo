@@ -1,13 +1,14 @@
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
-    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
-    outlined_button, status_line, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    checkbox, field, modal_button, modal_footer, modal_frame, modal_header, modal_section,
+    outlined_button, status_line, toggle_button_group, ButtonKind, EditKey, InputField,
+    ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 /// Opens the system folder picker; returns the folders chosen.
 pub type FolderChooser = Box<dyn Fn() -> Vec<std::path::PathBuf>>;
 
-const WIDTH: f32 = 520.0;
+const WIDTH: f32 = 540.0;
 
 const CLOSE: u64 = WINDOW_MODAL_BASE + 1;
 const SOURCE_FIELD: u64 = WINDOW_MODAL_BASE + 2;
@@ -16,6 +17,7 @@ const CHOOSE_FOLDER: u64 = WINDOW_MODAL_BASE + 4;
 const USE_AI: u64 = WINDOW_MODAL_BASE + 5;
 const CANCEL: u64 = WINDOW_MODAL_BASE + 6;
 const CONFIRM: u64 = WINDOW_MODAL_BASE + 7;
+const REVIEW_LATER: u64 = WINDOW_MODAL_BASE + 8;
 const WORKSPACE_BASE: u64 = WINDOW_MODAL_BASE + 100;
 const WORKSPACE_LIMIT: u64 = 200;
 
@@ -57,8 +59,8 @@ impl AddRepoModal {
         ai_available: bool,
     ) -> AddRepoModal {
         AddRepoModal {
-            source: InputField::new("Git URL or folder", "git@github.com:acme/web.git").mono(),
-            alias: InputField::new("Alias", "optional, e.g. fe").mono(),
+            source: InputField::new("Git URL or folder", "git@github.com:acme/web.git"),
+            alias: InputField::new("Alias", "optional, e.g. fe"),
             focus: Focus::Source,
             workspaces: workspaces
                 .into_iter()
@@ -120,7 +122,7 @@ impl AddRepoModal {
 
     fn workspaces_section(&self) -> Node {
         let colors = theme();
-        let mut list = div().col().gap(2.0);
+        let mut list = div().col().gap(6.0);
         if self.workspaces.is_empty() {
             list = list.child(
                 label("No other workspaces yet")
@@ -131,16 +133,7 @@ impl AddRepoModal {
         for (index, (branch, chosen)) in self.workspaces.iter().enumerate() {
             list = list.child(checkbox(WORKSPACE_BASE + index as u64, *chosen, branch));
         }
-        div()
-            .col()
-            .gap(6.0)
-            .child(
-                label("Also check it out in")
-                    .label_size(LabelSize::Small)
-                    .color(colors.text),
-            )
-            .child(list)
-            .into()
+        field("Also check it out in", list.into(), None, None)
     }
 }
 
@@ -162,30 +155,40 @@ impl WindowModal for AddRepoModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(div().col().flex(1.0).child(self.source.render(
+            .child(div().col().flex(1.0).child(self.source.render_input(
                 SOURCE_FIELD,
                 self.focus == Focus::Source,
+                source_error.is_some(),
+            )))
+            .child(outlined_button(CHOOSE_FOLDER, None, "Folder...", true));
+        let mut section = modal_section(16.0)
+            .child(field(
+                self.source.label,
+                source_row.into(),
                 Some(&hint),
                 source_error.as_deref(),
-            )))
-            .child(outlined_button(
-                CHOOSE_FOLDER,
-                Some(IconKind::FolderOpen),
-                "Folder...",
-                true,
-            ));
-        let mut section = modal_section(10.0)
-            .child(source_row)
+            ))
             .child(
                 self.alias
                     .render(ALIAS_FIELD, self.focus == Focus::Alias, None, None),
             )
             .child(self.workspaces_section());
         if self.ai_available {
-            section = section.child(checkbox(
-                USE_AI,
-                self.use_ai,
-                "Let Claude wire its env and shared services",
+            section = section.child(field(
+                "Afterwards",
+                toggle_button_group(
+                    &[
+                        (USE_AI, None, "Let Claude wire its env and shared services"),
+                        (
+                            REVIEW_LATER,
+                            None,
+                            "Review its entry in the config afterwards",
+                        ),
+                    ],
+                    usize::from(!self.use_ai),
+                ),
+                None,
+                None,
             ));
         } else {
             section = section.child(status_line(
@@ -197,9 +200,21 @@ impl WindowModal for AddRepoModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
-            .child(modal_button(CONFIRM, "Add", Some("enter"), self.can_add()));
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
+            .child(modal_button(
+                CONFIRM,
+                "Add",
+                Some("enter"),
+                ButtonKind::Primary,
+                self.can_add(),
+            ));
         modal_frame(WIDTH)
             .child(modal_header("Add Repository", Some(CLOSE)))
             .child(section)
@@ -218,7 +233,8 @@ impl WindowModal for AddRepoModal {
                     self.source.field.move_to_end();
                 }
             }
-            USE_AI => self.use_ai = !self.use_ai && self.ai_available,
+            USE_AI => self.use_ai = self.ai_available,
+            REVIEW_LATER => self.use_ai = false,
             CONFIRM => self.submit(),
             id if (WORKSPACE_BASE..WORKSPACE_BASE + WORKSPACE_LIMIT).contains(&id) => {
                 if let Some((_, chosen)) = self.workspaces.get_mut((id - WORKSPACE_BASE) as usize) {
@@ -340,7 +356,7 @@ impl WindowModal for CloneReposModal {
     }
 
     fn render(&mut self) -> Node {
-        let mut section = modal_section(10.0).child(
+        let mut section = modal_section(16.0).child(
             label("These repos are in the config but not cloned into main yet.")
                 .label_size(LabelSize::Small)
                 .color(theme().text_muted),
@@ -373,12 +389,19 @@ impl WindowModal for CloneReposModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Clone",
                 Some("enter"),
+                ButtonKind::Primary,
                 !self.sources().is_empty(),
             ));
         modal_frame(WIDTH)

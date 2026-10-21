@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, Node};
 use workspace::{
     checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section, status_line,
-    EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    text_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 460.0;
@@ -33,7 +33,7 @@ pub struct RenameAliasModal {
 
 impl RenameAliasModal {
     pub fn new(repo: &str, current: &str) -> RenameAliasModal {
-        let mut field = InputField::new("Alias", "fe").mono();
+        let mut field = InputField::new("Alias", "fe");
         field.field.set_text(current);
         field.field.move_to_end();
         RenameAliasModal {
@@ -83,16 +83,23 @@ impl WindowModal for RenameAliasModal {
             self.current
         );
         let section =
-            modal_section(10.0).child(self.field.render(FIELD, true, Some(&hint), self.error()));
+            modal_section(16.0).child(self.field.render(FIELD, true, Some(&hint), self.error()));
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Rename",
                 Some("enter"),
+                ButtonKind::Primary,
                 self.can_rename(),
             ));
         modal_frame(WIDTH)
@@ -175,15 +182,16 @@ impl WindowModal for RemoveRepoModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let section = modal_section(8.0)
+        let section = modal_section(16.0)
             .child(
                 label(format!(
                     "{} leaves the config. Its worktree goes from every workspace where it has no changes; \
                      worktrees with changes and main's clone stay on disk.",
                     self.repo
                 ))
-                .label_size(LabelSize::Small)
-                .color(colors.text),
+                .size(13.0)
+                .color(colors.text_muted)
+                .wrap(WIDTH - 36.0),
             )
             .child(status_line(
                 IconKind::Warning,
@@ -193,9 +201,21 @@ impl WindowModal for RemoveRepoModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
-            .child(modal_button(CONFIRM, "Remove", Some("enter"), true));
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
+            .child(modal_button(
+                CONFIRM,
+                "Remove",
+                Some("enter"),
+                ButtonKind::Danger,
+                true,
+            ));
         modal_frame(WIDTH)
             .child(modal_header(&format!("Remove {}?", self.repo), Some(CLOSE)))
             .child(section)
@@ -292,19 +312,26 @@ impl WindowModal for PickReposModal {
     }
 
     fn render(&mut self) -> Node {
-        let mut section = modal_section(6.0);
+        let mut section = modal_section(8.0);
         for (index, (repo, picked)) in self.repos.iter().enumerate().take(PICK_LIMIT as usize) {
             section = section.child(checkbox(PICK_BASE + index as u64, *picked, repo));
         }
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Add",
                 Some("enter"),
+                ButtonKind::Primary,
                 !self.picked().is_empty(),
             ));
         modal_frame(WIDTH)
@@ -356,7 +383,7 @@ impl WindowModal for PickReposModal {
     }
 }
 
-const USE_BRANCH_WIDTH: f32 = 360.0;
+const USE_BRANCH_WIDTH: f32 = 460.0;
 
 /// Check out this branch in the repo's worktree of the workspace and remember it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -371,7 +398,6 @@ pub struct UseBranchModal {
     /// The branch the worktree is on now, `None` when detached or unreadable.
     current: Option<String>,
     /// Where the worktree is, as the line under the title names it.
-    checkout: String,
     picker: BranchPicker,
     source: BranchSource,
     known: HashMap<String, RepoBranches>,
@@ -384,7 +410,6 @@ impl UseBranchModal {
         repo: &str,
         workspace_branch: &str,
         current: Option<&str>,
-        checkout: &str,
         source: BranchSource,
     ) -> UseBranchModal {
         let (sender, receiver) = mpsc::channel();
@@ -397,7 +422,6 @@ impl UseBranchModal {
         UseBranchModal {
             workspace_branch: workspace_branch.to_string(),
             current: current.map(str::to_string),
-            checkout: checkout.to_string(),
             picker: BranchPicker::open(repo, Some(&source)),
             source,
             known: HashMap::new(),
@@ -478,19 +502,15 @@ impl WindowModal for UseBranchModal {
     fn render(&mut self) -> Node {
         let colors = theme();
         let repo = self.repo().to_string();
-        let on = match &self.current {
-            Some(branch) => format!("{repo} is on {branch}."),
-            None => format!("{repo} is not on a branch."),
-        };
-        let intro = modal_section(0.0).child(
+        let intro = text_line(
+            20.0,
             label(format!(
-                "{on} Pick the branch it should use in this workspace; Pomelo fetches, checks it out in \
-                 {}/{repo} and remembers it.",
-                self.checkout
+                "Only {repo} changes branch; the other repos stay on {}.",
+                self.workspace_branch
             ))
-            .label_size(LabelSize::Small)
+            .size(13.0)
             .color(colors.text_muted)
-            .wrap(USE_BRANCH_WIDTH - 24.0),
+            .truncate(),
         );
         let picker =
             self.picker
@@ -498,12 +518,19 @@ impl WindowModal for UseBranchModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(4.0)
-            .child(modal_button(CANCEL, "Cancel", Some("escape"), true))
+            .gap(8.0)
+            .child(modal_button(
+                CANCEL,
+                "Cancel",
+                Some("escape"),
+                ButtonKind::Secondary,
+                true,
+            ))
             .child(modal_button(
                 CONFIRM,
                 "Check Out",
                 Some("enter"),
+                ButtonKind::Primary,
                 !self.entries().is_empty(),
             ));
         modal_frame(USE_BRANCH_WIDTH)
@@ -511,8 +538,7 @@ impl WindowModal for UseBranchModal {
                 &format!("Use another branch in {repo}"),
                 Some(CLOSE),
             ))
-            .child(intro)
-            .child(picker)
+            .child(modal_section(16.0).child(intro).child(picker))
             .child(modal_footer(None, buttons.into()))
             .into()
     }
@@ -654,7 +680,6 @@ mod tests {
             "worker",
             "fix-checkout-page",
             Some("fix-checkout-page"),
-            "workspace--fix-checkout-page",
             source,
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -681,10 +706,7 @@ mod tests {
         );
         let text: String = painted.texts.iter().map(|t| t.text.clone()).collect();
         assert!(
-            text.contains("Use another branch in worker")
-                && text.contains("Branches of worker")
-                && text.contains("origin/ana/mail-retry")
-                && text.contains("Fetched just now"),
+            text.contains("Use another branch in worker") && text.contains("ana/mail-retry"),
             "{text}"
         );
         modal.text("mail");
