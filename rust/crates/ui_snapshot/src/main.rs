@@ -25,6 +25,17 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // The strip over an agent someone else drives while a tool call waits, at the dock's width.
         "agents-strip" => (0, &[("AGENTSTRIP", "1")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
+        // A service tab's facts card, running, stopped and crashed, at the boards' card size.
+        "services-running" => (0, &[("SERVICES", "api/server"), ("FACTS", "674")]),
+        "services-stopped" => (
+            0,
+            &[
+                ("SERVICES", "web/vite"),
+                ("FACTS", "674"),
+                ("STOPPED", "web/vite"),
+            ],
+        ),
+        "services-crashed" => (0, &[("SERVICES", "api/jobs"), ("FACTS", "674")]),
         "agent-dock-tabs" => (0, &[("TABBAR", "agent")]),
         "components-tabs" => (0, &[("TABBAR", "sample")]),
         // The Git panel over scratch repos in the board's state; GITVIEW=tree|ungrouped, GITAMEND=1, GITSELECT=<rows down>.
@@ -563,11 +574,14 @@ fn main() -> anyhow::Result<()> {
 
     if std::env::var("SERVICES").is_ok() {
         use workspace::SidePanelView;
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
         let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
         std::fs::write(
             dir.join("pom.yml"),
-            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        mode: dev\n        modes:\n          dev: bin/rails s -p $PORT\n          prod: bin/rails s -e production -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      vite:\n        type: frontend\n        mode: dev\n        modes:\n          dev: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
+            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails s -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      vite:\n        type: frontend\n        mode: dev\n        modes:\n          dev: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
         )?;
         let config = pom_config::Config::load(&dir.join("pom.yml"))?;
         let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
@@ -618,6 +632,13 @@ fn main() -> anyhow::Result<()> {
         for name in ["postgres", "redis", "files"] {
             panel.show_shared_running(name);
         }
+        if let Some((repo, service)) = std::env::var("STOPPED")
+            .ok()
+            .as_deref()
+            .and_then(|which| which.split_once('/'))
+        {
+            panel.show_status(repo, service, Status::Stopped, None, None);
+        }
         let tab = std::env::var("SERVICES").ok().filter(|which| which != "1");
         let (width, height) = if tab.is_some() {
             (1000.0_f32, 520.0_f32)
@@ -654,16 +675,56 @@ fn main() -> anyhow::Result<()> {
             ),
             None => panel.render(width, height),
         };
-        let painted = ui::render(
-            &ui::div()
-                .bg(ui::theme().panel_background)
-                .child(node)
-                .into(),
-            body,
-        );
-        let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
+        // FACTS=<w>: only the facts card at that width, moved to the origin, as tall as it lays out.
+        let facts = std::env::var("FACTS")
+            .ok()
+            .and_then(|w| w.parse::<f32>().ok());
+        let (painted, width, height, scale) = match facts {
+            Some(card_w) => {
+                let wide = card_w + 32.0;
+                let node = match tab.as_deref().and_then(|which| which.split_once('/')) {
+                    Some((repo, service)) => {
+                        panel.tab_preview(repo, service, &[], "", wide, height)
+                    }
+                    None => node,
+                };
+                let probe = ui::render(
+                    &node,
+                    ui::Rect::new(0.0, 0.0, wide, height, ui::Rgba::TRANSPARENT),
+                );
+                let card = probe
+                    .debug_bounds
+                    .iter()
+                    .find(|(name, _)| *name == "fact-card")
+                    .map(|(_, rect)| *rect)
+                    .ok_or_else(|| anyhow::anyhow!("no facts card"))?;
+                let painted = ui::render(
+                    &node,
+                    ui::Rect::new(-card.x, -card.y, wide, height, ui::Rgba::TRANSPARENT),
+                );
+                (painted, card_w, card.h.round(), 1.0)
+            }
+            None => (
+                ui::render(
+                    &ui::div()
+                        .bg(ui::theme().panel_background)
+                        .child(node)
+                        .into(),
+                    body,
+                ),
+                width,
+                height,
+                2.0,
+            ),
+        };
+        let mut r =
+            ui::UiRenderer::new_headless((width * scale) as u32, (height * scale) as u32, scale)?;
         r.render_frame(
-            ui::theme().panel_background,
+            if facts.is_some() {
+                ui::theme().editor_background
+            } else {
+                ui::theme().panel_background
+            },
             &[(
                 painted.rects.as_slice(),
                 painted.tris.as_slice(),
