@@ -5,12 +5,14 @@ mod app;
 mod components;
 mod element;
 mod key_binding;
+mod scroll_gesture;
 mod theme;
 pub mod theme_file;
 pub use app::*;
 pub use components::*;
 pub use element::*;
-pub use key_binding::{render_keystroke, render_keystroke_in};
+pub use key_binding::{keystroke_as_typed, render_keystroke, render_keystroke_in};
+pub use scroll_gesture::ScrollGesture;
 pub use theme::*;
 
 // Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).
@@ -1422,6 +1424,35 @@ fn window_adapter(instance: &Instance, surface: &wgpu::Surface) -> Result<wgpu::
         .ok_or_else(|| anyhow::anyhow!("no GPU adapter can draw to the window"))
 }
 
+/// A slow GPU can miss the idle wait a reconfigure does, which wgpu reports as an uncaptured error that
+/// would abort the app; the old configuration stays and the next frame tries again.
+fn configure_surface(
+    surface: &wgpu::Surface,
+    device: &wgpu::Device,
+    config: &SurfaceConfiguration,
+) {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    surface.configure(device, config);
+    if let Some(error) = pollster::block_on(scope.pop()) {
+        eprintln!("surface configure: {error}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn present_mode(_capabilities: &wgpu::SurfaceCapabilities) -> PresentMode {
+    PresentMode::Fifo
+}
+
+/// Mailbox never blocks the thread that presents, which also reads input; FIFO where it is all there is.
+#[cfg(not(target_os = "macos"))]
+fn present_mode(capabilities: &wgpu::SurfaceCapabilities) -> PresentMode {
+    if capabilities.present_modes.contains(&PresentMode::Mailbox) {
+        PresentMode::Mailbox
+    } else {
+        PresentMode::Fifo
+    }
+}
+
 /// GL adapters cannot meet the default limits; ask only for what WebGL2-class hardware has.
 fn device_descriptor(adapter: &wgpu::Adapter) -> DeviceDescriptor<'static> {
     if adapter.get_info().backend == wgpu::Backend::Gl {
@@ -1445,8 +1476,9 @@ impl UiRenderer {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&device_descriptor(&adapter)))?;
 
-        let config = ui_config(size.width, size.height);
-        surface.configure(&device, &config);
+        let mut config = ui_config(size.width, size.height);
+        config.present_mode = present_mode(&surface.get_capabilities(&adapter));
+        configure_surface(&surface, &device, &config);
         Self::from_parts(device, queue, config, scale, Some(surface), None)
     }
 
@@ -1925,7 +1957,7 @@ impl UiRenderer {
         self.config.width = width.max(1);
         self.config.height = height.max(1);
         if let Some(surface) = &self.surface {
-            surface.configure(&self.device, &self.config);
+            configure_surface(surface, &self.device, &self.config);
         }
         self.msaa = make_msaa(
             &self.device,
@@ -2155,7 +2187,7 @@ impl UiRenderer {
         match surface.get_current_texture() {
             Current::Success(frame) | Current::Suboptimal(frame) => Some(frame),
             Current::Outdated | Current::Lost => {
-                surface.configure(&self.device, &self.config);
+                configure_surface(surface, &self.device, &self.config);
                 match surface.get_current_texture() {
                     Current::Success(frame) | Current::Suboptimal(frame) => Some(frame),
                     _ => None,

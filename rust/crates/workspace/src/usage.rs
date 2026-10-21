@@ -243,7 +243,7 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
         }
         None => {
             body = body.child(
-                label("No Claude Code sign-in on this Mac. Run claude and /login; Pomelo reads what it saved, never asks for it.")
+                label(format!("No Claude Code sign-in on {}. Run claude and /login; Pomelo reads what it saved, never asks for it.", desktop::THIS_MACHINE))
                     .size(12.0)
                     .color(colors.text_muted)
                     .wrap(CARD_WIDTH - 28.0),

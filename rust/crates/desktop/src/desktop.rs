@@ -69,3 +69,10 @@ pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
 } else {
     "Reveal in File Manager"
 };
+
+/// How copy names the machine Pomelo runs on.
+pub const THIS_MACHINE: &str = if cfg!(target_os = "macos") {
+    "this Mac"
+} else {
+    "this computer"
+};

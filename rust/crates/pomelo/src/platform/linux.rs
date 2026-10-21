@@ -14,6 +14,10 @@ pub(crate) fn main_window_attributes(attributes: WindowAttributes) -> WindowAttr
     window_attributes(attributes).with_decorations(false)
 }
 
+/// Wayland draws a frame when the compositor's frame callback asks for one; drawing ahead of it blocks the
+/// thread in the swap until the compositor catches up.
+pub(crate) const COMPOSITOR_PACED: bool = true;
+
 pub(crate) fn hide_pointer_until_mouse_moves() {}
 
 pub(crate) fn titlebar_double_click(window: &Window) {
@@ -136,5 +140,25 @@ pub(crate) fn resize_edge(
         Some(ResizeDirection::East)
     } else {
         None
+    }
+}
+
+/// The editing keys are laid out for macOS: (command, option, control). Here Ctrl is the shortcut key and moves
+/// by word on arrows and deletes, Ctrl+Alt by subword, and Ctrl+Space still completes, as Linux editors do;
+/// the macOS emacs bindings on Control have no Linux counterpart, and Super belongs to the desktop.
+pub(crate) fn editing_modifiers(
+    key: &winit::keyboard::Key,
+    _super_key: bool,
+    alt: bool,
+    ctrl: bool,
+) -> (bool, bool, bool) {
+    use winit::keyboard::{Key, NamedKey};
+
+    match key {
+        Key::Named(
+            NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Backspace | NamedKey::Delete,
+        ) => (false, ctrl || alt, ctrl && alt),
+        Key::Named(NamedKey::ArrowUp | NamedKey::ArrowDown | NamedKey::Space) => (false, alt, ctrl),
+        _ => (ctrl, alt, false),
     }
 }

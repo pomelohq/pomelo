@@ -524,7 +524,10 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .child(hint(format!("Week: resets {}", weekly.resets)));
         column = column.child(section(
             "Plan limits",
-            Some(hint("the Claude account signed in on this Mac".into())),
+            Some(hint(format!(
+                "the Claude account signed in on {}",
+                desktop::THIS_MACHINE
+            ))),
             card.into(),
         ));
     }

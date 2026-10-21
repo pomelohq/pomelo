@@ -984,6 +984,15 @@ fn docker_version(path: &str) -> Option<String> {
     (output.status.success() && !text.is_empty()).then_some(text)
 }
 
+/// Shared services run as a compose project; Linux packages of Docker often leave the plugin out.
+fn compose_installed(path: &str) -> bool {
+    std::process::Command::new("docker")
+        .args(["compose", "version"])
+        .env("PATH", path)
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 fn git_version(path: &str) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("--version")
@@ -1003,6 +1012,7 @@ fn git_version(path: &str) -> Option<String> {
 fn machine_checks() -> Vec<workspace::MachineCheck> {
     let path = pom_services::tool_path();
     let docker = pom_doctor::docker_answers(path);
+    let compose = docker && compose_installed(path);
     let git = git_version(path);
     let installed: Vec<&str> = agents()
         .into_iter()
@@ -1012,11 +1022,16 @@ fn machine_checks() -> Vec<workspace::MachineCheck> {
     vec![
         workspace::MachineCheck {
             name: "Docker".into(),
-            ok: docker,
+            ok: docker && compose,
             detail: if docker {
-                match docker_version(path) {
+                let running = match docker_version(path) {
                     Some(version) => format!("Running ({version})"),
                     None => "Running".into(),
+                };
+                if compose {
+                    running
+                } else {
+                    format!("{running}, but Docker Compose is missing - install its plugin to start shared services")
                 }
             } else {
                 "Docker is not running - shared services cannot start".into()

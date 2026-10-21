@@ -487,6 +487,9 @@ struct MainWindow {
     last_drawn: Instant,
     /// Frames present within the resize transaction until this long after the last resize.
     resizing_until: Option<Instant>,
+    scroll_gesture: ui::ScrollGesture,
+    /// A redraw was asked of the compositor and its frame has not been drawn yet.
+    redraw_requested: bool,
     project: Option<pom_core::Project>,
     watcher: Option<pom_core::ConfigWatcher>,
     /// The project's other workspaces, keyed by folder, kept alive while this one has the window.
@@ -1617,6 +1620,8 @@ impl App {
                 hidden: false,
                 last_drawn: Instant::now(),
                 resizing_until: None,
+                scroll_gesture: ui::ScrollGesture::default(),
+                redraw_requested: false,
                 project: None,
                 watcher: None,
                 parked: std::collections::HashMap::new(),
@@ -2565,6 +2570,18 @@ impl App {
         }
     }
 
+    /// Draws now where frames are free to, or asks the compositor for the next frame where it paces them.
+    fn draw_or_request(&mut self, id: WindowId) {
+        if !platform::COMPOSITOR_PACED {
+            self.draw_main(id);
+            return;
+        }
+        if let Some(m) = self.mains.get_mut(&id).filter(|m| !m.redraw_requested) {
+            m.redraw_requested = true;
+            m.window.request_redraw();
+        }
+    }
+
     fn draw_main(&mut self, id: WindowId) {
         let Some(app) = self.main_app.as_mut() else {
             return;
@@ -2577,6 +2594,11 @@ impl App {
             return;
         }
         m.last_drawn = Instant::now();
+        if platform::COMPOSITOR_PACED {
+            m.dirty = false;
+            m.redraw_requested = false;
+            m.window.pre_present_notify();
+        }
         let fullscreen = is_native_fullscreen(&m.window);
         let maximized = m.window.is_maximized();
         m.entity.update(app.app_mut(), |view, _| {
@@ -3535,10 +3557,12 @@ impl ApplicationHandler for App {
             })
             .collect();
         for id in dirty {
-            if let Some(m) = self.mains.get_mut(&id) {
-                m.dirty = false;
+            if !platform::COMPOSITOR_PACED {
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.dirty = false;
+                }
             }
-            self.draw_main(id);
+            self.draw_or_request(id);
         }
         let editor_windows: Vec<WindowId> = match self.main_app.as_ref() {
             Some(a) => self
@@ -3597,11 +3621,11 @@ impl ApplicationHandler for App {
                     .copied()
                     .filter(|id| self.main_menu_open(*id))
                     .collect();
-                for id in menu_windows {
-                    self.draw_main(id);
-                }
-                for id in &editor_windows {
-                    self.draw_main(*id);
+                for id in menu_windows
+                    .into_iter()
+                    .chain(editor_windows.iter().copied())
+                {
+                    self.draw_or_request(id);
                 }
                 now + CARET_BLINK
             } else {
@@ -3833,8 +3857,9 @@ impl ApplicationHandler for App {
                 && self.mains.contains_key(&id)
                 && self.with_workspace_view(id, |v, _| v.editor_focused()) == Some(true)
             {
-                let (shift, cmd, alt, ctrl) = (
-                    self.shift_down,
+                let shift = self.shift_down;
+                let (cmd, alt, ctrl) = platform::editing_modifiers(
+                    &ke.logical_key,
                     self.super_down,
                     self.alt_down,
                     self.ctrl_down,
@@ -4346,10 +4371,15 @@ impl ApplicationHandler for App {
                     m.dirty = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 let (dx, dy) = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => (x * 30.0, y * 30.0),
-                    winit::event::MouseScrollDelta::PixelDelta(p) => (p.x as f32, p.y as f32),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => {
+                        match self.mains.get_mut(&id) {
+                            Some(m) => m.scroll_gesture.filter((p.x as f32, p.y as f32), phase),
+                            None => return,
+                        }
+                    }
                 };
                 let (lx, ly) = match self.mains.get(&id) {
                     Some(m) => (m.cursor.0 as f32 / scale, m.cursor.1 as f32 / scale),

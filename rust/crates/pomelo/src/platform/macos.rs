@@ -10,6 +10,8 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
         .with_title_hidden(true)
 }
 
+pub(crate) const COMPOSITOR_PACED: bool = false;
+
 pub(crate) fn main_window_attributes(attributes: WindowAttributes) -> WindowAttributes {
     window_attributes(attributes)
 }
@@ -305,4 +307,14 @@ pub(crate) fn resize_edge(
     _cursor: (f64, f64),
 ) -> Option<winit::window::ResizeDirection> {
     None
+}
+
+/// The editing keys are laid out for macOS already: (command, option, control) as pressed.
+pub(crate) fn editing_modifiers(
+    _key: &winit::keyboard::Key,
+    command: bool,
+    option: bool,
+    control: bool,
+) -> (bool, bool, bool) {
+    (command, option, control)
 }
