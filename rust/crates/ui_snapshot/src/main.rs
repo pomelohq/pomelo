@@ -174,6 +174,8 @@ fn pr_fixture(view: &str) -> pull_request_ui::PrItem {
     };
     let empty = view == "empty";
     let mut pr = pom_forge::PullRequest {
+        id: "PR_482".into(),
+        head_ref_oid: "4f2a9c1".into(),
         number: 482,
         title: "Paginate the users index".into(),
         state: "OPEN".into(),
@@ -248,6 +250,7 @@ fn pr_fixture(view: &str) -> pull_request_ui::PrItem {
                 at: "2026-10-20T09:12:00Z".into(),
                 state: "CHANGES_REQUESTED".into(),
                 threads: vec![pom_forge::ReviewThread {
+                    id: "PRRT_1".into(),
                     path: "app/controllers/users_controller.rb".into(),
                     line: Some(7),
                     resolved: true,
@@ -1494,6 +1497,7 @@ fn main() -> anyhow::Result<()> {
                 at: "2026-09-01T09:00:00Z".into(),
                 state: "CHANGES_REQUESTED".into(),
                 threads: vec![pom_forge::ReviewThread {
+                    id: "PRRT_1".into(),
                     path: "src/auth/limit.rs".into(),
                     line: Some(42),
                     resolved: true,

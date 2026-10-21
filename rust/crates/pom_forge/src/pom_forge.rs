@@ -1,3 +1,4 @@
+mod actions;
 mod cache;
 mod pull_request;
 
@@ -10,6 +11,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use pom_paths::StateDir;
 use serde_json::Value;
 
+pub use actions::{
+    merge, merge_blockers, reply, set_resolved, submit_review, MergeMethod, Mutation, ReviewEvent,
+};
 pub use cache::PrCache;
 pub use pull_request::{
     fetch_detail, fetch_heads, severity, trouble, Actor, Check, Label, PrTarget, PullRequest,
@@ -24,9 +28,13 @@ const TOKEN_SECRET: &str = "github";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForgeError {
     Http(u16),
-    RateLimited { until: u64 },
+    RateLimited {
+        until: u64,
+    },
     Transport(String),
     Parse(String),
+    /// GitHub refused a change, with its reason ("Pull request is not mergeable").
+    Rejected(String),
 }
 
 impl std::fmt::Display for ForgeError {
@@ -42,6 +50,7 @@ impl std::fmt::Display for ForgeError {
             ForgeError::Parse(message) => {
                 write!(formatter, "github: unexpected answer ({message})")
             }
+            ForgeError::Rejected(message) => write!(formatter, "GitHub: {message}"),
         }
     }
 }
@@ -160,13 +169,26 @@ impl Client {
         }
     }
 
-    /// After a 403/429 every call fails fast until GitHub's window resets.
     pub fn graphql(&self, query: &str) -> Result<Value, ForgeError> {
+        self.post(serde_json::json!({ "query": query }), false)
+    }
+
+    /// Runs a change; any error GitHub lists fails it, even beside partial data.
+    pub fn mutate(&self, mutation: &Mutation) -> Result<Value, ForgeError> {
+        let request = serde_json::json!({
+            "query": mutation.query,
+            "variables": mutation.variables,
+        });
+        self.post(request, true)
+    }
+
+    /// After a 403/429 every call fails fast until GitHub's window resets.
+    fn post(&self, request: Value, strict: bool) -> Result<Value, ForgeError> {
         let blocked = self.blocked_until.lock().map_or(0, |until| *until);
         if blocked > now_seconds() {
             return Err(ForgeError::RateLimited { until: blocked });
         }
-        let body = serde_json::json!({ "query": query }).to_string();
+        let body = request.to_string();
         let response = self.transport.post(GRAPHQL_URL, &self.token, &body)?;
         if matches!(response.status, 403 | 429) {
             let until = response
@@ -184,6 +206,13 @@ impl Client {
         }
         let value: Value = serde_json::from_str(&response.body)
             .map_err(|error| ForgeError::Parse(error.to_string()))?;
+        if let Some(message) = value
+            .pointer("/errors/0/message")
+            .and_then(Value::as_str)
+            .filter(|_| strict)
+        {
+            return Err(ForgeError::Rejected(message.to_string()));
+        }
         match value.get("data") {
             Some(data) if !data.is_null() => Ok(data.clone()),
             _ => Err(ForgeError::Parse(

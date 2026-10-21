@@ -795,3 +795,48 @@ fn the_list_works_from_the_keyboard() {
     assert!(panel.panel_action(Action::GitChangesTab));
     assert_eq!(panel.tab(), Tab::Changes);
 }
+
+#[test]
+fn a_conflicted_file_is_marked_resolved_only_without_markers() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = repo(temp.path(), "worker", &["job.rb"], "feat");
+    write(&root, "job.rb", "ours\n");
+    git(&root, &["commit", "-q", "-am", "ours"]);
+    git(&root, &["checkout", "-q", "main"]);
+    write(&root, "job.rb", "theirs\n");
+    git(&root, &["commit", "-q", "-am", "theirs"]);
+    git(&root, &["checkout", "-q", "feat"]);
+    let merge = Command::new("git")
+        .args(["merge", "-q", "main"])
+        .current_dir(&root)
+        .output()
+        .expect("git merge");
+    assert!(!merge.status.success(), "the merge conflicts");
+    let mut panel = panel(vec![source("worker", &root, "feat")]);
+    let file = id_at(&mut panel, "job.rb");
+
+    assert!(panel.open_menu(file));
+    menu_pick(&mut panel, "Ask Claude to Merge");
+    match panel.take_requests().as_slice() {
+        [PanelRequest::FixWithAgent(fix)] => {
+            assert!(fix.prompt.contains("job.rb"));
+            assert_eq!(fix.cwd, root);
+        }
+        _ => panic!("asks a side agent to merge"),
+    }
+
+    assert!(panel.open_menu(file));
+    menu_pick(&mut panel, "Mark Resolved");
+    assert!(matches!(
+        panel.take_requests().as_slice(),
+        [PanelRequest::Toast(message)] if message.contains("still has 1 conflict")
+    ));
+    assert!(git_out(&root, &["diff", "--name-only", "--diff-filter=U"]).contains("job.rb"));
+
+    write(&root, "job.rb", "ours\ntheirs\n");
+    assert!(panel.open_menu(file));
+    menu_pick(&mut panel, "Mark Resolved");
+    settle(&mut panel);
+    assert!(git_out(&root, &["diff", "--name-only", "--diff-filter=U"]).is_empty());
+    assert_eq!(staged(&root), "job.rb");
+}

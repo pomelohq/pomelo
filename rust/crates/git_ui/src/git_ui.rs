@@ -173,6 +173,8 @@ enum MenuAction {
     CopyPath,
     CopyRelativePath,
     Discard,
+    MarkResolved,
+    MergeWithAgent,
 }
 
 struct OpenMenu {
@@ -541,6 +543,31 @@ impl GitPanel {
             working_copy::stage(&source.root, &paths)
         };
         self.report(result);
+    }
+
+    /// Stages a conflicted file once no conflict markers are left in it, the way `git add` settles a conflict.
+    fn mark_resolved(&mut self, repo: usize, path: &str) {
+        let Some(source) = self.sources.get(repo).cloned() else {
+            return;
+        };
+        let text = match std::fs::read_to_string(source.root.join(path)) {
+            Ok(text) => text,
+            Err(error) => {
+                self.requests.push(PanelRequest::Toast(format!(
+                    "Could not read {path}: {error}"
+                )));
+                return;
+            }
+        };
+        let left = git::conflict::conflicts(&text).len();
+        if left > 0 {
+            let noun = if left == 1 { "conflict" } else { "conflicts" };
+            self.requests.push(PanelRequest::Toast(format!(
+                "{path} still has {left} {noun}; resolve them first"
+            )));
+            return;
+        }
+        self.report(working_copy::stage(&source.root, &[path.to_string()]));
     }
 
     fn stage_directory(&mut self, repo: usize, scope: Scope, path: &str, staging: Staging) {
@@ -1300,7 +1327,9 @@ impl GitPanel {
             | MenuAction::ToggleReviewed
             | MenuAction::CopyPath
             | MenuAction::CopyRelativePath
-            | MenuAction::Discard => {
+            | MenuAction::Discard
+            | MenuAction::MarkResolved
+            | MenuAction::MergeWithAgent => {
                 if let Some((repo, scope, entry)) = file {
                     self.apply_file_action(repo, scope, &entry, action);
                 }
@@ -1328,6 +1357,14 @@ impl GitPanel {
                 .push(PanelRequest::Copy(path.to_string_lossy().into_owned())),
             MenuAction::CopyRelativePath => {
                 self.requests.push(PanelRequest::Copy(entry.path.clone()))
+            }
+            MenuAction::MarkResolved => self.mark_resolved(repo, &entry.path),
+            MenuAction::MergeWithAgent => {
+                self.requests
+                    .push(PanelRequest::FixWithAgent(workspace::AgentFix {
+                        prompt: git::conflict::merge_prompt(std::slice::from_ref(&entry.path)),
+                        cwd: source.root.clone(),
+                    }))
             }
             MenuAction::Discard => {
                 let detail = if entry.status == ChangeStatus::Added {
@@ -1672,6 +1709,20 @@ impl SidePanelView for GitPanel {
                 MenuAction::ToggleReviewed,
                 false,
                 true,
+            ));
+        }
+        if entry.status == ChangeStatus::Conflicted && scope != Scope::Commit {
+            entries.push((
+                "Mark Resolved".into(),
+                MenuAction::MarkResolved,
+                false,
+                true,
+            ));
+            entries.push((
+                "Ask Claude to Merge".into(),
+                MenuAction::MergeWithAgent,
+                false,
+                false,
             ));
         }
         entries.push(("Copy Path".into(), MenuAction::CopyPath, false, true));
