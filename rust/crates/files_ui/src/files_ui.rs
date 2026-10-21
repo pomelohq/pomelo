@@ -66,9 +66,9 @@ use workspace::{
 };
 
 // Editor text metrics (design px). Each source line is `edit_line_h()` tall with `edit_font()` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
-const DEFAULT_EDIT_FONT: f32 = 15.0; // matches the reference's default buffer font size
+const DEFAULT_EDIT_FONT: f32 = 13.0; // the design's code size
 /// The buffer font size in hundredths of a design px, set from the app's settings.
-static EDIT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1500);
+static EDIT_FONT_HUNDREDTHS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1300);
 static SOFT_WRAP_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static SPLIT_DIFF_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 thread_local! {
@@ -88,11 +88,11 @@ pub(crate) fn edit_font() -> f32 {
     EDIT_FONT_HUNDREDTHS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0
 }
 
-/// Line height as thousandths of the font size; "comfortable" (1.618) unless the settings say otherwise.
+/// Line height as thousandths of the font size; the design's 20 on 13 unless the settings say otherwise.
 static EDIT_LINE_HEIGHT_MILLI: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(1618);
+    std::sync::atomic::AtomicU32::new(1540);
 
-/// The font size times the line height setting, snapped to a whole pixel: 24 at the default 15.
+/// The font size times the line height setting, snapped to a whole pixel: 20 at the default 13.
 pub(crate) fn edit_line_h() -> f32 {
     let ratio = EDIT_LINE_HEIGHT_MILLI.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
     (edit_font() * ratio).round()
@@ -248,6 +248,30 @@ impl GutterDimensions {
 
 fn gutter_width(line_count: usize) -> f32 {
     GutterDimensions::for_lines(line_count).full_width()
+}
+
+struct PathCrumb {
+    text: String,
+    last: bool,
+}
+
+/// A path as its repo, the folders inside it, and the file: `api > app/controllers > users_controller.rb`.
+fn path_crumbs(path: &str) -> Vec<PathCrumb> {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let crumb = |text: String, last: bool| PathCrumb { text, last };
+    match parts.as_slice() {
+        [] => Vec::new(),
+        [file] => vec![crumb(file.to_string(), true)],
+        [repo, file] => vec![
+            crumb(repo.to_string(), false),
+            crumb(file.to_string(), true),
+        ],
+        [repo, folders @ .., file] => vec![
+            crumb(repo.to_string(), false),
+            crumb(folders.join("/"), false),
+            crumb(file.to_string(), true),
+        ],
+    }
 }
 
 /// `text` in the buffer font with its syntax colors over `plain`.
@@ -456,7 +480,9 @@ const EDITOR_CONTROLS: [(EditorControl, &str, bool); 6] = [
 ];
 
 const INDENT: f32 = 16.0; // per-depth indent (~20 in the design; trimmed for the narrower panel)
-const ROW_H: f32 = 22.0;
+/// A tree row's pitch: a 28px row and the 1px gap under it.
+const ROW_H: f32 = 29.0;
+const ROW_BOX_H: f32 = ROW_H - 1.0;
 const MAX_PANES: usize = 6; // ceiling on total leaf panes in the group
 
 // Click ids in the feature-view space: tree rows below FUNC_VIEW_BASE + 1M, the editor pane group from there up
@@ -973,7 +999,11 @@ struct DiagnosticEntry {
 /// Where a wavy underline sits in a line: below the baseline by most of the font's descent, as text is
 /// centered in the line box. Ascent and descent are the mono font's 1.025 and 0.275 em.
 fn diagnostic_underline_top() -> f32 {
-    (edit_line_h() - edit_font() * 1.3) / 2.0 + edit_font() * 1.025 + edit_font() * 0.275 * 0.618
+    // Tighter line heights would push the wave into the next line.
+    let below_text = (edit_line_h() - edit_font() * 1.3) / 2.0
+        + edit_font() * 1.025
+        + edit_font() * 0.275 * 0.618;
+    below_text.min(edit_line_h() - DIAGNOSTIC_UNDERLINE_THICKNESS * 3.0)
 }
 const DIAGNOSTIC_UNDERLINE_THICKNESS: f32 = 1.0;
 
@@ -5626,27 +5656,29 @@ impl Item for FileItem {
             .gap(4.0)
             .items_center()
             .rounded(4.0)
-            .on_click(id(TOOLBAR_CRUMBS))
-            .child(
-                label(self.path.clone())
-                    .size(13.0)
-                    .mono()
-                    .color(colors.text_muted)
-                    .truncate(),
-            );
+            .on_click(id(TOOLBAR_CRUMBS));
+        let separator = || {
+            icon(IconKind::ChevronRight)
+                .size(12.0)
+                .color(colors.text_placeholder)
+        };
+        for (index, segment) in path_crumbs(&self.path).into_iter().enumerate() {
+            if index > 0 {
+                crumbs = crumbs.child(separator());
+            }
+            crumbs = crumbs.child(label(segment.text).size(12.0).color(if segment.last {
+                colors.text_muted
+            } else {
+                colors.text_placeholder
+            }));
+        }
         for symbol in self.symbols_at_cursor() {
-            crumbs = crumbs
-                .child(
-                    icon(IconKind::ChevronRight)
-                        .size(10.0)
-                        .color(colors.text_placeholder),
-                )
-                .child(colored_label(
-                    &symbol.text,
-                    &symbol.colors,
-                    13.0,
-                    colors.text_muted,
-                ));
+            crumbs = crumbs.child(separator()).child(colored_label(
+                &symbol.text,
+                &symbol.colors,
+                12.0,
+                colors.text_muted,
+            ));
         }
         let button = |offset: u64, kind: IconKind| {
             div()
@@ -5659,22 +5691,19 @@ impl Item for FileItem {
                 .on_click(id(offset))
                 .child(icon(kind).size(14.0).color(colors.icon_muted))
         };
-        let row = div()
-            .row()
-            .h_px(workspace::pane::TOOLBAR_H - 1.0)
-            .px(8.0)
-            .gap(2.0)
-            .items_center()
-            .bg(colors.toolbar_background)
-            .child(div().row().flex(1.0).items_center().child(crumbs))
-            .child(button(TOOLBAR_SEARCH, IconKind::Search))
-            .child(button(TOOLBAR_SELECTIONS, IconKind::CursorIBeam))
-            .child(button(TOOLBAR_CONTROLS, IconKind::Sliders));
         Some(
             div()
-                .col()
-                .child(row)
-                .child(div().h_px(1.0).bg(colors.border_variant))
+                .row()
+                .h_px(workspace::pane::TOOLBAR_H)
+                .pl(10.0)
+                .pr(8.0)
+                .gap(2.0)
+                .items_center()
+                .bg(colors.toolbar_background)
+                .child(div().row().flex(1.0).items_center().child(crumbs))
+                .child(button(TOOLBAR_SEARCH, IconKind::Search))
+                .child(button(TOOLBAR_SELECTIONS, IconKind::CursorIBeam))
+                .child(button(TOOLBAR_CONTROLS, IconKind::Sliders))
                 .into(),
         )
     }
@@ -8748,7 +8777,7 @@ impl FunctionView for FilesView {
             .map(|r| 46.0 + r.depth as f32 * INDENT + r.name.chars().count() as f32 * 7.5)
             .fold(0.0_f32, f32::max);
         let flat = &self.flat_cache;
-        let mut tree_col = div().col().py(4.0);
+        let mut tree_col = div().col().gap(ROW_H - ROW_BOX_H).px(6.0).pb(8.0);
         let active_path = self.active_path();
         for (i, row) in flat.iter().enumerate().take(last).skip(first) {
             let id = FUNC_VIEW_BASE + i as u64;
@@ -8757,11 +8786,12 @@ impl FunctionView for FilesView {
             // last column holds this row's disclosure chevron — so guides line up exactly under the chevrons.
             let mut lead_row = div().row().items_center();
             for _ in 0..row.depth {
+                // The guide runs one pixel past the row so it bridges the gap to the next one.
                 lead_row = lead_row.child(
                     div()
                         .row()
                         .w_px(INDENT)
-                        .h_px(ROW_H)
+                        .h_px(ROW_BOX_H)
                         .justify_center()
                         .child(div().w_px(1.0).h_px(ROW_H).bg(theme().panel_indent_guide)),
                 );
@@ -8782,7 +8812,7 @@ impl FunctionView for FilesView {
                 div()
                     .row()
                     .w_px(INDENT)
-                    .h_px(ROW_H)
+                    .h_px(ROW_BOX_H)
                     .items_center()
                     .justify_center()
                     .child(chevron),
@@ -8794,9 +8824,9 @@ impl FunctionView for FilesView {
                 } else {
                     IconKind::Folder
                 };
-                icon(g).size(14.0).color(theme().icon_accent).into()
+                icon(g).size(14.0).color(theme().icon_muted).into()
             } else {
-                material_icon(file_icon(&row.name)).size(15.0).into()
+                material_icon(file_icon(&row.name)).size(16.0).into()
             };
             let edit = self.tree_ops.edit.as_ref().filter(|_| row.edit);
             let glyph = match edit {
@@ -8807,7 +8837,7 @@ impl FunctionView for FilesView {
                     } else {
                         row.name.clone()
                     };
-                    material_icon(file_icon(&name)).size(15.0).into()
+                    material_icon(file_icon(&name)).size(16.0).into()
                 }
                 _ => glyph,
             };
@@ -8816,14 +8846,14 @@ impl FunctionView for FilesView {
                     "",
                     true,
                     theme().text,
-                    ROW_H - 2.0,
+                    ROW_BOX_H - 2.0,
                     text_field::FieldFont::Ui,
                 ),
                 None => label(row.name.clone()).color(theme().text).into(),
             };
             let content = div()
                 .row()
-                .gap(5.0)
+                .gap(6.0)
                 .pr(6.0)
                 .items_center()
                 .flex(if edit.is_some() { 1.0 } else { 0.0 })
@@ -8832,10 +8862,10 @@ impl FunctionView for FilesView {
                 .child(name);
             let mut r = div()
                 .row()
-                .h_px(ROW_H)
-                .pl(8.0)
+                .h_px(ROW_BOX_H)
+                .pl(4.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(6.0)
                 .on_click(id)
                 .child(content);
             let keyboard_row =

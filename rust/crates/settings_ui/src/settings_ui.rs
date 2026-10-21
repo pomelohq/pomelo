@@ -4760,10 +4760,10 @@ mod tests {
     fn editor_and_terminal_controls_change_their_settings_within_bounds() {
         let mut s = Settings::default();
         assert!(handle_control(CTRL_BUFFER_FONT_INC, &mut s));
-        assert_eq!(s.buffer_font_size, 16.0);
+        assert_eq!(s.buffer_font_size, 14.0);
         assert!(!is_default(CTRL_BUFFER_FONT_EDIT, &s));
         assert!(reset_to_default(CTRL_BUFFER_FONT_EDIT, &mut s));
-        assert_eq!(s.buffer_font_size, 15.0);
+        assert_eq!(s.buffer_font_size, 13.0);
         assert!(handle_control(CTRL_TERM_FONT_DEC, &mut s));
         assert_eq!(s.terminal_font_size, 14.0);
         s.terminal_scrollback = SCROLLBACK_MAX;

@@ -500,7 +500,7 @@ impl FilesView {
         let Some(index) = rows.iter().position(|row| row.path == path) else {
             return;
         };
-        let top = 4.0 + index as f32 * ROW_H;
+        let top = index as f32 * ROW_H;
         if top < self.scroll || top + ROW_H > self.scroll + self.viewport_h {
             self.scroll = (top - self.viewport_h / 2.0).max(0.0);
         }
@@ -511,7 +511,7 @@ impl FilesView {
         let Some(index) = rows.iter().position(|row| row.edit) else {
             return;
         };
-        let top = 4.0 + index as f32 * ROW_H;
+        let top = index as f32 * ROW_H;
         if top < self.scroll {
             self.scroll = top;
         } else if top + ROW_H > self.scroll + self.viewport_h {
@@ -765,7 +765,7 @@ impl FilesView {
     }
 
     fn scroll_row_into_view(&mut self, index: usize) {
-        let top = 4.0 + index as f32 * ROW_H;
+        let top = index as f32 * ROW_H;
         if top < self.scroll {
             self.scroll = top;
         } else if top + ROW_H > self.scroll + self.viewport_h {

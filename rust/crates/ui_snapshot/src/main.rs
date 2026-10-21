@@ -17,6 +17,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "settings-agent" => (settings_ui::AGENT, &[]),
         "settings-languages" => (settings_ui::LANGUAGES_TOOLS, &[]),
         "settings-search" => (settings_ui::APPEARANCE, &[("SETTINGSSEARCH", "font")]),
+        // The main window as the window boards draw it: rail folded, the Files tree, three tabs, the agent dock.
+        "window-proposed" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
+        "project-sidebar-window" => (0, &[("MAINVIEW", "window")]),
         _ => return None,
     })
 }
@@ -47,11 +50,58 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
     std::env::set_var("THEME", theme);
     std::env::set_var("THEMESELECTION", "dynamic");
     std::env::set_var("SCENESIZE", size);
+    if switches.iter().any(|(key, _)| *key == "MAINVIEW") {
+        window_fixture()?;
+    }
     std::env::set_var("EXPANDED", category.to_string());
     for (key, value) in switches {
         std::env::set_var(key, value);
     }
     Ok(Some((out.clone(), category)))
+}
+
+/// The files the window boards show, written to a scratch folder the window scene opens.
+const FIXTURE_ROOT: &str = "/tmp/pomelo-qa-fixture/myproject";
+
+fn window_fixture() -> anyhow::Result<()> {
+    let root = std::path::Path::new(FIXTURE_ROOT);
+    let _ = std::fs::remove_dir_all(root);
+    let files: [(&str, &str); 7] = [
+        (
+            "api/app/controllers/users_controller.rb",
+            "class UsersController < ApplicationController\n  before_action :authenticate_user!\n\n  def index\n    @users = User.where(active: true).order(:name)\n    render json: @users\n  end\n\n  def show\n    @user = User.find(params[:id])\n  end\nend",
+        ),
+        (
+            "api/app/controllers/sessions_controller.rb",
+            "class SessionsController < ApplicationController\nend\n",
+        ),
+        ("api/app/models/user.rb", "class User < ApplicationRecord\nend\n"),
+        ("api/config/routes.rb", "Rails.application.routes.draw do\nend\n"),
+        ("api/spec/users_spec.rb", "\n"),
+        ("api/Gemfile", "source \"https://rubygems.org\"\n"),
+        ("web/README.md", "# web\n"),
+    ];
+    for (path, text) in files {
+        let path = root.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, text)?;
+    }
+    let open = |path: &str| root.join(path).display().to_string();
+    std::env::set_var("FILESROOT", root);
+    std::env::set_var(
+        "OPENFILES",
+        [
+            open("api/app/controllers/users_controller.rb"),
+            open("api/config/routes.rb"),
+            open("web/README.md"),
+            open("api/app/controllers/users_controller.rb"),
+        ]
+        .join(","),
+    );
+    std::env::set_var("SELECT", "7,0,0");
+    Ok(())
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1382,6 +1432,9 @@ fn main() -> anyhow::Result<()> {
     let mut r = ui::UiRenderer::new_headless((lw * scale) as u32, (lh * scale) as u32, scale)?;
 
     if let Ok(mode) = std::env::var("MAINVIEW") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
         if let Ok(size) = std::env::var("FONTSIZE").unwrap_or_default().parse::<f32>() {
             ui::set_ui_text_scale(size / ui::UI_FONT_BASE);
         }
@@ -1544,6 +1597,12 @@ fn main() -> anyhow::Result<()> {
         } else {
             project
         };
+        let window = mode == "window";
+        let project = if window {
+            Some(window_project())
+        } else {
+            project
+        };
         let current = project.as_ref().map(|_| 0);
         let mut app = ui::Application::new();
         let (handle, entity) = app.open_raw_window(
@@ -1584,10 +1643,19 @@ fn main() -> anyhow::Result<()> {
                     let list = std::env::var("OPENFILES").ok()?;
                     let paths: Vec<std::path::PathBuf> =
                         list.split(',').map(std::path::PathBuf::from).collect();
-                    let root = paths.first()?.parent()?.to_path_buf();
+                    let root = match std::env::var("FILESROOT") {
+                        Ok(root) => std::path::PathBuf::from(root),
+                        Err(_) => paths.first()?.parent()?.to_path_buf(),
+                    };
                     let mut files = files_ui::FilesView::new(root);
                     for path in &paths {
                         workspace::FunctionView::open_file_at(&mut files, path, None, None);
+                    }
+                    // The window scenes show the tree opened down to the file being edited.
+                    if std::env::var("FILESROOT").is_ok() {
+                        if let Some(last) = paths.last() {
+                            workspace::FunctionView::reveal_in_tree(&mut files, last);
+                        }
                     }
                     if let Some((line, column, lines)) =
                         std::env::var("SELECT").ok().and_then(|spec| {
@@ -1629,13 +1697,36 @@ fn main() -> anyhow::Result<()> {
                     }
                     Some(Box::new(files) as Box<dyn workspace::FunctionView>)
                 });
-                let layout = workspace::Layout {
+                let mut layout = workspace::Layout {
                     project,
                     files_view,
                     ..Default::default()
                 };
+                if window {
+                    layout.left.width = 256.0;
+                    layout.right.collapsed = false;
+                    layout.right.width = 380.0;
+                    layout.bottom.collapsed = true;
+                    layout.usage = window_usage();
+                }
                 let mut view = workspace::WorkspaceView::new(layout);
                 view.set_sessions(sessions, current);
+                if window {
+                    view.set_bindings(vec![(
+                        workspace::keymap::Action::NextWorkspaceNeedingAttention,
+                        "cmd-alt-a".into(),
+                    )]);
+                    view.set_agent_states(
+                        [
+                            ("proj-101-login-google", workspace::AgentDot::ToolUse),
+                            ("api-102-rate-limit", workspace::AgentDot::AwaitingInput),
+                            ("investigate-0917-5fwg", workspace::AgentDot::Thinking),
+                        ]
+                        .into_iter()
+                        .map(|(branch, dot)| (branch.to_string(), dot))
+                        .collect(),
+                    );
+                }
                 if sidebar {
                     view.set_agent_states(
                         [
@@ -2350,6 +2441,29 @@ fn main() -> anyhow::Result<()> {
             );
         }
         let frame = app.draw(handle).expect("frame");
+        // The OS draws the window buttons; a scene stands in for them where the app pins them.
+        let lights: Vec<ui::Rect> = if scene_size.is_some() {
+            [
+                (0.996, 0.373, 0.341),
+                (0.996, 0.737, 0.18),
+                (0.157, 0.784, 0.251),
+            ]
+            .iter()
+            .enumerate()
+            .map(|(index, (r, g, b))| ui::Rect {
+                radius: 6.0,
+                ..ui::Rect::new(
+                    20.0 + index as f32 * 20.0,
+                    (workspace::TOP_BAR_H - 12.0) / 2.0,
+                    12.0,
+                    12.0,
+                    ui::Rgba::new(*r, *g, *b, 1.0),
+                )
+            })
+            .collect()
+        } else {
+            Vec::new()
+        };
         let mut layers: Vec<ui::Layer> = vec![(
             frame.base.rects.as_slice(),
             frame.base.tris.as_slice(),
@@ -2366,6 +2480,7 @@ fn main() -> anyhow::Result<()> {
                 overlay.clip.map(|c| (c.x, c.y, c.w, c.h)),
             ));
         }
+        layers.push((lights.as_slice(), &[], &[], &[], None));
         r.render_frame(ui::theme().background, &layers)?;
         let (w, h, rgba) = r.read_rgba()?;
         let file = std::fs::File::create(&out)?;
@@ -2735,5 +2850,116 @@ fn update_snapshot(which: &str) -> auto_update::Snapshot {
         dismissed: which == "dismissed",
         supported: true,
         last_checked: Some(std::time::SystemTime::UNIX_EPOCH),
+    }
+}
+
+/// The workspaces the window boards list, the active one first after main.
+fn window_project() -> workspace::ProjectInfo {
+    let pr =
+        |count: usize, severity: workspace::PrSeverity, trouble: Option<workspace::PrTrouble>| {
+            Some(workspace::PrSummary {
+                count,
+                severity,
+                trouble,
+            })
+        };
+    // branch, label, ticket status, its category, running services, PRs.
+    type Row = (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        usize,
+        Option<workspace::PrSummary>,
+    );
+    let rows: [Row; 6] = [
+        ("main", "", "", "", 2, None),
+        (
+            "proj-101-login-google",
+            "Login with Google",
+            "In Progress",
+            "indeterminate",
+            3,
+            pr(2, workspace::PrSeverity::Ok, None),
+        ),
+        (
+            "api-102-rate-limit",
+            "Rate limit the public API",
+            "In Progress",
+            "indeterminate",
+            0,
+            None,
+        ),
+        (
+            "web-107-invoice-pdf",
+            "Invoice PDF export",
+            "In Review",
+            "indeterminate",
+            1,
+            pr(
+                1,
+                workspace::PrSeverity::Danger,
+                Some(workspace::PrTrouble::ChecksFailed),
+            ),
+        ),
+        (
+            "ops-112-queue-upgrade",
+            "Upgrade the queue worker",
+            "In Review",
+            "indeterminate",
+            0,
+            pr(
+                2,
+                workspace::PrSeverity::Warn,
+                Some(workspace::PrTrouble::Pending),
+            ),
+        ),
+        (
+            "investigate-0917-5fwg",
+            "investigate flaky spec",
+            "",
+            "",
+            0,
+            None,
+        ),
+    ];
+    workspace::ProjectInfo {
+        name: "myproject".into(),
+        branch: "main".into(),
+        config_path: format!("{FIXTURE_ROOT}/pom.yml").into(),
+        workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
+        active: "proj-101-login-google".into(),
+        labels: rows.iter().map(|row| row.1.to_string()).collect(),
+        running: rows.iter().map(|row| row.4).collect(),
+        tickets: rows.iter().map(|row| row.2.to_string()).collect(),
+        ticket_categories: rows.iter().map(|row| row.3.to_string()).collect(),
+        prs: rows.iter().map(|row| row.5).collect(),
+        missing: Vec::new(),
+        repo_branches: Vec::new(),
+    }
+}
+
+fn window_usage() -> workspace::UsageInfo {
+    workspace::UsageInfo {
+        account: Some(workspace::UsageAccount {
+            name: "Alex".into(),
+            email: "alex@example.com".into(),
+            plan: "team".into(),
+            organization: "myproject".into(),
+        }),
+        session: Some(workspace::UsageWindow {
+            used: 8.0,
+            resets: "in 2h 56m".into(),
+        }),
+        weekly: Some(workspace::UsageWindow {
+            used: 26.0,
+            resets: "Sat 17:00".into(),
+        }),
+        note: "Updated 2m ago".into(),
+        today: Some(workspace::UsageToday {
+            total: "$128".into(),
+            sessions: 6,
+            by_workspace: Vec::new(),
+        }),
     }
 }

@@ -1680,6 +1680,11 @@ impl WorkspaceView {
             .is_some_and(|menu| menu.3 == crate::APP_MENU_TARGET);
         self.layout.usage_card_open = self.usage_popover.is_some_and(|(status, _)| !status);
         self.layout.usage_today_open = self.usage_popover.is_some_and(|(status, _)| status);
+        self.layout.attention_keys = self
+            .bindings
+            .iter()
+            .find(|(action, _)| *action == crate::keymap::Action::NextWorkspaceNeedingAttention)
+            .map(|(_, keys)| keys.clone());
         if self.layout.files_view.is_some() {
             if let Some(mut page) = self.page.take() {
                 if let Some(item) = page.open.pop() {
@@ -1727,6 +1732,12 @@ impl WorkspaceView {
                     Some(DockPosition::Bottom) => self.layout.bottom_region(w, h),
                     _ => self.layout.tree_region(w, h),
                 };
+                let panel_region = tree_region;
+                let tree_region = Rect {
+                    y: tree_region.y + crate::PANEL_HEADER_H,
+                    h: (tree_region.h - crate::PANEL_HEADER_H).max(0.0),
+                    ..tree_region
+                };
                 if let Some(files) = self.layout.files_view.as_mut() {
                     let panel = self.layout.terminal_view.as_mut().map(|view| view.panes());
                     files.sync_items(panel);
@@ -1753,13 +1764,28 @@ impl WorkspaceView {
                     blit(ui::render(
                         &ui::div().bg(ui::theme().panel_background).into(),
                         Rect::new(
-                            tree_region.x,
-                            tree_region.y,
-                            (tree_region.w - 1.0).max(0.0),
-                            tree_region.h,
+                            panel_region.x,
+                            panel_region.y,
+                            (panel_region.w - 1.0).max(0.0),
+                            panel_region.h,
                             Rgba::TRANSPARENT,
                         ),
                     ));
+                    let title = ui::render(
+                        &crate::panel::dock_title_bar(
+                            "Files",
+                            Some((ui::IconKind::Search, crate::FILES_SEARCH)),
+                        ),
+                        Rect {
+                            h: crate::PANEL_HEADER_H.min(panel_region.h),
+                            ..panel_region
+                        },
+                    );
+                    panel_hits.extend(title.hits.iter().copied());
+                    center_overlays.push(Overlay {
+                        painted: title,
+                        clip: Some(panel_region),
+                    });
                     let tree_area = Rect::new(
                         tree_region.x - sr.scroll_x,
                         tree_region.y + sr.y_offset,
@@ -2239,41 +2265,6 @@ impl WorkspaceView {
         // shown (even in the collapsed rail), accented while the sidebar is open.
         {
             let region = self.layout.left_region(w, h);
-            let strip_top = region.y + region.h - crate::STATUS_BAR_H;
-            // The footer strip: same background + top border as the status bar so the two read as one continuous
-            blit(ui::render(
-                &ui::div().bg(ui::theme().title_bar_background).into(),
-                Rect::new(
-                    region.x,
-                    strip_top,
-                    region.w,
-                    crate::STATUS_BAR_H,
-                    Rgba::TRANSPARENT,
-                ),
-            ));
-            // Top border at `content_bottom - 1`, exactly matching the status bar's own top border (1px higher
-            // than the fill) so the two strips line up pixel-for-pixel.
-            blit(ui::render(
-                &ui::div().bg(ui::theme().border).into(),
-                Rect::new(region.x, strip_top - 1.0, region.w, 1.0, Rgba::TRANSPARENT),
-            ));
-            // Vertical divider at the sidebar's inner edge (the footer fill would otherwise cover the full-height
-            // one from `Layout::build`), so the sidebar footer is separated from the status bar.
-            let edge_x = if self.layout.sidebar_left() {
-                region.x + region.w - 1.0
-            } else {
-                region.x
-            };
-            blit(ui::render(
-                &ui::div().bg(ui::theme().border).into(),
-                Rect::new(
-                    edge_x,
-                    strip_top,
-                    1.0,
-                    crate::STATUS_BAR_H,
-                    Rgba::TRANSPARENT,
-                ),
-            ));
             let kind = if self.layout.sidebar_left() {
                 IconKind::Sidebar
             } else {
@@ -2425,16 +2416,10 @@ impl WorkspaceView {
 
         let mut overlays: Vec<Overlay> = Vec::new();
         overlays.append(&mut center_overlays);
-        {
-            let bp = Painted {
-                rects: self.layout.border_lines(w, h),
-                ..Painted::default()
-            };
-            overlays.push(Overlay {
-                painted: bp,
-                clip: None,
-            });
-        }
+        overlays.push(Overlay {
+            painted: self.layout.panel_outlines(w, h),
+            clip: None,
+        });
         if let Some(bar) = scrollbar_overlay {
             overlays.push(Overlay {
                 painted: bar,
@@ -7880,6 +7865,8 @@ impl WorkspaceView {
             self.layout.active_panels[side.index()] = Some(Shown::Func(PaneKind::ALL[i]));
             self.toggle_side(side, was_visible);
             self.pending.persist = true;
+        } else if id == crate::FILES_SEARCH {
+            self.open_file_finder();
         } else if id == crate::DIAGNOSTIC_MESSAGE {
             if let Some(v) = self.layout.files_view.as_mut() {
                 v.editor_key(EditKey::GoToDiagnostic, false);
@@ -7917,6 +7904,8 @@ impl WorkspaceView {
         } else if id == SIDEBAR_TOGGLE {
             self.layout.left.collapsed = !self.layout.left.collapsed;
             self.pending.persist = true;
+        } else if id == crate::ATTENTION_PILL {
+            self.next_workspace_needing_you();
         } else if id == SESSION_TRIGGER {
             self.layout.session_menu = !self.layout.session_menu;
             self.session_search_query.clear();
