@@ -168,13 +168,17 @@ impl Job<'_> {
         }
         if dirty > 0 {
             record.outcome = Outcome::Dirty;
-            record.detail = format!("{dirty} uncommitted changes; the worktree was left as it is");
+            record.detail = format!(
+                "{}; the worktree was left as it is",
+                plural(dirty as u64, "uncommitted change")
+            );
             return Ok(());
         }
         if local > 0 {
             record.outcome = Outcome::Diverged;
             record.detail = format!(
-                "{local} local commits GitHub does not have; the worktree was left as it is"
+                "{} GitHub does not have; the worktree was left as it is",
+                plural(local, "local commit")
             );
             return Ok(());
         }
@@ -238,6 +242,14 @@ impl Job<'_> {
             }
         }
         record.detail = problems.join("; ");
+    }
+}
+
+fn plural(count: u64, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
     }
 }
 

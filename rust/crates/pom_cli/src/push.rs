@@ -144,8 +144,10 @@ pub(crate) fn status(
         if !record.branch.is_empty() && record.workspace != record.branch {
             line.push_str(&format!("  ({})", record.branch));
         }
-        if record.commits > 0 {
-            line.push_str(&format!("  {} commits", record.commits));
+        match record.commits {
+            0 => {}
+            1 => line.push_str("  1 commit"),
+            count => line.push_str(&format!("  {count} commits")),
         }
         if !record.restarted.is_empty() {
             line.push_str(&format!("  restarted {}", record.restarted.join(", ")));
