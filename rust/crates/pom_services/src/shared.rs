@@ -334,13 +334,13 @@ impl ServiceRunner {
                 for pending in self.slots.pending(name) {
                     let at = pending.allocation;
                     match self.reset_slot(config, name, def, at) {
-                        Ok(true) => self.slots.cleared(name, at)?,
-                        Ok(false) if !require_running => {}
-                        Ok(false) => failures.push(format!(
-                            "{name} instance {} slot {}: its container is not running",
+                        SlotReset::Emptied => self.slots.cleared(name, at)?,
+                        SlotReset::Waiting(_) if !require_running => {}
+                        SlotReset::Waiting(reason) => failures.push(format!(
+                            "{name} instance {} slot {}: {reason}",
                             at.instance, at.slot
                         )),
-                        Err(error) => {
+                        SlotReset::Failed(error) => {
                             failures.push(format!(
                                 "{name} instance {} slot {}: {error}",
                                 at.instance, at.slot
@@ -368,27 +368,42 @@ impl ServiceRunner {
         }
     }
 
-    /// Runs the service's `slot_reset` for one slot; `false` when its container is not running.
+    /// Runs the service's `slot_reset` for one slot. Only the reset command failing counts against the slot:
+    /// when Docker cannot be reached or the container is down, the slot just keeps waiting, or every pass
+    /// would block another slot for good.
     fn reset_slot(
         &self,
         config: &Config,
         name: &str,
         def: &SharedServiceDef,
         allocation: pom_env::SlotAllocation,
-    ) -> Result<bool, ServiceError> {
+    ) -> SlotReset {
         if def.slot_reset.is_empty() {
-            return Ok(true);
+            return SlotReset::Emptied;
         }
         let service = if allocation.instance == 0 {
             name.to_string()
         } else {
             format!("{name}-{}", allocation.instance + 1)
         };
-        let file = self.write_shared_compose(config)?;
-        let running =
-            self.docker(&self.compose_args(&file, &["ps", "--status", "running", "-q", &service]))?;
-        if !running.status.success() || String::from_utf8_lossy(&running.stdout).trim().is_empty() {
-            return Ok(false);
+        let file = match self.write_shared_compose(config) {
+            Ok(file) => file,
+            Err(error) => return SlotReset::Waiting(error.to_string()),
+        };
+        let running = match self
+            .docker(&self.compose_args(&file, &["ps", "--status", "running", "-q", &service]))
+        {
+            Ok(output) => output,
+            Err(error) => return SlotReset::Waiting(error.to_string()),
+        };
+        if !running.status.success() {
+            return SlotReset::Waiting(format!(
+                "Docker did not answer: {}",
+                output_text(&running).trim()
+            ));
+        }
+        if String::from_utf8_lossy(&running.stdout).trim().is_empty() {
+            return SlotReset::Waiting("its container is not running".into());
         }
         let command = def
             .slot_reset
@@ -400,13 +415,19 @@ impl ServiceRunner {
             if attempt > 0 {
                 std::thread::sleep(SLOT_RESET_PAUSE);
             }
-            let output = self.docker(&args)?;
+            let output = match self.docker(&args) {
+                Ok(output) => output,
+                Err(error) => return SlotReset::Waiting(error.to_string()),
+            };
             if output.status.success() {
-                return Ok(true);
+                return SlotReset::Emptied;
             }
             last = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if last.to_ascii_lowercase().contains("docker daemon") {
+                return SlotReset::Waiting(format!("Docker did not answer: {last}"));
+            }
         }
-        Err(ServiceError::Io(std::io::Error::other(
+        SlotReset::Failed(ServiceError::Io(std::io::Error::other(
             if last.is_empty() {
                 format!("`{command}` failed in {service}")
             } else {
@@ -917,6 +938,13 @@ impl Postgres {
         args.extend(rest.iter().map(|arg| arg.to_string()));
         args
     }
+}
+
+enum SlotReset {
+    Emptied,
+    /// Not tried: Docker or the container is not there yet; the reason says which.
+    Waiting(String),
+    Failed(ServiceError),
 }
 
 pub(crate) fn output_text(output: &Output) -> String {

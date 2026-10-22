@@ -434,3 +434,30 @@ fn a_shared_service_is_ready_once_its_published_port_answers() {
     );
     assert!(fixture.calls().iter().all(|call| !call.contains("exec")));
 }
+
+#[test]
+fn slots_wait_instead_of_piling_up_while_docker_cannot_be_reached() {
+    let fixture = Fixture::new("abc123", "", "");
+    let mut config = fixture.config.clone();
+    if let Some(api) = config.repos.get_mut("api") {
+        api.env
+            .insert("REDIS_DB".into(), "{{shared.redis.slot}}".into());
+    }
+    let state = StateDir::new(fixture.temp.path().join("state"));
+    let runner = ServiceRunner::new(RunnerOptions {
+        project_root: fixture.temp.path().join("project"),
+        session: "demo".into(),
+        state: state.clone(),
+        holders: SocketDir::new(fixture.temp.path().join("s")),
+        binary: PathBuf::from("/nonexistent"),
+        docker: fixture.temp.path().join("no-docker"),
+    });
+    for _ in 0..3 {
+        let _ = runner.allocate_slots(&config, "ws-feat-login");
+    }
+    let slots = SlotStore::new(state, "demo");
+    let slot = slots.get("redis", "ws-feat-login").expect("slot");
+    assert_eq!((slot.instance, slot.slot), (0, 0));
+    assert_eq!(slots.pending("redis").len(), 1, "only the fresh slot waits");
+    assert_eq!(slots.instance_count("redis"), 1);
+}
