@@ -16,6 +16,7 @@ pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_secrets = { path = "../pom_secrets" }
 pom_services = { path = "../pom_services" }
+pom_sessions = { path = "../pom_sessions" }
 pom_workspace = { path = "../pom_workspace" }
 flate2 = "1"
 indexmap = { version = "2", features = ["serde"] }

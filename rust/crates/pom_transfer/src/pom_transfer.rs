@@ -6,6 +6,7 @@
 
 mod export;
 mod import;
+mod project;
 
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -16,6 +17,10 @@ use serde::{Deserialize, Serialize};
 
 pub use export::{export, ExportOptions, ExportReport};
 pub use import::{plan_import, ImportOptions, ImportPlan};
+pub use project::{
+    export_project, import_project, ProjectExport, ProjectImport, ProjectManifest, ProjectRepo,
+    PROJECT_EXTENSION, PROJECT_SCHEMA,
+};
 
 pub const SCHEMA: &str = "pom.wsbundle/v1";
 const SCHEMA_PREFIX: &str = "pom.wsbundle/v";
@@ -103,12 +108,21 @@ pub struct VolumeEntry {
 
 /// Refuses an archive a newer pom made: its major schema may mean things this one would get wrong.
 pub fn check_schema(schema: &str) -> Result<(), String> {
+    check_major(schema, SCHEMA_PREFIX, SCHEMA_MAJOR, "workspace")
+}
+
+pub(crate) fn check_major(
+    schema: &str,
+    prefix: &str,
+    supported: u32,
+    what: &str,
+) -> Result<(), String> {
     let major = schema
-        .strip_prefix(SCHEMA_PREFIX)
+        .strip_prefix(prefix)
         .and_then(|version| version.split('.').next())
         .and_then(|major| major.parse::<u32>().ok())
-        .ok_or_else(|| format!("not a workspace archive (schema {schema:?})"))?;
-    if major > SCHEMA_MAJOR {
+        .ok_or_else(|| format!("not a {what} archive (schema {schema:?})"))?;
+    if major > supported {
         return Err(format!(
             "this archive was made by a newer pom (schema {schema}); update pom here to import it"
         ));
@@ -118,6 +132,14 @@ pub fn check_schema(schema: &str) -> Result<(), String> {
 
 /// Writes `manifest.json`, then every file of `staging` under its relative path, as a gzip'd tar.
 pub fn pack(manifest: &Manifest, staging: &Path, out: &mut dyn Write) -> Result<(), String> {
+    pack_any(manifest, staging, out)
+}
+
+pub(crate) fn pack_any(
+    manifest: &impl Serialize,
+    staging: &Path,
+    out: &mut dyn Write,
+) -> Result<(), String> {
     let encoder = flate2::write::GzEncoder::new(out, flate2::Compression::default());
     let mut builder = tar::Builder::new(encoder);
     builder.follow_symlinks(false);
@@ -148,6 +170,18 @@ pub fn pack(manifest: &Manifest, staging: &Path, out: &mut dyn Write) -> Result<
 /// Reads an archive: the manifest first (checked before anything else is written), then the other entries into
 /// `staging`. Only the layout's own paths are accepted.
 pub fn unpack(input: &mut dyn Read, staging: &Path) -> Result<Manifest, String> {
+    let text = unpack_any(input, staging, &check_schema, &allowed_entry)?;
+    serde_json::from_str(&text).map_err(|error| format!("manifest: {error}"))
+}
+
+/// Reads a gzip'd tar whose first entry is `manifest.json`: `check` sees its schema before anything is written,
+/// and only paths `allowed` accepts are unpacked into `staging`. Returns the manifest's text.
+pub(crate) fn unpack_any(
+    input: &mut dyn Read,
+    staging: &Path,
+    check: &dyn Fn(&str) -> Result<(), String>,
+    allowed: &dyn Fn(&Path) -> bool,
+) -> Result<String, String> {
     let decoder = flate2::read::GzDecoder::new(input);
     let mut archive = tar::Archive::new(decoder);
     let mut entries = archive
@@ -162,7 +196,7 @@ pub fn unpack(input: &mut dyn Read, staging: &Path) -> Result<Manifest, String> 
         .map_err(|error| error.to_string())?
         .into_owned();
     if first_path != Path::new(MANIFEST_FILE) {
-        return Err("not a workspace archive (no manifest.json first)".into());
+        return Err("not a pom archive (no manifest.json first)".into());
     }
     let mut text = String::new();
     first
@@ -170,16 +204,14 @@ pub fn unpack(input: &mut dyn Read, staging: &Path) -> Result<Manifest, String> 
         .map_err(|error| format!("read manifest: {error}"))?;
     let schema: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| format!("manifest: {error}"))?;
-    check_schema(schema["schema"].as_str().unwrap_or_default())?;
-    let manifest: Manifest =
-        serde_json::from_str(&text).map_err(|error| format!("manifest: {error}"))?;
+    check(schema["schema"].as_str().unwrap_or_default())?;
     for entry in entries {
         let mut entry = entry.map_err(|error| format!("read archive: {error}"))?;
         let path = entry
             .path()
             .map_err(|error| error.to_string())?
             .into_owned();
-        if !allowed_entry(&path) {
+        if !allowed(&path) {
             return Err(format!(
                 "unexpected file in the archive: {}",
                 path.display()
@@ -193,7 +225,7 @@ pub fn unpack(input: &mut dyn Read, staging: &Path) -> Result<Manifest, String> 
             .unpack(&target)
             .map_err(|error| format!("unpack {}: {error}", path.display()))?;
     }
-    Ok(manifest)
+    Ok(text)
 }
 
 fn allowed_entry(path: &Path) -> bool {

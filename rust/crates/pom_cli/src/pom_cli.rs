@@ -88,11 +88,13 @@ workspaces
                      stop it and remove its worktrees, databases and folder; the local
                      branch goes too only when it is pushed or merged
   ws rename <branch> [name]   set or clear the workspace's display name
-  ws export <branch> [-o file.pomws] [--no-db] [--json]
+  ws export <branch> [-o file.pomws | --to <host>] [--no-db] [--json]
                      the workspace as one archive another machine can open as it was: commits
                      origin lacks, uncommitted and untracked files (not gitignored ones), its
                      databases (pg_dump) and the secrets its config uses, sealed with a
-                     passphrase ($POM_BUNDLE_PASSPHRASE, else asked); -o - writes to stdout
+                     passphrase ($POM_BUNDLE_PASSPHRASE, else asked); -o - writes to stdout;
+                     --to streams it over ssh into `pom ws import -` on a host of `pom host`
+                     (secrets sealed with a one-time passphrase sent ahead of it)
   ws import <file.pomws | -> [--project name] [--branch new] [--json]
                      open an exported workspace here: worktrees at the same commits with the
                      same changes, databases restored, fresh ports, env files rewritten, setup
@@ -154,6 +156,12 @@ config
 
 projects and machine
   project ls [--json]         the projects this machine knows: name, folder, whether its pom.yml is there
+  project export [-o file.pomproj | --to <host>] [--json]
+                     pom.yml, every secret of the project (sealed with a passphrase) and each
+                     repo's origin, for setting the project up on another machine
+  project import <file.pomproj | -> [--dir path] [--json]
+                     write pom.yml (into ~/pom/<project> unless --dir), store the secrets under
+                     this machine's key and clone the repos on main
   init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
   onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
@@ -531,7 +539,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         }
         "proxy" => Command::ProxyFault(proxy::parse_fault(rest)?),
         "ws" | "workspace" if matches!(rest.first(), Some(&("export" | "import"))) => {
-            Command::Transfer(transfer::parse(rest)?)
+            Command::Transfer(transfer::parse(rest, false)?)
         }
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
@@ -583,10 +591,15 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Agent(command)
         }
         "host" => Command::Host(remote::parse(rest)?),
+        "project" | "projects" if matches!(rest.first(), Some(&("export" | "import"))) => {
+            Command::Transfer(transfer::parse(rest, true)?)
+        }
         "project" | "projects" => {
             let (verb, flags) = rest.split_first().ok_or("usage: pom project ls [--json]")?;
             if !matches!(*verb, "ls" | "list") {
-                return Err(format!("unknown project command {verb} (ls)"));
+                return Err(format!(
+                    "unknown project command {verb} (ls, export, import)"
+                ));
             }
             let args = args::Args::parse(flags, &["-o", "--output"])?;
             args.allow(&["--json", "-o", "--output"])?;
