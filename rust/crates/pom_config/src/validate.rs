@@ -9,6 +9,14 @@ impl Config {
         let mut errors = Vec::new();
         for (repo, dir) in &self.repos {
             let context = format!("repo {repo:?}");
+            // The webhook relay keeps `/_<name>` paths for itself (`/_pom/github`).
+            for (what, name) in [("name", repo), ("alias", &dir.alias)] {
+                if name.starts_with('_') {
+                    errors.push(format!(
+                        "{context}: the {what} {name:?} may not start with `_` (the webhook relay keeps those paths)"
+                    ));
+                }
+            }
             let mut scan = |place: &str, values: &IndexMap<String, String>| {
                 for (key, value) in values {
                     for (namespace, name) in colon_template_refs(value) {
@@ -52,6 +60,15 @@ impl Config {
         }
         self.check_shared_services(&mut errors);
         self.limits.check(&mut errors);
+        if let Some(sync) = &self.sync {
+            if crate::OnPush::parse(&sync.on_push).is_none() {
+                errors.push(format!(
+                    "sync.on_push: {:?} is not one of {}",
+                    sync.on_push,
+                    crate::OnPush::NAMES.join(", ")
+                ));
+            }
+        }
         if errors.is_empty() {
             return Ok(());
         }
@@ -211,5 +228,43 @@ mod tests {
         );
         assert!(colon_ref_error("c", "var", "x").contains("no replacement"));
         assert!(colon_ref_error("c", "weird", "x").contains("colon-form templates are removed"));
+    }
+
+    #[test]
+    fn relay_paths_and_on_push_values_are_checked() {
+        let mut config = Config::default();
+        config
+            .repos
+            .insert("_internal".into(), crate::Dir::default());
+        config.repos.insert(
+            "api".into(),
+            crate::Dir {
+                alias: "_api".into(),
+                ..crate::Dir::default()
+            },
+        );
+        config.sync = Some(crate::SyncConfig {
+            on_push: "sometimes".into(),
+            ..crate::SyncConfig::default()
+        });
+        let errors = config.validate().expect_err("invalid");
+        assert!(errors.contains("the name \"_internal\""), "{errors}");
+        assert!(errors.contains("the alias \"_api\""), "{errors}");
+        assert!(errors.contains("sync.on_push"), "{errors}");
+
+        config.repos.clear();
+        for (text, mode) in [
+            ("pull", crate::OnPush::Pull),
+            ("", crate::OnPush::Notify),
+            ("off", crate::OnPush::Off),
+        ] {
+            config.sync = Some(crate::SyncConfig {
+                on_push: text.into(),
+                ..crate::SyncConfig::default()
+            });
+            assert_eq!(config.validate(), Ok(()));
+            assert_eq!(config.on_push(), mode);
+        }
+        assert_eq!(Config::default().on_push(), crate::OnPush::Notify);
     }
 }

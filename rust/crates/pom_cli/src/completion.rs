@@ -48,6 +48,8 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("disk", &["--json"]),
     ("modules", &["list", "prune", "clear"]),
     ("doctor", &["--json"]),
+    ("github", &["webhook"]),
+    ("sync", &["status"]),
     ("init", &[]),
     ("onboard", &[]),
     ("mcp", &[]),

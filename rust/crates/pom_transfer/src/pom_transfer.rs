@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 pub use export::{export, ExportOptions, ExportReport};
 pub use import::{plan_import, ImportOptions, ImportPlan};
+pub use pom_layout::normalize_remote;
 pub use project::{
     export_project, import_project, ProjectExport, ProjectImport, ProjectManifest, ProjectRepo,
     PROJECT_EXTENSION, PROJECT_SCHEMA,
@@ -330,33 +331,6 @@ pub(crate) fn git_text(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_bytes(dir, args).map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
 }
 
-/// `git@host:owner/name.git`, `ssh://git@host/owner/name` and `https://host/owner/name` all as `host/owner/name`,
-/// so the same repo matches however each machine cloned it.
-pub fn normalize_remote(url: &str) -> String {
-    let url = url.trim().trim_end_matches('/');
-    let url = url.strip_suffix(".git").unwrap_or(url);
-    let (host, path) = if let Some((_, rest)) = url.split_once("://") {
-        match rest.split_once('/') {
-            Some((authority, path)) => (authority, path),
-            None => (rest, ""),
-        }
-    } else {
-        match url.split_once(':') {
-            Some((authority, path)) if !authority.contains('/') && !authority.is_empty() => {
-                (authority, path)
-            }
-            _ => return url.to_string(),
-        }
-    };
-    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
-    let host = host.split_once(':').map_or(host, |(host, _)| host);
-    format!(
-        "{}/{}",
-        host.to_ascii_lowercase(),
-        path.trim_start_matches('/')
-    )
-}
-
 /// The ticket key a branch names (`proj-101-login` -> `PROJ-101`), as the app shows it.
 pub fn ticket_of(branch: &str) -> Option<String> {
     let mut parts = branch
@@ -425,21 +399,6 @@ mod tests {
         let newer = check_schema("pom.wsbundle/v2").expect_err("newer");
         assert!(newer.contains("newer pom"), "{newer}");
         assert!(check_schema("pom.other/v1").is_err());
-    }
-
-    #[test]
-    fn remotes_match_however_they_were_cloned() {
-        let expected = "github.com/acme/api";
-        for url in [
-            "git@github.com:acme/api.git",
-            "ssh://git@github.com/acme/api",
-            "https://github.com/acme/api.git",
-            "https://GitHub.com/acme/api/",
-            "ssh://git@github.com:22/acme/api.git",
-        ] {
-            assert_eq!(normalize_remote(url), expected, "{url}");
-        }
-        assert_eq!(normalize_remote("/srv/git/api.git"), "/srv/git/api");
     }
 
     #[test]

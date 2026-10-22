@@ -7,7 +7,10 @@ mod server;
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+
+use pom_config::Config;
 
 pub use activity::{read_activity, ActivityEntry, ActivityFile, ACTIVITY_SCHEMA};
 pub use faults::{
@@ -24,6 +27,37 @@ pub use routing::{
 const LOG_CAPACITY: usize = 300;
 pub const BODY_CAP: usize = 256 * 1024;
 const BODY_BUDGET: usize = 64 << 20;
+
+/// A delivery GitHub posted to the relay's `/_pom/github`, as it arrived.
+#[derive(Clone, Debug, Default)]
+pub struct GithubDelivery {
+    /// `X-GitHub-Event`: `push`, `ping`, ...
+    pub event: String,
+    /// `X-GitHub-Delivery`.
+    pub id: String,
+    /// `X-Hub-Signature-256`: `sha256=<hex>`.
+    pub signature: String,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+/// What the relay answers GitHub, and how the delivery shows in the request log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GithubReply {
+    pub status: u16,
+    /// JSON.
+    pub body: String,
+    /// `owner/name` of the repository, when the payload was trusted.
+    pub repo: String,
+    pub summary: String,
+}
+
+/// Verifies and acts on a GitHub delivery, given every project the proxy routes (root, config).
+pub type GithubHook =
+    Arc<dyn Fn(&GithubDelivery, &[(PathBuf, Arc<Config>)]) -> GithubReply + Send + Sync>;
+
+/// The relay path GitHub posts to; repo aliases may not start with `_`, so no repo route shadows it.
+pub const GITHUB_PATH: &str = "/_pom/github";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ports {
@@ -254,6 +288,7 @@ fn clock() -> String {
 pub struct DevProxy {
     router: Arc<Router>,
     log: Arc<ProxyLog>,
+    shared: Arc<server::Shared>,
     ports: Ports,
     network: pom_env::DevNetwork,
     proxy_bound: bool,
@@ -342,6 +377,7 @@ impl DevProxy {
         Ok(DevProxy {
             router,
             log,
+            shared,
             ports,
             network,
             proxy_bound,
@@ -353,6 +389,11 @@ impl DevProxy {
 
     pub fn set_projects(&self, projects: Vec<ProjectRoute>) {
         self.router.set_projects(projects);
+    }
+
+    /// Who handles `/_pom/github` on the relay; without one it answers 404.
+    pub fn set_github_hook(&self, hook: GithubHook) {
+        self.shared.set_github(hook);
     }
 
     pub fn log(&self, limit: usize) -> Vec<ProxyLogEntry> {

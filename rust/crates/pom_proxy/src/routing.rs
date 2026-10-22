@@ -419,6 +419,14 @@ impl Router {
             .is_ok_and(|projects| !projects.is_empty())
     }
 
+    /// Each project's root and its config as last loaded.
+    pub fn routes(&self) -> Vec<(PathBuf, Arc<Config>)> {
+        self.projects()
+            .into_iter()
+            .map(|(project, config)| (project.root, config))
+            .collect()
+    }
+
     fn projects(&self) -> Vec<(ProjectRoute, Arc<Config>)> {
         self.projects
             .read()

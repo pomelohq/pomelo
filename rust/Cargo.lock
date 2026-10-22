@@ -3600,6 +3600,7 @@ dependencies = [
  "pom_ports",
  "pom_proxy",
  "pom_ptyhost",
+ "pom_push",
  "pom_remote",
  "pom_secrets",
  "pom_services",
@@ -3815,6 +3816,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "pom_push"
+version = "0.9.3"
+dependencies = [
+ "pom_config",
+ "pom_env",
+ "pom_layout",
+ "pom_lock",
+ "pom_paths",
+ "pom_proxy",
+ "pom_ptyhost",
+ "pom_secrets",
+ "pom_services",
+ "pom_sync",
+ "pom_workspace",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "workspace_hack",
+]
+
+[[package]]
 name = "pom_remote"
 version = "0.9.3"
 dependencies = [
@@ -3824,6 +3847,7 @@ dependencies = [
  "pom_layout",
  "pom_paths",
  "pom_ptyhost",
+ "pom_push",
  "pom_services",
  "pom_workspace",
  "serde",
@@ -3984,6 +4008,7 @@ dependencies = [
  "pom_paths",
  "pom_proxy",
  "pom_ptyhost",
+ "pom_push",
  "pom_remote",
  "pom_secrets",
  "pom_services",

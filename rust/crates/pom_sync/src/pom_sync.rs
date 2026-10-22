@@ -3,7 +3,7 @@
 //! run in the one process per session that holds the primary lock, which the previous core takes too.
 
 mod autopush;
-mod git;
+pub mod git;
 mod refresh;
 
 use std::path::PathBuf;
@@ -172,6 +172,7 @@ mod tests {
             refresh_interval_sec: 600,
             auto_push: true,
             interval_sec: 5,
+            on_push: String::new(),
         });
         assert_eq!(
             refresh_schedule(&state, "demo", Some(&config)),

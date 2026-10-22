@@ -63,7 +63,11 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
     let machine = SystemMachine {
         state: state.clone(),
         holders: holders.clone(),
-        waker: Some(pom_workspace::waker(state.clone(), holders, binary)),
+        waker: Some(pom_workspace::waker(
+            state.clone(),
+            holders.clone(),
+            binary.clone(),
+        )),
     };
     let proxy = DevProxy::start_on(
         Box::new(machine),
@@ -71,6 +75,12 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
         pom_proxy::Serve::default(),
     )
     .map_err(|error| error.to_string())?;
+    let push = pom_push::PushSync::start(pom_push::Machine {
+        state: state.clone(),
+        holders,
+        binary,
+    });
+    proxy.set_github_hook(push.hook());
     if !proxy.proxy_running() {
         return Err(format!("could not listen on port {}", ports.proxy));
     }

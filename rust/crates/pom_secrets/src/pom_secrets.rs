@@ -39,6 +39,14 @@ impl From<std::io::Error> for SecretsError {
     }
 }
 
+/// `bytes` random bytes from the OS, as lowercase hex: a fresh shared secret.
+pub fn random_hex(bytes: usize) -> String {
+    use aes_gcm::aead::rand_core::RngCore;
+    let mut buffer = vec![0u8; bytes];
+    OsRng.fill_bytes(&mut buffer);
+    buffer.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 /// One session's secrets, encrypted at rest with a per-machine key:
 /// `secrets/<session>.bin` = 12-byte nonce + AES-256-GCM(JSON object of name -> value).
 /// Values only ever leave through `get`; agents and config see names.
