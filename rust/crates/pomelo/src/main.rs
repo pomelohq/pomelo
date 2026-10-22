@@ -4497,8 +4497,7 @@ fn main() -> anyhow::Result<()> {
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
             .unwrap_or_default();
         let line = format!("panic at {loc}: {info}\n");
-        if let Some(home) = std::env::var_os("HOME") {
-            let path = std::path::Path::new(&home).join("Library/Logs/pomelo-panic.log");
+        if let Some(path) = platform::panic_log() {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
@@ -4599,8 +4598,13 @@ fn begin_run() -> (Option<std::path::PathBuf>, recovery::LastRun) {
     let app = std::env::current_exe()
         .ok()
         .and_then(|exe| {
-            let bundle = exe.ancestors().nth(3)?;
-            Some(bundle.file_stem()?.to_string_lossy().into_owned())
+            // Pomelo.app/Contents/MacOS/pomelo on macOS; elsewhere the binary stands alone.
+            let named = if cfg!(target_os = "macos") {
+                exe.ancestors().nth(3)?
+            } else {
+                exe.as_path()
+            };
+            Some(named.file_stem()?.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "pomelo".into());
     let marker = recovery::marker_path(&dir, &app);

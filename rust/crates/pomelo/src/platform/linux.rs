@@ -233,3 +233,9 @@ pub(crate) fn quit_on_termination_signals(wake: impl Fn() + Send + 'static) {
 pub(crate) fn termination_requested() -> bool {
     TERMINATION_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
 }
+
+pub(crate) fn panic_log() -> Option<PathBuf> {
+    let dir = pom_paths::StateDir::from_env();
+    std::fs::create_dir_all(dir.root()).ok()?;
+    Some(dir.path("pomelo-panic.log"))
+}

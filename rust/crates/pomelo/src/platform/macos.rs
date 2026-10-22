@@ -325,3 +325,7 @@ pub(crate) fn quit_on_termination_signals(_wake: impl Fn() + Send + 'static) {}
 pub(crate) fn termination_requested() -> bool {
     false
 }
+
+pub(crate) fn panic_log() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var_os("HOME")?).join("Library/Logs/pomelo-panic.log"))
+}
