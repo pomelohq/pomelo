@@ -152,6 +152,8 @@ pub struct TerminalPanel {
     agent: bool,
     /// The agent dock's "+" was pressed; the workspace offers a side agent.
     new_agent_requested: bool,
+    /// What "+" does in the dock of a project on another machine.
+    start_remote_agent: Option<Box<dyn FnMut()>>,
     history_requested: bool,
 }
 
@@ -162,21 +164,31 @@ impl TerminalPanel {
 
     /// The agent dock's panel: one pane of agent sessions, which are opened for it rather than from it.
     pub fn agent_dock(root: PathBuf, waker: Waker) -> Self {
-        Self::agent_panel(root, waker, true)
+        Self::agent_panel(root, waker, true, true)
     }
 
-    /// The agent dock of a project on another machine: it shows the agents running there, and starts none.
-    pub fn remote_agent_dock(root: PathBuf, waker: Waker) -> Self {
-        Self::agent_panel(root, waker, false)
+    /// The agent dock of a project on another machine: it shows the agents running there, and "+" calls
+    /// `start_agent` when that machine can start one.
+    pub fn remote_agent_dock(
+        root: PathBuf,
+        waker: Waker,
+        start_agent: Option<Box<dyn FnMut()>>,
+    ) -> Self {
+        let starts = start_agent.is_some();
+        let mut panel = Self::agent_panel(root, waker, starts, false);
+        panel.start_remote_agent = start_agent;
+        panel
     }
 
-    fn agent_panel(root: PathBuf, waker: Waker, starts_agents: bool) -> Self {
+    fn agent_panel(root: PathBuf, waker: Waker, starts_agents: bool, history: bool) -> Self {
         let mut buttons = Vec::new();
         if starts_agents {
             buttons.push(PaneButton {
                 icon: IconKind::Plus,
                 action: PaneButtonAction::NewItem,
             });
+        }
+        if history {
             buttons.push(PaneButton {
                 icon: IconKind::Clock,
                 action: PaneButtonAction::History,
@@ -243,6 +255,7 @@ impl TerminalPanel {
             closed_last: false,
             agent: false,
             new_agent_requested: false,
+            start_remote_agent: None,
             history_requested: false,
         }
     }
@@ -421,7 +434,10 @@ impl TerminalPanelView for TerminalPanel {
             GroupClick::Search { pane, click } => self.panes.search_click(pane, click),
             GroupClick::Button { path, action } => match action {
                 PaneButtonAction::Split(direction) => self.split(&path, direction),
-                PaneButtonAction::NewItem if self.agent => self.new_agent_requested = true,
+                PaneButtonAction::NewItem if self.agent => match self.start_remote_agent.as_mut() {
+                    Some(start) => start(),
+                    None => self.new_agent_requested = true,
+                },
                 PaneButtonAction::NewItem => {
                     if let Some(item) = self.spawn_item(None) {
                         if let Some(pane) = self.panes.group.leaf_at_mut(&path) {

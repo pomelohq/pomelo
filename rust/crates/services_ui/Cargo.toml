@@ -18,6 +18,8 @@ pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }
 pom_remote = { path = "../pom_remote" }
 pom_agent = { path = "../pom_agent" }
+pom_paths = { path = "../pom_paths" }
+serde_json.workspace = true
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
 ui = { path = "../ui" }
@@ -25,5 +27,5 @@ workspace = { path = "../workspace" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
-pom_paths = { path = "../pom_paths" }
+pom_rpc = { path = "../pom_rpc" }
 tempfile = "3"

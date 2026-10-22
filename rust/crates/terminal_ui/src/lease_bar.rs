@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-use pom_agent::{PendingApproval, SessionState};
+use pom_agent::PendingApproval;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use ui::{div, icon, label, render_keystroke_in, theme, Appearance, Div, IconKind, Node, Rgba};
@@ -24,19 +24,60 @@ pub enum LeaseButton {
     Deny,
 }
 
-#[derive(Clone, Default)]
-struct Snapshot {
-    driver: Option<String>,
-    pending: Option<PendingApproval>,
-    session: Option<SessionState>,
+/// Who drives an agent session when it is not the person at the app, and the tool call it waits on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LeaseState {
+    pub driver: Option<String>,
+    pub pending: Option<PendingApproval>,
+}
+
+/// Where a session's lease is read and moved: this machine's state, or the project's machine through its server.
+pub trait LeaseSource {
+    fn state(&self) -> LeaseState;
+    /// The person at the app takes the session over.
+    fn take_over(&self) -> Result<(), String>;
+    fn answer(&self, request: &str, allow: bool) -> Result<(), String>;
+}
+
+/// A session of this machine, read from the state dir.
+pub struct LocalLease {
+    holder: String,
+    state: StateDir,
+    holders: SocketDir,
+}
+
+impl LocalLease {
+    fn session(&self) -> Result<pom_agent::SessionState, String> {
+        pom_agent::session_for_holder(&self.state, &self.holder)
+            .ok_or_else(|| format!("{} has no session yet", self.holder))
+    }
+}
+
+impl LeaseSource for LocalLease {
+    fn state(&self) -> LeaseState {
+        let pending = pom_agent::session_for_holder(&self.state, &self.holder)
+            .and_then(|session| pom_agent::pending_approval(&self.state, &session.session_id));
+        LeaseState {
+            driver: pom_agent::driven_by(&self.state, &self.holder),
+            pending,
+        }
+    }
+
+    fn take_over(&self) -> Result<(), String> {
+        pom_agent::take_over(&self.state, &self.holders, &self.session()?)
+            .map_err(|error| error.to_string())
+    }
+
+    fn answer(&self, request: &str, allow: bool) -> Result<(), String> {
+        pom_agent::answer_as_person(&self.state, &self.session()?, request, allow)
+            .map_err(|error| error.to_string())
+    }
 }
 
 pub struct LeaseBar {
     base: u64,
-    holder: String,
-    state: StateDir,
-    holders: SocketDir,
-    cached: RefCell<(Option<Instant>, Snapshot)>,
+    source: Box<dyn LeaseSource>,
+    cached: RefCell<(Option<Instant>, LeaseState)>,
 }
 
 /// The approval's actions share its line only when the strip is at least this wide; narrower, they wrap under it.
@@ -44,30 +85,25 @@ const ONE_LINE_W: f32 = 612.0;
 
 impl LeaseBar {
     pub fn new(holder: &str, state: StateDir, holders: SocketDir) -> LeaseBar {
-        LeaseBar {
-            base: workspace::toolbar_ids(IDS),
+        Self::with_source(Box::new(LocalLease {
             holder: holder.to_string(),
             state,
             holders,
-            cached: RefCell::new((None, Snapshot::default())),
+        }))
+    }
+
+    pub fn with_source(source: Box<dyn LeaseSource>) -> LeaseBar {
+        LeaseBar {
+            base: workspace::toolbar_ids(IDS),
+            source,
+            cached: RefCell::new((None, LeaseState::default())),
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
+    fn snapshot(&self) -> LeaseState {
         let mut cached = self.cached.borrow_mut();
         if cached.0.is_none_or(|at| at.elapsed() >= REFRESH) {
-            let session = pom_agent::session_for_holder(&self.state, &self.holder);
-            let pending = session
-                .as_ref()
-                .and_then(|session| pom_agent::pending_approval(&self.state, &session.session_id));
-            *cached = (
-                Some(Instant::now()),
-                Snapshot {
-                    driver: pom_agent::driven_by(&self.state, &self.holder),
-                    pending,
-                    session,
-                },
-            );
+            *cached = (Some(Instant::now()), self.source.state());
         }
         cached.1.clone()
     }
@@ -106,19 +142,11 @@ impl LeaseBar {
     /// offer it right now.
     pub fn press(&mut self, button: LeaseButton) -> bool {
         let snapshot = self.snapshot();
-        let Some(session) = snapshot.session.as_ref() else {
-            return false;
-        };
         let outcome = match (button, &snapshot.pending) {
-            (LeaseButton::TakeOver, _) if snapshot.driver.is_some() => {
-                pom_agent::take_over(&self.state, &self.holders, session)
-            }
-            (LeaseButton::Allow | LeaseButton::Deny, Some(pending)) => pom_agent::answer_as_person(
-                &self.state,
-                session,
-                &pending.request,
-                button == LeaseButton::Allow,
-            ),
+            (LeaseButton::TakeOver, _) if snapshot.driver.is_some() => self.source.take_over(),
+            (LeaseButton::Allow | LeaseButton::Deny, Some(pending)) => self
+                .source
+                .answer(&pending.request, button == LeaseButton::Allow),
             _ => return false,
         };
         if let Err(error) = outcome {

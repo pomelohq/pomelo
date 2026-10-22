@@ -5,6 +5,7 @@
 mod keys;
 mod model;
 mod remote;
+mod remote_agents;
 mod tab;
 mod view;
 
@@ -20,6 +21,10 @@ use workspace::{AgentFix, EditKey, MenuItem, PaletteEntry, PaneKind, PanelReques
 use model::{shared_key, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
 pub use model::{Action, Crash, ServicesContext, SharedConfig, Status};
 pub use remote::{connection_line, RemoteServicesPanel};
+pub use remote_agents::{
+    agent_item_id, next_agent_role, remote_agent_item, restore_agent_tabs, RemoteAgentTabs,
+    RemoteLease,
+};
 use view::{action_button, State, Tone};
 
 const SHARED_GROUP: &str = "_shared";
