@@ -1,0 +1,28 @@
+[package]
+name = "pom_transfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Moving a workspace or a project to another machine as one archive."
+
+[lib]
+path = "src/pom_transfer.rs"
+
+[dependencies]
+pom_bundle = { path = "../pom_bundle" }
+pom_config = { path = "../pom_config" }
+pom_env = { path = "../pom_env" }
+pom_layout = { path = "../pom_layout" }
+pom_paths = { path = "../pom_paths" }
+pom_secrets = { path = "../pom_secrets" }
+pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
+flate2 = "1"
+indexmap = { version = "2", features = ["serde"] }
+serde.workspace = true
+serde_json.workspace = true
+tar = { version = "0.4", default-features = false }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
+
+[dev-dependencies]
+tempfile = "3"

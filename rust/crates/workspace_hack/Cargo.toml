@@ -40,6 +40,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", default-features = false, features = ["alloc", "rc", "result", "std"] }
 serde_json = { version = "1" }
 sha2 = { version = "0.10" }
+simd-adler32 = { version = "0.3" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["local-offset", "macros"] }

@@ -48,6 +48,7 @@ pub fn workspace_list(
                 pom_workspace::failed_run(state, &workspace.branch).map(|failed| FailedRun {
                     operation: match failed.operation {
                         pom_workspace::Operation::Delete => "delete",
+                        pom_workspace::Operation::Import => "import",
                         _ => "create",
                     }
                     .to_string(),

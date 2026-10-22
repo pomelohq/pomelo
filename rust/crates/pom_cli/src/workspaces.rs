@@ -327,14 +327,22 @@ impl Session {
             } else if let Some(failed) = pom_workspace::failed_run(&self.state, &workspace.branch) {
                 let verb = match failed.operation {
                     pom_workspace::Operation::Delete => "delete",
+                    pom_workspace::Operation::Import => "import",
                     _ => "create",
                 };
-                line.push_str(&format!(
-                    "  {verb} stopped at stage {} - resume: pom ws {verb} {} --from-stage {}",
-                    failed.failed_stage + 1,
-                    workspace.branch,
-                    failed.failed_stage + 1
-                ));
+                if verb == "import" {
+                    line.push_str(&format!(
+                        "  import stopped at stage {} - resume: run the same pom ws import again",
+                        failed.failed_stage + 1
+                    ));
+                } else {
+                    line.push_str(&format!(
+                        "  {verb} stopped at stage {} - resume: pom ws {verb} {} --from-stage {}",
+                        failed.failed_stage + 1,
+                        workspace.branch,
+                        failed.failed_stage + 1
+                    ));
+                }
             }
             say(out, &line)?;
         }

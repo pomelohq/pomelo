@@ -16,6 +16,7 @@ path = "src/bin/pom.rs"
 pom_shell = { path = "../pom_shell" }
 pom_config = { path = "../pom_config" }
 pom_bundle = { path = "../pom_bundle" }
+pom_transfer = { path = "../pom_transfer" }
 pom_doctor = { path = "../pom_doctor" }
 pom_forge = { path = "../pom_forge" }
 git = { path = "../git" }

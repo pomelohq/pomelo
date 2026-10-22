@@ -67,7 +67,8 @@ fn uncommitted(worktree: &Path, copied: &[String]) -> Result<usize, String> {
         .count())
 }
 
-fn placed_by_pom(worktree: &Path, path: &str, copied: &[String]) -> bool {
+/// Untracked files pom put in a worktree itself: `copy:` files and generated env files.
+pub fn placed_by_pom(worktree: &Path, path: &str, copied: &[String]) -> bool {
     copied.iter().any(|pattern| matches_copy(pattern, path)) || generated(&worktree.join(path))
 }
 

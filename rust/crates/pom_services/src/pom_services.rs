@@ -1,5 +1,6 @@
 mod control;
 mod dotenv;
+mod dumps;
 mod env_files;
 mod health;
 mod marks;
@@ -16,6 +17,7 @@ pub use control::{
     holder_group, login_shell, service_command, shell_quote, RunnerOptions, ServiceError,
     ServiceRunner, ServiceTarget,
 };
+pub use dumps::{database_name, database_templates, DatabaseTemplate};
 pub use env_files::{EnvLine, ServiceExplain, WorkspaceEnv, HEADER as GENERATED_ENV_HEADER};
 pub use health::{cmd_ok, http_ok, parse_duration, ServiceHealth, WaitOutcome};
 pub use marks::{

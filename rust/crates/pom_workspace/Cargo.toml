@@ -20,6 +20,8 @@ pom_services = { path = "../pom_services" }
 pom_agent = { path = "../pom_agent" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_sessions = { path = "../pom_sessions" }
+pom_secrets = { path = "../pom_secrets" }
+tar = { version = "0.4", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 workspace_hack = { version = "0.1", path = "../workspace_hack" }

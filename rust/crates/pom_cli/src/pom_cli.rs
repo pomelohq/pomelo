@@ -16,6 +16,7 @@ mod onboard;
 mod proxy;
 mod remote;
 mod run;
+mod transfer;
 mod workspaces;
 
 use std::io::Write;
@@ -87,6 +88,15 @@ workspaces
                      stop it and remove its worktrees, databases and folder; the local
                      branch goes too only when it is pushed or merged
   ws rename <branch> [name]   set or clear the workspace's display name
+  ws export <branch> [-o file.pomws] [--no-db] [--json]
+                     the workspace as one archive another machine can open as it was: commits
+                     origin lacks, uncommitted and untracked files (not gitignored ones), its
+                     databases (pg_dump) and the secrets its config uses, sealed with a
+                     passphrase ($POM_BUNDLE_PASSPHRASE, else asked); -o - writes to stdout
+  ws import <file.pomws | -> [--project name] [--branch new] [--json]
+                     open an exported workspace here: worktrees at the same commits with the
+                     same changes, databases restored, fresh ports, env files rewritten, setup
+                     run; a stopped import resumes when run again
   ws gc [--merged] [--closed] [--dry-run] [--yes] [--force] [--json]
                      delete the workspaces whose pull requests (in every repo that has one) are
                      merged, or closed with --closed; asks for each on a terminal, else needs
@@ -219,6 +229,7 @@ enum Command {
     Url(String),
     Proxy,
     Workspace(WorkspaceCommand),
+    Transfer(transfer::TransferCommand),
     Config(ConfigCommand),
     Env(EnvCommand),
     Db(DbCommand),
@@ -302,6 +313,9 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                 return agent::execute(command, &invocation, cwd, out, err);
             }
             Command::Host(ref command) => return remote::execute(command, out, err),
+            Command::Transfer(ref command) => {
+                return transfer::execute(command, &invocation, cwd, out, err);
+            }
             Command::Projects { json } => projects(&StateDir::from_env(), json, out),
             Command::Queue(ref queue) => {
                 return match Session::open(&invocation, cwd) {
@@ -516,6 +530,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::ProxyConfig(proxy::parse_config(&rest[1..])?)
         }
         "proxy" => Command::ProxyFault(proxy::parse_fault(rest)?),
+        "ws" | "workspace" if matches!(rest.first(), Some(&("export" | "import"))) => {
+            Command::Transfer(transfer::parse(rest)?)
+        }
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
         "config" => Command::Config(config::parse(rest)?),
@@ -782,6 +799,7 @@ impl Session {
             | Command::Doctor { .. }
             | Command::Agent(_)
             | Command::Host(_)
+            | Command::Transfer(_)
             | Command::Projects { .. }
             | Command::Queue(_)
             | Command::Version
