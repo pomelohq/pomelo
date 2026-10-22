@@ -1,6 +1,5 @@
 //! Shared services against a stand-in `docker` that records its arguments and answers `ps`.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use pom_config::Config;
@@ -98,7 +97,7 @@ exit 0
         ),
     )
     .expect("script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    seal_executable(&script);
     script
 }
 
@@ -460,4 +459,21 @@ fn slots_wait_instead_of_piling_up_while_docker_cannot_be_reached() {
     assert_eq!((slot.instance, slot.slot), (0, 0));
     assert_eq!(slots.pending("redis").len(), 1, "only the fresh slot waits");
     assert_eq!(slots.instance_count("redis"), 1);
+}
+
+/// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+/// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+fn seal_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let staged = path.with_extension("staged");
+    std::fs::rename(path, &staged).expect("stage");
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let copied = std::process::Command::new("cp")
+        .arg("-p")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .expect("cp");
+    assert!(copied.success(), "cp {}", path.display());
+    std::fs::remove_file(&staged).expect("unstage");
 }

@@ -1,6 +1,5 @@
 //! The client against a stand-in `curl` that records its arguments and stdin and answers canned JSON.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use pom_jira::{Client, CurlTransport, IssueCache};
@@ -35,7 +34,7 @@ printf '\n200'
         ),
     )
     .expect("script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    seal_executable(&script);
     script
 }
 
@@ -128,4 +127,21 @@ fn http_failures_are_errors() {
     let error = jira.boards().expect_err("rejected");
     assert_eq!(error, pom_jira::JiraError::Http(401));
     assert_eq!(error.to_string(), "auth rejected - check email and token");
+}
+
+/// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+/// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+fn seal_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let staged = path.with_extension("staged");
+    std::fs::rename(path, &staged).expect("stage");
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let copied = std::process::Command::new("cp")
+        .arg("-p")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .expect("cp");
+    assert!(copied.success(), "cp {}", path.display());
+    std::fs::remove_file(&staged).expect("unstage");
 }
