@@ -4,6 +4,11 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-10-22
+
+### Fixed
+- Memory no longer climbs while the Mac sleeps or a window is hidden, and no longer spikes after waking: a hidden window stops drawing and redraws once when shown. (#260)
+
 ## [0.9.1] - 2026-10-22
 
 ### Changed
