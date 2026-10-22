@@ -1416,6 +1416,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "filetime"
+version = "0.2.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+dependencies = [
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3595,6 +3605,7 @@ dependencies = [
  "pom_services",
  "pom_sessions",
  "pom_shell",
+ "pom_transfer",
  "pom_workspace",
  "serde",
  "serde_json",
@@ -3888,6 +3899,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "pom_transfer"
+version = "0.9.3"
+dependencies = [
+ "flate2",
+ "indexmap",
+ "pom_bundle",
+ "pom_config",
+ "pom_env",
+ "pom_layout",
+ "pom_paths",
+ "pom_secrets",
+ "pom_services",
+ "pom_workspace",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "workspace_hack",
+]
+
+[[package]]
 name = "pom_workspace"
 version = "0.9.3"
 dependencies = [
@@ -3899,11 +3931,13 @@ dependencies = [
  "pom_layout",
  "pom_paths",
  "pom_ptyhost",
+ "pom_secrets",
  "pom_services",
  "pom_sessions",
  "pom_shell",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "workspace_hack",
 ]
@@ -5094,6 +5128,16 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-io-kit",
  "windows",
+]
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
 ]
 
 [[package]]
@@ -7090,6 +7134,7 @@ dependencies = [
  "serde_core",
  "serde_json",
  "sha2 0.10.9",
+ "simd-adler32",
  "smallvec",
  "syn 3.0.6",
  "thiserror 2.0.20",

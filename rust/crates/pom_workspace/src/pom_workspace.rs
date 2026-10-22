@@ -6,6 +6,7 @@ mod baseline;
 mod create;
 mod delete;
 mod git;
+mod import;
 mod prepare;
 mod repo_branch;
 mod schedule;
@@ -24,6 +25,7 @@ pub use baseline::{migrate, rebaseline, reseed, BaselineReport, MigrationOutcome
 pub use create::{create, validate_branch_name, CreateRequest, CREATE_STAGES};
 pub use delete::{delete, DeleteRequest, DELETE_STAGES};
 pub use git::{branch_is_safe_to_delete, unpushed_commits};
+pub use import::{import, ImportRequest, RepoImport, IMPORT_STAGES};
 pub use prepare::{prepare_main, PrepareRequest};
 pub use repo_branch::{
     checked_out_elsewhere, checkout_label, fetch_origin, keep_repo_branch, list_branches,
@@ -38,7 +40,7 @@ pub use sleep::{
     busy_agents, find_workspace, sleep, wake, wake_at, waker, AgentSession, Agents, DriveAgents,
     SleepError, SleepReport, WakeReport,
 };
-pub use unsaved::unsaved_work;
+pub use unsaved::{placed_by_pom, unsaved_work};
 
 /// Lines of a failed command's output kept in its warning.
 const OUTPUT_TAIL_LINES: usize = 20;
@@ -51,6 +53,8 @@ pub enum Operation {
     Delete,
     #[serde(rename = "PrepareMain")]
     PrepareMain,
+    #[serde(rename = "ImportWorkspace")]
+    Import,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

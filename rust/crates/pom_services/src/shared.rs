@@ -18,7 +18,7 @@ pub const SHARED_NETWORK: &str = "pomelo-shared";
 const PREFERRED_SPAN: u16 = 100;
 const SLOT_RESET_ATTEMPTS: usize = 5;
 const SLOT_RESET_PAUSE: Duration = Duration::from_millis(500);
-const POSTGRES: &str = "postgres";
+pub(crate) const POSTGRES: &str = "postgres";
 /// A Docker that stopped answering must not hold up the panel or an agent asking what runs.
 const SHARED_PS_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_PG_PORT: u16 = 5432;
@@ -961,21 +961,38 @@ pub(crate) struct Postgres {
 impl Postgres {
     /// Docker arguments running `psql` on `database`: inside our container, or a throwaway client.
     pub(crate) fn psql_args(&self, database: &str, rest: &[&str]) -> Vec<String> {
+        self.tool_args("psql", database, false, rest)
+    }
+
+    /// Docker arguments running a Postgres client tool (`psql`, `pg_dump`, `pg_restore`) on `database`;
+    /// `stdin` keeps docker's standard input open for the tool.
+    pub(crate) fn tool_args(
+        &self,
+        tool: &str,
+        database: &str,
+        stdin: bool,
+        rest: &[&str],
+    ) -> Vec<String> {
+        let interactive = stdin.then(|| "-i".to_string());
         let mut args: Vec<String> = match &self.container {
-            Some(container) => ["exec", container, "psql", "-U", &self.user, "-d", database]
-                .map(str::to_string)
-                .to_vec(),
-            None => vec![
-                "run".into(),
-                "--rm".into(),
-                format!("--add-host={}:host-gateway", self.host),
-                PSQL_IMAGE.into(),
-                "psql".into(),
-                format!(
-                    "postgresql://{}:{}@{}:{}/{database}",
-                    self.user, self.password, self.host, self.port
-                ),
-            ],
+            Some(container) => ["exec".to_string()]
+                .into_iter()
+                .chain(interactive)
+                .chain([container, tool, "-U", &self.user, "-d", database].map(str::to_string))
+                .collect(),
+            None => ["run".to_string(), "--rm".to_string()]
+                .into_iter()
+                .chain(interactive)
+                .chain([
+                    format!("--add-host={}:host-gateway", self.host),
+                    PSQL_IMAGE.into(),
+                    tool.into(),
+                    format!(
+                        "--dbname=postgresql://{}:{}@{}:{}/{database}",
+                        self.user, self.password, self.host, self.port
+                    ),
+                ])
+                .collect(),
         };
         args.extend(rest.iter().map(|arg| arg.to_string()));
         args

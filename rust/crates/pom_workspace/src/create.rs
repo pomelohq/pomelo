@@ -47,21 +47,21 @@ pub struct CreateRequest {
     pub repo_branches: IndexMap<String, String>,
 }
 
-struct RepoPlan {
-    name: String,
-    main: PathBuf,
-    worktree: PathBuf,
+pub(crate) struct RepoPlan {
+    pub(crate) name: String,
+    pub(crate) main: PathBuf,
+    pub(crate) worktree: PathBuf,
     base: String,
     /// The branch this repo checks out.
-    branch: String,
+    pub(crate) branch: String,
 }
 
-struct Creation<'a> {
-    context: &'a WorkspaceContext<'a>,
+pub(crate) struct Creation<'a> {
+    pub(crate) context: &'a WorkspaceContext<'a>,
     request: &'a CreateRequest,
-    folder: PathBuf,
+    pub(crate) folder: PathBuf,
     default_branch: &'a str,
-    repos: Vec<RepoPlan>,
+    pub(crate) repos: Vec<RepoPlan>,
 }
 
 pub fn create(
@@ -81,37 +81,9 @@ pub fn create(
         sink,
         resumable: true,
     };
-    let default_branch = context.config.global_default_branch();
-    let planned = plan_repos(context, request, default_branch);
-    // A resumed run may not carry the choices again; the ones saved by its first run still hold.
-    let mut repo_branches = WorkspaceState::load(&folder).repo_branches;
-    repo_branches.extend(request.repo_branches.clone());
-    let creation = planned.as_ref().ok().map(|repos| Creation {
-        context,
-        request,
-        folder: folder.clone(),
-        default_branch,
-        repos: repos
-            .iter()
-            .map(|(name, main)| RepoPlan {
-                name: name.clone(),
-                worktree: folder.join(name),
-                base: git::current_branch(main),
-                main: main.clone(),
-                branch: repo_branches
-                    .get(name)
-                    .filter(|branch| !branch.trim().is_empty())
-                    .unwrap_or(&request.branch)
-                    .clone(),
-            })
-            .collect(),
-    });
+    let creation = Creation::plan(context, request);
     run.execute(|index, scope| {
-        let creation = match (&creation, &planned) {
-            (Some(creation), _) => creation,
-            (None, Err(error)) => return Err(error.clone()),
-            (None, Ok(_)) => return Err("no repos".into()),
-        };
+        let creation = creation.as_ref().map_err(Clone::clone)?;
         match index {
             VALIDATE => creation.validate(),
             PROVISION => creation.provision(),
@@ -182,8 +154,41 @@ pub fn validate_branch_name(branch: &str) -> Result<(), String> {
     Ok(())
 }
 
-impl Creation<'_> {
-    fn branch(&self) -> &str {
+impl<'a> Creation<'a> {
+    /// The workspace's folder and each selected repo's checkout and branch.
+    pub(crate) fn plan(
+        context: &'a WorkspaceContext<'a>,
+        request: &'a CreateRequest,
+    ) -> Result<Creation<'a>, String> {
+        let folder = pom_layout::workspace_folder(context.runner.project_root(), &request.branch);
+        let default_branch = context.config.global_default_branch();
+        let repos = plan_repos(context, request, default_branch)?;
+        // A resumed run may not carry the choices again; the ones saved by its first run still hold.
+        let mut repo_branches = WorkspaceState::load(&folder).repo_branches;
+        repo_branches.extend(request.repo_branches.clone());
+        Ok(Creation {
+            context,
+            request,
+            default_branch,
+            repos: repos
+                .into_iter()
+                .map(|(name, main)| RepoPlan {
+                    worktree: folder.join(&name),
+                    base: git::current_branch(&main),
+                    branch: repo_branches
+                        .get(&name)
+                        .filter(|branch| !branch.trim().is_empty())
+                        .unwrap_or(&request.branch)
+                        .clone(),
+                    name,
+                    main,
+                })
+                .collect(),
+            folder,
+        })
+    }
+
+    pub(crate) fn branch(&self) -> &str {
         &self.request.branch
     }
 
@@ -191,7 +196,7 @@ impl Creation<'_> {
         pom_env::port_ws_key(self.branch())
     }
 
-    fn validate(&self) -> Result<StageResult, String> {
+    pub(crate) fn validate(&self) -> Result<StageResult, String> {
         validate_branch_name(self.branch())?;
         if self.branch() == self.default_branch {
             return Err(format!(
@@ -216,7 +221,7 @@ impl Creation<'_> {
         Ok(StageResult::Done)
     }
 
-    fn provision(&self) -> Result<StageResult, String> {
+    pub(crate) fn provision(&self) -> Result<StageResult, String> {
         let runner = self.context.runner;
         std::fs::create_dir_all(&self.folder)
             .map_err(|error| format!("create {}: {error}", self.folder.display()))?;
@@ -243,7 +248,7 @@ impl Creation<'_> {
         Ok(StageResult::Done)
     }
 
-    fn infra(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
+    pub(crate) fn infra(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
         let config = self.context.config;
         if config.shared_services.is_empty() {
             return Ok(StageResult::Skipped);
@@ -344,7 +349,7 @@ impl Creation<'_> {
         (fresh, clones)
     }
 
-    fn source(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
+    pub(crate) fn source(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
         let created: Mutex<Vec<(&RepoPlan, git::BranchOrigin)>> = Mutex::new(Vec::new());
         let project_root = self.context.runner.project_root();
         let errors: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -415,7 +420,7 @@ impl Creation<'_> {
         Err(first)
     }
 
-    fn configure(&self) -> Result<StageResult, String> {
+    pub(crate) fn configure(&self) -> Result<StageResult, String> {
         self.context
             .runner
             .workspace_env(self.context.config, self.branch())
@@ -424,7 +429,7 @@ impl Creation<'_> {
         Ok(StageResult::Done)
     }
 
-    fn setup(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
+    pub(crate) fn setup(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
         let config = self.context.config;
         let env = self.context.runner.workspace_env(config, self.branch());
         let store = module_store::Store::new(self.context.state);
@@ -502,7 +507,7 @@ impl Creation<'_> {
     }
 
     /// `ws__baseline`: the workspace's data right after it was created, migrated and seeded.
-    fn baseline(&self, scope: &StageScope<'_>) -> StageResult {
+    pub(crate) fn baseline(&self, scope: &StageScope<'_>) -> StageResult {
         let config = self.context.config;
         let names = pom_services::owned_database_names(config, self.branch(), |repo| {
             self.folder.join(repo).is_dir()
