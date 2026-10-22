@@ -60,9 +60,13 @@ services
                      the fault rules in force; remove one, or every one of the workspace
   proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
                      one in the background when neither the app nor another proxy does)
-  run <name|\"cmd\"> [repo]
+  run [--profile test|dev] <name|\"cmd\"> [repo]
                      a command from the config (or any shell command) in the repo's worktree,
-                     with the workspace's env
+                     with the workspace's env; the test profile layers the repo's .env.test on
+                     top (connection values keep the workspace's), and `run test` uses it when
+                     the repo has a `test:` block
+  run --explain-env [--profile test] [--json] <name|\"cmd\"> [repo]
+                     where each variable the command would get comes from, secrets masked
   commands           the commands the config defines, per repo
   refresh            stop every running service of the project (frees their ports)
   release [--disk] [--worktrees] [--yes]
@@ -631,7 +635,7 @@ impl Session {
             Command::Config(command) => self.config_command(command, out),
             Command::Env(command) => self.env_command(command, out),
             Command::Db(command) => self.db_command(command, out),
-            Command::Run(request) => self.run_command(request),
+            Command::Run(request) => self.run_command(request, out),
             Command::Commands => self.list_commands(out),
             Command::Lifecycle(command) => self.lifecycle_command(command, out),
             Command::Ports

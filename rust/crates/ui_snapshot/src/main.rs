@@ -2197,6 +2197,7 @@ fn main() -> anyhow::Result<()> {
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let mut item: Box<dyn Item> = if which == "board-env" {
             let line = |key: &str, value: &str, source: &str, secret: bool| pom_services::EnvLine {
+                connection: false,
                 key: key.into(),
                 value: value.into(),
                 source: source.into(),

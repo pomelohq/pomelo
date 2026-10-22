@@ -13,5 +13,6 @@ pub use dev_ports::{
     DEFAULT_WEBHOOK_PORT, PROXY_PORT_KEY, WEBHOOK_PORT_KEY,
 };
 pub use resolver::{
-    http_to_ws, service_host, EnvSources, ResolveContext, SlotAllocation, BIND_IP, DEV_PROXY_PREFIX,
+    http_to_ws, is_connection_var, service_host, EnvSources, ResolveContext, SlotAllocation,
+    BIND_IP, DEV_PROXY_PREFIX,
 };

@@ -1,0 +1,77 @@
+{
+  "command": "env | grep -E '^(DATABASE_URL|REDIS_URL|SOME_ALLOWED_DOMAINS|API_TOKEN|GREETING|ONLY_TEST|EXTRA)=' | sort > env.txt",
+  "env": [
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "API_TOKEN",
+      "secret": false,
+      "source": ".env.test",
+      "value": "test-token"
+    },
+    {
+      "connection": true,
+      "kept_over": ".env.test",
+      "key": "DATABASE_URL",
+      "secret": false,
+      "source": "connection",
+      "value": "postgres://postgres:postgres@127.0.0.1:<port>/demo_feat"
+    },
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "GREETING",
+      "secret": false,
+      "source": ".env.test.local",
+      "value": "local-wins"
+    },
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "LOG_LEVEL",
+      "secret": false,
+      "source": "workspace",
+      "value": "debug"
+    },
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "ONLY_TEST",
+      "secret": false,
+      "source": ".env.test",
+      "value": "yes example.test"
+    },
+    {
+      "connection": true,
+      "kept_over": ".env.test",
+      "key": "REDIS_URL",
+      "secret": false,
+      "source": "connection",
+      "value": "redis://127.0.0.1:<port>/0"
+    },
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "SIGNING_KEY",
+      "secret": true,
+      "source": "workspace",
+      "value": "********"
+    },
+    {
+      "connection": false,
+      "kept_over": null,
+      "key": "SOME_ALLOWED_DOMAINS",
+      "secret": false,
+      "source": ".env.test",
+      "value": "example.test"
+    }
+  ],
+  "env_files": [
+    ".env.test",
+    ".env.test.local"
+  ],
+  "profile": "test",
+  "repo": "api",
+  "schema": "pom.run/v1",
+  "workspace": "feat"
+}

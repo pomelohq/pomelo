@@ -27,6 +27,20 @@ impl Config {
             for (service_name, service) in &dir.services {
                 scan(&format!("service:{service_name}"), &service.env);
             }
+            if let Some(test) = &dir.test {
+                scan("test.env", &test.env);
+                let path = std::path::Path::new(&test.env_file);
+                if path.is_absolute()
+                    || path
+                        .components()
+                        .any(|part| matches!(part, std::path::Component::ParentDir))
+                {
+                    errors.push(format!(
+                        "{context} test.env_file: {:?} must be a path inside the repo",
+                        test.env_file
+                    ));
+                }
+            }
             self.check_profiles(&mut errors, &context, &dir.profiles);
             for (service_name, service) in &dir.services {
                 self.check_profiles(

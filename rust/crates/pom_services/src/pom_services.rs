@@ -1,8 +1,10 @@
 mod control;
+mod dotenv;
 mod env_files;
 mod health;
 mod marks;
 mod queue;
+mod run_env;
 mod shared;
 mod shared_command;
 mod shared_health;
@@ -21,6 +23,10 @@ pub use marks::{
     StepStats, STATS_UNAVAILABLE,
 };
 pub use queue::{bull_queues_from_keys, count_commands, tally, Count, QueueCounts, QueueKind};
+pub use run_env::{
+    runs_tests, RunEnv, RunEnvLine, RunProfile, SOURCE_CONNECTION, SOURCE_TEST_ENV,
+    SOURCE_WORKSPACE,
+};
 pub use shared::{
     database_names, database_names_where, run_within, Endpoint, PortOwner, SharedAction,
     COMPOSE_FILE, SHARED_NETWORK,
