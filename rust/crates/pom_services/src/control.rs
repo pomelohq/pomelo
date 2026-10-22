@@ -329,6 +329,11 @@ impl ServiceRunner {
         &self.project_root
     }
 
+    /// The binary that hosts holders.
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+
     pub fn set_mode(
         &self,
         config: &Config,

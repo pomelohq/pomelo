@@ -12,7 +12,7 @@ pub use faults::{
     add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, remove_fault, Fault,
     FaultRule,
 };
-pub use machine::{listening_ports_in_tree, SystemMachine};
+pub use machine::{listening_ports_in_tree, SystemMachine, Waker};
 pub use routing::{
     branch_labels, host_labels, host_name, reachable, resolve_service_key, rewrite_external_cookie,
     rewrite_local_cookie, rewrite_public_cookie, ConfigSource, Decision, Logged, Machine, Problem,

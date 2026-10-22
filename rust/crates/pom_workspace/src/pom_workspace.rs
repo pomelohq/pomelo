@@ -8,6 +8,7 @@ mod delete;
 mod git;
 mod prepare;
 mod repo_branch;
+mod sleep;
 mod unsaved;
 
 use std::path::Path;
@@ -26,6 +27,10 @@ pub use prepare::{prepare_main, PrepareRequest};
 pub use repo_branch::{
     checked_out_elsewhere, checkout_label, fetch_origin, keep_repo_branch, list_branches,
     switch_repo_branch, use_another_branch, BranchInfo,
+};
+pub use sleep::{
+    busy_agents, find_workspace, sleep, wake, wake_at, waker, AgentSession, Agents, DriveAgents,
+    SleepError, SleepReport, WakeReport,
 };
 pub use unsaved::unsaved_work;
 

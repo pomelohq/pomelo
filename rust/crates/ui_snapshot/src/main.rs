@@ -3080,6 +3080,7 @@ fn main() -> anyhow::Result<()> {
         }
         let main = which == "main";
         let items = workspace::workspace_row_menu(workspace::RowMenuFacts {
+            sleeping: false,
             ticket: !main,
             running: true,
             main,
@@ -3549,6 +3550,7 @@ fn main() -> anyhow::Result<()> {
             })
             .collect();
         let project = (mode != "welcome" && mode != "onboard").then(|| workspace::ProjectInfo {
+            states: Vec::new(),
             name: "myproject".into(),
             branch: "main".into(),
             config_path: "/projects/myproject/pom.yml".into(),
@@ -3683,6 +3685,7 @@ fn main() -> anyhow::Result<()> {
                 ),
             ];
             Some(workspace::ProjectInfo {
+                states: Vec::new(),
                 name: "myproject".into(),
                 branch: "main".into(),
                 config_path: "/projects/myproject/pom.yml".into(),
@@ -5231,6 +5234,7 @@ fn switcher_fixture() -> workspace::WorkspaceSwitcher {
             ticket: project.tickets[index].clone(),
             ticket_category: project.ticket_categories[index].clone(),
             running: project.running[index],
+            state: String::new(),
             pr: project.prs[index],
             missing: Vec::new(),
         })
@@ -5348,6 +5352,7 @@ fn window_project() -> workspace::ProjectInfo {
         ),
     ];
     workspace::ProjectInfo {
+        states: Vec::new(),
         name: "myproject".into(),
         branch: "main".into(),
         config_path: fixture_root().join("pom.yml"),

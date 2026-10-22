@@ -19,6 +19,8 @@ const REACH_TIMEOUT: Duration = Duration::from_millis(200);
 const MISS_CACHE_TTL: Duration = Duration::from_millis(500);
 /// Fault rules are re-read this often, so a test's `pom proxy fault add` takes effect within a second.
 const FAULT_CACHE_TTL: Duration = Duration::from_secs(1);
+/// A page's burst of requests, and the waiting page's own polling, ask to wake a workspace once.
+const WAKE_DEBOUNCE: Duration = Duration::from_secs(30);
 
 pub type ConfigSource = Arc<RwLock<Option<Arc<Config>>>>;
 
@@ -43,6 +45,8 @@ pub enum ProblemKind {
     Starting,
     /// The service has a port but is not running.
     Stopped,
+    /// Its workspace is asleep and was just asked to wake.
+    Waking,
     /// The workspace or service is unknown here.
     NoRoute,
     /// The host is not a workspace address at all.
@@ -345,6 +349,8 @@ pub trait Machine: Send + Sync {
     fn faults(&self) -> Vec<crate::FaultRule> {
         Vec::new()
     }
+    /// Starts waking a sleeping workspace without waiting for it.
+    fn wake(&self, _project_root: &Path, _branch: &str) {}
 }
 
 type BranchMap = (Instant, HashMap<String, String>);
@@ -362,6 +368,8 @@ pub struct Router {
     /// One lookup at a time: requests arriving while it runs wait and read its result from the cache.
     resolving: Mutex<()>,
     faults: Mutex<(Option<Instant>, Vec<crate::FaultRule>)>,
+    /// When each workspace was last asked to wake.
+    woken: Mutex<HashMap<(PathBuf, String), Instant>>,
     random: Mutex<u64>,
     /// Hosts end in it besides `localhost`.
     domain: String,
@@ -377,6 +385,7 @@ impl Router {
             ports: Mutex::new(HashMap::new()),
             resolving: Mutex::new(()),
             faults: Mutex::new((None, Vec::new())),
+            woken: Mutex::new(HashMap::new()),
             random: Mutex::new(crate::faults::now_ms() | 1),
             domain: DOMAIN.to_string(),
         }
@@ -535,11 +544,57 @@ impl Router {
         None
     }
 
-    fn workspace_route(&self, config: &Config, branch: &str, target: &str, prefix: &str) -> Route {
+    /// Asks the machine to wake the workspace unless it was asked within the debounce window.
+    fn wake_once(&self, project: &ProjectRoute, branch: &str) {
+        let key = (project.root.clone(), branch.to_string());
+        let Ok(mut woken) = self.woken.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if woken
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < WAKE_DEBOUNCE)
+        {
+            return;
+        }
+        woken.insert(key, now);
+        drop(woken);
+        self.machine.wake(&project.root, branch);
+    }
+
+    fn workspace_route(
+        &self,
+        project: &ProjectRoute,
+        config: &Config,
+        branch: &str,
+        target: &str,
+        prefix: &str,
+    ) -> Route {
         let Some(service_key) = resolve_service_key(config, target) else {
             return no_route(branch, target);
         };
-        match self.service_address(config, branch, &service_key) {
+        let address = self.service_address(config, branch, &service_key);
+        if matches!(address, Err(Unavailable::Stopped | Unavailable::Unknown))
+            && !self
+                .machine
+                .service_envs(&project.root, branch)
+                .state
+                .is_running()
+        {
+            self.wake_once(project, branch);
+            return Route::Error {
+                status: 503,
+                message: format!(
+                    "dev-proxy: workspace {branch} is asleep and waking up - retry shortly"
+                ),
+                problem: Problem {
+                    kind: ProblemKind::Waking,
+                    target: target.to_string(),
+                    workspace: branch.to_string(),
+                },
+            };
+        }
+        match address {
             Ok(address) => Route::Local {
                 address,
                 prefix: prefix.to_string(),
@@ -685,7 +740,7 @@ impl Router {
                         fault,
                     };
                 }
-                let route = self.workspace_route(&config, &branch, &target, &prefix);
+                let route = self.workspace_route(&project, &config, &branch, &target, &prefix);
                 logged.target = logged_target(&route);
                 let fault = self.fault_for(&config.session, &branch, &target, &stripped);
                 return Decision {
@@ -699,8 +754,8 @@ impl Router {
         if labels.len() == 3 {
             let target = format!("{}/{}", labels[1], labels[0]);
             let (route, fault) = match self.project_for(&branch_label, &target) {
-                Some((_, config, branch)) => (
-                    self.workspace_route(&config, &branch, &target, ""),
+                Some((project, config, branch)) => (
+                    self.workspace_route(&project, &config, &branch, &target, ""),
                     self.fault_for(&config.session, &branch, &target, path),
                 ),
                 None => (no_route(&branch_label, &target), None),

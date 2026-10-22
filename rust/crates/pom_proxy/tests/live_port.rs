@@ -20,6 +20,7 @@ fn the_live_port_is_found_wherever_the_dev_server_listens() {
     let machine = SystemMachine {
         state: StateDir::new(temp.path().join("state")),
         holders,
+        waker: None,
     };
 
     // Vite's 5173, CRA's 3000, Rails' 3000: the usual defaults of a server that ignores $PORT.

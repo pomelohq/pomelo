@@ -235,6 +235,8 @@ impl App {
                 self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
             }
             workspace::RowAction::StopServices => self.stop_workspace_services(id, &target),
+            workspace::RowAction::Sleep => self.sleep_workspace(id, &target),
+            workspace::RowAction::Wake => self.wake_workspace(id, &target),
             workspace::RowAction::AskDelete => {
                 let unpushed: Vec<(String, usize)> = target
                     .repos
@@ -362,6 +364,68 @@ impl App {
                 if let Err(error) = context.runner.stop(&target) {
                     eprintln!("stop {}/{}: {error}", target.repo, target.service);
                 }
+            }
+            ui::wake();
+        });
+    }
+
+    fn sleep_workspace(&mut self, id: WindowId, target: &pom_layout::Workspace) {
+        let Some(context) = self.op_context(id) else {
+            return;
+        };
+        let busy = {
+            let workspace_context = pom_workspace::WorkspaceContext {
+                config: &context.config,
+                runner: &context.runner,
+                state: &context.state,
+            };
+            let agents = pom_workspace::DriveAgents::new(&workspace_context);
+            pom_workspace::busy_agents(&agents, &target.branch)
+        };
+        if !busy.is_empty() {
+            let message = format!(
+                "{} stays awake: an agent is working ({})",
+                target.branch,
+                busy.join(", ")
+            );
+            self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+            return;
+        }
+        let target = target.clone();
+        std::thread::spawn(move || {
+            let workspace_context = pom_workspace::WorkspaceContext {
+                config: &context.config,
+                runner: &context.runner,
+                state: &context.state,
+            };
+            let agents = pom_workspace::DriveAgents::new(&workspace_context);
+            if let Err(error) = pom_workspace::sleep(&workspace_context, &agents, &target, false) {
+                eprintln!("sleep {}: {error}", target.branch);
+            }
+            ui::wake();
+        });
+    }
+
+    fn wake_workspace(&mut self, id: WindowId, target: &pom_layout::Workspace) {
+        let Some(context) = self.op_context(id) else {
+            return;
+        };
+        let target = target.clone();
+        std::thread::spawn(move || {
+            let workspace_context = pom_workspace::WorkspaceContext {
+                config: &context.config,
+                runner: &context.runner,
+                state: &context.state,
+            };
+            let agents = pom_workspace::DriveAgents::new(&workspace_context);
+            match pom_workspace::wake(&workspace_context, &agents, &target) {
+                Ok(report) if !report.failed.is_empty() => eprintln!(
+                    "wake {}: could not start {}",
+                    target.branch,
+                    report.failed.join("; ")
+                ),
+                Ok(_) => {}
+                Err(error) => eprintln!("wake {}: {error}", target.branch),
             }
             ui::wake();
         });

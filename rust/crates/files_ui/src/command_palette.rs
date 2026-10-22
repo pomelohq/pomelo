@@ -1425,6 +1425,7 @@ mod tests {
                     ticket: String::new(),
                     ticket_category: String::new(),
                     running: 0,
+                    state: String::new(),
                     pr: None,
                     missing: Vec::new(),
                 },

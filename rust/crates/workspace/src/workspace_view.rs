@@ -1669,6 +1669,7 @@ impl WorkspaceView {
                     .cloned()
                     .unwrap_or_default(),
                 running: project.running.get(index).copied().unwrap_or(0),
+                state: project.states.get(index).cloned().unwrap_or_default(),
                 pr: project.prs.get(index).copied().flatten(),
                 missing: project.missing.get(index).cloned().unwrap_or_default(),
             })
@@ -2323,6 +2324,9 @@ impl WorkspaceView {
                         }
                         if row.running > 0 {
                             text.push_str(&format!(" - {} running", row.running));
+                        }
+                        if !row.state.is_empty() {
+                            text.push_str(&format!(" - {}", row.state));
                         }
                         if let Some(pr) = row.pr.filter(|_| row.index != 0) {
                             let noun = if pr.count == 1 { "PR" } else { "PRs" };
@@ -3416,6 +3420,10 @@ impl WorkspaceView {
                 .running
                 .get(index)
                 .is_some_and(|running| *running > 0),
+            sleeping: project
+                .states
+                .get(index)
+                .is_some_and(|state| !state.is_empty()),
             main: is_main,
             missing: project
                 .missing
@@ -3434,6 +3442,12 @@ impl WorkspaceView {
             }
             crate::MENU_WS_STOP => {
                 self.workspace_requests.row = Some((index, crate::RowAction::StopServices));
+            }
+            crate::MENU_WS_SLEEP => {
+                self.workspace_requests.row = Some((index, crate::RowAction::Sleep));
+            }
+            crate::MENU_WS_WAKE => {
+                self.workspace_requests.row = Some((index, crate::RowAction::Wake));
             }
             crate::MENU_WS_OPEN_TICKET => {
                 self.workspace_requests.row = Some((index, crate::RowAction::OpenTicket));
@@ -8658,6 +8672,7 @@ fn server_notification(notice: crate::ServerNotice) -> Notification {
 pub struct RowMenuFacts {
     pub ticket: bool,
     pub running: bool,
+    pub sleeping: bool,
     pub main: bool,
     pub missing: bool,
 }
@@ -8697,6 +8712,11 @@ pub fn workspace_row_menu(facts: RowMenuFacts) -> Vec<MenuItem> {
     }
     if facts.running {
         items.push(item(crate::MENU_WS_STOP, "Stop All Services", false));
+    }
+    if facts.sleeping {
+        items.push(item(crate::MENU_WS_WAKE, "Wake Workspace", false));
+    } else {
+        items.push(item(crate::MENU_WS_SLEEP, "Sleep Workspace", false));
     }
     if facts.main && facts.missing {
         items.push(item(

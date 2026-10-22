@@ -6,7 +6,7 @@ use crate::routing::{Problem, ProblemKind};
 /// How often the page asks the proxy again, by what it is waiting for.
 fn poll_ms(kind: ProblemKind) -> Option<u32> {
     match kind {
-        ProblemKind::Starting => Some(1500),
+        ProblemKind::Starting | ProblemKind::Waking => Some(1500),
         ProblemKind::Stopped | ProblemKind::Unreachable => Some(3000),
         ProblemKind::NoRoute => Some(5000),
         ProblemKind::NotFound => None,
@@ -64,6 +64,14 @@ pub fn render(status: u16, message: &str, problem: &Problem) -> String {
             format!("{} is starting", escape(&target)),
             format!(
                 "It is building{in_workspace} and not listening yet. This page opens it as soon as it answers."
+            ),
+        ),
+        ProblemKind::Waking => (
+            "wait",
+            format!("Waking {}", escape(&problem.workspace)),
+            format!(
+                "The workspace was asleep, so {} is starting again with the rest of it. This page opens it as soon as it answers.",
+                escape(&target)
             ),
         ),
         ProblemKind::Stopped => (

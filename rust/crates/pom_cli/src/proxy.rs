@@ -48,9 +48,12 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
             ports.proxy
         ));
     }
+    let holders = pom_ptyhost::SocketDir::from_env();
+    let binary = std::env::current_exe().map_err(|error| error.to_string())?;
     let machine = SystemMachine {
         state: state.clone(),
-        holders: pom_ptyhost::SocketDir::from_env(),
+        holders: holders.clone(),
+        waker: Some(pom_workspace::waker(state.clone(), holders, binary)),
     };
     let proxy = DevProxy::start_on(
         Box::new(machine),

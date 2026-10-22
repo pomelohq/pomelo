@@ -31,6 +31,8 @@ pub struct WorkspaceSummary {
     pub name: String,
     pub repos: Vec<String>,
     pub running: usize,
+    /// `running`, `sleeping` or `queued`; empty from a pom that predates sleeping.
+    pub state: String,
     pub in_progress: Option<String>,
     pub failed: Option<FailedRun>,
 }
