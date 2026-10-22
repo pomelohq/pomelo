@@ -84,6 +84,21 @@ impl RemoteServicesPanel {
             return false;
         };
         let snapshot = self.watch.snapshot();
+        let number = self.next_item;
+        self.next_item += 1;
+        let service = match target {
+            terminal::RemoteTarget::Agent(role) => {
+                let watch = self.watch.clone();
+                let id = crate::agent_item_id(&snapshot.branch, &role);
+                let open = Box::new(move || crate::remote_agent_item(&watch, &role, number));
+                self.requests.push(PanelRequest::RevealAgent { id, open });
+                return true;
+            }
+            terminal::RemoteTarget::Service(service) => service,
+            terminal::RemoteTarget::Shell { .. } | terminal::RemoteTarget::Holder(_) => {
+                return false
+            }
+        };
         let root = snapshot
             .workspaces
             .as_ref()
@@ -94,23 +109,12 @@ impl RemoteServicesPanel {
             })
             .map(|workspace| workspace.path.clone())
             .unwrap_or_default();
-        let agent = matches!(target, terminal::RemoteTarget::Agent(_));
-        let id = match &target {
-            terminal::RemoteTarget::Agent(role) => format!("agent:{}/{role}", snapshot.branch),
-            terminal::RemoteTarget::Service(service) => {
-                format!("service:{}/{service}", snapshot.branch)
-            }
-            terminal::RemoteTarget::Shell { .. } | terminal::RemoteTarget::Holder(_) => {
-                return false
-            }
-        };
-        let number = self.next_item;
-        self.next_item += 1;
+        let id = format!("service:{}/{service}", snapshot.branch);
         let item_id = id.clone();
         let open = Box::new(move || {
             let remote = terminal::RemoteOptions {
                 provider,
-                target,
+                target: terminal::RemoteTarget::Service(service),
                 mode: terminal::RemoteMode::ReadWrite,
             };
             match terminal_ui::TerminalItem::remote_console(
@@ -119,7 +123,7 @@ impl RemoteServicesPanel {
                 item_id,
                 title,
                 remote,
-                agent,
+                false,
                 std::sync::Arc::new(ui::wake),
             ) {
                 Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
@@ -129,11 +133,8 @@ impl RemoteServicesPanel {
                 }
             }
         });
-        self.requests.push(if agent {
-            PanelRequest::RevealAgent { id, open }
-        } else {
-            PanelRequest::RevealTerminal { id, open }
-        });
+        self.requests
+            .push(PanelRequest::RevealTerminal { id, open });
         true
     }
 

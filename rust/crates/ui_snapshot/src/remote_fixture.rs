@@ -17,6 +17,48 @@ use pom_services::{ServiceHealth, SharedHealth};
 struct Board {
     down: AtomicBool,
     shell: Option<Arc<Shell>>,
+    /// Pushes who drives the agents and the approval one waits on.
+    pushes: bool,
+}
+
+const DEV_AGENT: &str = "ws-myproject-feat-login-claude-raw";
+
+const AGENT_OUTPUT: &[u8] = b"\x1b[1m> Fix the failing login spec\x1b[0m\r\n\r\n\x1b[38;2;215;119;87m*\x1b[0m Reading spec/requests/login_spec.rb\r\n\x1b[38;2;215;119;87m*\x1b[0m The spec expects a redirect to /dashboard after sign in.\r\n\x1b[38;2;215;119;87m*\x1b[0m Running the spec again with the fix applied\r\n\r\n  bin/rspec spec/requests/login_spec.rb\r\n";
+
+/// Pushes one agents update, then nothing changes.
+struct BoardFeed {
+    sent: AtomicBool,
+}
+
+impl pom_remote::Feed for BoardFeed {
+    fn next(&self, timeout: Duration) -> pom_remote::FeedEvent {
+        if self.sent.swap(true, Ordering::SeqCst) {
+            std::thread::sleep(timeout);
+            return pom_remote::FeedEvent::Idle;
+        }
+        let sessions = Board::sessions("feat-login");
+        let presence = vec![pom_remote::server_api::AgentPresence {
+            holder: DEV_AGENT.into(),
+            driven_by: Some("an orchestrator".into()),
+            pending: Some(pom_agent::PendingApproval {
+                request: "r1".into(),
+                tool: "Bash".into(),
+                summary: "bin/rspec spec/requests/login_spec.rb".into(),
+            }),
+        }];
+        pom_remote::FeedEvent::Update(pom_remote::Update::Agents(
+            pom_remote::server_api::AgentsUpdate {
+                branch: "feat-login".into(),
+                sessions,
+                presence,
+                error: None,
+            },
+        ))
+    }
+
+    fn follow(&self, _branch: &str, _turn: Option<&str>) -> Result<(), SourceError> {
+        Ok(())
+    }
 }
 
 const SHELL_OUTPUT: &[u8] = b"\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ ls\r\napi  web  pom.yml\r\n\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ pom status\r\napi/server   running  :3104\r\napi/jobs     running\r\nweb/app      running  :5276\r\nweb/storybook  crashed\r\n\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ ";
@@ -32,7 +74,12 @@ fn serve_shell(
         .connection()
         .attach_stream(params.channel, 0)
         .map_err(failed)?;
-    sender.write(SHELL_OUTPUT).map_err(failed)?;
+    let output = if params.holder.starts_with("ws-") {
+        AGENT_OUTPUT
+    } else {
+        SHELL_OUTPUT
+    };
+    sender.write(output).map_err(failed)?;
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(30));
         drop(sender);
@@ -51,7 +98,12 @@ struct Shell {
 
 impl pom_rpc::pty::PtyProvider for Shell {
     fn attach(&self, request: &pom_rpc::pty::Request) -> Result<pom_rpc::pty::Terminal, String> {
+        let holder = match &request.target {
+            pom_rpc::pty::Target::Agent(_) => DEV_AGENT.to_string(),
+            _ => String::new(),
+        };
         let params = pom_rpc::pty::AttachParams {
+            holder,
             cols: request.cols,
             rows: request.rows,
             ..pom_rpc::pty::AttachParams::default()
@@ -66,6 +118,28 @@ impl pom_rpc::pty::PtyProvider for Shell {
 }
 
 impl Board {
+    fn sessions(branch: &str) -> Vec<SessionView> {
+        let agent = |role: &str, holder: &str, state: &str, turn: u64| SessionView {
+            handle: format!("{branch}/{role}"),
+            workspace: branch.into(),
+            role: role.into(),
+            holder: holder.into(),
+            state: state.into(),
+            turn,
+            alive: true,
+            ..SessionView::default()
+        };
+        vec![
+            agent("dev", DEV_AGENT, "tool_use", 7),
+            agent(
+                "review",
+                "ws-myproject-feat-login-claude-review",
+                "awaiting_input",
+                2,
+            ),
+        ]
+    }
+
     fn check(&self) -> Result<(), SourceError> {
         if self.down.load(Ordering::SeqCst) {
             return Err(SourceError::Unreachable(
@@ -156,19 +230,7 @@ impl ProjectSource for Board {
 
     fn agents(&self, branch: &str) -> Result<Vec<SessionView>, SourceError> {
         self.check()?;
-        let agent = |role: &str, state: &str, turn: u64| SessionView {
-            handle: format!("{branch}/{role}"),
-            workspace: branch.into(),
-            role: role.into(),
-            state: state.into(),
-            turn,
-            alive: true,
-            ..SessionView::default()
-        };
-        Ok(vec![
-            agent("dev", "tool_use", 7),
-            agent("review", "awaiting_input", 2),
-        ])
+        Ok(Self::sessions(branch))
     }
 
     fn agent_turn(&self, _: &str, _: &str) -> Result<Option<AgentTurn>, SourceError> {
@@ -191,6 +253,8 @@ impl ProjectSource for Board {
         Some(pom_remote::TransportInfo {
             via: pom_remote::Via::Server,
             terminals: self.shell.is_some(),
+            pushes: self.pushes,
+            agents: self.pushes,
             ..pom_remote::TransportInfo::default()
         })
     }
@@ -199,6 +263,18 @@ impl ProjectSource for Board {
         self.shell
             .clone()
             .map(|shell| shell as Arc<dyn pom_rpc::pty::PtyProvider>)
+    }
+
+    fn events(
+        &self,
+        _branch: &str,
+        _turn: Option<&str>,
+    ) -> Result<Option<Arc<dyn pom_remote::Feed>>, SourceError> {
+        Ok(self.pushes.then(|| {
+            Arc::new(BoardFeed {
+                sent: AtomicBool::new(false),
+            }) as Arc<dyn pom_remote::Feed>
+        }))
     }
 }
 
@@ -281,7 +357,8 @@ pub fn render(
     scale: f32,
     renderer: &mut ui::UiRenderer,
 ) -> anyhow::Result<()> {
-    let shell = (mode == "terminal")
+    let agents = mode == "agents";
+    let shell = (mode == "terminal" || agents)
         .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
         .transpose()?
         .map(|(client, server)| {
@@ -292,6 +369,7 @@ pub fn render(
         });
     let board = Arc::new(Board {
         shell,
+        pushes: agents,
         ..Board::default()
     });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
@@ -299,6 +377,9 @@ pub fn render(
     wait_until(&watch, |snapshot| {
         snapshot.connection == Connection::Connected && snapshot.status.is_some()
     });
+    if agents {
+        wait_until(&watch, |snapshot| !snapshot.presence.is_empty());
+    }
     if mode == "disconnected" {
         board.down.store(true, Ordering::SeqCst);
         watch.refresh_now();
@@ -353,6 +434,20 @@ pub fn render(
         view.set_side_panels(vec![Box::new(panel)]);
         let (notice, _) = remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject");
         view.set_center_notice(Some(notice));
+        if agents {
+            let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
+            let dock = terminal_ui::TerminalPanel::remote_agent_dock(
+                root,
+                Arc::new(|| {}),
+                Some(Box::new(|| {})),
+            );
+            view.set_terminal_views(None, Some(Box::new(dock)));
+            let item_id = services_ui::agent_item_id("feat-login", "dev");
+            view.open_agent_item(&item_id, false, || {
+                services_ui::remote_agent_item(&watch, "dev", 1)
+            });
+            return;
+        }
         if let Some(provider) = watch.terminals() {
             let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
             let panel = terminal_ui::TerminalPanel::with_holders(
@@ -372,9 +467,10 @@ pub fn render(
     if mode == "logs" {
         wait_until(&watch, |snapshot| snapshot.logs.is_some());
     }
-    for _ in 0..if mode == "terminal" { 40 } else { 4 } {
+    let live = mode == "terminal" || agents;
+    for _ in 0..if live { 40 } else { 4 } {
         app.draw(handle).expect("frame");
-        if mode == "terminal" {
+        if live {
             std::thread::sleep(Duration::from_millis(20));
         }
     }

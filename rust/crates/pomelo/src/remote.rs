@@ -18,6 +18,8 @@ pub(crate) struct RemoteWindow {
     notice_actions: Vec<remote_ui::NoticeAction>,
     /// The workspace whose terminals the window shows, once the host's server opens them.
     terminals_for: Option<String>,
+    /// The agent roles whose tabs were open when last saved, for the shown workspace.
+    agent_tabs: Vec<String>,
 }
 
 impl RemoteWindow {
@@ -140,6 +142,7 @@ impl App {
                 seen: u64::MAX,
                 notice_actions: Vec::new(),
                 terminals_for: None,
+                agent_tabs: Vec::new(),
             });
         }
         self.install_remote_views(id);
@@ -265,6 +268,77 @@ impl App {
             view.set_center_notice(Some(notice));
         });
         self.install_remote_terminals(id, &snapshot);
+        self.open_started_agents(id);
+        self.save_remote_agent_tabs(id, &snapshot);
+    }
+
+    /// Agents this window started on the host, each opened in the dock once it runs.
+    fn open_started_agents(&mut self, id: WindowId) {
+        let Some(watch) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.watch.clone())
+        else {
+            return;
+        };
+        for started in watch.take_started() {
+            self.open_remote_agent(id, &watch, &started.role);
+        }
+    }
+
+    fn open_remote_agent(&mut self, id: WindowId, watch: &pom_remote::Watch, role: &str) {
+        let item_id = services_ui::agent_item_id(&watch.snapshot().branch, role);
+        let number = self.next_agent_item;
+        self.next_agent_item += 1;
+        self.with_workspace_view(id, |view, _| {
+            view.open_agent_item(&item_id, false, || {
+                services_ui::remote_agent_item(watch, role, number)
+            })
+        });
+    }
+
+    /// Keeps which agent tabs of the shown workspace are open, so they come back next time.
+    fn save_remote_agent_tabs(&mut self, id: WindowId, snapshot: &pom_remote::Snapshot) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        if remote.terminals_for.as_deref() != Some(remote.active.as_str())
+            || snapshot.agents.is_empty()
+        {
+            return;
+        }
+        let branch = remote.active.clone();
+        let roles: Vec<String> = snapshot
+            .agents
+            .iter()
+            .map(|agent| agent.role.clone())
+            .collect();
+        let open: Vec<String> = self
+            .with_workspace_view(id, |view, _| {
+                roles
+                    .into_iter()
+                    .filter(|role| view.agent_item_open(&services_ui::agent_item_id(&branch, role)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if open == remote.agent_tabs {
+            return;
+        }
+        remote.agent_tabs = open;
+        let Some(tabs) = services_ui::RemoteAgentTabs::default_location() else {
+            return;
+        };
+        if let Err(error) = tabs.save(&remote.host, &remote.project, &branch, &remote.agent_tabs) {
+            eprintln!("failed to save the remote agent tabs: {error}");
+        }
     }
 
     /// Terminal tabs and the agent dock of the shown workspace, run on the host through its server; the editor,
@@ -310,9 +384,34 @@ impl App {
                 group: None,
             },
         );
-        let agents = terminal_ui::TerminalPanel::remote_agent_dock(root, waker);
+        let starts_agents = snapshot
+            .transport
+            .as_ref()
+            .is_some_and(|transport| transport.agents);
+        let watch = remote.watch.clone();
+        let start_agent = starts_agents.then(|| {
+            let watch = watch.clone();
+            Box::new(move || {
+                let role = services_ui::next_agent_role(&watch.snapshot().agents);
+                watch.start_agent(&role);
+            }) as Box<dyn FnMut()>
+        });
+        let (host, project) = (remote.host.clone(), remote.project.clone());
+        remote.agent_tabs = Vec::new();
+        let agents = terminal_ui::TerminalPanel::remote_agent_dock(root, waker, start_agent);
         self.with_workspace_view(id, |view, _| {
             view.set_terminal_views(Some(Box::new(terminals)), Some(Box::new(agents)));
+        });
+        let Some(tabs) = services_ui::RemoteAgentTabs::default_location() else {
+            return;
+        };
+        let mut number = self.next_agent_item;
+        let restored = services_ui::restore_agent_tabs(&watch, &tabs, &host, &project, &mut number);
+        self.next_agent_item = number;
+        self.with_workspace_view(id, |view, _| {
+            for (item_id, item) in restored {
+                view.open_agent_item(&item_id, false, move || Some(item));
+            }
         });
     }
 

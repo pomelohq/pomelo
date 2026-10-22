@@ -286,6 +286,12 @@ impl TerminalItem {
         Ok(item)
     }
 
+    /// Shows who drives the agent and its waiting approvals over the tab, read and answered through `source`.
+    pub fn with_lease(mut self, source: Box<dyn crate::LeaseSource>) -> Self {
+        self.lease_bar = Some(crate::lease_bar::LeaseBar::with_source(source));
+        self
+    }
+
     pub(crate) fn set_agent(&mut self, agent: bool) {
         self.agent = agent;
     }
