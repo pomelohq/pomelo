@@ -315,6 +315,7 @@ pub(crate) fn editing_modifiers(
     command: bool,
     option: bool,
     control: bool,
+    _shift: bool,
 ) -> (bool, bool, bool) {
     (command, option, control)
 }

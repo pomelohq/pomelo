@@ -3855,6 +3855,7 @@ impl ApplicationHandler for App {
                     self.super_down,
                     self.alt_down,
                     self.ctrl_down,
+                    shift,
                 );
                 if cmd {
                     if let Key::Character(c) = &ke.logical_key {

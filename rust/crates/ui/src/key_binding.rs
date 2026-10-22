@@ -83,10 +83,32 @@ pub fn keystroke_as_typed(keystroke: &str) -> String {
 }
 
 /// Hints written for macOS (`cmd-enter`) as the keys that do the same off it: Command is Control there, and
-/// Command with an arrow goes to the line or document edge, which Home and End do.
+/// Command with an arrow goes to the line or document edge, which Home and End do. Arrow and delete keys follow
+/// the Linux editors: Control moves by word, Shift+Alt adds a cursor or grows the selection by syntax node, and
+/// Control+Shift+Alt duplicates the line.
 fn as_typed_off_macos(keystroke: &str) -> String {
     let (modifiers, key) = parse_keystroke(keystroke);
-    if !modifiers.contains(&"cmd") {
+    let has = |name: &str| modifiers.contains(&name);
+    let arrow = matches!(key, "left" | "right" | "up" | "down");
+    let vertical = matches!(key, "up" | "down");
+    let edit = arrow || matches!(key, "backspace" | "delete");
+    if vertical && has("cmd") && has("alt") {
+        return format!("shift-alt-{key}");
+    }
+    if vertical && has("alt") && has("shift") && !has("cmd") && !has("ctrl") {
+        return format!("ctrl-shift-alt-{key}");
+    }
+    if matches!(key, "left" | "right") && has("ctrl") && has("shift") && !has("cmd") && !has("alt")
+    {
+        return format!("shift-alt-{key}");
+    }
+    if edit && has("alt") && !has("cmd") && !has("ctrl") {
+        let mut rest: Vec<&str> = vec!["ctrl"];
+        rest.extend(modifiers.iter().copied().filter(|name| *name == "shift"));
+        rest.push(key);
+        return rest.join("-");
+    }
+    if !has("cmd") {
         return keystroke.to_string();
     }
     let mut rest: Vec<&str> = modifiers
@@ -198,6 +220,12 @@ mod tests {
         assert_eq!(as_typed_off_macos("cmd-up"), "ctrl-home");
         assert_eq!(as_typed_off_macos("cmd-ctrl-left"), "home");
         assert_eq!(as_typed_off_macos("ctrl-shift-n"), "ctrl-shift-n");
-        assert_eq!(as_typed_off_macos("alt-left"), "alt-left");
+        assert_eq!(as_typed_off_macos("alt-left"), "ctrl-left");
+        assert_eq!(as_typed_off_macos("alt-shift-right"), "ctrl-shift-right");
+        assert_eq!(as_typed_off_macos("alt-backspace"), "ctrl-backspace");
+        assert_eq!(as_typed_off_macos("ctrl-alt-left"), "ctrl-alt-left");
+        assert_eq!(as_typed_off_macos("cmd-alt-up"), "shift-alt-up");
+        assert_eq!(as_typed_off_macos("alt-shift-down"), "ctrl-shift-alt-down");
+        assert_eq!(as_typed_off_macos("ctrl-shift-right"), "shift-alt-right");
     }
 }
