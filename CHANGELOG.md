@@ -4,6 +4,24 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-10-22
+
+### Changed
+- Switch workspaces from a picker that lists the ones needing you first, with key hints. (#247)
+- Every dialog and confirmation shares one look, the merge confirmation included. (#249, #250)
+- The New project page, the Store and Dev Requests tabs, the welcome page and the workspace row menus are redrawn. (#251, #252, #255)
+- The welcome page flags a missing Docker, git or agent CLI with a button to fix it. (#255)
+- The command palette, Go to file, notifications, toasts and the update button are redrawn; a palette with no match says so. (#254)
+- The Database, Environment, Secrets, ticket and project search tabs are redrawn; search results show two lines of context. (#256, #257)
+- The editor and terminal are polished: clearer selected rows in pickers and completions, a centered message when the shell fails to start, and the review box uses the UI font. (#258)
+
+### Fixed
+- Memory no longer grows over long sessions from files changing on disk, background terminals and caches. (#248)
+- `pom ws create` no longer hangs at Provisioning. (#253)
+- Drawing a frame takes less CPU. (#253)
+- Markdown table cells that fit stay on one line. (#258)
+- Restore File and Add to .gitignore find the right repository for the file. (#258)
+
 ## [0.9.0] - 2026-10-21
 
 ### Added
