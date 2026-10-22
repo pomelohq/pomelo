@@ -32,6 +32,7 @@ pom_proxy = { path = "../pom_proxy" }
 pom_push = { path = "../pom_push" }
 pom_sessions = { path = "../pom_sessions" }
 pom_remote = { path = "../pom_remote" }
+pom_server = { path = "../pom_server" }
 pom_env = { path = "../pom_env" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_services = { path = "../pom_services" }
@@ -42,4 +43,5 @@ serde_json.workspace = true
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+pom_rpc = { path = "../pom_rpc" }
 tempfile = "3"

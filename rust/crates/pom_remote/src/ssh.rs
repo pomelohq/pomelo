@@ -173,6 +173,16 @@ impl Ssh {
         command
     }
 
+    pub fn command_with(&self, host: &Host, args: &[String], options: &[&str]) -> Command {
+        let mut command = Command::new(&self.program);
+        for option in options {
+            command.arg("-o").arg(option);
+        }
+        command.args(ssh_args(host, args, Tty::Batch, self.control.as_deref()));
+        command.envs(self.envs.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
     /// Runs pom with `args` on `host` without a terminal, killing ssh once `timeout` passes.
     pub fn output(
         &self,
@@ -418,6 +428,7 @@ mod tests {
             name: "dev".into(),
             url: HostUrl::parse("ssh://dev@dev.example.net:2222").expect("url"),
             pom_path: None,
+            transport: None,
         };
         let control = PathBuf::from("/run/user/1000/pom-ssh");
         let args = ssh_args(&host, &["status".into()], Tty::Batch, Some(&control));

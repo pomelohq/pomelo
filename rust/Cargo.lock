@@ -3602,7 +3602,9 @@ dependencies = [
  "pom_ptyhost",
  "pom_push",
  "pom_remote",
+ "pom_rpc",
  "pom_secrets",
+ "pom_server",
  "pom_services",
  "pom_sessions",
  "pom_shell",
@@ -3848,6 +3850,7 @@ dependencies = [
  "pom_paths",
  "pom_ptyhost",
  "pom_push",
+ "pom_rpc",
  "pom_services",
  "pom_workspace",
  "serde",
@@ -3871,6 +3874,24 @@ version = "0.9.3"
 dependencies = [
  "aes-gcm",
  "pom_paths",
+ "serde_json",
+ "tempfile",
+ "workspace_hack",
+]
+
+[[package]]
+name = "pom_server"
+version = "0.9.3"
+dependencies = [
+ "libc",
+ "pom_agent",
+ "pom_paths",
+ "pom_ptyhost",
+ "pom_remote",
+ "pom_rpc",
+ "pom_sessions",
+ "pom_workspace",
+ "serde",
  "serde_json",
  "tempfile",
  "workspace_hack",

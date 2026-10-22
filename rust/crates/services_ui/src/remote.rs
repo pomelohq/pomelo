@@ -480,7 +480,6 @@ impl RemoteServicesPanel {
     }
 }
 
-/// The connection's dot color, its line ("Connected to dev - updated 3s ago") and whether to offer a retry.
 pub fn connection_line(snapshot: &Snapshot, location: &str) -> (Rgba, String, bool) {
     let colors = theme();
     match &snapshot.connection {
@@ -494,9 +493,14 @@ pub fn connection_line(snapshot: &Snapshot, location: &str) -> (Rgba, String, bo
                 .answered_at
                 .map(|at| format!(" - updated {}", view::ago(at)))
                 .unwrap_or_default();
+            let via = snapshot
+                .transport
+                .as_ref()
+                .map(|transport| format!(" via {}", transport.via.name()))
+                .unwrap_or_default();
             (
                 colors.success,
-                format!("Connected to {location}{ago}"),
+                format!("Connected to {location}{via}{ago}"),
                 false,
             )
         }

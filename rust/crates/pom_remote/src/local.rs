@@ -12,8 +12,8 @@ use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 
 use crate::source::{
-    last_turn, AgentTurn, FailedRun, LastSync, ProjectSource, ServiceAction, SourceError,
-    StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
+    last_turn, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource, ServiceAction,
+    SourceError, StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
 };
 
 fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
@@ -23,6 +23,20 @@ fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarg
         repo: repo.to_string(),
         service: service.to_string(),
     }
+}
+
+pub fn local_projects(state: &StateDir) -> Vec<ProjectEntry> {
+    pom_core::session_entries(state)
+        .into_iter()
+        .filter(|entry| entry.host.is_none())
+        .map(|entry| ProjectEntry {
+            config: entry.path.join(pom_config::CONFIG_FILE_NAME),
+            name: entry.name,
+            path: entry.path,
+            missing: entry.missing,
+            last_used: entry.last_used,
+        })
+        .collect()
 }
 
 /// Every workspace of `project` with its repos, display name, running services and any unfinished run.
@@ -236,6 +250,32 @@ impl LocalSource {
     pub fn config_path(&self) -> &Path {
         &self.config_path
     }
+
+    pub fn last_turn_document(
+        &self,
+        branch: &str,
+        role: &str,
+    ) -> Result<serde_json::Value, SourceError> {
+        let opened = self.open()?;
+        let drive = self.drive(&opened.config);
+        let Some(view) = drive
+            .list(branch)
+            .into_iter()
+            .find(|view| view.role == role)
+        else {
+            return Err(SourceError::Failed(format!("no agent {branch}/{role}")));
+        };
+        let last = view.turn;
+        let turns = drive
+            .read(&view, |turn| turn == last, false)
+            .map_err(|error| SourceError::Failed(error.to_string()))?;
+        Ok(serde_json::json!({
+            "schema": pom_agent::SCHEMA,
+            "handle": view.handle,
+            "session_id": view.session_id,
+            "turns": turns,
+        }))
+    }
 }
 
 impl ProjectSource for LocalSource {
@@ -286,20 +326,7 @@ impl ProjectSource for LocalSource {
     }
 
     fn agent_turn(&self, branch: &str, role: &str) -> Result<Option<AgentTurn>, SourceError> {
-        let opened = self.open()?;
-        let drive = self.drive(&opened.config);
-        let Some(view) = drive
-            .list(branch)
-            .into_iter()
-            .find(|view| view.role == role)
-        else {
-            return Err(SourceError::Failed(format!("no agent {branch}/{role}")));
-        };
-        let last = view.turn;
-        let turns = drive
-            .read(&view, |turn| turn == last, false)
-            .map_err(|error| SourceError::Failed(error.to_string()))?;
-        Ok(last_turn(&serde_json::json!({ "turns": turns })))
+        Ok(last_turn(&self.last_turn_document(branch, role)?))
     }
 
     fn act(

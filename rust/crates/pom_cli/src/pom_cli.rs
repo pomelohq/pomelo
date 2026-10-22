@@ -17,6 +17,7 @@ mod proxy;
 mod push;
 mod remote;
 mod run;
+mod server;
 mod transfer;
 mod workspaces;
 
@@ -213,8 +214,9 @@ agents (one workspace at a time; --json for stable output)
   version, --version
 
 remote machines
-  host add <name> ssh://user@host[:port] [--pom-path p] [--json]
-                     name a machine pom runs on; ssh uses your own config and keys
+  host add <name> ssh://user@host[:port] [--pom-path p] [--transport server|ssh] [--json]
+                     name a machine pom runs on; ssh uses your own config and keys; the app
+                     reads it through `pom server` there unless --transport ssh
   host ls [--json]   the named machines (~/.config/pomelo/hosts.json)
   host rm <name> [--json]
                      forget one
@@ -224,6 +226,17 @@ remote machines
                      run the command on that machine over ssh (--host works too, anywhere on the
                      line): output, input and exit code pass through; exit 69 when ssh cannot
                      connect (with a JSON error object when the command asked for JSON)
+  server run [--foreground]
+                     start this machine's pom server in the background (the app starts it on
+                     demand over ssh; it listens on a private Unix socket, never the network,
+                     and exits after server.idle_exit_minutes without a client, 30 by default)
+  server status [--json]
+                     the running server's pid, version, uptime and connections: exit 3 when none runs
+  server stop        stop it
+  server proxy [--reconnect]
+                     what the app runs over ssh: pass bytes between stdin/stdout and the server,
+                     starting it when it is not running; --reconnect never starts one and exits
+                     70 when it is gone
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
 A service is `name` or `repo/name`.";
@@ -259,6 +272,7 @@ enum Command {
     Doctor { json: bool },
     Agent(agent::AgentCommand),
     Host(remote::HostCommand),
+    Server(server::ServerCommand),
     Projects { json: bool },
     Github(push::WebhookSetup),
     SyncStatus(push::SyncStatus),
@@ -330,6 +344,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                 return agent::execute(command, &invocation, cwd, out, err);
             }
             Command::Host(ref command) => return remote::execute(command, out, err),
+            Command::Server(ref command) => return server::execute(command, out, err),
             Command::Transfer(ref command) => {
                 return transfer::execute(command, &invocation, cwd, out, err);
             }
@@ -489,6 +504,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "queue"
                         | "proxy"
                         | "host"
+                        | "server"
                         | "project"
                         | "github"
                         | "sync")
@@ -603,6 +619,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Agent(command)
         }
         "host" => Command::Host(remote::parse(rest)?),
+        "server" => Command::Server(server::parse(rest)?),
         "project" | "projects" if matches!(rest.first(), Some(&("export" | "import"))) => {
             Command::Transfer(transfer::parse(rest, true)?)
         }
@@ -829,6 +846,7 @@ impl Session {
             | Command::Doctor { .. }
             | Command::Agent(_)
             | Command::Host(_)
+            | Command::Server(_)
             | Command::Transfer(_)
             | Command::Projects { .. }
             | Command::SyncStatus(_)
@@ -1295,24 +1313,10 @@ fn say(out: &mut dyn Write, line: &str) -> Result<(), String> {
 
 /// `project ls`: the local projects of sessions.json, most recently used first.
 fn projects(state: &StateDir, json: bool, out: &mut dyn Write) -> Result<(), String> {
-    let entries: Vec<pom_core::SessionEntry> = pom_core::session_entries(state)
-        .into_iter()
-        .filter(|entry| entry.host.is_none())
-        .collect();
+    let entries = pom_remote::local_projects(state);
     if json {
-        let projects: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "name": entry.name,
-                    "path": entry.path,
-                    "config": entry.path.join(pom_config::CONFIG_FILE_NAME),
-                    "missing": entry.missing,
-                    "last_used": entry.last_used,
-                })
-            })
-            .collect();
-        let document = serde_json::json!({"schema": "pom.project/v1", "projects": projects});
+        let document =
+            serde_json::json!({"schema": pom_remote::PROJECT_SCHEMA, "projects": entries});
         return say(out, &document.to_string());
     }
     if entries.is_empty() {
