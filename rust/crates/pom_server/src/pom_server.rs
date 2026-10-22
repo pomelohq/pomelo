@@ -3,6 +3,7 @@
 
 pub mod client;
 mod dispatch;
+mod jobs;
 mod log;
 mod paths;
 mod peer;
@@ -13,6 +14,7 @@ mod watch;
 pub use dispatch::{
     check_branch, check_name, check_op_id, registered_config, Dispatcher, Ops, FAILED, OP_MEMORY,
 };
+pub use jobs::{Jobs, JOB_MEMORY};
 pub use log::{RequestRecord, ServerLog, ROTATE_AT};
 pub use paths::{ensure_private_dir, ServerPaths};
 pub use peer::{current_uid, peer_uid};

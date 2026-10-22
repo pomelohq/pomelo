@@ -133,6 +133,8 @@ impl Shared {
             uptime_seconds: self.started.elapsed().as_secs(),
             connections: self.connections.load(Ordering::Acquire),
             streams: self.dispatcher.ptys().streams(),
+            log_follows: self.dispatcher.ptys().log_follows(),
+            jobs: self.dispatcher.jobs().running(),
             socket: self.paths.socket.clone(),
             log: self.log.path().to_path_buf(),
         }
@@ -143,6 +145,9 @@ impl Shared {
             return answer;
         }
         if let Some(answer) = self.dispatcher.dispatch_watch(request, caller) {
+            return answer;
+        }
+        if let Some(answer) = self.dispatcher.dispatch_jobs(request, caller) {
             return answer;
         }
         match request.method.as_str() {

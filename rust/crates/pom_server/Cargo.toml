@@ -11,10 +11,13 @@ path = "src/pom_server.rs"
 [dependencies]
 libc = "0.2"
 pom_agent = { path = "../pom_agent" }
+pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }
+pom_push = { path = "../pom_push" }
 pom_remote = { path = "../pom_remote" }
 pom_rpc = { path = "../pom_rpc" }
+pom_services = { path = "../pom_services" }
 pom_shell = { path = "../pom_shell" }
 pom_workspace = { path = "../pom_workspace" }
 serde.workspace = true

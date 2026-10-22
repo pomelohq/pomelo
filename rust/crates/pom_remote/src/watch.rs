@@ -11,8 +11,8 @@ use pom_agent::SessionView;
 
 use crate::server_api::AgentPresence;
 use crate::source::{
-    last_turn, AgentTurn, Feed, FeedEvent, ProjectSource, ServiceAction, SourceError, StatusReport,
-    TransportInfo, Update, WorkspaceList,
+    last_turn, AgentTurn, Feed, FeedEvent, LogEvent, LogFeed, ProjectSource, ServiceAction,
+    SourceError, StatusReport, TransportInfo, Update, WorkspaceList,
 };
 
 pub const POLL_EVERY: Duration = Duration::from_millis(2500);
@@ -73,6 +73,8 @@ pub struct Snapshot {
     pub message: Option<String>,
     /// The machine pushes its changes right now.
     pub pushing: bool,
+    /// The shown service's output streams in as it prints, rather than being asked for again and again.
+    pub logs_live: bool,
     /// Bumped on every change, so a reader can tell it has something new.
     pub generation: u64,
 }
@@ -98,6 +100,8 @@ struct Wanted {
     agent_jobs: VecDeque<AgentJob>,
     /// The pushes stopped, and why.
     feed_lost: Option<String>,
+    /// The followed output stopped.
+    logs_lost: bool,
     now: bool,
     stopped: bool,
 }
@@ -362,6 +366,18 @@ impl Live {
     }
 }
 
+/// A service's output being followed, and which.
+struct LiveLogs {
+    stop: Arc<AtomicBool>,
+    followed: (String, String),
+}
+
+impl LiveLogs {
+    fn end(self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
 enum Job {
     Act(ServiceAction, String, String),
     Agent(AgentJob, String),
@@ -383,6 +399,11 @@ enum Job {
         turn: Option<String>,
     },
     DropFeed(Option<String>),
+    OpenLogs {
+        branch: String,
+        service: String,
+    },
+    DropLogs,
 }
 
 #[derive(Default)]
@@ -390,13 +411,22 @@ struct Clock {
     look: Option<Instant>,
     logs: Option<Instant>,
     feed_tried: Option<Instant>,
+    logs_tried: Option<Instant>,
+    /// The machine never streams output: ask for it instead.
+    logs_unsupported: bool,
 }
 
 fn remaining(at: Option<Instant>, every: Duration) -> Duration {
     at.map_or(Duration::ZERO, |at| every.saturating_sub(at.elapsed()))
 }
 
-fn next_job(shared: &Shared, live: Option<&Live>, clock: &Clock, timing: Timing) -> Option<Job> {
+fn next_job(
+    shared: &Shared,
+    live: Option<&Live>,
+    logs: Option<&LiveLogs>,
+    clock: &Clock,
+    timing: Timing,
+) -> Option<Job> {
     let mut wanted = shared.wanted();
     loop {
         if wanted.stopped {
@@ -414,6 +444,22 @@ fn next_job(shared: &Shared, live: Option<&Live>, clock: &Clock, timing: Timing)
         }
         if !wanted.visible && live.is_some() {
             return Some(Job::DropFeed(None));
+        }
+        let wanted_logs = wanted
+            .logs
+            .clone()
+            .filter(|_| wanted.visible)
+            .map(|service| (wanted.branch.clone(), service));
+        if wanted.logs_lost {
+            wanted.logs_lost = false;
+            if logs.is_some() {
+                return Some(Job::DropLogs);
+            }
+        }
+        if let Some(current) = logs {
+            if wanted_logs.as_ref() != Some(&current.followed) {
+                return Some(Job::DropLogs);
+            }
         }
         let followed = (wanted.branch.clone(), wanted.turn.clone());
         let mut wait = timing.poll;
@@ -447,12 +493,24 @@ fn next_job(shared: &Shared, live: Option<&Live>, clock: &Clock, timing: Timing)
                 wanted.now = false;
                 return Some(Job::Look {
                     branch: followed.0,
-                    logs: wanted.logs.clone(),
+                    logs: wanted.logs.clone().filter(|_| logs.is_none()),
                     turn: followed.1,
                 });
             }
             wait = wait.min(look_in);
-            if let (Some(_), Some(service)) = (live, &wanted.logs) {
+            if let (None, Some((branch, service)), false) =
+                (logs, &wanted_logs, clock.logs_unsupported)
+            {
+                let retry = remaining(clock.logs_tried, timing.poll);
+                if retry.is_zero() {
+                    return Some(Job::OpenLogs {
+                        branch: branch.clone(),
+                        service: service.clone(),
+                    });
+                }
+                wait = wait.min(retry);
+            }
+            if let (Some(_), None, Some(service)) = (live, logs, &wanted.logs) {
                 let logs_in = remaining(clock.logs, timing.poll);
                 if logs_in.is_zero() {
                     return Some(Job::Logs {
@@ -478,8 +536,9 @@ fn run(
     timing: Timing,
 ) {
     let mut live: Option<Live> = None;
+    let mut logs: Option<LiveLogs> = None;
     let mut clock = Clock::default();
-    while let Some(job) = next_job(shared, live.as_ref(), &clock, timing) {
+    while let Some(job) = next_job(shared, live.as_ref(), logs.as_ref(), &clock, timing) {
         match job {
             Job::Act(action, target, branch) => act(
                 shared,
@@ -524,6 +583,29 @@ fn run(
                     shared.poke(|wanted| wanted.feed_lost = Some(error.to_string()));
                 }
             }
+            Job::OpenLogs { branch, service } => {
+                clock.logs_tried = Some(Instant::now());
+                match source.follow_logs(&branch, &service) {
+                    Ok(Some(feed)) => {
+                        shared.update(waker.as_ref(), |snapshot| {
+                            snapshot.logs_live = true;
+                            if snapshot.branch == branch {
+                                snapshot.logs = Some((service.clone(), Ok(String::new())));
+                            }
+                        });
+                        logs = Some(read_logs(shared, waker, feed, (branch, service)));
+                    }
+                    Ok(None) => clock.logs_unsupported = true,
+                    Err(_) => {}
+                }
+            }
+            Job::DropLogs => {
+                if let Some(current) = logs.take() {
+                    current.end();
+                }
+                clock.logs_tried = Some(Instant::now());
+                shared.update(waker.as_ref(), |snapshot| snapshot.logs_live = false);
+            }
             Job::DropFeed(reason) => {
                 if let Some(current) = live.take() {
                     current.end();
@@ -535,6 +617,69 @@ fn run(
     }
     if let Some(current) = live.take() {
         current.end();
+    }
+    if let Some(current) = logs.take() {
+        current.end();
+    }
+}
+
+/// Reads a service's output on a thread of its own into the snapshot, keeping its last lines.
+fn read_logs(
+    shared: &Arc<Shared>,
+    waker: &Arc<dyn Fn() + Send + Sync>,
+    feed: Box<dyn LogFeed>,
+    followed: (String, String),
+) -> LiveLogs {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (thread_shared, thread_waker, thread_stop) = (shared.clone(), waker.clone(), stop.clone());
+    let (branch, service) = followed.clone();
+    let spawned = std::thread::Builder::new()
+        .name("pom-remote-logs".into())
+        .spawn(move || {
+            let mut text: Vec<u8> = Vec::new();
+            while !thread_stop.load(Ordering::Acquire) {
+                match feed.next(FEED_POLL) {
+                    LogEvent::Data(bytes) => {
+                        text.extend_from_slice(&bytes);
+                        keep_last_lines(&mut text, LOG_LINES);
+                        let shown = String::from_utf8_lossy(&text).into_owned();
+                        thread_shared.update(thread_waker.as_ref(), |snapshot| {
+                            if snapshot.branch == branch {
+                                snapshot.logs = Some((service.clone(), Ok(shown)));
+                            }
+                        });
+                    }
+                    LogEvent::Skipped | LogEvent::Idle => {}
+                    LogEvent::Ended(_) => {
+                        if !thread_stop.load(Ordering::Acquire) {
+                            thread_shared.poke(|wanted| wanted.logs_lost = true);
+                        }
+                        return;
+                    }
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("watch: follow the output: {error}");
+        shared.poke(|wanted| wanted.logs_lost = true);
+    }
+    LiveLogs { stop, followed }
+}
+
+/// Drops all but the last `lines` lines (and the one being printed).
+fn keep_last_lines(text: &mut Vec<u8>, lines: usize) {
+    let mut seen = 0;
+    let cut = text
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, byte)| **byte == b'\n')
+        .find_map(|(at, _)| {
+            seen += 1;
+            (seen > lines).then_some(at + 1)
+        });
+    if let Some(cut) = cut {
+        text.drain(..cut);
     }
 }
 
@@ -788,6 +933,22 @@ mod tests {
         looks: AtomicUsize,
         acted: Mutex<Vec<String>>,
         feed: Option<Arc<FakeFeed>>,
+        logs_asked: AtomicUsize,
+        log_feed: Mutex<Option<std::sync::mpsc::Receiver<LogEvent>>>,
+    }
+
+    struct FakeLogs(Mutex<std::sync::mpsc::Receiver<LogEvent>>);
+
+    impl LogFeed for FakeLogs {
+        fn next(&self, timeout: Duration) -> LogEvent {
+            match locked(&self.0).recv_timeout(timeout) {
+                Ok(event) => event,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => LogEvent::Idle,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    LogEvent::Ended("gone".into())
+                }
+            }
+        }
     }
 
     struct FakeFeed {
@@ -850,6 +1011,7 @@ mod tests {
             })
         }
         fn logs(&self, _branch: &str, service: &str) -> Result<String, SourceError> {
+            self.logs_asked.fetch_add(1, Ordering::SeqCst);
             Ok((0..1000)
                 .map(|line| format!("{service} {line}\n"))
                 .collect())
@@ -878,6 +1040,71 @@ mod tests {
             _turn: Option<&str>,
         ) -> Result<Option<Arc<dyn Feed>>, SourceError> {
             Ok(self.feed.clone().map(|feed| feed as Arc<dyn Feed>))
+        }
+        fn follow_logs(
+            &self,
+            _branch: &str,
+            _service: &str,
+        ) -> Result<Option<Box<dyn LogFeed>>, SourceError> {
+            Ok(locked(&self.log_feed)
+                .take()
+                .map(|events| Box::new(FakeLogs(Mutex::new(events))) as Box<dyn LogFeed>))
+        }
+    }
+
+    #[test]
+    fn followed_output_streams_in_without_asking_and_asking_resumes_when_it_ends() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let fake = Arc::new(Fake {
+            log_feed: Mutex::new(Some(receiver)),
+            ..Fake::default()
+        });
+        let timing = Timing {
+            poll: Duration::from_millis(50),
+            safety: Duration::from_secs(60),
+        };
+        let watch = Watch::start_with(fake.clone(), "main", Arc::new(|| {}), timing);
+        watch.set_visible(true);
+        wait_for(&watch, |snapshot| {
+            snapshot.connection == Connection::Connected
+        });
+        watch.show_logs(Some("api/web".into()));
+        wait_for(&watch, |snapshot| snapshot.logs_live);
+        let asked = fake.logs_asked.load(Ordering::SeqCst);
+        for line in 0..(LOG_LINES + 50) {
+            sender
+                .send(LogEvent::Data(format!("line {line}\r\n").into_bytes()))
+                .expect("send");
+        }
+        sender
+            .send(LogEvent::Data(b"partial".to_vec()))
+            .expect("send");
+        let snapshot = wait_for(
+            &watch,
+            |snapshot| matches!(&snapshot.logs, Some((_, Ok(text))) if text.ends_with("partial")),
+        );
+        let text = snapshot
+            .logs
+            .and_then(|(_, text)| text.ok())
+            .unwrap_or_default();
+        assert_eq!(
+            text.lines().count(),
+            LOG_LINES + 1,
+            "the tail and the line being printed"
+        );
+        assert!(text.starts_with("line 50\r\n"), "{text:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            fake.logs_asked.load(Ordering::SeqCst) <= asked + 1,
+            "no asking while the output streams in"
+        );
+
+        drop(sender);
+        wait_for(&watch, |snapshot| !snapshot.logs_live);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fake.logs_asked.load(Ordering::SeqCst) < asked + 3 {
+            assert!(Instant::now() < deadline, "the output is asked for again");
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
