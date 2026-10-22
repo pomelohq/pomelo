@@ -500,6 +500,8 @@ pub enum RowAction {
     AddMissingRepos,
     /// Pick more of the config's repos to check out in this workspace.
     AddRepos,
+    /// Open a remote workspace's folder in an editor that works over SSH.
+    OpenInEditor,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -633,6 +635,7 @@ pub const MENU_WS_PREPARE_MAIN: u64 = 944;
 pub const MENU_WS_OPEN_TICKET: u64 = 945;
 pub const MENU_WS_ADD_MISSING: u64 = 946;
 pub const MENU_WS_ADD_REPOS: u64 = 947;
+pub const MENU_WS_OPEN_EDITOR: u64 = 948;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,

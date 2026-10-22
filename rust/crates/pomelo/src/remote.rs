@@ -290,8 +290,55 @@ impl App {
         };
         match remote.notice_actions.get(index) {
             Some(remote_ui::NoticeAction::Reconnect) => remote.watch.refresh_now(),
+            Some(remote_ui::NoticeAction::OpenInEditor) => self.open_remote_editor(id, None),
             None => {}
         }
+    }
+
+    /// Opens the worktree of the workspace at `index` (the shown one with `None`) in the editor that the
+    /// `remote_editor` setting names, over SSH to the project's host.
+    pub(crate) fn open_remote_editor(&mut self, id: WindowId, index: Option<usize>) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let snapshot = remote.watch.snapshot();
+        let workspaces = snapshot
+            .workspaces
+            .map(|list| list.workspaces)
+            .unwrap_or_default();
+        let workspace = match index {
+            Some(index) => workspaces.get(index),
+            None => workspaces
+                .iter()
+                .find(|workspace| workspace.branch == remote.active),
+        };
+        let message = match (workspace, host(&remote.host)) {
+            (None, _) => format!("{} has not listed its workspaces yet", remote.host),
+            (_, Err(error)) => format!("Cannot open an editor: {error}"),
+            (Some(workspace), Ok(host)) => {
+                let path = workspace.path.to_string_lossy();
+                let find =
+                    |program: &str| pom_remote::find_program(program, pom_services::tool_path());
+                match pom_remote::editor_argv(
+                    &self.settings.remote_editor,
+                    &host.url.alias(),
+                    &path,
+                    &find,
+                ) {
+                    Ok(argv) => match launch(&argv) {
+                        Ok(()) => format!(
+                            "Opening {} on {} in {}",
+                            workspace.branch,
+                            host.name,
+                            program_name(&argv)
+                        ),
+                        Err(error) => format!("Could not run {}: {error}", program_name(&argv)),
+                    },
+                    Err(error) => format!("Cannot open an editor: {error}"),
+                }
+            }
+        };
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
     }
 
     /// Workspace changes run on the host itself for now; say how.
@@ -308,6 +355,32 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
         true
     }
+}
+
+fn program_name(argv: &[String]) -> String {
+    argv.first()
+        .and_then(|program| std::path::Path::new(program).file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// Starts the editor on its own and reaps it when it exits, so it never lingers as a zombie of the app.
+fn launch(argv: &[String]) -> std::io::Result<()> {
+    let (program, args) = argv
+        .split_first()
+        .ok_or_else(|| std::io::Error::other("no editor command"))?;
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        if let Err(error) = child.wait() {
+            eprintln!("editor: {error}");
+        }
+    });
+    Ok(())
 }
 
 fn remote_title(remote: &RemoteWindow) -> String {

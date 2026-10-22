@@ -3390,6 +3390,9 @@ impl WorkspaceView {
         else {
             return Vec::new();
         };
+        if project.host.is_some() {
+            return remote_workspace_row_menu();
+        }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
         workspace_row_menu(RowMenuFacts {
             ticket: project
@@ -3427,6 +3430,9 @@ impl WorkspaceView {
             }
             crate::MENU_WS_ADD_REPOS => {
                 self.workspace_requests.row = Some((index, crate::RowAction::AddRepos));
+            }
+            crate::MENU_WS_OPEN_EDITOR => {
+                self.workspace_requests.row = Some((index, crate::RowAction::OpenInEditor));
             }
             crate::MENU_WS_DELETE => {
                 self.workspace_requests.row = Some((index, crate::RowAction::AskDelete));
@@ -8640,6 +8646,22 @@ pub struct RowMenuFacts {
     pub missing: bool,
 }
 
+/// A remote workspace's menu: only what works without its files here.
+pub fn remote_workspace_row_menu() -> Vec<MenuItem> {
+    vec![MenuItem {
+        id: crate::MENU_WS_OPEN_EDITOR,
+        label: "Open in Editor".into(),
+        checked: false,
+        sep: false,
+        disabled: false,
+        danger: false,
+        icon: None,
+        hint: None,
+        color: None,
+        header: false,
+    }]
+}
+
 pub fn workspace_row_menu(facts: RowMenuFacts) -> Vec<MenuItem> {
     let item = |id: u64, label: &'static str, sep: bool| MenuItem {
         id,
@@ -9455,6 +9477,11 @@ mod tests {
         }
         assert!(layout.is_remote());
         assert!((0..PaneKind::ALL.len()).all(|index| !layout.func_offered(index)));
+        let menu: Vec<u64> = remote_workspace_row_menu()
+            .iter()
+            .map(|item| item.id)
+            .collect();
+        assert_eq!(menu, vec![crate::MENU_WS_OPEN_EDITOR]);
         for side in [
             DockPosition::Left,
             DockPosition::Right,

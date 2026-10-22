@@ -2072,6 +2072,14 @@ impl App {
     /// Opens the active file (else the workspace) in the external editor from the settings, or the first
     /// known one installed.
     fn open_in_external_editor(&mut self, id: WindowId) {
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            self.open_remote_editor(id, None);
+            return;
+        }
         let Some(target) = self
             .with_workspace_view(id, |view, _| view.external_target())
             .flatten()

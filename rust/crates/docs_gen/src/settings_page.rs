@@ -49,6 +49,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("soft_wrap", "Editor", "Newly opened files wrap long lines at the editor's width."),
     ("split_diff", "Editor", "Diffs open side by side when the pane is wide enough, else in one column."),
     ("external_editor", "Editor", "The app \"Open in External Editor\" uses; empty picks the first one installed."),
+    ("remote_editor", "Editor", "The command \"Open in Editor\" runs for a project on another machine, with `{host}` (user@host[:port] from hosts.json), `{path}` (the worktree there) and `{url}` (`ssh://{host}/{path}`) filled in; empty runs `zed {url}` if `zed` is installed, else `code --remote ssh-remote+{host} {path}`."),
     ("enable_language_server", "Languages & Tools", "Language servers start for the languages they serve; off, none does."),
     ("language_servers", "Languages & Tools", "Which servers a language uses, in order: a name turns one on, `!name` turns it off, `...` stands for the rest of its defaults."),
     ("completions.lsp", "Languages & Tools", "Language servers are asked for completions."),

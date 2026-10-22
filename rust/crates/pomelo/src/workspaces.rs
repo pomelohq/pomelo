@@ -83,6 +83,8 @@ impl App {
         {
             if requests.new_workspace {
                 self.remote_only_on_host(id, "Creating a workspace");
+            } else if let Some((index, workspace::RowAction::OpenInEditor)) = requests.row {
+                self.open_remote_editor(id, Some(index));
             } else if requests.row.is_some() || requests.reorder.is_some() {
                 self.remote_only_on_host(id, "Changing a workspace");
             }
@@ -266,6 +268,7 @@ impl App {
             }
             workspace::RowAction::AddMissingRepos => self.add_missing_repos(id, &target),
             workspace::RowAction::AddRepos => self.pick_repos(id, &target),
+            workspace::RowAction::OpenInEditor => {}
         }
     }
 
