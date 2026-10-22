@@ -404,7 +404,16 @@ pub fn local_only_reason(host: &str, terminals: bool) -> String {
     }
 }
 
-pub fn transport_lines(snapshot: &Snapshot, host: &str) -> Vec<String> {
+/// Updating pom on the host from the app, as the page shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PomUpdate {
+    /// The app installs pom there itself: a release build, and pom in its default place on the host.
+    pub can_install: bool,
+    pub running: Option<pom_remote::update::UpdateStep>,
+    pub error: Option<String>,
+}
+
+pub fn transport_lines(snapshot: &Snapshot, host: &str, update: &PomUpdate) -> Vec<String> {
     let Some(transport) = &snapshot.transport else {
         return Vec::new();
     };
@@ -413,12 +422,26 @@ pub fn transport_lines(snapshot: &Snapshot, host: &str) -> Vec<String> {
         lines.push(format!("Reading over ssh: {reason}."));
     }
     if let (true, Some(remote)) = (transport.version_mismatch, &transport.remote_version) {
-        lines.push(format!(
-            "{host} runs pom {remote} and this app {}; update one so both are on the same minor version.",
-            pom_remote::VERSION
-        ));
+        lines.push(version_line(remote, host));
+        match (&update.running, &update.error) {
+            (Some(step), _) => lines.push(format!("Updating pom on {host}: {}...", step.label())),
+            (None, Some(error)) => lines.push(format!("Could not update pom on {host}: {error}")),
+            (None, None) => {}
+        }
+        if !update.can_install {
+            lines.push(format!("To update it, run on {host}:"));
+            lines.extend(pom_remote::update::manual_commands(pom_remote::VERSION));
+        }
     }
     lines
+}
+
+/// The banner of a host whose pom is on another minor version than the app.
+pub fn version_line(remote: &str, host: &str) -> String {
+    format!(
+        "pom {remote} on {host}, the app is {}.",
+        pom_remote::VERSION
+    )
 }
 
 /// Said once each time the session comes back to a server that restarted meanwhile.
@@ -431,6 +454,7 @@ pub fn restart_notice(host: &str) -> String {
 pub enum NoticeAction {
     OpenInEditor,
     Reconnect,
+    UpdatePom,
 }
 
 /// The page in place of the editor for a remote project: the connection, why the editor is not here, and what
@@ -440,6 +464,7 @@ pub fn remote_notice(
     location: &str,
     host: &str,
     project: &str,
+    update: &PomUpdate,
 ) -> (CenterNotice, Vec<NoticeAction>) {
     let (_, status, retry) = services_ui::connection_line(snapshot, location);
     let tone = match snapshot.connection {
@@ -453,7 +478,7 @@ pub fn remote_notice(
         .as_ref()
         .is_some_and(|transport| transport.via == pom_remote::Via::Server && transport.terminals);
     let mut lines = vec![local_only_reason(host, terminals)];
-    lines.extend(transport_lines(snapshot, host));
+    lines.extend(transport_lines(snapshot, host, update));
     if let Some(list) = &snapshot.workspaces {
         let running: usize = list.workspaces.iter().map(|ws| ws.running).sum();
         lines.push(format!(
@@ -462,6 +487,13 @@ pub fn remote_notice(
         ));
     }
     let mut actions = vec![NoticeAction::OpenInEditor];
+    let mismatch = snapshot
+        .transport
+        .as_ref()
+        .is_some_and(|transport| transport.version_mismatch);
+    if mismatch && update.can_install && update.running.is_none() {
+        actions.insert(0, NoticeAction::UpdatePom);
+    }
     if retry {
         actions.insert(0, NoticeAction::Reconnect);
     }
@@ -470,6 +502,7 @@ pub fn remote_notice(
         .map(|action| match action {
             NoticeAction::OpenInEditor => "Open in Editor".to_string(),
             NoticeAction::Reconnect => "Reconnect".to_string(),
+            NoticeAction::UpdatePom => format!("Update pom on {host}"),
         })
         .collect();
     (
@@ -572,16 +605,58 @@ mod tests {
     #[test]
     fn the_page_says_why_reads_go_over_ssh_and_when_versions_differ() {
         let mut snapshot = Snapshot::default();
-        assert!(transport_lines(&snapshot, "dev").is_empty());
+        let update = PomUpdate {
+            can_install: true,
+            ..PomUpdate::default()
+        };
+        assert!(transport_lines(&snapshot, "dev", &update).is_empty());
         snapshot.transport = Some(pom_remote::TransportInfo {
             via: pom_remote::Via::Server,
             remote_version: Some("0.1.0".into()),
             version_mismatch: true,
             ..pom_remote::TransportInfo::default()
         });
-        let lines = transport_lines(&snapshot, "dev");
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("dev runs pom 0.1.0 and this app "));
+        let lines = transport_lines(&snapshot, "dev", &update);
+        assert_eq!(lines, vec![version_line("0.1.0", "dev")]);
+        assert!(lines[0].starts_with("pom 0.1.0 on dev, the app is "));
+        snapshot.connection = Connection::Connected;
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
+        assert_eq!(actions.first(), Some(&NoticeAction::UpdatePom));
+        assert_eq!(
+            notice.actions.first().map(String::as_str),
+            Some("Update pom on dev")
+        );
+
+        let running = PomUpdate {
+            running: Some(pom_remote::update::UpdateStep::Download),
+            ..update.clone()
+        };
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &running);
+        assert!(
+            !actions.contains(&NoticeAction::UpdatePom),
+            "one update at a time"
+        );
+        assert!(notice
+            .lines
+            .contains(&"Updating pom on dev: downloading...".to_string()));
+        let failed = PomUpdate {
+            error: Some("pom-1.0.0-linux-x86_64.tar.gz does not match".into()),
+            ..update.clone()
+        };
+        assert!(transport_lines(&snapshot, "dev", &failed)
+            .iter()
+            .any(|line| line.starts_with("Could not update pom on dev:")));
+
+        let dev_build = PomUpdate::default();
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &dev_build);
+        assert!(
+            !actions.contains(&NoticeAction::UpdatePom),
+            "a dev build shows the commands"
+        );
+        assert!(notice
+            .lines
+            .iter()
+            .any(|line| line.contains("install.sh --cli-only")));
         snapshot.transport = Some(pom_remote::TransportInfo {
             fallback_reason: Some(
                 "its pom is older than pom server; update pom on the VM to get terminals".into(),
@@ -589,11 +664,17 @@ mod tests {
             ..pom_remote::TransportInfo::default()
         });
         assert_eq!(
-            transport_lines(&snapshot, "dev"),
+            transport_lines(&snapshot, "dev", &update),
             vec!["Reading over ssh: its pom is older than pom server; update pom on the VM to get terminals.".to_string()]
         );
         snapshot.connection = Connection::Connected;
-        let (notice, _) = remote_notice(&snapshot, "dev (dev@dev.example.net)", "dev", "myproject");
+        let (notice, _) = remote_notice(
+            &snapshot,
+            "dev (dev@dev.example.net)",
+            "dev",
+            "myproject",
+            &update,
+        );
         assert!(
             notice
                 .status

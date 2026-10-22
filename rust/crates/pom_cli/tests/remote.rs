@@ -1793,3 +1793,140 @@ fn a_real_sshd_session_killed_mid_terminal_reconnects() {
         eprintln!("pom server stop: {error}");
     }
 }
+
+impl Fixture {
+    /// A release folder as GitHub serves it: a pom tarball whose install.sh records how it ran and puts in
+    /// place a pom that is this build, and the checksums list, `tamper` making the tarball's entry wrong.
+    fn fake_release(&self, version: &str, tamper: bool) -> pom_remote::update::Release {
+        let release = self
+            .temp
+            .path()
+            .join(if tamper { "release-bad" } else { "release" });
+        let stage = self.temp.path().join(format!("stage/pom-{version}"));
+        std::fs::create_dir_all(stage.join("bin")).expect("stage");
+        executable(
+            &stage.join("bin/pom"),
+            &format!("#!/bin/sh\n# installed by the update\nexec '{POM}' \"$@\"\n"),
+        );
+        executable(
+            &stage.join("install.sh"),
+            "#!/bin/sh\nset -eu\necho \"$@\" > \"$HOME/install-args\"\nhere=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nrm -f \"$HOME/.local/bin/pom\"\ncp \"$here/bin/pom\" \"$HOME/.local/bin/pom\"\n",
+        );
+        std::fs::create_dir_all(&release).expect("release");
+        let tarball = format!("pom-{version}-linux-x86_64.tar.gz");
+        let packed = Command::new("tar")
+            .arg("-C")
+            .arg(self.temp.path().join("stage"))
+            .arg("-czf")
+            .arg(release.join(&tarball))
+            .arg(format!("pom-{version}"))
+            .output()
+            .expect("tar");
+        assert!(packed.status.success(), "{}", text(&packed));
+        let bytes = std::fs::read(release.join(&tarball)).expect("tarball");
+        let hash = if tamper {
+            "0".repeat(64)
+        } else {
+            pom_remote::update::sha256_hex(&bytes)
+        };
+        std::fs::write(
+            release.join(pom_remote::update::CHECKSUMS),
+            format!(
+                "{hash}  {tarball}\n{}  pom-{version}-linux-aarch64.tar.gz\n",
+                "1".repeat(64)
+            ),
+        )
+        .expect("checksums");
+        pom_remote::update::Release {
+            version: version.to_string(),
+            base: format!("file://{}", release.display()),
+        }
+    }
+
+    /// A server source whose ssh finds a `uname` that says Linux, as the hosts pom is published for do.
+    fn linux_server_source(&self) -> pom_remote::ServerSource {
+        let tools = self.temp.path().join("linux-tools");
+        std::fs::create_dir_all(&tools).expect("tools");
+        executable(&tools.join("uname"), "#!/bin/sh\necho Linux x86_64\n");
+        let mut envs = self.envs();
+        envs.push((
+            "PATH".into(),
+            format!(
+                "{}:{}",
+                tools.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        ));
+        let ssh = pom_remote::Ssh::custom(self.temp.path().join("bin/ssh"), None, envs);
+        let host = pom_remote::Hosts::load(&self.temp.path().join("config/hosts.json"))
+            .and_then(|hosts| hosts.get("dev"))
+            .expect("host");
+        pom_remote::ServerSource::new(host, self.config(), ssh)
+    }
+}
+
+#[test]
+fn updating_pom_installs_the_checked_release_tarball_and_moves_to_its_server() {
+    use pom_remote::update::UpdateStep;
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let installed = fixture.temp.path().join("home/.local/bin/pom");
+    std::fs::remove_file(&installed).expect("drop the symlink");
+    executable(&installed, &format!("#!/bin/sh\nexec '{POM}' \"$@\"\n"));
+    let source = fixture.linux_server_source();
+    source.set_backoff(vec![Duration::from_millis(50); 6]);
+    source.workspaces().expect("connect");
+    let version = env!("CARGO_PKG_VERSION");
+
+    let refused = source.update_pom(&fixture.fake_release(version, true), &|_| {});
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.contains("does not match the release's checksum")),
+        "{refused:?}"
+    );
+    assert!(
+        !std::fs::read_to_string(&installed)
+            .unwrap_or_default()
+            .contains("installed by the update"),
+        "a tarball that fails its checksum is never installed"
+    );
+    assert!(!fixture.temp.path().join("home/install-args").exists());
+    assert_eq!(source.link().map(|report| report.restarts), Some(0));
+
+    let steps = std::sync::Mutex::new(Vec::new());
+    source
+        .update_pom(&fixture.fake_release(version, false), &|step| {
+            if let Ok(mut steps) = steps.lock() {
+                steps.push(step);
+            }
+        })
+        .expect("update");
+    assert_eq!(
+        steps.lock().map(|steps| steps.clone()).unwrap_or_default(),
+        vec![
+            UpdateStep::Machine,
+            UpdateStep::Download,
+            UpdateStep::Verify,
+            UpdateStep::Install,
+            UpdateStep::Restart
+        ]
+    );
+    assert!(std::fs::read_to_string(&installed)
+        .unwrap_or_default()
+        .contains("installed by the update"));
+    assert_eq!(
+        std::fs::read_to_string(fixture.temp.path().join("home/install-args"))
+            .unwrap_or_default()
+            .trim(),
+        "--cli-only"
+    );
+    assert_eq!(
+        source.link().map(|report| report.restarts),
+        Some(1),
+        "the old server stopped and the session moved to a new one"
+    );
+    assert!(source.workspaces().is_ok());
+}

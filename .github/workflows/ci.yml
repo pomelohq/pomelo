@@ -242,8 +242,8 @@ jobs:
       - run: cargo test -p pom_remote server
       - run: cargo test -p pom_remote watch
       - run: cargo test -p pom_cli --test remote server
-      # Proxies SIGKILLed mid-stream, a killed server and holder, a job followed again after the session died.
-      - run: cargo test -p pom_cli --test remote -- chaos session_dies reconnected --nocapture
+      # Proxies SIGKILLed mid-stream, a killed server and holder, a job followed again, pom updated from a release.
+      - run: cargo test -p pom_cli --test remote -- chaos session_dies reconnected updating_pom --nocapture
       # sshd and its throwaway key live only on this runner.
       - name: Start a real sshd on this runner
         run: |

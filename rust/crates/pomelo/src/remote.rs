@@ -22,6 +22,24 @@ pub(crate) struct RemoteWindow {
     agent_tabs: Vec<String>,
     /// Server restarts already told about.
     restarts_told: u64,
+    /// Updating pom on the host, written by the thread that runs it.
+    pom_update: Arc<std::sync::Mutex<remote_ui::PomUpdate>>,
+    update_shown: remote_ui::PomUpdate,
+}
+
+fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
+    update.lock().map(|state| state.clone()).unwrap_or_default()
+}
+
+fn write_update(
+    update: &std::sync::Mutex<remote_ui::PomUpdate>,
+    edit: impl FnOnce(&mut remote_ui::PomUpdate),
+) {
+    match update.lock() {
+        Ok(mut state) => edit(&mut state),
+        Err(poisoned) => edit(&mut poisoned.into_inner()),
+    }
+    ui::wake();
 }
 
 impl RemoteWindow {
@@ -122,6 +140,7 @@ impl App {
         ) {
             eprintln!("failed to record the remote project: {error}");
         }
+        let can_install = !crate::is_dev_build() && host.pom_path.is_none();
         let source =
             pom_remote::project_source(host, picked.config.clone(), pom_remote::Ssh::system());
         let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
@@ -146,6 +165,11 @@ impl App {
                 terminals_for: None,
                 agent_tabs: Vec::new(),
                 restarts_told: 0,
+                pom_update: Arc::new(std::sync::Mutex::new(remote_ui::PomUpdate {
+                    can_install,
+                    ..remote_ui::PomUpdate::default()
+                })),
+                update_shown: remote_ui::PomUpdate::default(),
             });
         }
         self.install_remote_views(id);
@@ -232,10 +256,12 @@ impl App {
         };
         remote.watch.set_visible(!hidden);
         let generation = remote.watch.generation();
-        if generation == remote.seen {
+        let update = read_update(&remote.pom_update);
+        if generation == remote.seen && update == remote.update_shown {
             return;
         }
         remote.seen = generation;
+        remote.update_shown = update.clone();
         let snapshot = remote.watch.snapshot();
         if remote.active.is_empty() {
             let main_branch = snapshot.workspaces.as_ref().and_then(|list| {
@@ -260,6 +286,7 @@ impl App {
             remote.watch.location(),
             &remote.host,
             &remote.project,
+            &update,
         );
         remote.notice_actions = actions;
         let restarted = snapshot.server_restarts > remote.restarts_told;
@@ -457,7 +484,43 @@ impl App {
         match remote.notice_actions.get(index) {
             Some(remote_ui::NoticeAction::Reconnect) => remote.watch.refresh_now(),
             Some(remote_ui::NoticeAction::OpenInEditor) => self.open_remote_editor(id, None),
+            Some(remote_ui::NoticeAction::UpdatePom) => self.update_remote_pom(id),
             None => {}
+        }
+    }
+
+    /// Installs this app's version of pom on the host, off the UI thread; the page shows how it goes.
+    fn update_remote_pom(&mut self, id: WindowId) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let state = remote.pom_update.clone();
+        if read_update(&state).running.is_some() {
+            return;
+        }
+        write_update(&state, |update| {
+            update.error = None;
+            update.running = Some(pom_remote::update::UpdateStep::Machine);
+        });
+        let source = remote.watch.source();
+        let thread_state = state.clone();
+        let spawned = std::thread::Builder::new()
+            .name("pom-update".into())
+            .spawn(move || {
+                let release = pom_remote::update::Release::published(pom_remote::VERSION);
+                let result = source.update_pom(&release, &|step| {
+                    write_update(&thread_state, |update| update.running = Some(step));
+                });
+                write_update(&thread_state, |update| {
+                    update.running = None;
+                    update.error = result.err();
+                });
+            });
+        if let Err(error) = spawned {
+            write_update(&state, |update| {
+                update.running = None;
+                update.error = Some(error.to_string());
+            });
         }
     }
 
