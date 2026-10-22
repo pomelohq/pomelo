@@ -246,6 +246,47 @@ fn prune_drops_expired_copies_then_the_oldest_over_the_limit() {
 }
 
 #[test]
+fn a_scheduled_prune_runs_at_most_once_a_day_and_not_when_the_store_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    assert_eq!(store.prune_if_due(&Options::default()).unwrap(), None);
+    let source = repo_with(&dir.path().join("source"), "v1", true);
+    store
+        .fill(
+            "api",
+            "old",
+            Manager::Npm,
+            &source.join("node_modules"),
+            Method::Copy,
+        )
+        .unwrap();
+    let stamp = now();
+    store
+        .update(|index| index.entries[0].last_used = stamp - 30 * DAY)
+        .unwrap();
+    let off = Options {
+        enabled: false,
+        ..Options::default()
+    };
+    assert_eq!(store.prune_if_due(&off).unwrap(), None);
+    let pruned = store
+        .prune_if_due_at(&Options::default(), stamp)
+        .unwrap()
+        .expect("due");
+    assert_eq!(pruned.removed, 1);
+    assert_eq!(
+        store
+            .prune_if_due_at(&Options::default(), stamp + DAY - 1)
+            .unwrap(),
+        None
+    );
+    assert!(store
+        .prune_if_due_at(&Options::default(), stamp + DAY)
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn copies_from_before_the_index_are_adopted() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("store");

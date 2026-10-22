@@ -3,6 +3,7 @@ mod claude;
 mod conversation;
 mod drive;
 mod driver;
+mod forget;
 mod gate;
 mod hooks;
 mod identity;
@@ -26,6 +27,7 @@ pub use conversation::{
 };
 pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView, NEEDS_TRUST_EXIT};
 pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
+pub use forget::forget_workspace;
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
 pub use hooks::{
     branch_from_cwd, event_state, notification_for, read_states, record_hook, run, session_event,

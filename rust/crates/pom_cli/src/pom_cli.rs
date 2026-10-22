@@ -7,6 +7,7 @@ mod completion;
 mod config;
 mod db;
 mod env;
+mod gc;
 mod lifecycle;
 mod machine;
 mod marks;
@@ -86,6 +87,10 @@ workspaces
                      stop it and remove its worktrees, databases and folder; the local
                      branch goes too only when it is pushed or merged
   ws rename <branch> [name]   set or clear the workspace's display name
+  ws gc [--merged] [--closed] [--dry-run] [--yes] [--force] [--json]
+                     delete the workspaces whose pull requests (in every repo that has one) are
+                     merged, or closed with --closed; asks for each on a terminal, else needs
+                     --yes; a workspace with uncommitted or unpushed work is kept unless --force
   ws ls [--json]     workspaces, their repos and running services (ws list works too)
   get workspaces [-o json]    each workspace's readiness and phase
   describe workspace <branch> [-o json]
@@ -134,7 +139,8 @@ projects and machine
   onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
   ps [--watch]       CPU and memory of every holder Pomelo started
-  disk               disk used by the registered projects
+  disk [--json]      free space where Pomelo writes (home, its state, Docker's data, LVM thin
+                     pools; warns past 80% with what to run) and the projects' node_modules
   modules [list|prune|clear]
                      the shared node_modules store: its copies, drop unused ones, or empty it
   mcp [--branch b]   MCP server on stdio for a coding agent working in this workspace
@@ -210,7 +216,7 @@ enum Command {
     Lifecycle(LifecycleCommand),
     Onboard(OnboardCommand),
     Ps { watch: bool },
-    Disk,
+    Disk { json: bool },
     Modules(modules::ModulesCommand),
     Completion(String),
     Doctor { json: bool },
@@ -278,7 +284,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             }
             Command::Onboard(ref command) => onboard::execute(command, cwd, out),
             Command::Ps { watch } => machine::ps(watch, out),
-            Command::Disk => machine::disk(&StateDir::from_env(), out),
+            Command::Disk { json } => machine::disk(&StateDir::from_env(), json, out),
             Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
             Command::Completion(ref shell) => completion::print(shell, out),
             Command::Agent(ref command) => {
@@ -432,6 +438,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "onboard"
                         | "agent"
                         | "doctor"
+                        | "disk"
                         | "start"
                         | "status"
                         | "logs"
@@ -514,7 +521,13 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             ["-w" | "--watch"] => Command::Ps { watch: true },
             _ => return Err("usage: pom ps [--watch]".into()),
         },
-        "disk" => none().map(|_| Command::Disk)?,
+        "disk" => Command::Disk {
+            json: match rest {
+                [] | ["-o" | "--output", "table"] => false,
+                ["--json"] | ["-o" | "--output", "json"] => true,
+                _ => return Err("usage: pom disk [--json]".into()),
+            },
+        },
         "modules" => Command::Modules(modules::parse(rest)?),
         "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
         "doctor" => Command::Doctor {
@@ -589,6 +602,9 @@ pub(crate) fn doctor(
     );
     let network = pom_env::dev_network();
     if let Some(finding) = pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len()) {
+        pom_doctor::add_finding(&mut findings, finding);
+    }
+    for finding in machine::disk_check(&StateDir::from_env()).findings {
         pom_doctor::add_finding(&mut findings, finding);
     }
     let write = |out: &mut dyn Write, line: String| {
@@ -721,7 +737,7 @@ impl Session {
             | Command::ProxyConfig(_)
             | Command::Onboard(_)
             | Command::Ps { .. }
-            | Command::Disk
+            | Command::Disk { .. }
             | Command::Modules(_)
             | Command::Completion(_)
             | Command::Doctor { .. }
@@ -769,6 +785,19 @@ impl Session {
         }
         if let Err(error) = proxy::ensure_running(out) {
             say(err, &format!("dev proxy: {error}"))?;
+        }
+        let store = module_store::Store::new(&self.state);
+        match store.prune_if_due(&module_store::Options::from_settings_file()) {
+            Ok(Some(pruned)) if pruned.removed > 0 => say(
+                out,
+                &format!(
+                    "node_modules store: removed {} unused copies, freed {}",
+                    pruned.removed,
+                    module_store::format_size(pruned.freed)
+                ),
+            )?,
+            Err(error) => say(err, &format!("node_modules store: prune: {error}"))?,
+            _ => {}
         }
         if failed > 0 {
             return Err(format!("{failed} service(s) did not start"));

@@ -1,4 +1,4 @@
-//! `pom ws create|delete|rename|list` and `pom prepare-main`.
+//! `pom ws create|delete|rename|list|gc` and `pom prepare-main`.
 
 use std::io::Write;
 use std::sync::mpsc;
@@ -18,6 +18,7 @@ pub(crate) enum WorkspaceCommand {
     Delete(DeleteRequest),
     Rename { branch: String, name: String },
     List { json: bool },
+    Gc(crate::gc::GcArgs),
     PrepareMain(PrepareRequest),
 }
 
@@ -84,7 +85,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
     }
     let (action, rest) = positional
         .split_first()
-        .ok_or("ws needs create, delete, rename or list")?;
+        .ok_or("ws needs create, delete, rename, list or gc")?;
     match (*action, rest) {
         ("create", [branch]) => {
             allow(&["repos", "env", "no-seed", "fresh-db", "from-stage"])?;
@@ -115,6 +116,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
             Ok(WorkspaceCommand::Delete(DeleteRequest {
                 branch: branch.to_string(),
                 from_stage: from_stage()?,
+                ..DeleteRequest::default()
             }))
         }
         ("rename", [branch, name @ ..]) if name.len() <= 1 => {
@@ -137,6 +139,18 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
             };
             Ok(WorkspaceCommand::List { json })
         }
+        ("gc", []) => {
+            allow(&["merged", "closed", "yes", "dry-run", "json", "force"])?;
+            Ok(WorkspaceCommand::Gc(crate::gc::GcArgs {
+                merged: has("merged"),
+                closed: has("closed"),
+                yes: has("yes"),
+                dry_run: has("dry-run"),
+                json: has("json"),
+                force: has("force"),
+            }))
+        }
+        ("gc", _) => Err("ws gc takes no arguments".into()),
         ("create" | "delete", _) => Err(format!("ws {action} takes one branch")),
         ("rename", _) => Err("ws rename takes a branch and an optional name".into()),
         ("list" | "ls", _) => Err("ws ls takes no arguments".into()),
@@ -156,6 +170,7 @@ impl Session {
             WorkspaceCommand::Rename { branch, name } => self.rename_workspace(branch, name, out),
             WorkspaceCommand::List { json: false } => self.list_workspaces(out),
             WorkspaceCommand::List { json: true } => self.list_workspaces_json(out),
+            WorkspaceCommand::Gc(args) => self.gc(args, out),
             WorkspaceCommand::PrepareMain(request) => self.prepare_main(request, out),
         }
     }
@@ -418,6 +433,7 @@ mod tests {
             Ok(WorkspaceCommand::Delete(DeleteRequest {
                 branch: "feat-x".into(),
                 from_stage: 0,
+                ..DeleteRequest::default()
             }))
         );
         assert_eq!(
@@ -437,6 +453,16 @@ mod tests {
             Ok(WorkspaceCommand::List { json: true })
         );
         assert!(parsed("ls -o yaml").is_err());
+        assert_eq!(
+            parsed("gc --closed --yes --json"),
+            Ok(WorkspaceCommand::Gc(crate::gc::GcArgs {
+                closed: true,
+                yes: true,
+                json: true,
+                ..Default::default()
+            }))
+        );
+        assert!(parsed("gc feat").is_err());
         assert_eq!(
             parse(&["--no-seed"], true),
             Ok(WorkspaceCommand::PrepareMain(PrepareRequest {

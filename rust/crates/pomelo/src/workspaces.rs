@@ -96,6 +96,9 @@ impl App {
         if let Some((index, action)) = requests.row {
             self.workspace_row_action(id, index, action);
         }
+        if requests.clean_up {
+            self.clean_up_merged(id, true);
+        }
         if let Some((from, to)) = requests.reorder {
             self.reorder_workspace(id, from, to);
         }
@@ -250,7 +253,7 @@ impl App {
                     view.ask_to_delete_workspace(index, &unpushed)
                 });
             }
-            workspace::RowAction::Delete => self.delete_workspace(id, index, &target),
+            workspace::RowAction::Delete => self.delete_workspace(id, index, &target, None),
             workspace::RowAction::UpdateMain => {
                 self.queue_main_op(id, OpKind::RefreshMain, workspaces_ui::REFRESH_TITLE)
             }
@@ -364,8 +367,15 @@ impl App {
         });
     }
 
-    /// Deleting the workspace this window works in first moves the window to main.
-    fn delete_workspace(&mut self, id: WindowId, index: usize, target: &pom_layout::Workspace) {
+    /// Deleting the workspace this window works in first moves the window to main. With `pushed_heads` the
+    /// delete keeps a workspace that has uncommitted or unpushed work.
+    fn delete_workspace(
+        &mut self,
+        id: WindowId,
+        index: usize,
+        target: &pom_layout::Workspace,
+        pushed_heads: Option<std::collections::BTreeMap<String, String>>,
+    ) {
         let Some(context) = self.op_context(id) else {
             return;
         };
@@ -390,12 +400,109 @@ impl App {
             main.ops.enqueue(
                 OpKind::Delete(pom_workspace::DeleteRequest {
                     branch: target.branch.clone(),
-                    from_stage: 0,
+                    keep_unsaved_work: pushed_heads.is_some(),
+                    pushed_heads: pushed_heads.unwrap_or_default(),
+                    ..pom_workspace::DeleteRequest::default()
                 }),
                 format!("Deleting {title}"),
                 context,
             );
         }
+    }
+
+    /// The workspaces (by index) whose PRs all merged, with the commit each repo's PR was merged at.
+    fn merged_workspaces(
+        &self,
+        id: WindowId,
+    ) -> Vec<(
+        usize,
+        pom_layout::Workspace,
+        std::collections::BTreeMap<String, String>,
+    )> {
+        let Some(main) = self.mains.get(&id) else {
+            return Vec::new();
+        };
+        let (Some(project), Some(prs)) = (main.project.as_ref(), main.pull_requests.as_ref())
+        else {
+            return Vec::new();
+        };
+        project
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(_, workspace)| !workspace.is_main)
+            .filter_map(|(index, workspace)| {
+                let (_, heads) = prs.merged(&workspace.branch)?;
+                Some((index, workspace.clone(), heads))
+            })
+            .collect()
+    }
+
+    /// After a PR refresh, `workspaces.auto_cleanup` decides: offer to delete the newly merged workspaces
+    /// ("ask"), delete them ("auto", leaving the one on screen), or nothing ("off").
+    fn offer_merged_cleanup(&mut self, id: WindowId) {
+        let mode = self.settings.workspaces.auto_cleanup.clone();
+        if mode != "ask" && mode != "auto" {
+            return;
+        }
+        let merged = self.merged_workspaces(id);
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let fresh = merged
+            .iter()
+            .filter(|(_, workspace, _)| !main.cleanup_offered.contains(&workspace.branch))
+            .count();
+        if fresh == 0 {
+            return;
+        }
+        if mode == "auto" {
+            self.clean_up_merged(id, false);
+            return;
+        }
+        main.cleanup_offered.extend(
+            merged
+                .iter()
+                .map(|(_, workspace, _)| workspace.branch.clone()),
+        );
+        let message = match merged.len() {
+            1 => "1 workspace has merged PRs".to_string(),
+            count => format!("{count} workspaces have merged PRs"),
+        };
+        self.with_workspace_view(id, |view, _| view.offer_cleanup(message));
+    }
+
+    /// Deletes the workspaces whose PRs merged; each keeps itself when it has uncommitted or unpushed work.
+    fn clean_up_merged(&mut self, id: WindowId, include_active: bool) {
+        let active = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.active_branch().to_string())
+            .unwrap_or_default();
+        let doomed: Vec<_> = self
+            .merged_workspaces(id)
+            .into_iter()
+            .filter(|(_, workspace, _)| include_active || workspace.branch != active)
+            .collect();
+        if doomed.is_empty() {
+            return;
+        }
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.cleanup_offered.extend(
+                doomed
+                    .iter()
+                    .map(|(_, workspace, _)| workspace.branch.clone()),
+            );
+        }
+        let message = match doomed.len() {
+            1 => "Cleaning up 1 workspace with merged PRs".to_string(),
+            count => format!("Cleaning up {count} workspaces with merged PRs"),
+        };
+        for (index, workspace, heads) in doomed {
+            self.delete_workspace(id, index, &workspace, Some(heads));
+        }
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
     }
 
     /// Lights the status bar's Services badge while a repo service of the active workspace runs (checked at
@@ -458,6 +565,7 @@ impl App {
                 self.open_remote_in(id, picked);
             }
         }
+        let mut merged_changed = false;
         let tickets_changed = match self.mains.get_mut(&id) {
             Some(main) => {
                 let branches: Vec<String> = main
@@ -486,12 +594,18 @@ impl App {
                     prs.refresh_if_due(workspaces);
                     prs.take_changed()
                 });
+                if prs_changed {
+                    merged_changed = true;
+                }
                 tickets_changed || prs_changed
             }
             None => false,
         };
         if tickets_changed {
             self.refresh_project_info(id);
+        }
+        if merged_changed {
+            self.offer_merged_cleanup(id);
         }
         let Some(main) = self.mains.get(&id) else {
             return;

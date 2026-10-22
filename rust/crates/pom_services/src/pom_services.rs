@@ -16,7 +16,7 @@ pub use control::{
     login_shell, service_command, shell_quote, RunnerOptions, ServiceError, ServiceRunner,
     ServiceTarget,
 };
-pub use env_files::{EnvLine, ServiceExplain, WorkspaceEnv};
+pub use env_files::{EnvLine, ServiceExplain, WorkspaceEnv, HEADER as GENERATED_ENV_HEADER};
 pub use health::{cmd_ok, http_ok, parse_duration, ServiceHealth, WaitOutcome};
 pub use marks::{
     parse_statement_rows, step_stats, strip_ansi, LogSlice, Mark, StatementRow, StepQuery,
@@ -29,7 +29,7 @@ pub use run_env::{
 };
 pub use shared::{
     database_names, database_names_where, run_within, Endpoint, PortOwner, SharedAction,
-    COMPOSE_FILE, SHARED_NETWORK,
+    COMPOSE_FILE, SHARED_NETWORK, WORKSPACE_VOLUME_LABEL,
 };
 pub use shared_health::{
     postgres_answers, redis_answers, tcp_answers, CommandProbe, SharedHealth, SharedProbe,

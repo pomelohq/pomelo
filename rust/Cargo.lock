@@ -3575,6 +3575,7 @@ dependencies = [
 name = "pom_cli"
 version = "0.9.3"
 dependencies = [
+ "git",
  "module_store",
  "pom_agent",
  "pom_bundle",
@@ -3582,6 +3583,7 @@ dependencies = [
  "pom_core",
  "pom_doctor",
  "pom_env",
+ "pom_forge",
  "pom_layout",
  "pom_mcp",
  "pom_paths",
@@ -3890,6 +3892,7 @@ version = "0.9.3"
 dependencies = [
  "indexmap",
  "module_store",
+ "pom_agent",
  "pom_config",
  "pom_env",
  "pom_layout",

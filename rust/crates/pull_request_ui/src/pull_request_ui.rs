@@ -204,6 +204,29 @@ impl PullRequests {
         })
     }
 
+    /// Why the workspace is done, when every PR its repos have is merged, with the commit each was merged at.
+    pub fn merged(
+        &self,
+        branch: &str,
+    ) -> Option<(String, std::collections::BTreeMap<String, String>)> {
+        let prs: Vec<(String, PullRequest)> = self
+            .prs_of(branch)
+            .into_iter()
+            .filter_map(|(_, target, pr)| Some((target.repo, pr?)))
+            .collect();
+        let reason = pom_forge::finished_reason(
+            prs.iter().map(|(repo, pr)| (repo.as_str(), pr)),
+            true,
+            false,
+        )?;
+        let heads = prs
+            .into_iter()
+            .filter(|(_, pr)| !pr.head_ref_oid.is_empty())
+            .map(|(repo, pr)| (repo, pr.head_ref_oid))
+            .collect();
+        Some((reason, heads))
+    }
+
     /// The lookup and PR (if any) for the checkout at `root`; `None` while its GitHub repo is unknown.
     pub fn for_checkout(&self, root: &Path) -> Option<(PrTarget, Option<PullRequest>)> {
         let targets = self.shared.targets.lock().ok()?;
@@ -318,6 +341,16 @@ mod tests {
         let item = prs.item(target("api"));
         assert_eq!(item.title(), "#2 ");
         assert_eq!(item.id().as_deref(), Some("pr:api:feat-login"));
+        assert_eq!(prs.merged("feat-login"), None);
+        let mut merged = pr(3, "MERGED", "pass");
+        merged.head_ref_oid = "abc123".into();
+        prs.show(
+            "feat-login",
+            vec![(temp.path().join("api"), target("api"), merged)],
+        );
+        let (reason, heads) = prs.merged("feat-login").ok_or("merged")?;
+        assert_eq!(reason, "api #3 merged");
+        assert_eq!(heads.get("api").map(String::as_str), Some("abc123"));
         Ok(())
     }
 }

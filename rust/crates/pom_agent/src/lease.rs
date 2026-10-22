@@ -12,7 +12,7 @@ use crate::caller::Caller;
 use crate::gate::Refusal;
 use crate::sessions::{now_ms, with_lock};
 
-const LEASES_DIR: &str = "agents/leases";
+pub(crate) const LEASES_DIR: &str = "agents/leases";
 const LOGS_DIR: &str = "agents/workspace-log";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ fn new_token() -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn lease_path(state: &StateDir, holder: &str) -> std::path::PathBuf {
+pub(crate) fn lease_path(state: &StateDir, holder: &str) -> std::path::PathBuf {
     state
         .path(LEASES_DIR)
         .join(format!("{}.json", holder.replace('/', "_")))
@@ -145,7 +145,7 @@ pub fn set_lease(
     Ok(lease)
 }
 
-fn log_path(state: &StateDir, project: &str, branch: &str) -> std::path::PathBuf {
+pub(crate) fn log_path(state: &StateDir, project: &str, branch: &str) -> std::path::PathBuf {
     state
         .path(LOGS_DIR)
         .join(project.replace('/', "_"))

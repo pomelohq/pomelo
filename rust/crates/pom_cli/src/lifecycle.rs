@@ -432,6 +432,7 @@ impl Session {
                 let request = DeleteRequest {
                     branch: workspace.branch.clone(),
                     from_stage: 0,
+                    ..DeleteRequest::default()
                 };
                 let result = crate::workspaces::stream(out, |sink| {
                     pom_workspace::delete(&context, &request, sink)

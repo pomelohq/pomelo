@@ -16,9 +16,9 @@ pub use actions::{
 };
 pub use cache::PrCache;
 pub use pull_request::{
-    fetch_detail, fetch_heads, severity, trouble, Actor, Check, Label, PrTarget, PullRequest,
-    ReviewRequest, ReviewThread, Reviewer, Severity, ThreadComment, TimelineItem, TimelineKind,
-    Trouble,
+    fetch_detail, fetch_heads, fetch_latest, finished_reason, severity, trouble, Actor, Check,
+    Label, PrTarget, PullRequest, ReviewRequest, ReviewThread, Reviewer, Severity, ThreadComment,
+    TimelineItem, TimelineKind, Trouble,
 };
 
 const GRAPHQL_URL: &str = "https://api.github.com/graphql";

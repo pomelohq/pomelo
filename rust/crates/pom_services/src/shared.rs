@@ -66,6 +66,9 @@ fn parse_port_owner(stdout: &str) -> Option<PortOwner> {
 }
 
 const PORT_OWNER_TIMEOUT: Duration = Duration::from_secs(5);
+const VOLUME_RM_TIMEOUT: Duration = Duration::from_secs(60);
+/// Docker label naming the workspace (`<project>/<branch>`) a volume belongs to.
+pub const WORKSPACE_VOLUME_LABEL: &str = "pom.workspace";
 
 const OUTPUT_TAIL_LINES: usize = 20;
 
@@ -781,6 +784,39 @@ impl ServiceRunner {
                 None
             }
         }
+    }
+
+    /// The label a Docker volume carries when it belongs to one workspace, so deleting the workspace drops it.
+    pub fn workspace_volume_label(&self, branch: &str) -> String {
+        format!("{WORKSPACE_VOLUME_LABEL}={}/{branch}", self.session)
+    }
+
+    /// Removes the volumes labelled as this workspace's; shared volumes never carry the label. `None` when
+    /// Docker does not answer, which leaves nothing to clean.
+    pub fn remove_workspace_volumes(&self, branch: &str) -> Option<Result<Vec<String>, String>> {
+        let listed = self.docker_within(
+            &[
+                "volume".to_string(),
+                "ls".into(),
+                "-q".into(),
+                "--filter".into(),
+                format!("label={}", self.workspace_volume_label(branch)),
+            ],
+            PORT_OWNER_TIMEOUT,
+        );
+        let names: Vec<String> = listed
+            .ok()?
+            .lines()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect();
+        if names.is_empty() {
+            return Some(Ok(names));
+        }
+        let mut args = vec!["volume".to_string(), "rm".into()];
+        args.extend(names.iter().cloned());
+        Some(self.docker_within(&args, VOLUME_RM_TIMEOUT).map(|_| names))
     }
 
     /// Whether `owner` is a container of this project's shared stack.

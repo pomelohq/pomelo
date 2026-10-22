@@ -180,27 +180,89 @@ fn format_mb(mb: u64) -> String {
     }
 }
 
-pub(crate) fn disk(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {
-    if let Some(home) = std::env::var_os("HOME") {
-        let output = std::process::Command::new("df")
-            .arg("-h")
-            .arg(&home)
-            .output();
-        if let Ok(output) = output {
-            let text = String::from_utf8_lossy(&output.stdout).into_owned();
-            let fields: Vec<&str> = text
-                .lines()
-                .nth(1)
-                .unwrap_or("")
-                .split_whitespace()
-                .collect();
-            if fields.len() >= 4 {
-                say(
-                    out,
-                    &format!("disk  used {}  free {}", fields[2], fields[3]),
-                )?;
-            }
+/// The filesystems of home, the state dir and Docker's data, the LVM thin pools, and the warnings about them.
+pub(crate) struct DiskCheck {
+    pub filesystems: Vec<pom_doctor::Filesystem>,
+    pub pools: Option<Vec<pom_doctor::ThinPool>>,
+    pub findings: Vec<pom_doctor::Finding>,
+}
+
+pub(crate) fn disk_check(state: &StateDir) -> DiskCheck {
+    let path = pom_services::tool_path();
+    let mut places = Vec::new();
+    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+        places.push(pom_doctor::Place {
+            name: "home".into(),
+            path: home.into(),
+        });
+    }
+    places.push(pom_doctor::Place {
+        name: "state".into(),
+        path: nearest_existing(state.root()),
+    });
+    if pom_doctor::on_path(path, "docker") {
+        if let Some(root) = pom_doctor::docker_root(path) {
+            places.push(pom_doctor::Place {
+                name: "docker".into(),
+                path: root,
+            });
         }
+    }
+    let filesystems = pom_doctor::filesystems(&places, &pom_doctor::df_usage);
+    let pools = pom_doctor::thin_pools(path);
+    let findings = pom_doctor::disk_findings(&filesystems, pools.as_deref().unwrap_or_default());
+    DiskCheck {
+        filesystems,
+        pools,
+        findings,
+    }
+}
+
+/// The state dir may not exist yet; its filesystem is its nearest existing parent's.
+fn nearest_existing(path: &Path) -> std::path::PathBuf {
+    path.ancestors()
+        .find(|ancestor| ancestor.exists())
+        .unwrap_or(path)
+        .to_path_buf()
+}
+
+pub(crate) fn disk(state: &StateDir, json: bool, out: &mut dyn Write) -> Result<(), String> {
+    let check = disk_check(state);
+    if json {
+        let report = serde_json::json!({
+            "schema": "pom.disk/v1",
+            "filesystems": check.filesystems,
+            "thin_pools": check.pools,
+            "findings": check.findings,
+            "warn_percent": pom_doctor::FULL_PERCENT,
+        });
+        return say(
+            out,
+            &serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?,
+        );
+    }
+    for filesystem in &check.filesystems {
+        let usage = &filesystem.usage;
+        let names: Vec<&str> = filesystem
+            .places
+            .iter()
+            .map(|place| place.name.as_str())
+            .collect();
+        say(
+            out,
+            &format!(
+                "disk {}  {}% used  free {}  ({})",
+                usage.mount,
+                usage.used_percent,
+                pom_doctor::format_bytes(usage.available_bytes),
+                names.join(", ")
+            ),
+        )?;
+    }
+    for finding in &check.findings {
+        say(out, &format!("warn  {}", finding.title))?;
+        say(out, &format!("      {}", finding.detail))?;
+        say(out, &format!("      free space: {}", finding.fix))?;
     }
     let store = std::process::Command::new("pnpm")
         .args(["store", "path"])

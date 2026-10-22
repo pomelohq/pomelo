@@ -136,6 +136,8 @@ pub struct WorkspaceRequests {
     pub op: Option<(u64, crate::OpAction)>,
     /// A group was folded, opened or moved; `workspace_grouping` has the new arrangement to save.
     pub grouping_changed: bool,
+    /// The person took the offer to delete the workspaces whose pull requests merged.
+    pub clean_up: bool,
 }
 
 const CENTER_PAGE_PAD: f32 = 40.0;
@@ -379,6 +381,8 @@ pub struct WorkspaceView {
     press: (f32, f32),
     show_after_switch: Option<PaneKind>,
     toast_then: Option<(PaneKind, crate::PanelRequest)>,
+    /// The toast on screen offers to clean up merged workspaces.
+    cleanup_toast: bool,
     /// When main's background update last succeeded; its row says "Up to date" for a moment after.
     upkeep_done_at: Option<Instant>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
@@ -500,6 +504,7 @@ impl WorkspaceView {
             press: (0.0, 0.0),
             show_after_switch: None,
             toast_then: None,
+            cleanup_toast: false,
             upkeep_done_at: None,
             terminal_click: None,
             titlebar_press: false,
@@ -1462,6 +1467,7 @@ impl WorkspaceView {
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
+        self.cleanup_toast = false;
         let now = Instant::now();
         self.toast = Some(Toast {
             message: message.into(),
@@ -1472,6 +1478,13 @@ impl WorkspaceView {
             remaining: TOAST_DISMISS,
             rect: Rect::new(0.0, 0.0, 0.0, 0.0, Rgba::TRANSPARENT),
         });
+    }
+
+    /// Offers, in a toast, to delete the workspaces whose pull requests merged.
+    pub fn offer_cleanup(&mut self, message: impl Into<String>) {
+        self.show_toast(message, Some("Clean up".into()));
+        self.toast_then = None;
+        self.cleanup_toast = true;
     }
 
     /// An item on screen runs an animation and wants every frame.
@@ -7784,6 +7797,9 @@ impl WorkspaceView {
         if id == TOAST_CLOSE || id == TOAST_ACTION {
             self.toast = None;
             let then = self.toast_then.take();
+            if id == TOAST_ACTION && std::mem::take(&mut self.cleanup_toast) {
+                self.workspace_requests.clean_up = true;
+            }
             if let (TOAST_ACTION, Some((kind, then))) = (id, then) {
                 self.apply_request(kind, then);
             }
@@ -9043,6 +9059,22 @@ mod tests {
             Some("Language 2 is available for this file".to_string())
         );
         assert!(view.server_notices.is_empty());
+    }
+
+    #[test]
+    fn the_cleanup_toast_asks_the_app_only_when_its_action_is_taken() {
+        let mut view = WorkspaceView::new(Layout::default());
+        view.offer_cleanup("2 workspaces have merged PRs");
+        view.header_click(TOAST_CLOSE);
+        assert!(!view.take_workspace_requests().clean_up);
+        view.offer_cleanup("2 workspaces have merged PRs");
+        view.show_toast("Something else", None);
+        view.header_click(TOAST_CLOSE);
+        assert!(!view.take_workspace_requests().clean_up);
+        view.offer_cleanup("2 workspaces have merged PRs");
+        view.header_click(TOAST_ACTION);
+        assert!(view.take_workspace_requests().clean_up);
+        assert!(view.toast.is_none());
     }
 
     #[test]

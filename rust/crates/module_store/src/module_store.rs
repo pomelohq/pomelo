@@ -167,6 +167,9 @@ impl Entry {
 #[derive(Default, Serialize, Deserialize)]
 struct Index {
     entries: Vec<Entry>,
+    /// When the store was last pruned on a schedule, in seconds since the epoch.
+    #[serde(default)]
+    last_prune: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -608,6 +611,30 @@ impl Store {
             }
         }
         Ok(pruned)
+    }
+
+    /// [`Store::prune`] at most once a day (the app's launch and `pom start` call it); `None` when it is not
+    /// due or the store is off.
+    pub fn prune_if_due(&self, options: &Options) -> io::Result<Option<Pruned>> {
+        self.prune_if_due_at(options, now())
+    }
+
+    fn prune_if_due_at(&self, options: &Options, stamp: u64) -> io::Result<Option<Pruned>> {
+        if !options.enabled || !self.root.is_dir() {
+            return Ok(None);
+        }
+        let mut due = false;
+        // Claimed before pruning, so two launches at once prune once; the prune takes the lock itself.
+        self.update(|index| {
+            due = stamp.saturating_sub(index.last_prune) >= DAY;
+            if due {
+                index.last_prune = stamp;
+            }
+        })?;
+        if !due {
+            return Ok(None);
+        }
+        self.prune(options).map(Some)
     }
 
     /// What a workspace folder under `workspaces` would get from this store.
