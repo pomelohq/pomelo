@@ -42,9 +42,10 @@ pub use usage::{
     USAGE_OPEN, USAGE_REFRESH, USAGE_STATUS,
 };
 pub use welcome::{
-    is_welcome_id, welcome_page, MachineCheck, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE,
-    WELCOME_NEW_PROJECT, WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS,
-    WELCOME_RECENT_BASE, WELCOME_RECHECK,
+    is_welcome_id, notice_page, welcome_page, CenterNotice, MachineCheck, NoticeTone,
+    NOTICE_ACTION_BASE, NOTICE_ACTION_END, WELCOME_CONNECT_HOST, WELCOME_FIX_BASE,
+    WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT, WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT,
+    WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE, WELCOME_RECHECK,
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
@@ -205,12 +206,14 @@ impl Dock {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Session {
     pub name: String,
     pub path: std::path::PathBuf,
     pub running: bool,
     pub missing: bool,
+    /// The machine a remote project lives on (`path` is a path there).
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -218,6 +221,8 @@ pub struct ProjectInfo {
     pub name: String,
     pub branch: String,
     pub config_path: std::path::PathBuf,
+    /// The machine the project runs on when it is not this one: its local-only features stay hidden.
+    pub host: Option<String>,
     /// Workspace branches on disk, the main one first.
     pub workspaces: Vec<String>,
     /// The workspace this window works in (its files, terminal, branch).
@@ -599,6 +604,8 @@ pub const STATUS_TICKET: u64 = 15;
 pub const SESSION_EDIT_CONFIG: u64 = 16;
 /// The session menu's "New session..." row.
 pub const SESSION_NEW: u64 = 17;
+/// The session menu's "Connect to host..." row.
+pub const SESSION_CONNECT_HOST: u64 = 28;
 /// A workspace operation card: base + position * stride + part.
 pub const WORKSPACE_OP_BASE: u64 = 3000;
 pub const WORKSPACE_OP_END: u64 = 4000;
@@ -2418,8 +2425,15 @@ impl Layout {
 
     /// Whether the function at `PaneKind::ALL` index `i` has a button and a panel: not hidden by the user, and
     /// meaningful here (main is the base every branch compares against, so it has no Git panel).
+    /// The project runs on another machine: what needs its files here (panels, terminals, the agent) is off.
+    pub fn is_remote(&self) -> bool {
+        self.project
+            .as_ref()
+            .is_some_and(|project| project.host.is_some())
+    }
+
     pub fn func_offered(&self, i: usize) -> bool {
-        if self.func_hidden.get(i).copied().unwrap_or(false) {
+        if self.func_hidden.get(i).copied().unwrap_or(false) || self.is_remote() {
             return false;
         }
         let on_main = self.project.as_ref().is_some_and(|project| {
@@ -2442,11 +2456,11 @@ impl Layout {
                 v.push(Shown::Func(*kind));
             }
         }
-        if !self.terminal_hidden && self.terminal_side == side {
+        if !self.terminal_hidden && !self.is_remote() && self.terminal_side == side {
             v.push(Shown::Terminal);
         }
         // Listed last so functions and the terminal take priority when the agent is not the active panel.
-        if !self.agent_hidden && side == self.agent_side {
+        if !self.agent_hidden && !self.is_remote() && side == self.agent_side {
             v.push(Shown::Agent);
         }
         v
@@ -3106,7 +3120,11 @@ impl Layout {
         let pad = MENU_PAD * scale;
         let search_h = MENU_SEARCH_H * scale;
         let div_h = MENU_DIV_H * scale;
-        let footer_rows = if self.project.is_some() { 3.0 } else { 2.0 };
+        let local_project = self
+            .project
+            .as_ref()
+            .is_some_and(|project| project.host.is_none());
+        let footer_rows = if local_project { 4.0 } else { 3.0 };
         let footer_h = (MENU_ACTION_H * footer_rows + 2.0 * (footer_rows - 1.0)) * scale;
         let (content_h, region_h) = self.session_list_metrics(query);
         let max_scroll = (content_h - region_h).max(0.0);
@@ -3204,8 +3222,17 @@ impl Layout {
                 "Open a session...",
                 SESSION_OPEN,
                 hovered,
+            ))
+            .child(action_row(
+                ui::icon(ui::IconKind::Server)
+                    .size(14.0)
+                    .color(theme().icon_muted)
+                    .into(),
+                "Connect to host...",
+                SESSION_CONNECT_HOST,
+                hovered,
             ));
-        if self.project.is_some() {
+        if local_project {
             footer = footer.child(action_row(
                 ui::icon(ui::IconKind::File)
                     .size(14.0)
@@ -3352,6 +3379,13 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
     if current {
         left = left.child(ui::check_icon().size(15.0));
     }
+    if let Some(host) = &s.host {
+        left = left.child(
+            label(format!("on {host}"))
+                .label_size(ui::LabelSize::XSmall)
+                .color(theme().text_placeholder),
+        );
+    }
     if s.missing {
         left = left.child(
             label("missing")
@@ -3381,12 +3415,14 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
                     ui::window_icon().into(),
                     SESSION_OPENTHIS_BASE + i as u64,
                     hovered,
-                ))
-                .child(icon_button(
+                ));
+            if s.host.is_none() {
+                actions = actions.child(icon_button(
                     ui::folder_icon().into(),
                     SESSION_REVEAL_BASE + i as u64,
                     hovered,
                 ));
+            }
         }
         if !current {
             actions = actions.child(icon_button(
@@ -3483,7 +3519,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             row = row.child(toggle(ui::IconKind::Ticket, STATUS_TICKET, false));
             has = true;
         }
-        if !layout.terminal_hidden && layout.terminal_side == side {
+        if !layout.terminal_hidden && !layout.is_remote() && layout.terminal_side == side {
             row = row.child(toggle(
                 ui::IconKind::Terminal,
                 BOTTOM_TOGGLE,
@@ -3491,7 +3527,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             ));
             has = true;
         }
-        if !layout.agent_hidden && side == layout.agent_side {
+        if !layout.agent_hidden && !layout.is_remote() && side == layout.agent_side {
             let active = layout.agent_shown();
             row = row.child(toggle(ui::IconKind::Sparkle, AGENT_TOGGLE, active));
             has = true;

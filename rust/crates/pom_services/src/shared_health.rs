@@ -23,7 +23,8 @@ const COMMAND_NOT_FOUND: i32 = 127;
 const PG_PROTOCOL_3: u32 = 196_608;
 const PG_STARTING_UP: &str = "57P03";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SharedHealth {
     pub name: String,
     /// Its container or command runs.

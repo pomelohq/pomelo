@@ -1,0 +1,16 @@
+[package]
+name = "remote_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Remote projects in the app: the connect-to-host dialog and what stands in for local-only panels."
+
+[lib]
+path = "src/remote_ui.rs"
+
+[dependencies]
+pom_remote = { path = "../pom_remote" }
+services_ui = { path = "../services_ui" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

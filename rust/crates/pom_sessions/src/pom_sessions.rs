@@ -13,6 +13,15 @@ pub struct Session {
     pub path: String,
     #[serde(default)]
     pub last_used: i64,
+    /// The `hosts.json` name of the machine the project lives on; none for a project on this machine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+impl Session {
+    pub fn is_remote(&self) -> bool {
+        self.host.is_some()
+    }
 }
 
 /// Known sessions and which one is current (`sessions.json`).
@@ -42,29 +51,45 @@ impl Sessions {
         write_json(&state.path(SESSIONS_FILE), self)
     }
 
+    /// The local session called `name`.
     pub fn get(&self, name: &str) -> Option<&Session> {
-        self.sessions.iter().find(|session| session.name == name)
+        self.sessions
+            .iter()
+            .find(|session| session.name == name && !session.is_remote())
     }
 
-    /// The named current session, or else the most recently used one.
+    /// The named current session, or else the most recently used local one.
     pub fn current_session(&self) -> Option<&Session> {
         self.get(&self.current).or_else(|| {
-            self.sessions.iter().reduce(|best, session| {
-                if session.last_used > best.last_used {
-                    session
-                } else {
-                    best
-                }
-            })
+            self.sessions
+                .iter()
+                .filter(|session| !session.is_remote())
+                .reduce(|best, session| {
+                    if session.last_used > best.last_used {
+                        session
+                    } else {
+                        best
+                    }
+                })
         })
     }
 
     /// Records use of a session (adding it if new) and makes it current.
     pub fn touch(&mut self, name: &str, path: &str, now: i64) {
+        self.upsert(name, None, path, now);
+        self.current = name.to_string();
+    }
+
+    /// Records use of a project on another machine; it never becomes the current (local) session.
+    pub fn touch_remote(&mut self, name: &str, host: &str, path: &str, now: i64) {
+        self.upsert(name, Some(host), path, now);
+    }
+
+    fn upsert(&mut self, name: &str, host: Option<&str>, path: &str, now: i64) {
         match self
             .sessions
             .iter_mut()
-            .find(|session| session.name == name)
+            .find(|session| session.name == name && session.host.as_deref() == host)
         {
             Some(session) => {
                 session.path = path.to_string();
@@ -74,16 +99,22 @@ impl Sessions {
                 name: name.to_string(),
                 path: path.to_string(),
                 last_used: now,
+                host: host.map(str::to_string),
             }),
         }
-        self.current = name.to_string();
     }
 
     pub fn remove(&mut self, name: &str) {
-        self.sessions.retain(|session| session.name != name);
+        self.sessions
+            .retain(|session| session.name != name || session.is_remote());
         if self.current == name {
             self.current.clear();
         }
+    }
+
+    pub fn remove_remote(&mut self, name: &str, host: &str) {
+        self.sessions
+            .retain(|session| session.name != name || session.host.as_deref() != Some(host));
     }
 }
 
@@ -213,6 +244,45 @@ mod tests {
             sessions.current_session().map(|s| s.last_used),
             Some(1_700_000_000)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn remote_projects_sit_beside_local_ones_of_the_same_name() -> std::io::Result<()> {
+        let (_temp, state) = state();
+        let mut sessions = Sessions::default();
+        sessions.touch("myproject", "/Users/me/pom/myproject", 10);
+        sessions.touch_remote("myproject", "dev", "/home/dev/pom/myproject", 20);
+        sessions.touch_remote("myproject", "dev", "/home/dev/pom/myproject2", 30);
+        assert_eq!(sessions.sessions.len(), 2);
+        assert_eq!(sessions.current, "myproject");
+        assert_eq!(
+            sessions.get("myproject").map(|s| s.path.as_str()),
+            Some("/Users/me/pom/myproject")
+        );
+        sessions.current.clear();
+        assert_eq!(
+            sessions.current_session().map(|s| s.path.as_str()),
+            Some("/Users/me/pom/myproject")
+        );
+        sessions.save(&state)?;
+        let text = std::fs::read_to_string(state.path("sessions.json"))?;
+        assert_eq!(text.matches("\"host\"").count(), 1);
+        let loaded = Sessions::load(&state);
+        assert_eq!(loaded, sessions);
+        let remote = loaded
+            .sessions
+            .iter()
+            .find(|s| s.is_remote())
+            .expect("remote");
+        assert_eq!(remote.host.as_deref(), Some("dev"));
+        assert_eq!(remote.path, "/home/dev/pom/myproject2");
+
+        let mut sessions = loaded;
+        sessions.remove("myproject");
+        assert_eq!(sessions.sessions.len(), 1);
+        sessions.remove_remote("myproject", "dev");
+        assert!(sessions.sessions.is_empty());
         Ok(())
     }
 

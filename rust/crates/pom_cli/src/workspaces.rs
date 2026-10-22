@@ -290,42 +290,12 @@ impl Session {
     /// `ws ls --json`: each workspace with its folder, repos, display name, running services and any
     /// create/delete still in progress or stopped part-way.
     fn list_workspaces_json(&self, out: &mut dyn Write) -> Result<(), String> {
-        let workspaces: Vec<serde_json::Value> = self
-            .project
-            .workspaces
-            .iter()
-            .map(|workspace| {
-                let repos: Vec<&str> = workspace
-                    .repos
-                    .iter()
-                    .map(|repo| repo.name.as_str())
-                    .collect();
-                let failed = pom_workspace::failed_run(&self.state, &workspace.branch).map(|failed| {
-                    let operation = match failed.operation {
-                        pom_workspace::Operation::Delete => "delete",
-                        _ => "create",
-                    };
-                    serde_json::json!({"operation": operation, "stage": failed.failed_stage + 1})
-                });
-                serde_json::json!({
-                    "branch": workspace.branch,
-                    "is_main": workspace.is_main,
-                    "path": workspace.path,
-                    "name": WorkspaceState::load(&workspace.path).display_name,
-                    "repos": repos,
-                    "running": self.running_services(&workspace.branch, workspace.is_main),
-                    "in_progress": pom_workspace::active_run(&self.state, &workspace.branch),
-                    "failed": failed,
-                })
-            })
-            .collect();
-        let document = serde_json::json!({
-            "schema": "pom.workspace/v1",
-            "project": self.config.session,
-            "root": self.project.root,
-            "workspaces": workspaces,
-        });
-        say(out, &document.to_string())
+        let list =
+            pom_remote::workspace_list(&self.project, &self.config, &self.runner, &self.state);
+        say(
+            out,
+            &serde_json::to_string(&list).map_err(|error| error.to_string())?,
+        )
     }
 
     fn running_services(&self, branch: &str, is_main: bool) -> usize {

@@ -33,7 +33,8 @@ pub fn parse_duration(text: &str, default: Duration) -> Duration {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ServiceHealth {
     pub repo: String,
     pub service: String,

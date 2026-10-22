@@ -1,17 +1,28 @@
 //! Remote machines driven over SSH: the hosts the user named (`~/.config/pomelo/hosts.json`) and the `ssh`
-//! command that runs `pom` on one of them. Pomelo relies on the user's own SSH config and keys.
+//! command that runs `pom` on one of them, and the [`ProjectSource`] a view reads a project through, here or there.
+//! Pomelo relies on the user's own SSH config and keys.
 
+mod local;
+mod source;
 mod ssh;
+mod watch;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use local::{ordered_services, service_output, status_report, workspace_list, LocalSource};
+pub use source::{
+    remote_projects, run_pom, AgentTurn, FailedRun, ProjectEntry, ProjectSource, RemoteSource,
+    ServiceAction, SourceError, StatusReport, WorkspaceList, WorkspaceSummary, PROJECT_SCHEMA,
+    WORKSPACE_SCHEMA,
+};
 pub use ssh::{
     control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,
-    version_mismatch, Tty,
+    version_mismatch, Ssh, Tty,
 };
+pub use watch::{Connection, Snapshot, Watch, POLL_EVERY};
 
 pub const SCHEMA: &str = "pom.hosts/v1";
 const HOSTS_FILE: &str = "hosts.json";

@@ -51,6 +51,7 @@ members = [
     "crates/pom_proxy",
     "crates/pom_services",
     "crates/services_ui",
+    "crates/remote_ui",
     "crates/pom_cli",
     "crates/pom_mcp",
     "crates/pom_agent",

@@ -413,3 +413,140 @@ fn agent_ls_comes_back_verbatim() {
     assert_eq!(remote.stdout, local.stdout);
     assert_eq!(json(&remote)["sessions"][0]["role"], "dev");
 }
+
+impl Fixture {
+    fn envs(&self) -> Vec<(String, String)> {
+        let path = |relative: &str| {
+            self.temp
+                .path()
+                .join(relative)
+                .to_string_lossy()
+                .into_owned()
+        };
+        vec![
+            ("HOME".into(), path("home")),
+            (
+                "FAKE_SSH_LOG".into(),
+                self.log().to_string_lossy().into_owned(),
+            ),
+            ("XDG_STATE_HOME".into(), path("state")),
+            ("POMELO_CONFIG_DIR".into(), path("config")),
+            ("POM_NO_PROXY".into(), "1".into()),
+            ("POM_WEB_PORT".into(), "1".into()),
+            ("POM_PTY_SOCK_DIR".into(), path("s")),
+        ]
+    }
+
+    fn remote_source(&self) -> pom_remote::RemoteSource {
+        let ssh = pom_remote::Ssh::custom(self.temp.path().join("bin/ssh"), None, self.envs());
+        let host = pom_remote::Hosts::load(&self.temp.path().join("config/hosts.json"))
+            .and_then(|hosts| hosts.get("dev"))
+            .expect("host dev");
+        pom_remote::RemoteSource::new(host, self.config(), ssh)
+    }
+
+    fn local_source(&self) -> pom_remote::LocalSource {
+        pom_remote::LocalSource::new(
+            self.root().join("pom.yml"),
+            StateDir::new(self.temp.path().join("state/pom")),
+            pom_ptyhost::SocketDir::new(self.temp.path().join("s")),
+            PathBuf::from(POM),
+        )
+    }
+}
+
+#[test]
+fn the_remote_source_reads_what_the_local_one_does() {
+    use pom_remote::{ProjectSource, ServiceAction};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    let remote = fixture.remote_source();
+    let local = fixture.local_source();
+    assert_eq!(remote.location(), "dev (dev@dev.example.net:2222)");
+
+    let started = remote
+        .act("feat", ServiceAction::Start, "web")
+        .expect("start over ssh");
+    assert!(started.contains("started api/web"), "{started}");
+
+    assert_eq!(
+        remote.workspaces().expect("remote"),
+        local.workspaces().expect("local")
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let logs = remote.logs("feat", "api/web").expect("logs");
+        if logs.contains("web-banner-") {
+            assert!(local
+                .logs("feat", "api/web")
+                .expect("local logs")
+                .contains("web-banner-"));
+            break;
+        }
+        assert!(Instant::now() < deadline, "no banner in {logs:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let ready = Instant::now() + Duration::from_secs(15);
+    while !remote.status("feat").expect("status").services[0].ready {
+        assert!(Instant::now() < ready, "web never became ready");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let status = remote.status("feat").expect("status");
+    assert_eq!(status, local.status("feat").expect("local status"));
+    assert!(status.services[0].up);
+
+    assert_eq!(
+        remote.agents("feat").expect("agents"),
+        local.agents("feat").expect("local")
+    );
+
+    remote
+        .act("feat", ServiceAction::Stop, "web")
+        .expect("stop");
+    assert!(!remote.status("feat").expect("status").services[0].up);
+    match remote.status("nope") {
+        Err(pom_remote::SourceError::Failed(message)) => {
+            assert!(message.contains("no workspace nope"), "{message}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_connect_flow_lists_the_remote_projects_and_reports_an_unreachable_host() {
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    let state = StateDir::new(fixture.temp.path().join("state/pom"));
+    let mut sessions = pom_sessions::Sessions::load(&state);
+    sessions.touch("demo", &fixture.root().to_string_lossy(), 10);
+    sessions.touch_remote("elsewhere", "lab", "/srv/elsewhere", 20);
+    sessions.save(&state).expect("sessions");
+
+    let listed = json(&fixture.pom(&["project", "ls", "--json"]));
+    assert_eq!(listed["schema"], "pom.project/v1");
+    assert_eq!(listed["projects"].as_array().map(Vec::len), Some(1));
+
+    let ssh = pom_remote::Ssh::custom(fixture.temp.path().join("bin/ssh"), None, fixture.envs());
+    let hosts =
+        pom_remote::Hosts::load(&fixture.temp.path().join("config/hosts.json")).expect("hosts");
+    let projects =
+        pom_remote::remote_projects(&ssh, &hosts.get("dev").expect("dev")).expect("projects");
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].name, "demo");
+    assert_eq!(projects[0].config, fixture.root().join("pom.yml"));
+    assert!(!projects[0].missing);
+
+    let down = pom_remote::Host {
+        name: "lab".into(),
+        url: pom_remote::HostUrl::parse("ssh://down.example.net").expect("url"),
+        pom_path: None,
+    };
+    match pom_remote::remote_projects(&ssh, &down) {
+        Err(pom_remote::SourceError::Unreachable(reason)) => {
+            assert!(reason.contains("Connection refused"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+}

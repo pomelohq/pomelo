@@ -3804,7 +3804,14 @@ dependencies = [
 name = "pom_remote"
 version = "0.9.3"
 dependencies = [
+ "pom_agent",
+ "pom_config",
+ "pom_core",
+ "pom_layout",
  "pom_paths",
+ "pom_ptyhost",
+ "pom_services",
+ "pom_workspace",
  "serde",
  "serde_json",
  "tempfile",
@@ -3937,12 +3944,14 @@ dependencies = [
  "pom_paths",
  "pom_proxy",
  "pom_ptyhost",
+ "pom_remote",
  "pom_secrets",
  "pom_services",
  "pom_shell",
  "pom_workspace",
  "pomelo-editor",
  "pull_request_ui",
+ "remote_ui",
  "serde",
  "serde_json",
  "services_ui",
@@ -4381,6 +4390,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "remote_ui"
+version = "0.9.3"
+dependencies = [
+ "pom_remote",
+ "services_ui",
+ "ui",
+ "workspace",
+ "workspace_hack",
+]
+
+[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4683,10 +4703,12 @@ version = "0.9.3"
 dependencies = [
  "database_ui",
  "libc",
+ "pom_agent",
  "pom_config",
  "pom_db",
  "pom_paths",
  "pom_ptyhost",
+ "pom_remote",
  "pom_services",
  "pom_shell",
  "tempfile",
@@ -5800,10 +5822,12 @@ dependencies = [
  "pom_paths",
  "pom_ports",
  "pom_ptyhost",
+ "pom_remote",
  "pom_secrets",
  "pom_services",
  "pom_workspace",
  "pull_request_ui",
+ "remote_ui",
  "serde_json",
  "services_ui",
  "settings",

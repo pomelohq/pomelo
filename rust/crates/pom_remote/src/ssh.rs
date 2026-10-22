@@ -1,5 +1,7 @@
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::Host;
 
@@ -136,10 +138,100 @@ pub fn ssh_args(
 
 /// The system `ssh` (found on PATH) set up to run pom with `args` on `host`.
 pub fn ssh_command(host: &Host, args: &[String], tty: Tty) -> Command {
-    let control = control_dir().filter(|dir| ensure_private_dir(dir));
-    let mut command = Command::new("ssh");
-    command.args(ssh_args(host, args, tty, control.as_deref()));
-    command
+    Ssh::system().command(host, args, tty)
+}
+
+/// Which ssh runs and how: the system one in the app and CLI, a stand-in in tests.
+#[derive(Debug, Clone)]
+pub struct Ssh {
+    program: PathBuf,
+    control: Option<PathBuf>,
+    envs: Vec<(String, String)>,
+}
+
+impl Ssh {
+    pub fn system() -> Ssh {
+        Ssh {
+            program: PathBuf::from("ssh"),
+            control: control_dir().filter(|dir| ensure_private_dir(dir)),
+            envs: Vec::new(),
+        }
+    }
+
+    pub fn custom(program: PathBuf, control: Option<PathBuf>, envs: Vec<(String, String)>) -> Ssh {
+        Ssh {
+            program,
+            control,
+            envs,
+        }
+    }
+
+    pub fn command(&self, host: &Host, args: &[String], tty: Tty) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(ssh_args(host, args, tty, self.control.as_deref()));
+        command.envs(self.envs.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
+    /// Runs pom with `args` on `host` without a terminal, killing ssh once `timeout` passes.
+    pub fn output(
+        &self,
+        host: &Host,
+        args: &[String],
+        timeout: Duration,
+    ) -> std::io::Result<Output> {
+        let mut child = self
+            .command(host, args, Tty::Batch)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let drain = |pipe: Option<Box<dyn Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    if let Err(error) = pipe.read_to_end(&mut bytes) {
+                        bytes.extend_from_slice(error.to_string().as_bytes());
+                    }
+                }
+                bytes
+            })
+        };
+        let stdout = drain(
+            child
+                .stdout
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        );
+        let stderr = drain(
+            child
+                .stderr
+                .take()
+                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+        );
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                if let Err(error) = child.kill() {
+                    eprintln!("ssh to {}: kill after timeout: {error}", host.name);
+                }
+                child.wait()?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("no answer from {} after {}s", host.name, timeout.as_secs()),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        Ok(Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        })
+    }
 }
 
 /// Whether the command asks for machine-readable output (`--json`, `-o json`, `--output=json`).

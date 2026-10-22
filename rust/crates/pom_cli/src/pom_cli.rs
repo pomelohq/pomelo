@@ -25,7 +25,7 @@ use db::DbCommand;
 use env::EnvCommand;
 use lifecycle::LifecycleCommand;
 use onboard::OnboardCommand;
-use pom_config::{Config, DepGraph};
+use pom_config::Config;
 use pom_core::Project;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
@@ -129,6 +129,7 @@ config
   doctor [--json]    what keeps the project from running, and how to fix it
 
 projects and machine
+  project ls [--json]         the projects this machine knows: name, folder, whether its pom.yml is there
   init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
   onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
@@ -215,6 +216,7 @@ enum Command {
     Doctor { json: bool },
     Agent(agent::AgentCommand),
     Host(remote::HostCommand),
+    Projects { json: bool },
     Version,
     Help,
 }
@@ -283,6 +285,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                 return agent::execute(command, &invocation, cwd, out, err);
             }
             Command::Host(ref command) => return remote::execute(command, out, err),
+            Command::Projects { json } => projects(&StateDir::from_env(), json, out),
             Command::Queue(ref queue) => {
                 return match Session::open(&invocation, cwd) {
                     Ok(session) => session.queue_command(queue, out, err),
@@ -435,7 +438,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "mark"
                         | "queue"
                         | "proxy"
-                        | "host")
+                        | "host"
+                        | "project")
                 )
             )
         {
@@ -528,6 +532,18 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Agent(command)
         }
         "host" => Command::Host(remote::parse(rest)?),
+        "project" | "projects" => {
+            let (verb, flags) = rest.split_first().ok_or("usage: pom project ls [--json]")?;
+            if !matches!(*verb, "ls" | "list") {
+                return Err(format!("unknown project command {verb} (ls)"));
+            }
+            let args = args::Args::parse(flags, &["-o", "--output"])?;
+            args.allow(&["--json", "-o", "--output"])?;
+            args.at_most(0, "project ls")?;
+            Command::Projects {
+                json: args.has("--json") || args.json()?,
+            }
+        }
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -711,39 +727,15 @@ impl Session {
             | Command::Doctor { .. }
             | Command::Agent(_)
             | Command::Host(_)
+            | Command::Projects { .. }
             | Command::Queue(_)
             | Command::Version
             | Command::Help => Ok(()),
         }
     }
 
-    /// `(repo, service)` pairs of `target`, each repo's in dependency order (reversed for stopping).
     fn ordered(&self, target: &str, stopping: bool) -> Result<Vec<(String, String)>, String> {
-        let pairs = self.config.resolve_services(target)?;
-        let mut repos: Vec<(String, Vec<String>)> = Vec::new();
-        for (repo, service) in pairs {
-            match repos.iter_mut().find(|(name, _)| *name == repo) {
-                Some((_, services)) => services.push(service),
-                None => repos.push((repo, vec![service])),
-            }
-        }
-        let mut ordered = Vec::new();
-        for (repo, services) in repos {
-            let services = match self.config.repos.get(&repo) {
-                Some(dir) => {
-                    let graph = DepGraph::build(dir);
-                    let order = if stopping {
-                        graph.stop_order(&services)
-                    } else {
-                        graph.start_order(&services)
-                    };
-                    order.map_err(|error| format!("{repo}: {error}"))?
-                }
-                None => services,
-            };
-            ordered.extend(services.into_iter().map(|service| (repo.clone(), service)));
-        }
-        Ok(ordered)
+        pom_remote::ordered_services(&self.config, target, stopping)
     }
 
     fn start(&self, target: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
@@ -1029,22 +1021,10 @@ impl Session {
 
     /// `status -o json`: every repo service's up / ready / healthy, and the shared services.
     fn status_json(&self, out: &mut dyn Write) -> Result<(), String> {
-        let mut services = Vec::new();
-        for (repo, dir) in &self.config.repos {
-            for name in dir.services.keys() {
-                services.push(
-                    self.runner
-                        .service_health(&self.config, &self.target(repo, name)),
-                );
-            }
-        }
-        let shared = self.runner.shared_health(&self.config);
-        let document = serde_json::json!({
-            "schema": "pom.status/v1",
-            "workspace": self.branch,
-            "services": services,
-            "shared": shared,
-        });
+        let report =
+            pom_remote::status_report(&self.config, &self.runner, &self.branch, self.is_main);
+        let mut document = serde_json::to_value(&report).map_err(|error| error.to_string())?;
+        document["schema"] = "pom.status/v1".into();
         say(out, &document.to_string())
     }
 
@@ -1056,16 +1036,7 @@ impl Session {
     /// A running service's scrollback, or what a crashed one left.
     fn logs(&self, entry: &str, out: &mut dyn Write) -> Result<(), String> {
         let target = self.service(entry)?;
-        let holder = self.runner.holder_name(&target);
-        let holders = self.runner.holders();
-        let bytes = if holders.holder_alive(&holder) {
-            pom_ptyhost::snapshot(holders, &holder, std::time::Duration::from_secs(5))
-                .map_err(|error| error.to_string())?
-        } else if let Some(info) = holders.crash_info(&holder) {
-            info.output
-        } else {
-            return Err(format!("{entry} is not running"));
-        };
+        let bytes = pom_remote::service_output(&self.runner, &target, entry)?;
         out.write_all(&bytes).map_err(|error| error.to_string())
     }
 
@@ -1148,6 +1119,46 @@ fn canonical(path: &Path) -> PathBuf {
 
 fn say(out: &mut dyn Write, line: &str) -> Result<(), String> {
     writeln!(out, "{line}").map_err(|error| error.to_string())
+}
+
+/// `project ls`: the local projects of sessions.json, most recently used first.
+fn projects(state: &StateDir, json: bool, out: &mut dyn Write) -> Result<(), String> {
+    let entries: Vec<pom_core::SessionEntry> = pom_core::session_entries(state)
+        .into_iter()
+        .filter(|entry| entry.host.is_none())
+        .collect();
+    if json {
+        let projects: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "name": entry.name,
+                    "path": entry.path,
+                    "config": entry.path.join(pom_config::CONFIG_FILE_NAME),
+                    "missing": entry.missing,
+                    "last_used": entry.last_used,
+                })
+            })
+            .collect();
+        let document = serde_json::json!({"schema": "pom.project/v1", "projects": projects});
+        return say(out, &document.to_string());
+    }
+    if entries.is_empty() {
+        return say(out, "no projects");
+    }
+    let width = entries
+        .iter()
+        .map(|entry| entry.name.len())
+        .max()
+        .unwrap_or(0);
+    for entry in &entries {
+        let missing = if entry.missing { "  (missing)" } else { "" };
+        say(
+            out,
+            &format!("{:width$}  {}{missing}", entry.name, entry.path.display()),
+        )?;
+    }
+    Ok(())
 }
 
 fn ports(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {

@@ -138,6 +138,9 @@ pub struct WorkspaceRequests {
     pub grouping_changed: bool,
 }
 
+const CENTER_PAGE_PAD: f32 = 40.0;
+const CENTER_PAGE_MAX_W: f32 = 760.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRequest {
     Switch(usize),
@@ -149,6 +152,10 @@ pub enum SessionRequest {
     CheckMachine,
     /// The fix of the welcome page's machine check at this index (start Docker).
     FixMachine(usize),
+    /// Pick a host from hosts.json, then one of its projects.
+    ConnectHost,
+    /// A button of the page shown in place of the editor, by index.
+    NoticeAction(usize),
 }
 
 /// A workspace's views and dock visibility while another workspace has the window.
@@ -309,6 +316,11 @@ pub struct WorkspaceView {
     modal_rect: Option<Rect>,
     /// A form over the whole window; it takes the keyboard while open.
     window_modal: Option<Box<dyn crate::WindowModal>>,
+    /// Shown in place of the editor while the project has no files view here (a remote project), with the
+    /// Services panel under it.
+    center_notice: Option<crate::CenterNotice>,
+    /// Where that Services panel was drawn, for the scroll wheel.
+    center_body: Option<Rect>,
     /// How the last window modal ended, until the app takes it.
     modal_result: Option<crate::ModalResult>,
     workspace_ops: Vec<crate::WorkspaceOp>,
@@ -447,6 +459,8 @@ impl WorkspaceView {
             menu_terminal: None,
             modal_rect: None,
             window_modal: None,
+            center_notice: None,
+            center_body: None,
             modal_result: None,
             workspace_ops: Vec::new(),
             expanded_ops: Vec::new(),
@@ -914,6 +928,15 @@ impl WorkspaceView {
             files.dismiss_modal();
         }
         self.window_modal = Some(modal);
+    }
+
+    /// The page in place of the editor for a project whose files are elsewhere; returns whether it changed.
+    pub fn set_center_notice(&mut self, notice: Option<crate::CenterNotice>) -> bool {
+        if self.center_notice == notice {
+            return false;
+        }
+        self.center_notice = notice;
+        true
     }
 
     pub fn window_modal_open(&self) -> bool {
@@ -2075,6 +2098,39 @@ impl WorkspaceView {
             let p = ui::render(&page, cr);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
+        } else if let Some(notice) = self
+            .center_notice
+            .clone()
+            .filter(|_| self.layout.files_view.is_none())
+        {
+            let scale = ui::ui_text_scale();
+            let width = (cr.w / scale - 2.0 * CENTER_PAGE_PAD).clamp(200.0, CENTER_PAGE_MAX_W);
+            let left = cr.x + ((cr.w / scale - width) / 2.0).max(0.0) * scale;
+            blit(ui::render(
+                &ui::div().bg(ui::theme().editor_background).into(),
+                cr,
+            ));
+            let strip = crate::notice_page(&notice, width, self.session_menu_hover);
+            let strip_h = ui::measure(&strip).1 * scale;
+            let p = ui::render(
+                &strip,
+                Rect::new(left, cr.y, width * scale, strip_h, Rgba::TRANSPARENT),
+            );
+            panel_hits.extend(p.hits.iter().copied());
+            blit(p);
+            let body = Rect::new(
+                left,
+                cr.y + strip_h,
+                width * scale,
+                (cr.h - strip_h).max(0.0),
+                Rgba::TRANSPARENT,
+            );
+            self.center_body = Some(body);
+            if let Some(panel) = self.layout.side_panel_mut(PaneKind::Services) {
+                let p = ui::render(&panel.render(body.w / scale, body.h / scale), body);
+                panel_hits.extend(p.hits.iter().copied());
+                blit(p);
+            }
         } else {
             match self.layout.shown_on(DockPosition::Left) {
                 Some(Shown::Terminal) => {
@@ -7587,6 +7643,16 @@ impl WorkspaceView {
                     || input.editor_scroll(x, y, dx, dy)
             });
         }
+        let over_center_panel = self
+            .center_body
+            .filter(|_| self.center_notice.is_some() && self.layout.files_view.is_none())
+            .is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+        if over_center_panel && !self.layout.session_menu {
+            return self
+                .layout
+                .side_panel_mut(PaneKind::Services)
+                .is_some_and(|panel| panel.scroll(dy));
+        }
         if !self.layout.session_menu {
             let (w, h) = self.viewport;
             let cr = self.layout.center_region(w, h);
@@ -7881,6 +7947,9 @@ impl WorkspaceView {
         } else if id == crate::SESSION_NEW {
             self.close_session_menu();
             self.pending.session = Some(SessionRequest::NewProject);
+        } else if id == crate::SESSION_CONNECT_HOST {
+            self.close_session_menu();
+            self.pending.session = Some(SessionRequest::ConnectHost);
         } else if id == crate::SESSION_EDIT_CONFIG {
             self.close_session_menu();
             self.pending.action = Some(crate::keymap::Action::OpenProjectConfig);
@@ -7987,6 +8056,12 @@ impl WorkspaceView {
             self.pending.session = Some(SessionRequest::NewProject);
         } else if id == crate::WELCOME_IMPORT_BUNDLE {
             self.pending.session = Some(SessionRequest::ImportBundle);
+        } else if id == crate::WELCOME_CONNECT_HOST {
+            self.pending.session = Some(SessionRequest::ConnectHost);
+        } else if (crate::NOTICE_ACTION_BASE..crate::NOTICE_ACTION_END).contains(&id) {
+            self.pending.session = Some(SessionRequest::NoticeAction(
+                (id - crate::NOTICE_ACTION_BASE) as usize,
+            ));
         } else if id == crate::WELCOME_RECHECK {
             self.pending.session = Some(SessionRequest::CheckMachine);
         } else if let Some(index) = id
@@ -9087,6 +9162,7 @@ mod tests {
                 path: std::path::PathBuf::from(format!("/projects/{name}")),
                 running: false,
                 missing: *name == "gone",
+                host: None,
             })
             .collect()
     }
@@ -9344,6 +9420,54 @@ mod tests {
             v.take_effects()
         });
         assert_eq!(effects.session, Some(SessionRequest::NewProject));
+    }
+
+    #[test]
+    fn connecting_to_a_host_starts_from_the_menu_the_welcome_page_or_the_remote_page() {
+        let (mut app, h, e) = open();
+        app.draw(h);
+        for (id, expected) in [
+            (crate::SESSION_CONNECT_HOST, SessionRequest::ConnectHost),
+            (crate::WELCOME_CONNECT_HOST, SessionRequest::ConnectHost),
+            (
+                crate::NOTICE_ACTION_BASE + 1,
+                SessionRequest::NoticeAction(1),
+            ),
+        ] {
+            let effects = e.update(app.app_mut(), |v, _| {
+                v.header_click(id);
+                v.take_effects()
+            });
+            assert_eq!(effects.session, Some(expected));
+        }
+    }
+
+    #[test]
+    fn a_remote_project_offers_no_panel_terminal_or_agent_that_needs_its_files_here() {
+        let mut layout = Layout {
+            project: Some(sample_project()),
+            ..Layout::default()
+        };
+        assert!(!layout.is_remote());
+        assert!((0..PaneKind::ALL.len()).any(|index| layout.func_offered(index)));
+        if let Some(project) = layout.project.as_mut() {
+            project.host = Some("dev".into());
+        }
+        assert!(layout.is_remote());
+        assert!((0..PaneKind::ALL.len()).all(|index| !layout.func_offered(index)));
+        for side in [
+            DockPosition::Left,
+            DockPosition::Right,
+            DockPosition::Bottom,
+        ] {
+            assert!(
+                !layout
+                    .candidates_on(side)
+                    .iter()
+                    .any(|shown| matches!(shown, Shown::Terminal | Shown::Agent)),
+                "{side:?}"
+            );
+        }
     }
 
     #[test]

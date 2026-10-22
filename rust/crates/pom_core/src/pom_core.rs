@@ -286,6 +286,8 @@ pub struct SessionEntry {
     /// Its folder or `pom.yml` is gone, so it can only be removed.
     pub missing: bool,
     pub last_used: i64,
+    /// The machine a remote project lives on (`path` is a path there); none for a local one.
+    pub host: Option<String>,
 }
 
 /// Known sessions, most recently used first.
@@ -296,10 +298,11 @@ pub fn session_entries(state: &StateDir) -> Vec<SessionEntry> {
         .map(|session| {
             let path = PathBuf::from(&session.path);
             SessionEntry {
-                missing: config_in(&path).is_none(),
+                missing: !session.is_remote() && config_in(&path).is_none(),
                 name: session.name,
                 path,
                 last_used: session.last_used,
+                host: session.host,
             }
         })
         .collect();
@@ -315,12 +318,31 @@ pub fn forget_session(state: &StateDir, name: &str) -> std::io::Result<()> {
     Projects::unregister(state, name)
 }
 
+/// Drops a remote project from the list; nothing on its machine changes.
+pub fn forget_remote_session(state: &StateDir, name: &str, host: &str) -> std::io::Result<()> {
+    let mut sessions = Sessions::load(state);
+    sessions.remove_remote(name, host);
+    sessions.save(state)
+}
+
+pub fn record_remote_open(
+    state: &StateDir,
+    name: &str,
+    host: &str,
+    path: &str,
+    now: i64,
+) -> std::io::Result<()> {
+    let mut sessions = Sessions::load(state);
+    sessions.touch_remote(name, host, path, now);
+    sessions.save(state)
+}
+
 fn session_for_root(state: &StateDir, root: &Path) -> String {
     let root_text = root.to_string_lossy();
     Sessions::load(state)
         .sessions
         .into_iter()
-        .find(|session| session.path == root_text)
+        .find(|session| session.path == root_text && !session.is_remote())
         .map(|session| session.name)
         .or_else(|| {
             root.file_name()

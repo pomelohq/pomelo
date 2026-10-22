@@ -76,6 +76,18 @@ impl App {
         else {
             return;
         };
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            if requests.new_workspace {
+                self.remote_only_on_host(id, "Creating a workspace");
+            } else if requests.row.is_some() || requests.reorder.is_some() {
+                self.remote_only_on_host(id, "Changing a workspace");
+            }
+            return;
+        }
         if requests.new_workspace {
             self.open_create_workspace(id);
         }
@@ -410,6 +422,7 @@ impl App {
 
     /// Picks up a closed form, the operations' progress and whatever finished.
     pub(crate) fn poll_workspaces(&mut self, id: WindowId) {
+        self.poll_remote(id);
         self.poll_doctor(id);
         self.poll_services_badge(id);
         self.poll_use_branch(id);
@@ -438,6 +451,8 @@ impl App {
                 self.import_config(id, import);
             } else if let Some(choice) = value.downcast_ref::<workspaces_ui::UseBranch>() {
                 self.start_use_branch(id, choice);
+            } else if let Some(picked) = value.downcast_ref::<remote_ui::ConnectProject>() {
+                self.open_remote_in(id, picked);
             }
         }
         let tickets_changed = match self.mains.get_mut(&id) {

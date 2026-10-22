@@ -11,6 +11,7 @@ mod e2e;
 mod editor_fixture;
 mod git_fixture;
 mod modal_fixture;
+mod remote_fixture;
 mod terminal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
@@ -368,6 +369,12 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "git-pr-none" => (0, &[("PRFIXTURE", "none")]),
         "git-pr-error" => (0, &[("PRFIXTURE", "error")]),
         "git-pr-empty" => (0, &[("PRFIXTURE", "empty")]),
+        // A project on another machine from a stand-in source; REMOTEVIEW names the state.
+        "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
+        "remote-disconnected" => (0, &[("REMOTEVIEW", "disconnected")]),
+        "remote-logs" => (0, &[("REMOTEVIEW", "logs")]),
+        "remote-connect" => (0, &[("REMOTEVIEW", "connect")]),
+        "remote-connect-projects" => (0, &[("REMOTEVIEW", "connect-projects")]),
         _ => return None,
     })
 }
@@ -3119,6 +3126,7 @@ fn main() -> anyhow::Result<()> {
                 path: std::path::PathBuf::from(format!("{home}/code/{name}")),
                 running: false,
                 missing: false,
+                host: None,
             })
             .collect();
         let docker = which != "docker";
@@ -3517,6 +3525,12 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Ok(mode) = std::env::var("REMOTEVIEW") {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        return remote_fixture::render(&mode, &out, (lw, lh), scale, &mut r);
+    }
     if let Ok(mode) = std::env::var("MAINVIEW") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -3531,12 +3545,14 @@ fn main() -> anyhow::Result<()> {
                 path: format!("/projects/{name}").into(),
                 running: false,
                 missing: *name == "old",
+                host: None,
             })
             .collect();
         let project = (mode != "welcome" && mode != "onboard").then(|| workspace::ProjectInfo {
             name: "myproject".into(),
             branch: "main".into(),
             config_path: "/projects/myproject/pom.yml".into(),
+            host: None,
             workspaces: vec![
                 "main".into(),
                 "feat-login".into(),
@@ -3670,6 +3686,7 @@ fn main() -> anyhow::Result<()> {
                 name: "myproject".into(),
                 branch: "main".into(),
                 config_path: "/projects/myproject/pom.yml".into(),
+                host: None,
                 workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
                 active: "main".into(),
                 labels: rows.iter().map(|row| row.1.to_string()).collect(),
@@ -5334,6 +5351,7 @@ fn window_project() -> workspace::ProjectInfo {
         name: "myproject".into(),
         branch: "main".into(),
         config_path: fixture_root().join("pom.yml"),
+        host: None,
         workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
         active: "proj-101-login-google".into(),
         labels: rows.iter().map(|row| row.1.to_string()).collect(),
