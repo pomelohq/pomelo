@@ -185,7 +185,8 @@ jobs:
       - name: Workspace limits in a real systemd user session
         run: |
           sudo loginctl enable-linger "$USER"
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
           for _ in $(seq 1 30); do
             if [ -S "$XDG_RUNTIME_DIR/systemd/private" ]; then break; fi
             sleep 1
