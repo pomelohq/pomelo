@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Assemble a Linux tarball: the app and the pom CLI under bin/, the desktop entry and icon under share/, and
-# install.sh, which copies them into ~/.local (or $PREFIX) and points the desktop entry at the installed app.
+# Assemble the Linux tarballs: Pomelo-<v>-linux-<arch> has the app and the pom CLI under bin/, the desktop entry
+# and icon under share/, and install.sh, which copies them into ~/.local (or $PREFIX) and points the desktop entry
+# at the installed app; pom-<v>-linux-<arch> has pom and install.sh alone, for a server without a desktop.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -30,6 +31,13 @@ install -Dm644 crates/pomelo/assets/pomelo.desktop "$STAGE/share/applications/po
 install -Dm644 crates/pomelo/assets/pomelo.png "$STAGE/share/icons/hicolor/512x512/apps/pomelo.png"
 install -Dm755 scripts/install-linux.sh "$STAGE/install.sh"
 
+CLI_STAGE="target/linux-stage/pom-${VERSION}"
+install -Dm755 "$BIN_DIR/pom" "$CLI_STAGE/bin/pom"
+install -Dm755 scripts/install-linux.sh "$CLI_STAGE/install.sh"
+
+CLI_TARBALL="target/pom-${VERSION}-linux-${ARCH}.tar.gz"
+tar -C "target/linux-stage" -czf "$CLI_TARBALL" "pom-${VERSION}"
+echo "$CLI_TARBALL"
 TARBALL="target/Pomelo-${VERSION}-linux-${ARCH}.tar.gz"
 tar -C "target/linux-stage" -czf "$TARBALL" "pomelo-${VERSION}"
 echo "$TARBALL"
