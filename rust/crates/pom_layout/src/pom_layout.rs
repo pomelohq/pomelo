@@ -210,6 +210,9 @@ pub struct WorkspaceState {
     /// What ran when it went to sleep, so waking starts the same again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asleep: Option<SleepRecord>,
+    /// When it joined the queue, so the longest waiting starts first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

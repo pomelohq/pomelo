@@ -255,12 +255,18 @@ pub struct WorkspaceSettings {
     /// Workspaces whose pull requests all merged: "off" leaves them, "ask" offers to delete them, "auto"
     /// deletes them (never one with uncommitted or unpushed work).
     pub auto_cleanup: String,
+    /// Minutes without a dev proxy request or a working agent before a workspace sleeps; 0 never.
+    pub idle_sleep_minutes: u64,
+    /// How many workspaces may run at once on this machine; 0 any number.
+    pub max_running: u64,
 }
 
 impl Default for WorkspaceSettings {
     fn default() -> Self {
         WorkspaceSettings {
             auto_cleanup: "off".into(),
+            idle_sleep_minutes: 0,
+            max_running: 0,
         }
     }
 }

@@ -55,6 +55,10 @@ impl Machine for SystemMachine {
         WorkspaceState::load(&pom_layout::workspace_folder(project_root, branch))
     }
 
+    fn activity_file(&self) -> Option<std::path::PathBuf> {
+        Some(self.state.path("proxy/activity.json"))
+    }
+
     fn wake(&self, project_root: &Path, branch: &str) {
         let Some(waker) = self.waker.clone() else {
             return;

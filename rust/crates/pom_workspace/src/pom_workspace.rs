@@ -8,6 +8,7 @@ mod delete;
 mod git;
 mod prepare;
 mod repo_branch;
+mod schedule;
 mod sleep;
 mod unsaved;
 
@@ -28,6 +29,11 @@ pub use repo_branch::{
     checked_out_elsewhere, checkout_label, fetch_origin, keep_repo_branch, list_branches,
     switch_repo_branch, use_another_branch, BranchInfo,
 };
+pub use schedule::{
+    admission, plan, run_in_background, wake_with_room, Admission, Admitted, Machine,
+    PowerSettings, Seen, Step, WakeOutcome, ACTIVITY_FILE,
+};
+pub use sleep::now_ms;
 pub use sleep::{
     busy_agents, find_workspace, sleep, wake, wake_at, waker, AgentSession, Agents, DriveAgents,
     SleepError, SleepReport, WakeReport,

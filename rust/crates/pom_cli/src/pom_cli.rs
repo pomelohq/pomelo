@@ -98,7 +98,9 @@ workspaces
                      ports; refused while an agent is working or waits for an approval, unless --force
   ws wake <branch> [--json]
                      start what ran when it went to sleep (the dev proxy also wakes a sleeping
-                     workspace on a request)
+                     workspace on a request); with settings.json workspaces.max_running, starting
+                     or waking one more first sleeps the least recently used idle workspace, or
+                     queues it until one sleeps when the others' agents are at work
   get workspaces [-o json]    each workspace's readiness and phase
   describe workspace <branch> [-o json]
                      its services, ports and repos missing from it
@@ -791,7 +793,62 @@ impl Session {
         pom_remote::ordered_services(&self.config, target, stopping)
     }
 
+    /// Under `workspaces.max_running`, a workspace that does not run yet first needs a slot; queued, it does not
+    /// start now.
+    fn admit(&self, target: &str, out: &mut dyn Write) -> Result<(), String> {
+        let settings = pom_workspace::PowerSettings::from_settings_file();
+        let Some(workspace) = self
+            .project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == self.branch)
+        else {
+            return Ok(());
+        };
+        let mut state = pom_layout::WorkspaceState::load(&workspace.path);
+        let up = ServiceRunner::service_targets(&self.config, &self.branch, self.is_main)
+            .iter()
+            .any(|target| self.runner.is_running(target));
+        if settings.max_running > 0 && !(up && state.state.is_running()) {
+            let services: Vec<String> = self
+                .ordered(target, false)?
+                .into_iter()
+                .map(|(repo, service)| format!("{repo}/{service}"))
+                .collect();
+            let machine = pom_workspace::Machine::of(&self.context());
+            match machine.admit(
+                &self.project.root,
+                workspace,
+                &services,
+                &settings,
+                pom_workspace::now_ms(),
+            )? {
+                pom_workspace::Admitted::Run => {}
+                pom_workspace::Admitted::MadeRoom(slept) => say(
+                    out,
+                    &format!("put {slept} to sleep to make room (workspaces.max_running)"),
+                )?,
+                pom_workspace::Admitted::Queued { running } => {
+                    return Err(format!(
+                        "{} is queued: {running} workspaces run with agents at work and workspaces.max_running is {}; it starts once one sleeps",
+                        self.branch, settings.max_running
+                    ));
+                }
+            }
+        }
+        if !state.state.is_running() {
+            state.state = pom_layout::RunState::Running;
+            state.asleep = None;
+            state.queued_ms = None;
+            state
+                .save(&workspace.path)
+                .map_err(|error| format!("save {}: {error}", workspace.path.display()))?;
+        }
+        Ok(())
+    }
+
     fn start(&self, target: &str, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), String> {
+        self.admit(target, out)?;
         let mut failed = 0;
         for (repo, service) in self.ordered(target, false)? {
             let target = self.target(&repo, &service);

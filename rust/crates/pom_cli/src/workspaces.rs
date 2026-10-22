@@ -400,7 +400,20 @@ impl Session {
         let workspace = self.find_workspace(branch)?;
         let context = self.context();
         let agents = pom_workspace::DriveAgents::new(&context);
-        let report = pom_workspace::wake(&context, &agents, workspace)?;
+        let settings = pom_workspace::PowerSettings::from_settings_file();
+        let (report, made_room) =
+            match pom_workspace::wake_with_room(&context, &agents, workspace, &settings)? {
+                pom_workspace::WakeOutcome::Woke { report, made_room } => (report, made_room),
+                pom_workspace::WakeOutcome::Queued { running } => {
+                    return queued(out, branch, running, settings.max_running, json);
+                }
+            };
+        if let Some(slept) = made_room.as_ref().filter(|_| !json) {
+            say(
+                out,
+                &format!("put {slept} to sleep to make room (workspaces.max_running)"),
+            )?;
+        }
         if json {
             let document = serde_json::json!({
                 "schema": "pom.ws_wake/v1",
@@ -410,6 +423,7 @@ impl Session {
                 "started_services": report.started,
                 "started_agents": report.agents,
                 "failed": report.failed,
+                "made_room": made_room,
             });
             say(out, &document.to_string())?;
         } else if report.already {
@@ -449,6 +463,32 @@ impl Session {
             })
             .count()
     }
+}
+
+/// A workspace that waits for a slot under `workspaces.max_running`.
+pub(crate) fn queued(
+    out: &mut dyn Write,
+    branch: &str,
+    running: usize,
+    max_running: usize,
+    json: bool,
+) -> Result<(), String> {
+    if json {
+        let document = serde_json::json!({
+            "schema": "pom.ws_wake/v1",
+            "workspace": branch,
+            "state": "queued",
+            "running": running,
+            "max_running": max_running,
+        });
+        return say(out, &document.to_string());
+    }
+    say(
+        out,
+        &format!(
+            "{branch} is queued: {running} workspaces run with agents at work and workspaces.max_running is {max_running}; it starts once one sleeps"
+        ),
+    )
 }
 
 fn warned(outcome: &Outcome) -> String {

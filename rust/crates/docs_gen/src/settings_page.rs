@@ -87,6 +87,8 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("modules_size_limit_gb", "Dev Services", "GB the node_modules store keeps at most; the least recently used copies go first."),
     ("modules_unused_days", "Dev Services", "Days a stored copy is kept without a workspace taking it (0 keeps them until the size limit)."),
     ("workspaces.auto_cleanup", "Integrations", "Workspaces whose pull requests all merged: `\"off\"` leaves them, `\"ask\"` offers to delete them, `\"auto\"` deletes them (not the one on screen). One with uncommitted or unpushed work is always kept."),
+    ("workspaces.idle_sleep_minutes", "Integrations", "Minutes a workspace may go without a dev proxy request or a working agent before it is put to sleep (`pom ws sleep`); 0 never. Checked once a minute by `pom proxy` and the app."),
+    ("workspaces.max_running", "Integrations", "How many workspaces may run at once on this machine; 0 any number. Starting or waking one more first puts the least recently used idle one to sleep; when none is idle it waits as `queued` and starts once one sleeps."),
     ("jira_only_mine", "Integrations", "The new-workspace ticket picker lists only Jira tickets assigned to you."),
     ("group_workspaces", "Integrations", "The WORKSPACES list is grouped under its tickets' statuses."),
     ("onboard_with_ai", "Kept by the app", "New projects are finished by the coding agent; off, you review the drafted pom.yml yourself."),

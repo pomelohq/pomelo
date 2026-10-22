@@ -1,3 +1,4 @@
+mod activity;
 mod error_page;
 mod faults;
 mod machine;
@@ -8,6 +9,7 @@ use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
+pub use activity::{read_activity, ActivityEntry, ActivityFile, ACTIVITY_SCHEMA};
 pub use faults::{
     add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, remove_fault, Fault,
     FaultRule,

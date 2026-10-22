@@ -418,12 +418,17 @@ impl App {
                 state: &context.state,
             };
             let agents = pom_workspace::DriveAgents::new(&workspace_context);
-            match pom_workspace::wake(&workspace_context, &agents, &target) {
-                Ok(report) if !report.failed.is_empty() => eprintln!(
-                    "wake {}: could not start {}",
-                    target.branch,
-                    report.failed.join("; ")
-                ),
+            let settings = pom_workspace::PowerSettings::from_settings_file();
+            match pom_workspace::wake_with_room(&workspace_context, &agents, &target, &settings) {
+                Ok(pom_workspace::WakeOutcome::Woke { report, .. })
+                    if !report.failed.is_empty() =>
+                {
+                    eprintln!(
+                        "wake {}: could not start {}",
+                        target.branch,
+                        report.failed.join("; ")
+                    )
+                }
                 Ok(_) => {}
                 Err(error) => eprintln!("wake {}: {error}", target.branch),
             }

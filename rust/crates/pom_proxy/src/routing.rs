@@ -351,6 +351,10 @@ pub trait Machine: Send + Sync {
     }
     /// Starts waking a sleeping workspace without waiting for it.
     fn wake(&self, _project_root: &Path, _branch: &str) {}
+    /// Where the last request per workspace is kept; nowhere when `None`.
+    fn activity_file(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 type BranchMap = (Instant, HashMap<String, String>);
@@ -370,6 +374,7 @@ pub struct Router {
     faults: Mutex<(Option<Instant>, Vec<crate::FaultRule>)>,
     /// When each workspace was last asked to wake.
     woken: Mutex<HashMap<(PathBuf, String), Instant>>,
+    activity: crate::activity::Activity,
     random: Mutex<u64>,
     /// Hosts end in it besides `localhost`.
     domain: String,
@@ -377,7 +382,9 @@ pub struct Router {
 
 impl Router {
     pub fn new(machine: Box<dyn Machine>) -> Router {
+        let activity = crate::activity::Activity::new(machine.activity_file());
         Router {
+            activity,
             machine,
             projects: RwLock::new(Vec::new()),
             branch_maps: Mutex::new(HashMap::new()),
@@ -573,6 +580,8 @@ impl Router {
         let Some(service_key) = resolve_service_key(config, target) else {
             return no_route(branch, target);
         };
+        self.activity
+            .touch(&project.root, branch, crate::faults::now_ms());
         let address = self.service_address(config, branch, &service_key);
         if matches!(address, Err(Unavailable::Stopped | Unavailable::Unknown))
             && !self
@@ -732,6 +741,8 @@ impl Router {
                 {
                     logged.profile = profile;
                     logged.target = url.clone();
+                    self.activity
+                        .touch(&project.root, &branch, crate::faults::now_ms());
                     let fault = self.fault_for(&config.session, &branch, &target, &stripped);
                     return Decision {
                         route: Route::External { url, prefix },
