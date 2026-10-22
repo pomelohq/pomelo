@@ -99,6 +99,9 @@ impl App {
         if requests.clean_up {
             self.clean_up_merged(id, true);
         }
+        if let Some(branch) = requests.pull {
+            self.pull_from_github(id, &branch);
+        }
         if let Some((from, to)) = requests.reorder {
             self.reorder_workspace(id, from, to);
         }
@@ -599,9 +602,107 @@ impl App {
         }
     }
 
+    /// Shows what the last GitHub pushes did to this project's workspaces (the relay writes the journal,
+    /// from this process or from `pom proxy`); looked at every two seconds, and read only when it grew.
+    fn poll_push_notices(&mut self, id: WindowId) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+        let state = pom_paths::StateDir::from_env();
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        if main.remote.is_some()
+            || main
+                .push_notices
+                .checked
+                .is_some_and(|at| at.elapsed() < EVERY)
+        {
+            return;
+        }
+        main.push_notices.checked = Some(std::time::Instant::now());
+        let Some(session) = main
+            .project
+            .as_ref()
+            .and_then(|project| project.config.as_ref())
+            .map(|config| config.session.clone())
+        else {
+            return;
+        };
+        let length = std::fs::metadata(pom_push::journal_path(&state)).map_or(0, |meta| meta.len());
+        if length == main.push_notices.journal_len {
+            return;
+        }
+        main.push_notices.journal_len = length;
+        let seen = main.push_notices.seen_ms;
+        let fresh: Vec<pom_push::Record> = pom_push::read_all(&state)
+            .into_iter()
+            .filter(|record| record.ms > seen)
+            .collect();
+        if let Some(newest) = fresh.iter().map(|record| record.ms).max() {
+            main.push_notices.seen_ms = newest;
+        }
+        let Some(notice) = fresh
+            .into_iter()
+            .rev()
+            .find(|record| record.project == session && record.outcome.is_notice())
+        else {
+            return;
+        };
+        let message = notice.message();
+        let pull = notice.outcome == pom_push::Outcome::Notified && notice.can_pull;
+        self.with_workspace_view(id, |view, _| {
+            if pull {
+                view.offer_pull(message, &notice.workspace);
+            } else {
+                view.show_toast(message, None);
+            }
+        });
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
+    }
+
+    /// The notice's Pull: fast-forwards the workspace off the UI thread; the journal brings the result back.
+    fn pull_from_github(&mut self, id: WindowId, branch: &str) {
+        let Some(root) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .map(|project| project.root.clone())
+        else {
+            return;
+        };
+        let binary = match std::env::current_exe() {
+            Ok(binary) => binary,
+            Err(error) => {
+                eprintln!("pull {branch}: {error}");
+                return;
+            }
+        };
+        let machine = pom_push::Machine {
+            state: pom_paths::StateDir::from_env(),
+            holders: pom_ptyhost::SocketDir::from_env(),
+            binary,
+        };
+        let branch = branch.to_string();
+        let message = format!("Pulling {branch}...");
+        let spawned = std::thread::Builder::new()
+            .name("github-pull".into())
+            .spawn(move || {
+                pom_push::pull_now(&machine, &root, &branch);
+                ui::wake();
+            });
+        match spawned {
+            Ok(_) => {
+                self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+            }
+            Err(error) => eprintln!("pull: {error}"),
+        }
+    }
+
     /// Picks up a closed form, the operations' progress and whatever finished.
     pub(crate) fn poll_workspaces(&mut self, id: WindowId) {
         self.poll_remote(id);
+        self.poll_push_notices(id);
         self.poll_doctor(id);
         self.poll_services_badge(id);
         self.poll_use_branch(id);

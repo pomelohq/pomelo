@@ -497,6 +497,24 @@ fn read_dock_settings(s: &mut Settings, layout: &Layout) {
     s.func_hidden = layout.func_hidden.clone();
 }
 
+/// Which GitHub push notices a window has already seen.
+struct PushNotices {
+    seen_ms: u64,
+    journal_len: u64,
+    checked: Option<Instant>,
+}
+
+impl Default for PushNotices {
+    /// Only what arrives after the window opened is news.
+    fn default() -> PushNotices {
+        PushNotices {
+            seen_ms: pom_push::now_ms(),
+            journal_len: 0,
+            checked: None,
+        }
+    }
+}
+
 /// One on-screen main window: its winit handle + GPU renderer, plus the framework `WindowHandle`/`WorkspaceView`
 /// entity it drives. Many can coexist (one per session opened in a new window).
 struct MainWindow {
@@ -534,6 +552,8 @@ struct MainWindow {
     use_branch: Option<std::sync::mpsc::Receiver<String>>,
     /// When the Services badge last checked the active workspace's services.
     services_checked: Option<Instant>,
+    /// GitHub push notices already shown: the newest journal time seen, the journal's size, and the last look.
+    push_notices: PushNotices,
     /// The last frame seen while neither maximized nor fullscreen: what a restored window returns to.
     windowed: Option<(f64, f64, f64, f64)>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
@@ -1687,6 +1707,7 @@ impl App {
                 doctor_findings: Vec::new(),
                 use_branch: None,
                 services_checked: None,
+                push_notices: PushNotices::default(),
                 background: None,
                 remote: None,
                 windowed,

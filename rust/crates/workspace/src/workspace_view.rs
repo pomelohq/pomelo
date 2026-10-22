@@ -127,7 +127,7 @@ pub enum TitlebarGesture {
 
 /// What the WORKSPACES panel asked for: the new-workspace form, an action on a row (an index into
 /// `ProjectInfo::workspaces`) or a button on an operation card (by operation id).
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceRequests {
     pub new_workspace: bool,
     pub row: Option<(usize, crate::RowAction)>,
@@ -138,6 +138,8 @@ pub struct WorkspaceRequests {
     pub grouping_changed: bool,
     /// The person took the offer to delete the workspaces whose pull requests merged.
     pub clean_up: bool,
+    /// Pull what GitHub has for the workspace of this branch.
+    pub pull: Option<String>,
 }
 
 const CENTER_PAGE_PAD: f32 = 40.0;
@@ -383,6 +385,8 @@ pub struct WorkspaceView {
     toast_then: Option<(PaneKind, crate::PanelRequest)>,
     /// The toast on screen offers to clean up merged workspaces.
     cleanup_toast: bool,
+    /// The toast on screen offers to pull this workspace.
+    pull_toast: Option<String>,
     /// When main's background update last succeeded; its row says "Up to date" for a moment after.
     upkeep_done_at: Option<Instant>,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
@@ -505,6 +509,7 @@ impl WorkspaceView {
             show_after_switch: None,
             toast_then: None,
             cleanup_toast: false,
+            pull_toast: None,
             upkeep_done_at: None,
             terminal_click: None,
             titlebar_press: false,
@@ -1468,6 +1473,7 @@ impl WorkspaceView {
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
         self.cleanup_toast = false;
+        self.pull_toast = None;
         let now = Instant::now();
         self.toast = Some(Toast {
             message: message.into(),
@@ -1485,6 +1491,13 @@ impl WorkspaceView {
         self.show_toast(message, Some("Clean up".into()));
         self.toast_then = None;
         self.cleanup_toast = true;
+    }
+
+    /// Offers, in a toast, to pull the new commits GitHub has for the workspace of `branch`.
+    pub fn offer_pull(&mut self, message: impl Into<String>, branch: &str) {
+        self.show_toast(message, Some("Pull".into()));
+        self.toast_then = None;
+        self.pull_toast = Some(branch.to_string());
     }
 
     /// An item on screen runs an animation and wants every frame.
@@ -7814,6 +7827,10 @@ impl WorkspaceView {
             if id == TOAST_ACTION && std::mem::take(&mut self.cleanup_toast) {
                 self.workspace_requests.clean_up = true;
             }
+            let pull = self.pull_toast.take();
+            if id == TOAST_ACTION {
+                self.workspace_requests.pull = pull;
+            }
             if let (TOAST_ACTION, Some((kind, then))) = (id, then) {
                 self.apply_request(kind, then);
             }
@@ -9079,6 +9096,24 @@ mod tests {
             Some("Language 2 is available for this file".to_string())
         );
         assert!(view.server_notices.is_empty());
+    }
+
+    #[test]
+    fn the_pull_toast_asks_for_its_workspace_only_when_taken() {
+        let mut view = WorkspaceView::new(Layout::default());
+        view.offer_pull("feat-x: 3 new commits on GitHub (api)", "feat-x");
+        view.header_click(TOAST_CLOSE);
+        assert_eq!(view.take_workspace_requests().pull, None);
+        view.offer_pull("feat-x: 3 new commits on GitHub (api)", "feat-x");
+        view.show_toast("Something else", None);
+        view.header_click(TOAST_ACTION);
+        assert_eq!(view.take_workspace_requests().pull, None);
+        view.offer_pull("feat-x: 3 new commits on GitHub (api)", "feat-x");
+        view.header_click(TOAST_ACTION);
+        assert_eq!(
+            view.take_workspace_requests().pull.as_deref(),
+            Some("feat-x")
+        );
     }
 
     #[test]
