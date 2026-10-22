@@ -498,6 +498,122 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
     }
 
+    /// Creating a workspace on the host: the create form, with the repos main has there.
+    pub(crate) fn open_remote_create(&mut self, id: WindowId) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let snapshot = remote.watch.snapshot();
+        if !runs_jobs(&snapshot) {
+            self.remote_only_on_host(id, "Creating a workspace");
+            return;
+        }
+        let workspaces = snapshot
+            .workspaces
+            .map(|list| list.workspaces)
+            .unwrap_or_default();
+        let repos = workspaces
+            .iter()
+            .find(|workspace| workspace.is_main)
+            .map(|workspace| workspace.repos.clone())
+            .unwrap_or_default();
+        let existing = workspaces
+            .iter()
+            .map(|workspace| workspace.branch.clone())
+            .collect();
+        let modal =
+            workspaces_ui::CreateWorkspaceModal::new(repos, existing, crate::workspaces::namer());
+        self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
+    }
+
+    /// A remote workspace's menu: sleep, wake and pull run on the host as jobs; the rest stays there.
+    pub(crate) fn remote_row_action(
+        &mut self,
+        id: WindowId,
+        index: usize,
+        action: workspace::RowAction,
+    ) {
+        use pom_remote::server_api::{BranchArgs, JobRequest};
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let snapshot = remote.watch.snapshot();
+        let Some(workspace) = snapshot
+            .workspaces
+            .as_ref()
+            .and_then(|list| list.workspaces.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let label = if workspace.name.is_empty() {
+            workspace.branch.clone()
+        } else {
+            workspace.name.clone()
+        };
+        let branch = BranchArgs {
+            branch: workspace.branch.clone(),
+            force: false,
+        };
+        let (request, title) = match action {
+            workspace::RowAction::OpenInEditor => return self.open_remote_editor(id, Some(index)),
+            workspace::RowAction::Sleep => (JobRequest::Sleep(branch), format!("Sleeping {label}")),
+            workspace::RowAction::Wake => (JobRequest::Wake(branch), format!("Waking {label}")),
+            workspace::RowAction::Pull => (JobRequest::Sync(branch), format!("Pulling {label}")),
+            _ => {
+                self.remote_only_on_host(id, "Changing a workspace");
+                return;
+            }
+        };
+        self.queue_remote_job(id, request, title);
+    }
+
+    /// Runs `request` on the host as a job whose card shows its stages; a host whose pom cannot says how.
+    pub(crate) fn queue_remote_job(
+        &mut self,
+        id: WindowId,
+        request: pom_remote::server_api::JobRequest,
+        title: String,
+    ) {
+        let Some(main) = self.mains.get(&id) else {
+            return;
+        };
+        let Some(remote) = main.remote.as_ref() else {
+            return;
+        };
+        if !runs_jobs(&remote.watch.snapshot()) {
+            let host = remote.host.clone();
+            let message = format!(
+                "{title} needs a newer pom on {host}: update it there, or use pom -H {host}"
+            );
+            self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+            return;
+        }
+        main.ops
+            .enqueue_remote(request, title, remote.watch.source());
+    }
+
+    /// After jobs on the host: look again now, and show a workspace just created there.
+    pub(crate) fn finish_remote_jobs(
+        &mut self,
+        id: WindowId,
+        finished: &[workspaces_ui::Finished],
+    ) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if let Some(created) = finished.iter().rev().find(|done| done.ok && done.created) {
+            remote.active = created.branch.clone();
+            remote.watch.set_branch(&remote.active);
+            remote.seen = u64::MAX;
+        }
+        remote.watch.refresh_now();
+    }
+
     /// Workspace changes run on the host itself for now; say how.
     pub(crate) fn remote_only_on_host(&mut self, id: WindowId, what: &str) -> bool {
         let Some(host) = self
@@ -512,6 +628,13 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
         true
     }
+}
+
+fn runs_jobs(snapshot: &pom_remote::Snapshot) -> bool {
+    snapshot
+        .transport
+        .as_ref()
+        .is_some_and(|transport| transport.jobs)
 }
 
 fn program_name(argv: &[String]) -> String {

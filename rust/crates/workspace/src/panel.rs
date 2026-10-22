@@ -1711,8 +1711,10 @@ fn op_details(
         fixes = fixes.child(small_button("Retry", base + crate::WORKSPACE_OP_RETRY));
         fixes_w += button_width("Retry", 0.0) + 6.0;
     }
-    fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
-    fixes_w += button_width(AGENT_LABEL, 15.0);
+    if !op.remote {
+        fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
+        fixes_w += button_width(AGENT_LABEL, 15.0);
+    }
     // Its menu floats over the list: the view drops it from this button.
     let mut manual = div()
         .row()
@@ -1748,7 +1750,9 @@ fn op_details(
         icons_w += 24.0;
     }
     // One line while everything fits; otherwise the manual routes and the icons move to a second line.
-    let actions: Node = if fixes_w + 6.0 + manual_w + 6.0 + icons_w <= width {
+    let actions: Node = if op.remote {
+        fixes.child(div().row().flex(1.0)).child(icons).into()
+    } else if fixes_w + 6.0 + manual_w + 6.0 + icons_w <= width {
         fixes
             .child(manual)
             .child(div().row().flex(1.0))
@@ -1891,7 +1895,7 @@ fn op_row(
         OpStatus::Failed => failure_line(op.error.clone(), base, expanded),
     };
     let mut second = div().row().h_px(14.0).gap(8.0).items_center().child(line);
-    if op.status == OpStatus::Queued {
+    if op.status == OpStatus::Queued || (op.remote && op.status == OpStatus::Running) {
         second = second.child(
             div()
                 .row()
