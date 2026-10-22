@@ -125,6 +125,40 @@ jobs:
             gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
           done
 
+  # The same `make check` on Linux, which ships its own build: platform code there compiles and is tested only here.
+  rust-linux:
+    name: Rust fmt + clippy + test (Linux)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+      POM_TARGET_LIMIT_GB: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the libraries the window and fonts build against
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+      # Installs the toolchain rust/rust-toolchain.toml pins.
+      - run: rustup show
+      # Dependencies only, saved from main so a PR starts warm without a second copy of every crate's build.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+          shared-key: linux-ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-hakari
+      - run: make check
+
   # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
   postgres:
     name: Real Postgres tests (Linux)
@@ -167,14 +201,15 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust, postgres, actionlint]
+    needs: [changes, rust, rust-linux, postgres, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
           case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
+          case "${{ needs.rust-linux.result }}" in success|skipped) ;; *) echo "rust on Linux failed"; exit 1 ;; esac
           case "${{ needs.postgres.result }}" in success|skipped) ;; *) echo "postgres tests failed"; exit 1 ;; esac
           case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
           echo "CI gate passed"
