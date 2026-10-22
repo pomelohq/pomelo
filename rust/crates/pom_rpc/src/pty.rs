@@ -2,7 +2,10 @@
 //! attached terminal. A terminal is a stream whose DATA is the holder's output at its absolute offsets, whose
 //! INPUT is what the user types, and whose exit comes as a `pty.exit` push.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +35,8 @@ pub const METHODS: &[&str] = &[
 ];
 
 pub const EXIT_TOPIC: &str = "pty.exit";
+/// In a server's HELLO: every terminal of a connection may share one push channel for its events.
+pub const SHARED_EVENTS: &str = "pty.shared_events";
 pub const MAX_SIZE: u16 = 1000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +98,9 @@ pub struct AttachParams {
     /// The subscription `pty.exit` is pushed on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<u32>,
+    /// `events` serves every terminal of the connection, so it outlives this one.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub shared_events: bool,
     /// The output offset to replay from; 0 replays the whole scrollback.
     pub since: u64,
     /// Where this client's input numbering resumes; unset starts a fresh numbering the server picks.
@@ -150,6 +158,13 @@ pub struct CloseParams {
 pub struct Exit {
     pub holder: String,
     pub crashed: bool,
+    /// The terminal's stream, which tells terminals apart on a shared events channel.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub channel: u32,
+}
+
+fn is_zero(channel: &u32) -> bool {
+    *channel == 0
 }
 
 /// What a terminal view asks a [`PtyProvider`] for.
@@ -181,10 +196,111 @@ pub trait PtyProvider: Send + Sync {
     fn close(&self, holder: &str) -> Result<(), String>;
 }
 
+type Routes = Arc<Mutex<HashMap<u32, Sender<Exit>>>>;
+
+fn routes(routes: &Routes) -> MutexGuard<'_, HashMap<u32, Sender<Exit>>> {
+    routes
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// How often the router looks up from its wait to notice it was dropped.
+const ROUTE_POLL: Duration = Duration::from_millis(500);
+
+/// One push channel for the events of every terminal of a connection, so a terminal costs one channel instead
+/// of two. Only for a server whose HELLO lists [`SHARED_EVENTS`].
+pub struct SharedEvents {
+    channel: u32,
+    routes: Routes,
+    stop: Arc<AtomicBool>,
+}
+
+impl SharedEvents {
+    pub fn open(connection: &Connection) -> Result<SharedEvents, Error> {
+        let subscription = connection.subscribe()?;
+        let channel = subscription.channel();
+        let routes: Routes = Arc::new(Mutex::new(HashMap::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_routes, thread_stop) = (routes.clone(), stop.clone());
+        std::thread::Builder::new()
+            .name("pom-rpc-pty-events".into())
+            .spawn(move || route(&subscription, &thread_routes, &thread_stop))
+            .map_err(|error| Error::Io(error.to_string()))?;
+        Ok(SharedEvents {
+            channel,
+            routes,
+            stop,
+        })
+    }
+
+    pub fn channel(&self) -> u32 {
+        self.channel
+    }
+
+    fn register(&self, stream: u32) -> Route {
+        let (sender, exits) = mpsc::channel();
+        routes(&self.routes).insert(stream, sender);
+        Route {
+            routes: self.routes.clone(),
+            shared: self.channel,
+            stream,
+            exits,
+        }
+    }
+}
+
+impl Drop for SharedEvents {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
+/// A listener that went away stopped caring on purpose, so a failed hand-off is not an error.
+fn deliver(sender: &Sender<Exit>, exit: Exit) -> bool {
+    sender.send(exit).is_ok()
+}
+
+fn route(subscription: &Subscription, table: &Routes, stop: &AtomicBool) {
+    while !stop.load(Ordering::Acquire) {
+        match subscription.recv_timeout(ROUTE_POLL) {
+            Ok(PushEvent::Value { topic, value }) if topic == EXIT_TOPIC => {
+                let Ok(exit) = serde_json::from_value::<Exit>(value) else {
+                    continue;
+                };
+                if let Some(sender) = routes(table).remove(&exit.channel) {
+                    deliver(&sender, exit);
+                }
+            }
+            Ok(PushEvent::Value { .. }) | Err(Error::Timeout) => {}
+            Ok(PushEvent::End { .. }) | Err(_) => break,
+        }
+    }
+    routes(table).clear();
+}
+
+/// One terminal's entry on a shared events channel; dropping it leaves the channel.
+struct Route {
+    routes: Routes,
+    shared: u32,
+    stream: u32,
+    exits: Receiver<Exit>,
+}
+
+impl Drop for Route {
+    fn drop(&mut self) {
+        routes(&self.routes).remove(&self.stream);
+    }
+}
+
+enum Events {
+    Own(Subscription),
+    Shared(Route),
+}
+
 /// The reading end of an attached terminal: output, resets and the end.
 pub struct Output {
     stream: StreamReceiver,
-    events: Option<Subscription>,
+    events: Events,
 }
 
 impl Output {
@@ -194,7 +310,10 @@ impl Output {
 
     /// The `pty.exit` the server pushed, waiting up to `timeout` for it.
     pub fn exit(&self, timeout: Duration) -> Option<Exit> {
-        let events = self.events.as_ref()?;
+        let events = match &self.events {
+            Events::Shared(route) => return route.exits.recv_timeout(timeout).ok(),
+            Events::Own(events) => events,
+        };
         loop {
             match events.recv_timeout(timeout) {
                 Ok(PushEvent::Value { topic, value }) if topic == EXIT_TOPIC => {
@@ -278,13 +397,44 @@ impl Terminal {
     /// Opens a stream and attaches it to the holder `params` names; the stream and push channel are filled in.
     pub fn attach(
         connection: &Connection,
-        mut params: AttachParams,
+        params: AttachParams,
         timeout: Duration,
     ) -> Result<Terminal, Error> {
         let stream = connection.open_stream()?;
         let events = connection.subscribe()?;
+        Self::finish_attach(connection, stream, Events::Own(events), params, timeout)
+    }
+
+    /// Like [`Terminal::attach`], with the exit pushed on the connection's shared events channel.
+    pub fn attach_shared(
+        connection: &Connection,
+        shared: &SharedEvents,
+        params: AttachParams,
+        timeout: Duration,
+    ) -> Result<Terminal, Error> {
+        let stream = connection.open_stream()?;
+        let route = shared.register(stream.channel());
+        Self::finish_attach(connection, stream, Events::Shared(route), params, timeout)
+    }
+
+    fn finish_attach(
+        connection: &Connection,
+        stream: StreamReceiver,
+        events: Events,
+        mut params: AttachParams,
+        timeout: Duration,
+    ) -> Result<Terminal, Error> {
         params.channel = stream.channel();
-        params.events = Some(events.channel());
+        match &events {
+            Events::Own(subscription) => {
+                params.events = Some(subscription.channel());
+                params.shared_events = false;
+            }
+            Events::Shared(route) => {
+                params.events = Some(route.shared);
+                params.shared_events = true;
+            }
+        }
         let value = connection
             .start_request(method::ATTACH, &params)?
             .wait_timeout(timeout)?;
@@ -298,10 +448,7 @@ impl Terminal {
             resizes: std::sync::Arc::new(AtomicU64::new(0)),
         };
         Ok(Terminal {
-            output: Output {
-                stream,
-                events: Some(events),
-            },
+            output: Output { stream, events },
             control,
             attached,
         })

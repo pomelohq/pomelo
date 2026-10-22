@@ -1301,6 +1301,7 @@ mod tests {
                     let exit = pom_rpc::pty::Exit {
                         holder: "term-demo-main-1".into(),
                         crashed: true,
+                        ..pom_rpc::pty::Exit::default()
                     };
                     events.publish(pom_rpc::pty::EXIT_TOPIC, exit)?;
                 }

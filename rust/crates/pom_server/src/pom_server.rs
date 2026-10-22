@@ -8,6 +8,7 @@ mod paths;
 mod peer;
 mod pty;
 mod server;
+mod watch;
 
 pub use dispatch::{
     check_branch, check_name, check_op_id, registered_config, Dispatcher, Ops, FAILED, OP_MEMORY,
@@ -20,3 +21,4 @@ pub use server::{
     bind, idle_exit_from_settings, PeerCheck, Server, ServerHandle, ServerOptions, StartError,
     DEAD_AFTER, DEFAULT_IDLE_EXIT_MINUTES, SOCKET_CHECK_EVERY,
 };
+pub use watch::{Watches, READ_EVERY};

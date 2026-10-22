@@ -215,8 +215,8 @@ jobs:
             '
 
   # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
-  # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), and the
-  # app's reads and shells through `pom server proxy` behind a fake ssh.
+  # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), pushes and
+  # agent leases, and the app's reads, shells and agents through `pom server proxy` behind a fake ssh.
   pom-server:
     name: pom server (Linux)
     needs: changes
@@ -239,6 +239,7 @@ jobs:
       # pom_ptyhost builds the holder binary the terminal tests run.
       - run: cargo test -p pom_server -p pom_rpc -p pom_ptyhost
       - run: cargo test -p pom_remote server
+      - run: cargo test -p pom_remote watch
       - run: cargo test -p pom_cli --test remote server
       # Measures keystrokes through a real ssh session without a tty; sshd and its key live only on this runner.
       - name: Keystrokes through a real sshd on this runner

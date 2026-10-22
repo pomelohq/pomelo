@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use pom_remote::server_api::{method, ServerInfo, METHODS, SERVER_SCHEMA};
+use pom_remote::server_api::{method, ServerInfo, FEATURES, METHODS, SERVER_SCHEMA};
 use pom_rpc::{Config, Connection, Hello, RemoteError, Request, RequestContext, Transport};
 use serde_json::Value;
 
@@ -142,6 +142,9 @@ impl Shared {
         if let Some(answer) = self.dispatcher.dispatch_pty(request, caller) {
             return answer;
         }
+        if let Some(answer) = self.dispatcher.dispatch_watch(request, caller) {
+            return answer;
+        }
         match request.method.as_str() {
             method::SERVER_INFO => serde_json::to_value(self.info()).map_err(|error| {
                 RemoteError::new(pom_rpc::error_code::INTERNAL, error.to_string())
@@ -238,7 +241,11 @@ impl Shared {
                 let mut hello = Hello::new(version);
                 hello.server_id = Some(server_id);
                 hello.client_id = client.client_id.clone();
-                hello.features = METHODS.iter().map(|name| name.to_string()).collect();
+                hello.features = METHODS
+                    .iter()
+                    .chain(FEATURES)
+                    .map(|name| name.to_string())
+                    .collect();
                 Ok(hello)
             });
         let connection = match accepted {
@@ -262,7 +269,7 @@ impl Shared {
             }
         };
         self.live().remove(&id);
-        self.dispatcher.ptys().disconnect(id);
+        self.dispatcher.disconnect(id);
         self.log.line(&format!("conn={id} closed: {reason}"));
     }
 }

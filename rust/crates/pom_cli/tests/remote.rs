@@ -441,6 +441,8 @@ impl Fixture {
             ("POM_WEB_PORT".into(), "1".into()),
             ("POM_PTY_SOCK_DIR".into(), path("s")),
             ("SHELL".into(), "/bin/sh".into()),
+            ("FAKE_POM".into(), POM.into()),
+            ("FAKE_TRANSCRIPTS".into(), path("transcripts")),
         ]
     }
 
@@ -718,6 +720,139 @@ fn a_shell_on_the_server_runs_what_is_typed() {
     assert!(holders.holder_alive(&holder));
     terminals.close(&holder).expect("close");
     assert!(!holders.holder_alive(&holder));
+}
+
+const FAKE_AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-agent.sh");
+
+impl Fixture {
+    /// A source whose server finds a stand-in for the agent CLI first on its PATH, so no real agent ever
+    /// starts: it runs the scripted agent on the conversation id pom hands it.
+    fn server_source_with_agent_cli(&self) -> pom_remote::ServerSource {
+        std::fs::create_dir_all(self.temp.path().join("transcripts")).expect("transcripts");
+        let bin = self.temp.path().join("agent-bin");
+        std::fs::create_dir_all(&bin).expect("agent bin");
+        executable(
+            &bin.join("claude"),
+            &format!(
+                "#!/bin/sh\nsession=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in --session-id|--resume) session=\"$2\"; shift ;; esac\n  shift\ndone\nFAKE_SESSION=\"$session\" FAKE_TRANSCRIPT=\"$FAKE_TRANSCRIPTS/$session.jsonl\" POM=\"$FAKE_POM\" exec /bin/sh '{FAKE_AGENT}'\n"
+            ),
+        );
+        let mut envs = self.envs();
+        envs.push((
+            "PATH".into(),
+            format!(
+                "{}:{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                bin.display(),
+                self.temp.path().join("bin").display()
+            ),
+        ));
+        let ssh = pom_remote::Ssh::custom(self.temp.path().join("bin/ssh"), None, envs);
+        let host = pom_remote::Hosts::load(&self.temp.path().join("config/hosts.json"))
+            .and_then(|hosts| hosts.get("dev"))
+            .expect("host");
+        pom_remote::ServerSource::new(host, self.config(), ssh)
+    }
+}
+
+fn wait_snapshot(
+    watch: &pom_remote::Watch,
+    what: &str,
+    done: impl Fn(&pom_remote::Snapshot) -> bool,
+) -> pom_remote::Snapshot {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let snapshot = watch.snapshot();
+        if done(&snapshot) {
+            return snapshot;
+        }
+        assert!(Instant::now() < deadline, "no {what}: {snapshot:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn the_server_starts_an_agent_pushes_its_state_and_takes_what_is_typed() {
+    use pom_remote::ProjectSource;
+    use pom_rpc::pty::{Mode, Request, Target};
+    use pom_rpc::StreamEvent;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source = std::sync::Arc::new(fixture.server_source_with_agent_cli());
+    let watch = pom_remote::Watch::start(source.clone(), "feat", std::sync::Arc::new(|| {}));
+    watch.set_visible(true);
+    wait_snapshot(&watch, "pushes", |snapshot| snapshot.pushing);
+    assert!(source.transport().is_some_and(|info| info.agents));
+
+    watch.start_agent("claude");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let started = loop {
+        if let Some(view) = watch.take_started().pop() {
+            break view;
+        }
+        let message = watch.snapshot().message.unwrap_or_default();
+        assert!(!message.starts_with("could not"), "{message}");
+        assert!(Instant::now() < deadline, "the agent did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(started.role, "claude");
+    let screen = pom_ptyhost::snapshot(
+        &pom_ptyhost::SocketDir::new(fixture.temp.path().join("s")),
+        &started.holder,
+        Duration::from_secs(5),
+    )
+    .unwrap_or_default();
+    assert!(
+        !String::from_utf8_lossy(&screen).contains("Welcome"),
+        "the stand-in runs, not a real agent"
+    );
+    let holder = started.holder.clone();
+    // Whoever starts a session drives it, so it reports to an orchestrator until the server hands it over.
+    wait_snapshot(
+        &watch,
+        "the agent pushed, driven by the person",
+        |snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.role == "claude" && agent.state == "idle")
+                && snapshot
+                    .presence
+                    .iter()
+                    .any(|presence| presence.holder == holder && presence.driven_by.is_none())
+        },
+    );
+
+    watch.show_turn(Some("claude".into()));
+    let terminal = source
+        .pty("feat")
+        .expect("terminals")
+        .attach(&Request {
+            target: Target::Agent("claude".into()),
+            cols: 80,
+            rows: 24,
+            mode: Mode::ReadWrite,
+            primary: true,
+            claim: None,
+        })
+        .expect("attach the agent");
+    assert_eq!(terminal.attached.holder, holder);
+    terminal.control.input(b"hello-agent\n").expect("type");
+    let snapshot = wait_snapshot(&watch, "the turn pushed", |snapshot| {
+        matches!(&snapshot.turn, Some((_, Ok(Some(turn)))) if turn.text.contains("echo: hello-agent"))
+            && snapshot.agents.iter().any(|agent| agent.turn == 1)
+    });
+    assert!(snapshot.pushing);
+    while let Ok(event) = terminal.output.recv_timeout(Duration::from_millis(50)) {
+        if let StreamEvent::Data { offset, bytes } = event {
+            terminal.control.ack(offset + bytes.len() as u64);
+        }
+    }
+    source
+        .pty("feat")
+        .expect("terminals")
+        .close(&holder)
+        .expect("stop the agent");
 }
 
 #[test]

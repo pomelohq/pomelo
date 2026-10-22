@@ -1518,6 +1518,11 @@ impl Connection {
         &self.inner.config
     }
 
+    /// Whether both handles are the same connection.
+    pub fn ptr_eq(&self, other: &Connection) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn state(&self) -> ConnectionState {
         match &self.inner.lock().closed {
             Some(reason) => ConnectionState::Closed(reason.clone()),

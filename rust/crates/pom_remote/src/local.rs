@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pom_agent::{Drive, SessionView};
+use pom_agent::{Caller, Drive, DriveError, Gate, Lease, LeaseClass, Limits, SessionView};
 use pom_config::{Config, DepGraph};
 use pom_core::Project;
 use pom_layout::WorkspaceState;
@@ -11,6 +11,7 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 
+use crate::server_api::{AgentClaim, AgentPresence};
 use crate::source::{
     last_turn, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource, ServiceAction,
     SourceError, StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
@@ -299,6 +300,156 @@ impl LocalSource {
         Ok(opened
             .runner
             .holder_name(&target(branch, is_main, &repo, &name)))
+    }
+
+    /// The machine's own processes act as an orchestrator; a remote person says so with `person`.
+    fn gate<'a>(&'a self, config: &Config, branch: &str) -> Result<Gate<'a>, SourceError> {
+        Gate::open(
+            &self.state,
+            Caller::Operator,
+            pom_agent::Workspace {
+                project: config.session.clone(),
+                branch: branch.to_string(),
+            },
+            Limits::OPERATOR,
+        )
+        .map_err(|refusal| SourceError::Failed(refusal.to_string()))
+    }
+
+    fn agent_view(
+        &self,
+        drive: &Drive,
+        branch: &str,
+        holder: &str,
+    ) -> Result<SessionView, SourceError> {
+        drive
+            .list(branch)
+            .into_iter()
+            .find(|view| view.holder == holder)
+            .ok_or_else(|| SourceError::Failed(format!("no agent {holder} in {branch}")))
+    }
+
+    /// Who drives each session, and the approval it waits for.
+    pub fn agent_presence(&self, sessions: &[SessionView]) -> Vec<AgentPresence> {
+        sessions
+            .iter()
+            .map(|view| AgentPresence {
+                holder: view.holder.clone(),
+                driven_by: pom_agent::driven_by(&self.state, &view.holder),
+                pending: (!view.session_id.is_empty())
+                    .then(|| pom_agent::pending_approval(&self.state, &view.session_id))
+                    .flatten(),
+            })
+            .collect()
+    }
+
+    /// Starts the workspace's main agent (`claude`) or a fresh one as `role`, the way `pom agent start` does.
+    /// A person who starts one drives it, and answers its folder trust prompt in its terminal.
+    pub fn start_agent(
+        &self,
+        branch: &str,
+        role: &str,
+        person: bool,
+    ) -> Result<SessionView, SourceError> {
+        let opened = self.open()?;
+        let is_main = Self::is_main(&opened.project, branch)?;
+        let drive = self.drive(&opened.config);
+        let gate = self.gate(&opened.config, branch)?;
+        let cwd = pom_layout::workspace_root(&opened.project.root, branch, is_main);
+        let fresh = role != pom_agent::CLAUDE_DRIVER;
+        let started = drive.start(
+            &gate,
+            &cwd,
+            is_main,
+            role,
+            fresh,
+            &pom_agent::LaunchOptions::default(),
+        );
+        let view = match started {
+            Ok(view) => view,
+            Err(DriveError::NeedsTrust(_)) if person => drive
+                .list(branch)
+                .into_iter()
+                .find(|view| view.role == role)
+                .ok_or_else(|| SourceError::Failed(format!("{role} did not start")))?,
+            Err(error) => return Err(SourceError::Failed(error.to_string())),
+        };
+        if person {
+            pom_agent::set_lease(
+                &self.state,
+                &self.holders,
+                &opened.config.session,
+                branch,
+                &view.holder,
+                &view.role,
+                Lease::person(),
+            )
+            .map_err(|error| SourceError::Failed(format!("could not hand {role} over: {error}")))?;
+        }
+        Ok(view)
+    }
+
+    /// Takes the lease of `role` as an orchestrator, as `pom agent send --take` does.
+    pub fn claim_agent(&self, branch: &str, role: &str) -> Result<AgentClaim, SourceError> {
+        let opened = self.open()?;
+        let drive = self.drive(&opened.config);
+        let gate = self.gate(&opened.config, branch)?;
+        let view = drive
+            .resolve(&gate, role)
+            .map_err(|error| SourceError::Failed(error.to_string()))?;
+        let lease = drive
+            .take_lease(&gate, &view)
+            .map_err(|error| SourceError::Failed(error.to_string()))?;
+        Ok(AgentClaim {
+            holder: view.holder,
+            token: lease.token,
+        })
+    }
+
+    /// The person takes `holder` over; whoever drove it gets it back on release.
+    pub fn take_over_agent(&self, branch: &str, holder: &str) -> Result<(), SourceError> {
+        let opened = self.open()?;
+        let view = self.agent_view(&self.drive(&opened.config), branch, holder)?;
+        let before = pom_agent::read_lease(&self.state, holder);
+        if before.class == LeaseClass::Human {
+            return Ok(());
+        }
+        let mut person = Lease::person();
+        person.previous = Some(Box::new(before));
+        pom_agent::set_lease(
+            &self.state,
+            &self.holders,
+            &opened.config.session,
+            branch,
+            holder,
+            &view.role,
+            person,
+        )
+        .map(|_| ())
+        .map_err(|error| SourceError::Failed(error.to_string()))
+    }
+
+    /// The person answers the approval `holder`'s session waits for.
+    pub fn answer_agent(
+        &self,
+        branch: &str,
+        holder: &str,
+        request: &str,
+        allow: bool,
+    ) -> Result<(), SourceError> {
+        let opened = self.open()?;
+        self.agent_view(&self.drive(&opened.config), branch, holder)?;
+        let session = pom_agent::session_for_holder(&self.state, holder)
+            .ok_or_else(|| SourceError::Failed(format!("{holder} has no session yet")))?;
+        if pom_agent::pending_approval(&self.state, &session.session_id)
+            .is_none_or(|pending| pending.request != request)
+        {
+            return Err(SourceError::Failed(format!(
+                "{holder} does not wait for {request}"
+            )));
+        }
+        pom_agent::answer_as_person(&self.state, &session, request, allow)
+            .map_err(|error| SourceError::Failed(error.to_string()))
     }
 
     pub fn last_turn_document(

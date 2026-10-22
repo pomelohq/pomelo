@@ -21,7 +21,8 @@ pub fn session_for_holder(state: &StateDir, holder: &str) -> Option<SessionState
 }
 
 /// A tool call that waits for someone to approve it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct PendingApproval {
     pub request: String,
     pub tool: String,

@@ -21,17 +21,17 @@ pub use local::{
     local_projects, ordered_services, service_output, status_report, workspace_list, LocalSource,
     WorkspaceTerminals,
 };
-pub use server_source::{project_source, ServerSource, VERSION};
+pub use server_source::{project_source, Opener, ServerSource, VERSION};
 pub use source::{
-    remote_projects, run_pom, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource,
-    RemoteSource, ServiceAction, SourceError, StatusReport, TransportInfo, Via, WorkspaceList,
-    WorkspaceSummary, PROJECT_SCHEMA, WORKSPACE_SCHEMA,
+    remote_projects, run_pom, AgentTurn, FailedRun, Feed, FeedEvent, LastSync, ProjectEntry,
+    ProjectSource, RemoteSource, ServiceAction, SourceError, StatusReport, TransportInfo, Update,
+    Via, WorkspaceList, WorkspaceSummary, PROJECT_SCHEMA, WORKSPACE_SCHEMA,
 };
 pub use ssh::{
     control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,
     version_mismatch, Ssh, Tty,
 };
-pub use watch::{Connection, Snapshot, Watch, POLL_EVERY};
+pub use watch::{Connection, Snapshot, Timing, Watch, POLL_EVERY, SAFETY_REFRESH};
 
 pub const SCHEMA: &str = "pom.hosts/v1";
 const HOSTS_FILE: &str = "hosts.json";
