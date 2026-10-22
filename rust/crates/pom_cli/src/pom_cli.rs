@@ -13,6 +13,7 @@ mod marks;
 mod modules;
 mod onboard;
 mod proxy;
+mod remote;
 mod run;
 mod workspaces;
 
@@ -32,7 +33,7 @@ use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 use run::RunCommand;
 use workspaces::WorkspaceCommand;
 
-pub const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [args]
+pub const USAGE: &str = "usage: pom [-H <host>] [-w <workspace>] [-c <pom.yml>] <command> [args]
 
 services
   start <target> [--wait [--timeout 120s]]
@@ -85,7 +86,7 @@ workspaces
                      stop it and remove its worktrees, databases and folder; the local
                      branch goes too only when it is pushed or merged
   ws rename <branch> [name]   set or clear the workspace's display name
-  ws list            workspaces, their repos and running services
+  ws ls [--json]     workspaces, their repos and running services (ws list works too)
   get workspaces [-o json]    each workspace's readiness and phase
   describe workspace <branch> [-o json]
                      its services, ports and repos missing from it
@@ -168,6 +169,19 @@ agents (one workspace at a time; --json for stable output)
   completion bash|zsh|fish
   version, --version
 
+remote machines
+  host add <name> ssh://user@host[:port] [--pom-path p] [--json]
+                     name a machine pom runs on; ssh uses your own config and keys
+  host ls [--json]   the named machines (~/.config/pomelo/hosts.json)
+  host rm <name> [--json]
+                     forget one
+  host test <name> [--json]
+                     connect and compare the remote pom's version with this one
+  -H <host> <command>
+                     run the command on that machine over ssh (--host works too, anywhere on the
+                     line): output, input and exit code pass through; exit 69 when ssh cannot
+                     connect (with a JSON error object when the command asked for JSON)
+
 The workspace is the one the current directory is in, else the main one; -w picks another.
 A service is `name` or `repo/name`.";
 
@@ -200,6 +214,7 @@ enum Command {
     Completion(String),
     Doctor { json: bool },
     Agent(agent::AgentCommand),
+    Host(remote::HostCommand),
     Version,
     Help,
 }
@@ -225,7 +240,15 @@ fn std_handles() -> (std::io::Stdout, std::io::Stderr) {
 
 /// Runs `args` (the program name first) as if typed in `cwd`; returns the exit code.
 pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
-    let invocation = match parse(args.get(1..).unwrap_or_default()) {
+    let args = match remote::extract_host(args.get(1..).unwrap_or_default()) {
+        Ok((Some(host), rest)) => return remote::forward(&host, &rest, out, err),
+        Ok((None, rest)) => rest,
+        Err(message) => {
+            report(err, &format!("{message}\n\n{USAGE}"));
+            return 2;
+        }
+    };
+    let invocation = match parse(&args) {
         Ok(invocation) => invocation,
         Err(message) => {
             report(err, &format!("{message}\n\n{USAGE}"));
@@ -259,6 +282,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Agent(ref command) => {
                 return agent::execute(command, &invocation, cwd, out, err);
             }
+            Command::Host(ref command) => return remote::execute(command, out, err),
             Command::Queue(ref queue) => {
                 return match Session::open(&invocation, cwd) {
                     Ok(session) => session.queue_command(queue, out, err),
@@ -410,7 +434,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "logs"
                         | "mark"
                         | "queue"
-                        | "proxy")
+                        | "proxy"
+                        | "host")
                 )
             )
         {
@@ -502,6 +527,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             }
             Command::Agent(command)
         }
+        "host" => Command::Host(remote::parse(rest)?),
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -684,6 +710,7 @@ impl Session {
             | Command::Completion(_)
             | Command::Doctor { .. }
             | Command::Agent(_)
+            | Command::Host(_)
             | Command::Queue(_)
             | Command::Version
             | Command::Help => Ok(()),
