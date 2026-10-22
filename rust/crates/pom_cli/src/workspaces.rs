@@ -17,7 +17,7 @@ pub(crate) enum WorkspaceCommand {
     Create(CreateRequest),
     Delete(DeleteRequest),
     Rename { branch: String, name: String },
-    List,
+    List { json: bool },
     PrepareMain(PrepareRequest),
 }
 
@@ -27,6 +27,10 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
     let mut flags: Vec<(&str, Option<&str>)> = Vec::new();
     let mut iter = words.iter();
     while let Some(word) = iter.next() {
+        if *word == "-o" {
+            flags.push(("output", Some(*iter.next().ok_or("-o needs a value")?)));
+            continue;
+        }
         let Some(flag) = word.strip_prefix("--") else {
             positional.push(word);
             continue;
@@ -35,7 +39,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
             Some((name, value)) => (name, Some(value)),
             None => (flag, None),
         };
-        let takes_value = matches!(name, "repos" | "env" | "from-stage");
+        let takes_value = matches!(name, "repos" | "env" | "from-stage" | "output");
         let value = match (takes_value, inline) {
             (true, Some(value)) => Some(value),
             (true, None) => Some(*iter.next().ok_or(format!("--{name} needs a value"))?),
@@ -122,13 +126,20 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
                     .map_or_else(String::new, |name| name.to_string()),
             })
         }
-        ("list", []) => {
-            allow(&[])?;
-            Ok(WorkspaceCommand::List)
+        ("list" | "ls", []) => {
+            allow(&["json", "output"])?;
+            let json = match value("output") {
+                None | Some("table") => has("json"),
+                Some("json") => true,
+                Some(other) => {
+                    return Err(format!("unknown output format {other} (table or json)"))
+                }
+            };
+            Ok(WorkspaceCommand::List { json })
         }
         ("create" | "delete", _) => Err(format!("ws {action} takes one branch")),
         ("rename", _) => Err("ws rename takes a branch and an optional name".into()),
-        ("list", _) => Err("ws list takes no arguments".into()),
+        ("list" | "ls", _) => Err("ws ls takes no arguments".into()),
         (other, _) => Err(format!("unknown ws command {other}")),
     }
 }
@@ -143,7 +154,8 @@ impl Session {
             WorkspaceCommand::Create(request) => self.create_workspace(request, out),
             WorkspaceCommand::Delete(request) => self.delete_workspace(request, out),
             WorkspaceCommand::Rename { branch, name } => self.rename_workspace(branch, name, out),
-            WorkspaceCommand::List => self.list_workspaces(out),
+            WorkspaceCommand::List { json: false } => self.list_workspaces(out),
+            WorkspaceCommand::List { json: true } => self.list_workspaces_json(out),
             WorkspaceCommand::PrepareMain(request) => self.prepare_main(request, out),
         }
     }
@@ -275,6 +287,47 @@ impl Session {
         Ok(())
     }
 
+    /// `ws ls --json`: each workspace with its folder, repos, display name, running services and any
+    /// create/delete still in progress or stopped part-way.
+    fn list_workspaces_json(&self, out: &mut dyn Write) -> Result<(), String> {
+        let workspaces: Vec<serde_json::Value> = self
+            .project
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                let repos: Vec<&str> = workspace
+                    .repos
+                    .iter()
+                    .map(|repo| repo.name.as_str())
+                    .collect();
+                let failed = pom_workspace::failed_run(&self.state, &workspace.branch).map(|failed| {
+                    let operation = match failed.operation {
+                        pom_workspace::Operation::Delete => "delete",
+                        _ => "create",
+                    };
+                    serde_json::json!({"operation": operation, "stage": failed.failed_stage + 1})
+                });
+                serde_json::json!({
+                    "branch": workspace.branch,
+                    "is_main": workspace.is_main,
+                    "path": workspace.path,
+                    "name": WorkspaceState::load(&workspace.path).display_name,
+                    "repos": repos,
+                    "running": self.running_services(&workspace.branch, workspace.is_main),
+                    "in_progress": pom_workspace::active_run(&self.state, &workspace.branch),
+                    "failed": failed,
+                })
+            })
+            .collect();
+        let document = serde_json::json!({
+            "schema": "pom.workspace/v1",
+            "project": self.config.session,
+            "root": self.project.root,
+            "workspaces": workspaces,
+        });
+        say(out, &document.to_string())
+    }
+
     fn running_services(&self, branch: &str, is_main: bool) -> usize {
         self.config
             .repos
@@ -404,7 +457,16 @@ mod tests {
                 name: "Login".into(),
             })
         );
-        assert_eq!(parsed("list"), Ok(WorkspaceCommand::List));
+        assert_eq!(parsed("list"), Ok(WorkspaceCommand::List { json: false }));
+        assert_eq!(
+            parsed("ls --json"),
+            Ok(WorkspaceCommand::List { json: true })
+        );
+        assert_eq!(
+            parsed("ls -o json"),
+            Ok(WorkspaceCommand::List { json: true })
+        );
+        assert!(parsed("ls -o yaml").is_err());
         assert_eq!(
             parse(&["--no-seed"], true),
             Ok(WorkspaceCommand::PrepareMain(PrepareRequest {

@@ -3588,6 +3588,7 @@ dependencies = [
  "pom_ports",
  "pom_proxy",
  "pom_ptyhost",
+ "pom_remote",
  "pom_secrets",
  "pom_services",
  "pom_sessions",
@@ -3795,6 +3796,17 @@ version = "0.9.3"
 dependencies = [
  "libc",
  "sha1",
+ "tempfile",
+ "workspace_hack",
+]
+
+[[package]]
+name = "pom_remote"
+version = "0.9.3"
+dependencies = [
+ "pom_paths",
+ "serde",
+ "serde_json",
  "tempfile",
  "workspace_hack",
 ]
