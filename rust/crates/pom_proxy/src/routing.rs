@@ -95,16 +95,26 @@ pub struct Decision {
     pub fault: Option<crate::Fault>,
 }
 
-/// The labels of a `<...>.localhost` host, without its port.
-pub fn host_labels(host: &str) -> Option<Vec<String>> {
-    let host = host.rsplit_once(':').map_or(host, |(name, port)| {
+/// The host without its port.
+pub fn host_name(host: &str) -> &str {
+    host.rsplit_once(':').map_or(host, |(name, port)| {
         if port.chars().all(|c| c.is_ascii_digit()) {
             name
         } else {
             host
         }
-    });
-    let rest = host.strip_suffix(&format!(".{DOMAIN}"))?;
+    })
+}
+
+/// The labels of a `<...>.localhost` or `<...>.<domain>` host, without its port.
+pub fn host_labels(host: &str, domain: &str) -> Option<Vec<String>> {
+    let host = host_name(host);
+    let rest = host.strip_suffix(&format!(".{DOMAIN}")).or_else(|| {
+        let suffix = host.len().checked_sub(domain.len() + 1)?;
+        let (rest, tail) = host.split_at_checked(suffix)?;
+        (tail.len() > 1 && tail[1..].eq_ignore_ascii_case(domain) && tail.starts_with('.'))
+            .then_some(rest)
+    })?;
     Some(rest.split('.').map(str::to_string).collect())
 }
 
@@ -256,6 +266,64 @@ pub fn rewrite_external_cookie(cookie: &str, prefix: &str) -> String {
         .into_owned()
 }
 
+/// A cookie served under a real domain: the prefix logic stays, `Domain` survives only when it covers
+/// `public_host`, `Secure` only when browsers reach it over https. A remote environment's `SameSite=None`
+/// still turns `Lax` over plain http, where browsers reject it without `Secure`.
+pub fn rewrite_public_cookie(
+    cookie: &str,
+    prefix: &str,
+    external: bool,
+    public_host: &str,
+    https: bool,
+) -> String {
+    let Some(rules) = cookie_rules() else {
+        return cookie.to_string();
+    };
+    let mut cookie = cookie.to_string();
+    if !prefix.is_empty() && prefix != "/" {
+        if rules.has_path.is_match(&cookie) {
+            cookie = rules
+                .path
+                .replace_all(&cookie, |found: &regex::Captures| {
+                    format!("{}{prefix}{}", &found[1], &found[2])
+                })
+                .into_owned();
+        } else if external {
+            cookie.push_str(&format!("; Path={prefix}/"));
+        }
+    }
+    let public_host = public_host.to_ascii_lowercase();
+    cookie = rules
+        .domain
+        .replace_all(&cookie, |found: &regex::Captures| {
+            let attribute = &found[0];
+            let value = attribute
+                .split_once('=')
+                .map_or("", |(_, value)| value)
+                .trim()
+                .trim_start_matches('.')
+                .to_ascii_lowercase();
+            let covers = !value.is_empty()
+                && (public_host == value || public_host.ends_with(&format!(".{value}")));
+            if covers {
+                attribute.to_string()
+            } else {
+                String::new()
+            }
+        })
+        .into_owned();
+    if !https {
+        cookie = rules.secure.replace_all(&cookie, "").into_owned();
+        if external {
+            cookie = rules
+                .same_site_none
+                .replace_all(&cookie, "; SameSite=Lax")
+                .into_owned();
+        }
+    }
+    cookie
+}
+
 fn strip_prefix(path: &str, prefix: &str) -> String {
     let rest = path.strip_prefix(prefix).unwrap_or(path);
     if rest.starts_with('/') {
@@ -295,6 +363,8 @@ pub struct Router {
     resolving: Mutex<()>,
     faults: Mutex<(Option<Instant>, Vec<crate::FaultRule>)>,
     random: Mutex<u64>,
+    /// Hosts end in it besides `localhost`.
+    domain: String,
 }
 
 impl Router {
@@ -308,7 +378,17 @@ impl Router {
             resolving: Mutex::new(()),
             faults: Mutex::new((None, Vec::new())),
             random: Mutex::new(crate::faults::now_ms() | 1),
+            domain: DOMAIN.to_string(),
         }
+    }
+
+    pub fn with_domain(mut self, domain: &str) -> Router {
+        self.domain = domain.to_string();
+        self
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
     }
 
     pub fn set_projects(&self, projects: Vec<ProjectRoute>) {
@@ -547,10 +627,13 @@ impl Router {
             logged: None,
             fault: None,
         };
-        let Some(labels) = host_labels(host) else {
+        let Some(labels) = host_labels(host, &self.domain) else {
             return unrouted(Route::Error {
                 status: 404,
-                message: format!("open a workspace at http://<service>.<repo>.<branch>.{DOMAIN}"),
+                message: format!(
+                    "open a workspace at http://<service>.<repo>.<branch>.{}",
+                    self.domain
+                ),
                 problem: Problem::default(),
             });
         };
@@ -739,12 +822,90 @@ mod tests {
     }
 
     #[test]
+    fn a_configured_domain_routes_beside_localhost() {
+        let domain = "dev.example.net";
+        let labels = |host: &str| host_labels(host, domain);
+        assert_eq!(
+            labels("portal.client.proj-101.dev.example.net"),
+            Some(vec!["portal".into(), "client".into(), "proj-101".into()])
+        );
+        assert_eq!(
+            labels("Portal.client.proj-101.DEV.example.net:443"),
+            Some(vec!["Portal".into(), "client".into(), "proj-101".into()])
+        );
+        assert_eq!(
+            labels("server.api.main.localhost:8767"),
+            Some(vec!["server".into(), "api".into(), "main".into()])
+        );
+        assert_eq!(labels("dev.example.net"), None);
+        assert_eq!(labels("web.web.proj-101.otherdev.example.net"), None);
+        assert_eq!(labels("web.web.proj-101.example.net"), None);
+    }
+
+    #[test]
+    fn public_cookies_keep_a_covering_domain_and_secure_over_https() {
+        let host = "portal.client.proj-101.dev.example.net";
+        let rewrite = |cookie: &str, prefix: &str, external: bool, https: bool| {
+            rewrite_public_cookie(cookie, prefix, external, host, https)
+        };
+        assert_eq!(
+            rewrite(
+                "sid=1; Path=/; Secure; Domain=.dev.example.net; SameSite=None",
+                "",
+                false,
+                true
+            ),
+            "sid=1; Path=/; Secure; Domain=.dev.example.net; SameSite=None"
+        );
+        assert_eq!(
+            rewrite(
+                "sid=1; Domain=example.org; Secure; HttpOnly",
+                "",
+                false,
+                true
+            ),
+            "sid=1; Secure; HttpOnly"
+        );
+        assert_eq!(
+            rewrite(
+                "sid=1; Domain=portal.client.proj-101.dev.example.net",
+                "",
+                false,
+                true
+            ),
+            "sid=1; Domain=portal.client.proj-101.dev.example.net"
+        );
+        assert_eq!(
+            rewrite(
+                "sid=1; Path=/; Secure; Domain=.dev.example.net",
+                "/_pom_dev/api/server",
+                false,
+                false
+            ),
+            "sid=1; Path=/_pom_dev/api/server/; Domain=.dev.example.net"
+        );
+        assert_eq!(
+            rewrite(
+                "sid=1; Domain=.staging.example.com; Secure; SameSite=None",
+                "/_pom_dev/api/server",
+                true,
+                true
+            ),
+            "sid=1; Secure; SameSite=None; Path=/_pom_dev/api/server/"
+        );
+        assert_eq!(
+            rewrite("sid=1; Secure; SameSite=None", "", true, false),
+            "sid=1; SameSite=Lax"
+        );
+    }
+
+    #[test]
     fn hosts_split_into_labels_and_ticket_labels_must_be_unique() {
         assert_eq!(
-            host_labels("server.api.feat-login.localhost:8767"),
+            host_labels("server.api.feat-login.localhost:8767", DOMAIN),
             Some(vec!["server".into(), "api".into(), "feat-login".into()])
         );
-        assert_eq!(host_labels("example.com"), None);
+        assert_eq!(host_labels("example.com", DOMAIN), None);
         let labels = branch_labels(&[
             "PROJ-101-login".into(),
             "PROJ-101-signup".into(),

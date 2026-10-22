@@ -5,6 +5,7 @@ mod routing;
 mod server;
 
 use std::collections::VecDeque;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 
 pub use faults::{
@@ -13,9 +14,9 @@ pub use faults::{
 };
 pub use machine::{listening_ports_in_tree, SystemMachine};
 pub use routing::{
-    branch_labels, host_labels, reachable, resolve_service_key, rewrite_external_cookie,
-    rewrite_local_cookie, ConfigSource, Decision, Logged, Machine, Problem, ProblemKind,
-    ProjectRoute, Route, Router,
+    branch_labels, host_labels, host_name, reachable, resolve_service_key, rewrite_external_cookie,
+    rewrite_local_cookie, rewrite_public_cookie, ConfigSource, Decision, Logged, Machine, Problem,
+    ProblemKind, ProjectRoute, Route, Router,
 };
 
 const LOG_CAPACITY: usize = 300;
@@ -252,6 +253,7 @@ pub struct DevProxy {
     router: Arc<Router>,
     log: Arc<ProxyLog>,
     ports: Ports,
+    network: pom_env::DevNetwork,
     proxy_bound: bool,
     webhook_bound: bool,
     serve: Serve,
@@ -259,23 +261,46 @@ pub struct DevProxy {
 }
 
 impl DevProxy {
+    /// On this machine only, under `localhost`.
     pub fn start(
         machine: Box<dyn Machine>,
         ports: Ports,
         serve: Serve,
     ) -> std::io::Result<DevProxy> {
+        let network = pom_env::DevNetwork::local(pom_env::DevPorts {
+            webhook: ports.webhook,
+            proxy: ports.proxy,
+        });
+        DevProxy::start_on(machine, network, serve)
+    }
+
+    /// Listens where `network` says and routes its domain beside `localhost`.
+    pub fn start_on(
+        machine: Box<dyn Machine>,
+        network: pom_env::DevNetwork,
+        serve: Serve,
+    ) -> std::io::Result<DevProxy> {
+        let ports = Ports {
+            webhook: network.ports.webhook,
+            proxy: network.ports.proxy,
+        };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pom-proxy")
             .enable_all()
             .build()?;
-        let router = Arc::new(Router::new(machine));
+        let router = Arc::new(Router::new(machine).with_domain(&network.domain));
         let log = Arc::new(ProxyLog::default());
-        let shared = Arc::new(server::Shared::new(router.clone(), log.clone()));
+        let shared = Arc::new(server::Shared::new(
+            router.clone(),
+            log.clone(),
+            network.clone(),
+        ));
         let _entered = runtime.enter();
         let mut proxy_bound = false;
-        for host in ["127.0.0.1", "[::1]"].into_iter().filter(|_| serve.proxy) {
-            match bind(&format!("{host}:{}", ports.proxy)) {
+        let proxy_addresses = listen_addresses(network.bind, ports.proxy, true);
+        for address in proxy_addresses.into_iter().filter(|_| serve.proxy) {
+            match bind(address) {
                 Ok(listener) => {
                     proxy_bound = true;
                     runtime.spawn(server::accept(
@@ -284,7 +309,7 @@ impl DevProxy {
                         server::Kind::Proxy,
                     ));
                 }
-                Err(error) => eprintln!("dev proxy: {host}:{} unavailable: {error}", ports.proxy),
+                Err(error) => eprintln!("dev proxy: {address} unavailable: {error}"),
             }
         }
         if serve.proxy && !proxy_bound {
@@ -293,28 +318,30 @@ impl DevProxy {
                 ports.proxy
             );
         }
-        let webhook_bound = match serve
-            .webhook
-            .then(|| bind(&format!("127.0.0.1:{}", ports.webhook)))
-        {
-            None => false,
-            Some(Ok(listener)) => {
-                runtime.spawn(server::accept(listener, shared, server::Kind::Webhook));
-                true
+        let mut webhook_bound = false;
+        let webhook_addresses = listen_addresses(network.bind, ports.webhook, false);
+        for address in webhook_addresses.into_iter().filter(|_| serve.webhook) {
+            match bind(address) {
+                Ok(listener) => {
+                    webhook_bound = true;
+                    runtime.spawn(server::accept(
+                        listener,
+                        shared.clone(),
+                        server::Kind::Webhook,
+                    ));
+                }
+                Err(error) => eprintln!("webhook relay: {address} unavailable: {error}"),
             }
-            Some(Err(error)) => {
-                eprintln!(
-                    "webhook relay: 127.0.0.1:{} unavailable: {error}",
-                    ports.webhook
-                );
-                false
-            }
-        };
+        }
+        if network.exposed() && (proxy_bound || webhook_bound) {
+            eprintln!("dev proxy: {}", exposure_warning(&network));
+        }
         drop(_entered);
         Ok(DevProxy {
             router,
             log,
             ports,
+            network,
             proxy_bound,
             webhook_bound,
             serve,
@@ -336,6 +363,10 @@ impl DevProxy {
 
     pub fn ports(&self) -> Ports {
         self.ports
+    }
+
+    pub fn network(&self) -> &pom_env::DevNetwork {
+        &self.network
     }
 
     pub fn serve(&self) -> Serve {
@@ -360,7 +391,36 @@ pub fn listening(port: u16) -> bool {
     .is_ok()
 }
 
-fn bind(address: &str) -> std::io::Result<tokio::net::TcpListener> {
+/// Other machines can reach the proxy: say so, since it has no authentication.
+pub fn exposure_warning(network: &pom_env::DevNetwork) -> String {
+    let trust = if network.trusted_proxies.is_empty() {
+        " and no proxy.trusted_proxies, so forwarded headers are ignored"
+    } else {
+        ""
+    };
+    format!(
+        "listening on {}, reachable from other machines{trust}. It has no authentication: keep it on a private network (Tailscale, a LAN) or behind a reverse proxy",
+        network.bind
+    )
+}
+
+/// Loopback stays reachable (the CLI and services on this machine use it) beside a configured address; an
+/// unspecified address already covers loopback, and a second bind on the same port would fail.
+fn listen_addresses(bind: IpAddr, port: u16, both_loopbacks: bool) -> Vec<SocketAddr> {
+    let mut addresses = vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)];
+    if both_loopbacks {
+        addresses.push(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port));
+    }
+    if bind.is_unspecified() {
+        return vec![SocketAddr::new(bind, port)];
+    }
+    if !bind.is_loopback() {
+        addresses.push(SocketAddr::new(bind, port));
+    }
+    addresses
+}
+
+fn bind(address: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let listener = std::net::TcpListener::bind(address)?;
     listener.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(listener)
@@ -369,6 +429,30 @@ fn bind(address: &str) -> std::io::Result<tokio::net::TcpListener> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_binds_as_before_and_other_addresses_add_to_it() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let text = |addresses: Vec<SocketAddr>| -> Vec<String> {
+            addresses.iter().map(SocketAddr::to_string).collect()
+        };
+        assert_eq!(
+            text(listen_addresses(loopback, 8767, true)),
+            ["127.0.0.1:8767", "[::1]:8767"]
+        );
+        assert_eq!(
+            text(listen_addresses(loopback, 8766, false)),
+            ["127.0.0.1:8766"]
+        );
+        assert_eq!(
+            text(listen_addresses("100.64.0.10".parse().unwrap(), 8767, true)),
+            ["127.0.0.1:8767", "[::1]:8767", "100.64.0.10:8767"]
+        );
+        assert_eq!(
+            text(listen_addresses("0.0.0.0".parse().unwrap(), 8766, false)),
+            ["0.0.0.0:8766"]
+        );
+    }
 
     #[test]
     fn bodies_are_capped_and_the_oldest_are_dropped_over_budget() {

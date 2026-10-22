@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use indexmap::IndexMap;
 use pom_config::{Config, Dir, Service, SharedServiceDef};
-use pom_env::{EnvSources, ResolveContext, SlotAllocation};
+use pom_env::{EnvSources, PublicAddress, ResolveContext, SlotAllocation};
 
 #[derive(Default)]
 struct FakeState {
@@ -10,6 +10,7 @@ struct FakeState {
     service_ports: HashMap<(String, String), u16>,
     slots: HashMap<(String, String), SlotAllocation>,
     secrets: HashMap<(String, String), String>,
+    public: Option<PublicAddress>,
 }
 
 impl EnvSources for FakeState {
@@ -30,6 +31,11 @@ impl EnvSources for FakeState {
         self.secrets
             .get(&(session.to_string(), name.to_string()))
             .cloned()
+    }
+    fn public_address(&self) -> PublicAddress {
+        self.public
+            .clone()
+            .unwrap_or_else(|| PublicAddress::local(pom_env::DEFAULT_PROXY_PORT))
     }
 }
 
@@ -279,4 +285,74 @@ fn http_to_ws_only_swaps_http_schemes() {
     assert_eq!(pom_env::http_to_ws("http://a:1/x"), "ws://a:1/x");
     assert_eq!(pom_env::http_to_ws("https://a"), "wss://a");
     assert_eq!(pom_env::http_to_ws("tcp://a"), "tcp://a");
+}
+
+fn service_urls(public: Option<PublicAddress>) -> Vec<String> {
+    let config = config();
+    let state = FakeState { public, ..state() };
+    let db_names = IndexMap::new();
+    let context = ResolveContext {
+        config: &config,
+        branch: "PROJ-101-login",
+        ws_key: WS,
+        env_name: "",
+        db_names: &db_names,
+        sources: &state,
+    };
+    [
+        "{{api.server.url}}",
+        "{{api.server.ws}}",
+        "{{api.server.host}}",
+        "{{api.server.path}}",
+    ]
+    .iter()
+    .map(|input| context.resolve(input))
+    .collect()
+}
+
+#[test]
+fn service_urls_on_localhost_are_unchanged() {
+    assert_eq!(
+        service_urls(None),
+        [
+            "http://server.api.proj-101.localhost:8767",
+            "ws://server.api.proj-101.localhost:8767",
+            "server.api.proj-101.localhost",
+            "/_pom_dev/api/server",
+        ]
+    );
+}
+
+#[test]
+fn service_urls_behind_https_on_443_carry_no_port() {
+    let public = PublicAddress {
+        https: true,
+        domain: "dev.example.net".into(),
+        port: 443,
+    };
+    assert_eq!(
+        service_urls(Some(public)),
+        [
+            "https://server.api.proj-101.dev.example.net",
+            "wss://server.api.proj-101.dev.example.net",
+            "server.api.proj-101.dev.example.net",
+            "/_pom_dev/api/server",
+        ]
+    );
+}
+
+#[test]
+fn service_urls_on_a_custom_public_port_keep_it() {
+    let public = PublicAddress {
+        https: true,
+        domain: "dev.example.net".into(),
+        port: 8443,
+    };
+    assert_eq!(
+        service_urls(Some(public))[..2],
+        [
+            "https://server.api.proj-101.dev.example.net:8443",
+            "wss://server.api.proj-101.dev.example.net:8443",
+        ]
+    );
 }

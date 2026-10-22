@@ -9,10 +9,12 @@ pub use branch::{
     workspace_label, ws_key,
 };
 pub use dev_ports::{
-    dev_ports, from_settings as dev_ports_from_settings, DevPorts, DEFAULT_PROXY_PORT,
-    DEFAULT_WEBHOOK_PORT, PROXY_PORT_KEY, WEBHOOK_PORT_KEY,
+    dev_network, dev_ports, forget_dev_network, from_settings as dev_ports_from_settings,
+    network_from_settings, DevNetwork, DevPorts, PublicAddress, DEFAULT_PROXY_PORT,
+    DEFAULT_WEBHOOK_PORT, PROXY_KEY, PROXY_PORT_KEY, WEBHOOK_PORT_KEY,
 };
 pub use resolver::{
     http_to_ws, is_connection_var, service_host, EnvSources, ResolveContext, SlotAllocation,
     BIND_IP, DEV_PROXY_PREFIX,
 };
+pub use settings::{Cidr, ProxySettings};

@@ -303,6 +303,29 @@ pub fn diagnose(
     out
 }
 
+/// The dev proxy listens where other machines can reach it, and it has no authentication of its own.
+pub fn proxy_exposure(bind: std::net::IpAddr, trusted_proxies: usize) -> Option<Finding> {
+    if bind.is_loopback() {
+        return None;
+    }
+    let detail = if trusted_proxies == 0 {
+        format!("proxy.bind is {bind} and proxy.trusted_proxies is empty: anyone who reaches that address opens every workspace's services, and forwarded headers from a reverse proxy are ignored")
+    } else {
+        format!("proxy.bind is {bind}: anyone who reaches that address opens every workspace's services")
+    };
+    Some(
+        Finding::new("proxy.exposed", Severity::Warn, "Dev proxy reachable from other machines")
+            .detail(detail)
+            .fix("keep the address on a private network (Tailscale, a LAN) or behind a reverse proxy, or `pom proxy config reset bind`"),
+    )
+}
+
+/// Adds `finding`, dropping the lone "ready" finding it contradicts.
+pub fn add_finding(findings: &mut Vec<Finding>, finding: Finding) {
+    findings.retain(|existing| existing.severity != Severity::Ok);
+    findings.push(finding);
+}
+
 /// `{findings, errors, warnings}`, the shape the previous core's doctor endpoint returned.
 pub fn report(findings: &[Finding]) -> serde_json::Value {
     let count = |severity: Severity| {
@@ -344,6 +367,19 @@ pub fn fix_prompt(findings: &[Finding]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_non_loopback_proxy_is_reported() {
+        assert!(proxy_exposure("127.0.0.1".parse().unwrap(), 0).is_none());
+        assert!(proxy_exposure("::1".parse().unwrap(), 0).is_none());
+        let finding = proxy_exposure("100.64.0.10".parse().unwrap(), 0).unwrap();
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains("trusted_proxies is empty"));
+        let mut findings = vec![Finding::new("ok", Severity::Ok, "Ready to run")];
+        add_finding(&mut findings, finding);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].id, "proxy.exposed");
+    }
 
     fn write(root: &Path, yaml: &str) -> std::path::PathBuf {
         let path = root.join("pom.yml");

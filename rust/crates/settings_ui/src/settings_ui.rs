@@ -273,6 +273,18 @@ pub const CTRL_INLINE_COLUMN_INC: u64 = 371;
 pub const CTRL_INLINE_COLUMN_EDIT: u64 = 372;
 pub const CTRL_LANGUAGE_BACK: u64 = 380;
 pub const CTRL_AGENT_OPEN_IN: u64 = 381;
+pub const CTRL_PROXY_BIND: u64 = 382;
+pub const CTRL_PROXY_DOMAIN: u64 = 383;
+pub const CTRL_PROXY_SCHEME: u64 = 384;
+pub const CTRL_PROXY_PUBLIC_PORT: u64 = 385;
+pub const CTRL_PROXY_TRUSTED: u64 = 386;
+/// The free-text proxy fields, edited inline and checked before they are kept.
+pub const PROXY_TEXT_FIELDS: [u64; 4] = [
+    CTRL_PROXY_BIND,
+    CTRL_PROXY_DOMAIN,
+    CTRL_PROXY_PUBLIC_PORT,
+    CTRL_PROXY_TRUSTED,
+];
 /// A language's Configure button, by its index in `language_names`.
 pub const LANGUAGE_OPEN_BASE: u64 = 29_000;
 /// A language's own controls: `LANGUAGE_CTRL_BASE + index * LANGUAGE_CTRL_STRIDE + field`.
@@ -338,6 +350,7 @@ pub const MODULES_DAYS_MAX: u64 = 365;
 const AGENT_TAB_CLOSE: [(&str, &str); 2] =
     [("hide", "Keep It Running"), ("stop", "Stop the Agent")];
 /// Where agents open, as (setting value, label).
+const PROXY_SCHEMES: [(&str, &str); 2] = [("http", "HTTP"), ("https", "HTTPS")];
 const AGENT_OPEN_IN: [(&str, &str); 2] = [("dock", "Agent Dock"), ("center", "Editor Tab")];
 const RESTORE_ON_STARTUP: [(&str, &str); 2] =
     [("last_session", "Last Session"), ("none", "Nothing")];
@@ -691,6 +704,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_REDUCE_MOTION
             | CTRL_DEFINITION_SCROLL
             | CTRL_DIAGNOSTICS_SEVERITY
+            | CTRL_PROXY_SCHEME
     ) || sound_event(id).is_some()
 }
 
@@ -740,6 +754,7 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .collect(),
         CTRL_RESTORE_ON_STARTUP => labels(&RESTORE_ON_STARTUP),
         CTRL_AGENT_OPEN_IN => labels(&AGENT_OPEN_IN),
+        CTRL_PROXY_SCHEME => labels(&PROXY_SCHEMES),
         CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
         CTRL_CURSOR_SHAPE => labels(&CURSOR_SHAPES),
         CTRL_REDUCE_MOTION => labels(&REDUCE_MOTION),
@@ -784,6 +799,7 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .to_string(),
         CTRL_RESTORE_ON_STARTUP => label_of(&RESTORE_ON_STARTUP, &s.restore_on_startup),
         CTRL_AGENT_OPEN_IN => label_of(&AGENT_OPEN_IN, &s.agent_open_in),
+        CTRL_PROXY_SCHEME => label_of(&PROXY_SCHEMES, &s.proxy.public_scheme),
         CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
         CTRL_CURSOR_SHAPE => label_of(&CURSOR_SHAPES, &s.cursor_shape),
         CTRL_REDUCE_MOTION => label_of(&REDUCE_MOTION, &s.reduce_motion),
@@ -845,8 +861,10 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         | CTRL_CURSOR_SHAPE
         | CTRL_REDUCE_MOTION
         | CTRL_DEFINITION_SCROLL
-        | CTRL_DIAGNOSTICS_SEVERITY => {
+        | CTRL_DIAGNOSTICS_SEVERITY
+        | CTRL_PROXY_SCHEME => {
             let (choices, slot) = match id {
+                CTRL_PROXY_SCHEME => (&PROXY_SCHEMES[..], &mut s.proxy.public_scheme),
                 CTRL_RESTORE_ON_STARTUP => (&RESTORE_ON_STARTUP[..], &mut s.restore_on_startup),
                 CTRL_AGENT_OPEN_IN => (&AGENT_OPEN_IN[..], &mut s.agent_open_in),
                 CTRL_MULTI_CURSOR_MODIFIER => {
@@ -945,6 +963,11 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_WEBHOOK_ENABLED => s.webhook_enabled == d.webhook_enabled,
         CTRL_PROXY_PORT_EDIT => s.dev_proxy_port == d.dev_proxy_port,
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port == d.webhook_port,
+        CTRL_PROXY_BIND => s.proxy.bind == d.proxy.bind,
+        CTRL_PROXY_DOMAIN => s.proxy.domain == d.proxy.domain,
+        CTRL_PROXY_SCHEME => s.proxy.public_scheme == d.proxy.public_scheme,
+        CTRL_PROXY_PUBLIC_PORT => s.proxy.public_port == d.proxy.public_port,
+        CTRL_PROXY_TRUSTED => s.proxy.trusted_proxies == d.proxy.trusted_proxies,
         CTRL_MODULES_ENABLED => s.modules_store_enabled == d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback == d.modules_fallback,
         CTRL_HIDE_MOUSE => s.hide_mouse == d.hide_mouse,
@@ -1024,6 +1047,11 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_WEBHOOK_ENABLED => s.webhook_enabled = d.webhook_enabled,
         CTRL_PROXY_PORT_EDIT => s.dev_proxy_port = d.dev_proxy_port,
         CTRL_WEBHOOK_PORT_EDIT => s.webhook_port = d.webhook_port,
+        CTRL_PROXY_BIND => s.proxy.bind = d.proxy.bind,
+        CTRL_PROXY_DOMAIN => s.proxy.domain = d.proxy.domain,
+        CTRL_PROXY_SCHEME => s.proxy.public_scheme = d.proxy.public_scheme,
+        CTRL_PROXY_PUBLIC_PORT => s.proxy.public_port = d.proxy.public_port,
+        CTRL_PROXY_TRUSTED => s.proxy.trusted_proxies = d.proxy.trusted_proxies,
         CTRL_MODULES_ENABLED => s.modules_store_enabled = d.modules_store_enabled,
         CTRL_MODULES_FALLBACK => s.modules_fallback = d.modules_fallback.clone(),
         CTRL_HIDE_MOUSE => s.hide_mouse = d.hide_mouse.clone(),
@@ -2805,6 +2833,8 @@ pub struct DevServicesPage {
     pub served_elsewhere: bool,
     /// `POM_WEB_PORT` overrides the configured ports.
     pub port_from_env: bool,
+    /// Where a service opens, as a pattern: `http://<service>.<repo>.<ticket or branch>.localhost:8767`.
+    pub service_url: String,
     /// How the node_modules store reaches project folders on this drive (empty until checked).
     pub modules_method: String,
 }
@@ -3518,6 +3548,44 @@ fn notifications_page(s: &Settings) -> Page {
     }
 }
 
+/// The text a proxy field shows and starts editing from.
+pub fn proxy_text(id: u64, s: &Settings) -> String {
+    match id {
+        CTRL_PROXY_BIND => s.proxy.bind.clone(),
+        CTRL_PROXY_DOMAIN => s.proxy.domain.clone(),
+        CTRL_PROXY_PUBLIC_PORT if s.proxy.public_port == 0 => String::new(),
+        CTRL_PROXY_PUBLIC_PORT => s.proxy.public_port.to_string(),
+        CTRL_PROXY_TRUSTED => s.proxy.trusted_proxies.join(", "),
+        _ => String::new(),
+    }
+}
+
+/// Keeps an edited proxy field when it is usable; `Ok(true)` when it changed.
+pub fn set_proxy_text(id: u64, text: &str, s: &mut Settings) -> Result<bool, String> {
+    let text = text.trim();
+    let mut proxy = s.proxy.clone();
+    match id {
+        CTRL_PROXY_BIND if text.is_empty() => proxy.bind = settings::DEFAULT_PROXY_BIND.to_string(),
+        CTRL_PROXY_BIND => proxy.bind = settings::parse_bind(text)?.to_string(),
+        CTRL_PROXY_DOMAIN => proxy.domain = settings::parse_domain(text)?,
+        CTRL_PROXY_PUBLIC_PORT if text.is_empty() => proxy.public_port = 0,
+        CTRL_PROXY_PUBLIC_PORT => {
+            proxy.public_port = text.parse().map_err(|_| format!("{text} is not a port"))?
+        }
+        CTRL_PROXY_TRUSTED => {
+            proxy.trusted_proxies = text
+                .split([',', ' '])
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| settings::Cidr::parse(entry).map(|range| range.to_string()))
+                .collect::<Result<_, _>>()?
+        }
+        _ => return Ok(false),
+    }
+    let changed = proxy != s.proxy;
+    s.proxy = proxy;
+    Ok(changed)
+}
+
 fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
     let status = |enabled: bool, running: bool| {
         if enabled {
@@ -3559,8 +3627,8 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
         PageItem::Row(SettingRow {
             title: "Port".into(),
             description: format!(
-                "Open a service at <service>.<repo>.<ticket or branch>.localhost:{}. Service URLs in env files use it too; restart running services after changing it.",
-                services.proxy_port
+                "Open a service at {}. Service URLs in env files use it too; restart running services after changing it.",
+                services.service_url
             )
             .into(),
             control: Control::Stepper {
@@ -3579,13 +3647,63 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
             },
             reset: None,
         }),
+        PageItem::Header("Remote Access"),
         PageItem::Row(SettingRow {
             title: "Bind Address".into(),
-            description: "Only this machine can reach the proxy.".into(),
-            control: Control::Value {
-                text: "127.0.0.1".into(),
+            description: if s.proxy.bind_ip().is_loopback() {
+                "Only this machine can reach the proxy and the webhook relay. A private address (Tailscale, a LAN) lets another machine in; they stay on loopback too.".into()
+            } else {
+                "Other machines can reach the proxy and the webhook relay, and they have no authentication: keep this address on a private network or behind a reverse proxy.".into()
             },
-            reset: None,
+            control: Control::TextInput {
+                id: CTRL_PROXY_BIND,
+                value: s.proxy.bind.clone(),
+                placeholder: "127.0.0.1",
+                masked: false,
+            },
+            reset: reset_if_changed(CTRL_PROXY_BIND, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Domain".into(),
+            description: "Service hosts end in it, beside localhost: <service>.<repo>.<ticket or branch>.<domain>. Changing it rewrites the env files; restart running services.".into(),
+            control: Control::TextInput {
+                id: CTRL_PROXY_DOMAIN,
+                value: s.proxy.domain.clone(),
+                placeholder: "localhost",
+                masked: false,
+            },
+            reset: reset_if_changed(CTRL_PROXY_DOMAIN, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Public Scheme".into(),
+            description: "HTTPS when a reverse proxy in front terminates TLS: service URLs use it and cookies keep Secure.".into(),
+            control: Control::Dropdown {
+                id: CTRL_PROXY_SCHEME,
+                value: control_value(CTRL_PROXY_SCHEME, s),
+            },
+            reset: reset_if_changed(CTRL_PROXY_SCHEME, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Public Port".into(),
+            description: "The port in service URLs; empty uses the proxy's port, and 443 with HTTPS (80 with HTTP) leaves it out.".into(),
+            control: Control::TextInput {
+                id: CTRL_PROXY_PUBLIC_PORT,
+                value: proxy_text(CTRL_PROXY_PUBLIC_PORT, s),
+                placeholder: "proxy port",
+                masked: false,
+            },
+            reset: reset_if_changed(CTRL_PROXY_PUBLIC_PORT, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: "Trusted Proxies".into(),
+            description: "Addresses or ranges, comma separated, whose X-Forwarded-Proto and X-Forwarded-Host are believed; anyone else's are replaced.".into(),
+            control: Control::TextInput {
+                id: CTRL_PROXY_TRUSTED,
+                value: proxy_text(CTRL_PROXY_TRUSTED, s),
+                placeholder: "none",
+                masked: false,
+            },
+            reset: reset_if_changed(CTRL_PROXY_TRUSTED, s),
         }),
         PageItem::Header("Webhook Fan-out"),
         PageItem::Row(SettingRow {

@@ -17,7 +17,8 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::routing::{
-    rewrite_external_cookie, rewrite_local_cookie, Problem, ProblemKind, Route, Router,
+    host_name, rewrite_external_cookie, rewrite_local_cookie, rewrite_public_cookie, Problem,
+    ProblemKind, Route, Router,
 };
 use crate::{
     capture_of, clock, finish, record, Capture, Delivery, ProxyLog, ProxyLogEntry, RequestKind,
@@ -102,12 +103,13 @@ const HOP_HEADERS: [&str; 9] = [
 pub(crate) struct Shared {
     pub router: Arc<Router>,
     pub log: Arc<ProxyLog>,
+    network: pom_env::DevNetwork,
     local: Client<HttpConnector, Body>,
     external: Client<hyper_tls::HttpsConnector<HttpConnector>, Body>,
 }
 
 impl Shared {
-    pub fn new(router: Arc<Router>, log: Arc<ProxyLog>) -> Shared {
+    pub fn new(router: Arc<Router>, log: Arc<ProxyLog>, network: pom_env::DevNetwork) -> Shared {
         let mut local = HttpConnector::new();
         local.set_connect_timeout(Some(LOCAL_CONNECT_TIMEOUT));
         let mut external = HttpConnector::new();
@@ -116,6 +118,7 @@ impl Shared {
         Shared {
             router,
             log,
+            network,
             local: Client::builder(TokioExecutor::new())
                 .pool_idle_timeout(Duration::from_secs(30))
                 .pool_max_idle_per_host(24)
@@ -255,6 +258,77 @@ fn strip_hop_headers(headers: &mut HeaderMap, keep_upgrade: bool) {
     }
 }
 
+/// What the request looked like to the browser: the `X-Forwarded-Host`/`-Proto` sent upstream, and how
+/// response cookies are rewritten.
+struct Forwarding {
+    peer: SocketAddr,
+    host: String,
+    proto: String,
+    cookies: CookiePolicy,
+}
+
+enum CookiePolicy {
+    /// A `localhost` name: the long-standing rewrite.
+    Local,
+    Public {
+        host: String,
+        https: bool,
+    },
+}
+
+impl Forwarding {
+    /// Forwarded headers are believed only from a trusted proxy; anyone else could forge them.
+    fn of(
+        headers: &HeaderMap,
+        host: &str,
+        peer: SocketAddr,
+        network: &pom_env::DevNetwork,
+    ) -> Forwarding {
+        let trusted = network.trusts(peer.ip());
+        let claimed = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.split(',').next())
+                .map(str::trim)
+                .filter(|value| trusted && !value.is_empty())
+                .map(str::to_string)
+        };
+        let host = claimed("x-forwarded-host").unwrap_or_else(|| host.to_string());
+        let proto = claimed("x-forwarded-proto")
+            .map(|proto| proto.to_ascii_lowercase())
+            .unwrap_or_else(|| "http".to_string());
+        let name = host_name(&host).to_ascii_lowercase();
+        let local = network.public().is_local()
+            || name == crate::routing::DOMAIN
+            || name.ends_with(&format!(".{}", crate::routing::DOMAIN));
+        let cookies = if local {
+            CookiePolicy::Local
+        } else {
+            CookiePolicy::Public {
+                host: name,
+                https: network.https,
+            }
+        };
+        Forwarding {
+            peer,
+            host,
+            proto,
+            cookies,
+        }
+    }
+
+    fn rewrite_cookie(&self, cookie: &str, prefix: &str, external: bool) -> String {
+        match &self.cookies {
+            CookiePolicy::Local if external => rewrite_external_cookie(cookie, prefix),
+            CookiePolicy::Local => rewrite_local_cookie(cookie, prefix),
+            CookiePolicy::Public { host, https } => {
+                rewrite_public_cookie(cookie, prefix, external, host, *https)
+            }
+        }
+    }
+}
+
 enum Upstream {
     Local(SocketAddr),
     External { scheme: String, authority: String },
@@ -285,7 +359,8 @@ async fn handle_proxy(
         .get("sec-fetch-mode")
         .is_some_and(|mode| mode.as_bytes() == b"navigate");
     let page = wants_page(request.headers());
-    let workspace_label = crate::routing::host_labels(&host)
+    let forwarding = Forwarding::of(request.headers(), &host, client, &shared.network);
+    let workspace_label = crate::routing::host_labels(&host, shared.router.domain())
         .and_then(|labels| labels.last().cloned())
         .unwrap_or_default();
     let request_capture = Capture::default();
@@ -339,7 +414,7 @@ async fn handle_proxy(
                 &decision.path,
                 query.as_deref(),
                 &prefix,
-                client,
+                &forwarding,
             )
             .await;
             if response.headers_mut().remove(UNREACHABLE).is_some() && page {
@@ -377,7 +452,7 @@ async fn handle_proxy(
                     &decision.path,
                     query.as_deref(),
                     &prefix,
-                    client,
+                    &forwarding,
                 )
                 .await
             }
@@ -434,7 +509,7 @@ async fn forward(
     path: &str,
     query: Option<&str>,
     prefix: &str,
-    client: SocketAddr,
+    forwarding: &Forwarding,
 ) -> Response<Body> {
     let upgrade = is_upgrade(request.headers());
     let path_and_query = match query {
@@ -470,11 +545,24 @@ async fn forward(
         .get(&forwarded_for)
         .and_then(|value| value.to_str().ok())
     {
-        Some(prior) => format!("{prior}, {}", client.ip()),
-        None => client.ip().to_string(),
+        Some(prior) => format!("{prior}, {}", forwarding.peer.ip()),
+        None => forwarding.peer.ip().to_string(),
     };
     if let Ok(value) = HeaderValue::from_str(&chain) {
         parts.headers.insert(forwarded_for, value);
+    }
+    for (name, value) in [
+        ("x-forwarded-host", forwarding.host.as_str()),
+        ("x-forwarded-proto", forwarding.proto.as_str()),
+    ] {
+        match HeaderValue::from_str(value) {
+            Ok(value) => {
+                parts.headers.insert(HeaderName::from_static(name), value);
+            }
+            Err(_) => {
+                parts.headers.remove(name);
+            }
+        }
     }
     let outgoing = Request::from_parts(parts, body.boxed());
     let result = if direct {
@@ -539,13 +627,7 @@ async fn forward(
         .get_all(SET_COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
-        .map(|cookie| {
-            if external {
-                rewrite_external_cookie(cookie, prefix)
-            } else {
-                rewrite_local_cookie(cookie, prefix)
-            }
-        })
+        .map(|cookie| forwarding.rewrite_cookie(cookie, prefix, external))
         .collect();
     if !cookies.is_empty() {
         response.headers_mut().remove(SET_COOKIE);

@@ -60,6 +60,10 @@ services
                      the fault rules in force; remove one, or every one of the workspace
   proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
                      one in the background when neither the app nor another proxy does)
+  proxy config [-o json] | set <key> <value> | reset <key>
+                     how other machines reach the proxy: bind, domain, public_scheme,
+                     public_port, trusted_proxies (settings.json `proxy`); a new domain,
+                     scheme or port rewrites every workspace's env files
   run [--profile test|dev] <name|\"cmd\"> [repo]
                      a command from the config (or any shell command) in the repo's worktree,
                      with the workspace's env; the test profile layers the repo's .env.test on
@@ -177,6 +181,7 @@ enum Command {
     Mark(marks::MarkArgs),
     Queue(QueueArgs),
     ProxyFault(proxy::FaultCommand),
+    ProxyConfig(proxy::ProxyConfigCommand),
     Attach(String),
     Ports,
     Url(String),
@@ -235,6 +240,9 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Ports => ports(&StateDir::from_env(), out),
             Command::Doctor { json } => doctor(invocation.config.as_deref(), cwd, json, out),
             Command::Proxy => proxy::serve(&StateDir::from_env(), out),
+            Command::ProxyConfig(ref command) => {
+                proxy::config_command(command, &StateDir::from_env(), out)
+            }
             Command::Config(ref command) if !command.needs_session() => {
                 find_config(invocation.config.as_deref(), cwd)
                     .and_then(|path| config::execute(command, &path, out))
@@ -457,6 +465,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "ports" => none().map(|_| Command::Ports)?,
         "url" => Command::Url(one("a service")?),
         "proxy" if rest.is_empty() => Command::Proxy,
+        "proxy" if rest.first() == Some(&"config") => {
+            Command::ProxyConfig(proxy::parse_config(&rest[1..])?)
+        }
         "proxy" => Command::ProxyFault(proxy::parse_fault(rest)?),
         "ws" | "workspace" => Command::Workspace(workspaces::parse(rest, false)?),
         "prepare-main" => Command::Workspace(workspaces::parse(rest, true)?),
@@ -523,7 +534,7 @@ pub(crate) fn doctor(
     let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
     let docker_running = || pom_doctor::docker_answers(path);
     let compose_installed = || pom_doctor::compose_answers(path);
-    let findings = pom_doctor::diagnose(
+    let mut findings = pom_doctor::diagnose(
         config.as_ref(),
         &config_path,
         root,
@@ -534,6 +545,10 @@ pub(crate) fn doctor(
             compose_installed: &compose_installed,
         },
     );
+    let network = pom_env::dev_network();
+    if let Some(finding) = pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len()) {
+        pom_doctor::add_finding(&mut findings, finding);
+    }
     let write = |out: &mut dyn Write, line: String| {
         writeln!(out, "{line}").map_err(|error| error.to_string())
     };
@@ -661,6 +676,7 @@ impl Session {
             Command::Lifecycle(command) => self.lifecycle_command(command, out),
             Command::Ports
             | Command::Proxy
+            | Command::ProxyConfig(_)
             | Command::Onboard(_)
             | Command::Ps { .. }
             | Command::Disk

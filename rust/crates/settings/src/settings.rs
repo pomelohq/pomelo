@@ -6,6 +6,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod proxy;
+pub use proxy::{
+    parse_bind, parse_domain, parse_scheme, Cidr, ProxySettings, DEFAULT_PROXY_BIND, LOCAL_DOMAIN,
+};
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -67,6 +72,8 @@ pub struct Settings {
     /// Also read by `pom_env::dev_ports` (service URLs, the CLI); keep the key names in step.
     pub dev_proxy_port: u16,
     pub webhook_port: u16,
+    /// Also read by `pom_env::dev_network`; keep the key names in step.
+    pub proxy: ProxySettings,
     /// Also read by `module_store::Options` (workspace creation, the CLI); keep the key names in step.
     pub modules_store_enabled: bool,
     /// Where a copy-on-write clone is impossible: "hardlink", "copy" or "install".
@@ -185,6 +192,7 @@ impl Default for Settings {
             webhook_enabled: true,
             dev_proxy_port: 8767,
             webhook_port: 8766,
+            proxy: ProxySettings::default(),
             modules_store_enabled: true,
             modules_fallback: "hardlink".into(),
             modules_size_limit_gb: 20,

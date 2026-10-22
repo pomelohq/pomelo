@@ -4815,6 +4815,7 @@ fn main() -> anyhow::Result<()> {
             webhook_running: live,
             proxy_port: 8767,
             webhook_port: 8766,
+            service_url: "http://<service>.<repo>.<ticket or branch>.localhost:8767".into(),
             ..settings_ui::DevServicesPage::default()
         },
         general: {
