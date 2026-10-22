@@ -27,7 +27,7 @@ pub fn reveal(path: impl AsRef<Path>) -> std::io::Result<()> {
     }
 }
 
-/// Opens `target` in the named app: an app bundle name on macOS, a command on PATH elsewhere.
+/// Opens `target` in the named app: an app bundle name on macOS, an app's launcher command elsewhere.
 pub fn open_with(app: &str, target: impl AsRef<OsStr>) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -35,8 +35,57 @@ pub fn open_with(app: &str, target: impl AsRef<OsStr>) -> std::io::Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        spawn(Command::new(app).arg(target))
+        let command = app_command(app);
+        let program = find_on_path(&command).unwrap_or_else(|| command.into());
+        spawn(Command::new(program).arg(target))
     }
+}
+
+/// Whether the named app is installed: its bundle under an Applications folder on macOS, its launcher
+/// command on PATH elsewhere.
+pub fn app_installed(app: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = format!("{app}.app");
+        Path::new("/Applications").join(&bundle).exists()
+            || std::env::var_os("HOME")
+                .is_some_and(|home| Path::new(&home).join("Applications").join(&bundle).exists())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        find_on_path(&app_command(app)).is_some()
+    }
+}
+
+/// The launcher command an editor's Linux package installs; most are the app's name in lower case.
+#[cfg(not(target_os = "macos"))]
+fn app_command(app: &str) -> String {
+    match app {
+        "Visual Studio Code" => "code".into(),
+        "Sublime Text" => "subl".into(),
+        "IntelliJ IDEA" => "idea".into(),
+        other if other.contains('/') => other.into(),
+        other => other.to_lowercase(),
+    }
+}
+
+/// A desktop session's PATH often leaves out the per-user and snap bin folders editors install into.
+#[cfg(not(target_os = "macos"))]
+fn find_on_path(command: &str) -> Option<std::path::PathBuf> {
+    if command.contains('/') {
+        return Some(command.into()).filter(|path: &std::path::PathBuf| path.is_file());
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let mut dirs: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    dirs.extend(home.map(|home| home.join(".local/bin")));
+    dirs.push("/snap/bin".into());
+    dirs.push("/usr/local/bin".into());
+    dirs.push("/usr/bin".into());
+    dirs.into_iter()
+        .map(|dir| dir.join(command))
+        .find(|path| path.is_file())
 }
 
 fn opener() -> Command {

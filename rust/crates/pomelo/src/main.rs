@@ -2051,18 +2051,10 @@ impl App {
         else {
             return;
         };
-        let installed = |name: &str| {
-            std::path::Path::new(&format!("/Applications/{name}.app")).exists()
-                || std::env::var_os("HOME").is_some_and(|home| {
-                    std::path::Path::new(&home)
-                        .join(format!("Applications/{name}.app"))
-                        .exists()
-                })
-        };
         let editor = if self.settings.external_editor.is_empty() {
             settings_ui::EXTERNAL_EDITORS
                 .into_iter()
-                .find(|name| installed(name))
+                .find(|name| desktop::app_installed(name))
                 .map(str::to_string)
         } else {
             Some(self.settings.external_editor.clone())
