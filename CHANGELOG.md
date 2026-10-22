@@ -4,6 +4,26 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-10-22
+
+### Added
+- Linux: Pomelo runs natively on Linux (Wayland and X11), with its own title bar, Ctrl keys, desktop notifications and the login shell; each release ships x86_64 and aarch64 tarballs with an `install.sh`. (#261, #262)
+- A standalone `pom` CLI tarball for Linux servers (`install.sh --cli-only`), with no display libraries needed; `pom doctor --json` and `pom --version`. (#261, #262)
+- `pom run --profile test` runs a command with the repo's `.env.test` values while keeping the workspace's own database, Redis, URLs and ports; a `test:` block in pom.yml makes `pom run test` use it, and `--explain-env` shows where each variable comes from. (#265)
+- `pom agent ls --json` says why a session holds: `pending_approval`, `idle_notification`, `stale`. (#263)
+
+### Changed
+- Shared Docker services are checked from the host (Postgres handshake, Redis PING, TCP), and their compose healthchecks are turned off, so pom never runs `docker exec` on a timer. (#264)
+- `pom start --wait` also waits for shared services to answer, and `pom status` shows one that runs but does not answer yet as starting. (#264)
+- `pom doctor` on Linux checks Docker Engine and the Compose plugin instead of asking for Docker Desktop or OrbStack. (#261)
+- `pom agent send --queue` waits at most 30 minutes by default (`--timeout` to change it). (#263)
+
+### Fixed
+- An agent idle for a long time can be sent to again: Claude's idle reminder no longer counts as a permission prompt. (#263)
+- Opening a file from outside the workspace, like pom.yml, in an external editor uses the right path. (#261)
+- Shared Redis slots are no longer used up when Docker cannot be reached. (#261)
+- The dev proxy serves a project that was started from the CLI without opening it in the app. (#261)
+
 ## [0.9.2] - 2026-10-22
 
 ### Fixed
