@@ -2879,36 +2879,58 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
                 reset: reset_if_changed(CTRL_RESTORE_ON_STARTUP, s),
             }),
             PageItem::Header("Updates"),
-            PageItem::Row(SettingRow {
-                title: "Check for Updates Automatically".into(),
-                description: "Every hour, quietly. Nothing installs until you restart.".into(),
-                control: Control::Toggle {
-                    id: CTRL_AUTO_UPDATE,
-                    on: s.auto_update,
-                },
-                reset: reset_if_changed(CTRL_AUTO_UPDATE, s),
-            }),
-            PageItem::Row(SettingRow {
-                title: format!("Pomelo {}", general.version).into(),
-                description: match (&general.update_note, general.updates_apply) {
-                    (Some(note), true) => note.clone().into(),
-                    (None, true) => "Looks for a newer release right away.".into(),
-                    (_, false) => {
-                        "Only the installed Pomelo updates itself; this build does not.".into()
-                    }
-                },
-                control: Control::Button {
-                    id: CTRL_CHECK_UPDATES,
-                    label: general
-                        .update_button
-                        .map_or("Check Now", |(label, _)| label),
-                    enabled: general.updates_apply
-                        && general.update_button.is_none_or(|(_, enabled)| enabled),
-                },
-                reset: None,
-            }),
-        ],
+        ]
+        .into_iter()
+        .chain(update_items(s, general))
+        .collect(),
     }
+}
+
+/// The app replaces itself only on macOS; elsewhere a new release is installed from its tarball.
+fn update_items(s: &Settings, general: &GeneralPage) -> Vec<PageItem> {
+    let version = format!("Pomelo {}", general.version);
+    if !cfg!(target_os = "macos") {
+        return vec![PageItem::Row(SettingRow {
+            title: version.into(),
+            description:
+                "New releases are on GitHub: install the newer tarball with its install.sh to update."
+                    .into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        })];
+    }
+    vec![
+        PageItem::Row(SettingRow {
+            title: "Check for Updates Automatically".into(),
+            description: "Every hour, quietly. Nothing installs until you restart.".into(),
+            control: Control::Toggle {
+                id: CTRL_AUTO_UPDATE,
+                on: s.auto_update,
+            },
+            reset: reset_if_changed(CTRL_AUTO_UPDATE, s),
+        }),
+        PageItem::Row(SettingRow {
+            title: version.into(),
+            description: match (&general.update_note, general.updates_apply) {
+                (Some(note), true) => note.clone().into(),
+                (None, true) => "Looks for a newer release right away.".into(),
+                (_, false) => {
+                    "Only the installed Pomelo updates itself; this build does not.".into()
+                }
+            },
+            control: Control::Button {
+                id: CTRL_CHECK_UPDATES,
+                label: general
+                    .update_button
+                    .map_or("Check Now", |(label, _)| label),
+                enabled: general.updates_apply
+                    && general.update_button.is_none_or(|(_, enabled)| enabled),
+            },
+            reset: None,
+        }),
+    ]
 }
 
 /// The editor's font: its rows sit under Appearance with the other fonts.
@@ -5043,13 +5065,16 @@ mod tests {
             ..PageState::default()
         };
         let general = texts_of(GENERAL, &state, &settings);
-        for expected in [
-            "Start at Login",
-            "Pomelo 0.9.0",
-            "Check for Updates Automatically",
-        ] {
+        for expected in ["Start at Login", "Pomelo 0.9.0"] {
             assert!(general.iter().any(|t| t.text == expected), "{expected}");
         }
+        assert_eq!(
+            general
+                .iter()
+                .any(|t| t.text == "Check for Updates Automatically"),
+            cfg!(target_os = "macos"),
+            "only the macOS app updates itself"
+        );
         let editor = texts_of(EDITOR, &state, &settings);
         for expected in ["None", "Split", "Auto"] {
             assert!(editor.iter().any(|t| t.text == expected), "{expected}");
