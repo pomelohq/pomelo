@@ -3857,6 +3857,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pom_rpc"
+version = "0.9.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "workspace_hack",
+]
+
+[[package]]
 name = "pom_secrets"
 version = "0.9.3"
 dependencies = [
