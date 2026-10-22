@@ -261,6 +261,14 @@ pub trait ProjectSource: Send + Sync {
     }
     /// Tries to reconnect now rather than at the next scheduled attempt.
     fn reconnect_now(&self) {}
+    /// Installs `release`'s pom on the machine and moves the session to its server.
+    fn update_pom(
+        &self,
+        _release: &crate::update::Release,
+        _progress: &dyn Fn(crate::update::UpdateStep),
+    ) -> Result<(), String> {
+        Err("updating pom needs pom server on the project's machine".to_string())
+    }
     fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
         None
     }

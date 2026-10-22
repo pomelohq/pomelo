@@ -4583,7 +4583,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn is_dev_build() -> bool {
+pub(crate) fn is_dev_build() -> bool {
     std::env::current_exe()
         .ok()
         .is_some_and(|exe| exe.to_string_lossy().contains("PomeloDev.app"))

@@ -22,6 +22,7 @@ pom_services = { path = "../pom_services" }
 pom_workspace = { path = "../pom_workspace" }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]

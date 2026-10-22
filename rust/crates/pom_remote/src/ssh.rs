@@ -109,6 +109,20 @@ pub fn ssh_args(
     tty: Tty,
     control: Option<&std::path::Path>,
 ) -> Vec<String> {
+    ssh_args_running(
+        host,
+        remote_command(host.pom_path.as_deref(), args),
+        tty,
+        control,
+    )
+}
+
+fn ssh_args_running(
+    host: &Host,
+    remote: String,
+    tty: Tty,
+    control: Option<&std::path::Path>,
+) -> Vec<String> {
     let mut ssh: Vec<String> = Vec::new();
     let mut option = |value: String| {
         ssh.push("-o".into());
@@ -132,7 +146,7 @@ pub fn ssh_args(
     }
     ssh.push("--".into());
     ssh.push(host.url.destination());
-    ssh.push(remote_command(host.pom_path.as_deref(), args));
+    ssh.push(remote);
     ssh
 }
 
@@ -169,6 +183,20 @@ impl Ssh {
     pub fn command(&self, host: &Host, args: &[String], tty: Tty) -> Command {
         let mut command = Command::new(&self.program);
         command.args(ssh_args(host, args, tty, self.control.as_deref()));
+        command.envs(self.envs.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
+    /// Runs `script` with `sh` on `host`, without a terminal; for work that is not a pom command.
+    pub fn script(&self, host: &Host, script: &str) -> Command {
+        let remote = format!("sh -c {}", quote(script));
+        let mut command = Command::new(&self.program);
+        command.args(ssh_args_running(
+            host,
+            remote,
+            Tty::Batch,
+            self.control.as_deref(),
+        ));
         command.envs(self.envs.iter().map(|(key, value)| (key, value)));
         command
     }

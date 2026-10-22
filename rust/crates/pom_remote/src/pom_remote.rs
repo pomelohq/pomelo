@@ -9,6 +9,7 @@ mod server_source;
 pub mod server_transport;
 mod source;
 mod ssh;
+pub mod update;
 mod watch;
 
 use std::collections::BTreeMap;

@@ -24,6 +24,7 @@ use crate::server_api::{
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
+use crate::update::{Release, UpdateStep};
 use crate::{
     version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, JobEvent, JobFeed, LogEvent,
     LogFeed, ProjectSource, RemoteSource, ServiceAction, SourceError, Ssh, StatusReport,
@@ -43,6 +44,8 @@ pub const BACKOFF: [Duration; 6] = [
     Duration::from_secs(8),
     Duration::from_secs(15),
 ];
+/// How long an update waits for the new server to answer after the old one stopped.
+const UPDATE_RECONNECT: Duration = Duration::from_secs(60);
 /// A caller that finds the session down waits this long for the reconnect under way.
 const LINK_WAIT: Duration = Duration::from_secs(5);
 /// How often the supervisor looks up from a wait to notice a retry, a wake from sleep or its end.
@@ -803,6 +806,45 @@ impl ProjectSource for ServerSource {
 
     fn reconnect_now(&self) {
         self.inner.kick();
+    }
+
+    /// Installs the new pom first, then stops the old server, so the reconnect that follows starts the new one.
+    fn update_pom(&self, release: &Release, progress: &dyn Fn(UpdateStep)) -> Result<(), String> {
+        let inner = &self.inner;
+        crate::update::install_pom(&inner.ssh, &inner.host, release, progress)?;
+        progress(UpdateStep::Restart);
+        let old = inner.live_connection();
+        if let Some(connection) = &old {
+            let stopped = connection
+                .start_request(method::SERVER_STOP, serde_json::Value::Null)
+                .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT));
+            match stopped {
+                Ok(_) | Err(Error::Closed(_)) => {}
+                Err(error) => return Err(format!("stopping the old pom server: {error}")),
+            }
+        }
+        inner.kick();
+        let deadline = Instant::now() + UPDATE_RECONNECT;
+        loop {
+            let running = inner
+                .live_connection()
+                .filter(|now| old.as_ref().is_none_or(|old| !old.ptr_eq(now)))
+                .and_then(|_| inner.info())
+                .and_then(|info| info.remote_version);
+            if running.as_deref() == Some(release.version.as_str()) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "pom {} is installed on {}, but its server answers with {}",
+                    release.version,
+                    inner.host.name,
+                    running.unwrap_or_else(|| "nothing yet".to_string())
+                ));
+            }
+            inner.kick();
+            std::thread::sleep(SUPERVISOR_TICK);
+        }
     }
 
     fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {

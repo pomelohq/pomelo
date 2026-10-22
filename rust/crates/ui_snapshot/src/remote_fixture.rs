@@ -28,6 +28,8 @@ struct Board {
     /// The session's state, once the scene drops it.
     link: SharedLink,
     restarts: u64,
+    /// The host's pom, when it is on another minor version than the app.
+    older_pom: Option<String>,
 }
 
 const DEV_AGENT: &str = "ws-myproject-feat-login-claude-raw";
@@ -273,6 +275,8 @@ impl ProjectSource for Board {
             terminals: self.shell.is_some(),
             pushes: self.pushes,
             agents: self.pushes,
+            version_mismatch: self.older_pom.is_some(),
+            remote_version: self.older_pom.clone(),
             ..pom_remote::TransportInfo::default()
         })
     }
@@ -458,6 +462,8 @@ pub fn render(
         pushes: agents,
         link: link.clone(),
         restarts: u64::from(mode == "restarted"),
+        older_pom: matches!(mode, "version" | "version-commands" | "version-updating")
+            .then(|| "0.1.0".to_string()),
         ..Board::default()
     });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
@@ -535,7 +541,14 @@ pub fn render(
             panel.show_logs("api/server");
         }
         view.set_side_panels(vec![Box::new(panel)]);
-        let (notice, _) = remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject");
+        let update = remote_ui::PomUpdate {
+            can_install: mode != "version-commands",
+            running: (mode == "version-updating")
+                .then_some(pom_remote::update::UpdateStep::Download),
+            error: None,
+        };
+        let (notice, _) =
+            remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject", &update);
         view.set_center_notice(Some(notice));
         if mode == "restarted" {
             view.show_toast(remote_ui::restart_notice("dev"), None);
