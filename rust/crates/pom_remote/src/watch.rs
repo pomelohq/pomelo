@@ -108,6 +108,7 @@ pub struct Watch {
     shared: Arc<Shared>,
     _stopper: Arc<Stopper>,
     location: String,
+    source: Arc<dyn ProjectSource>,
 }
 
 impl Watch {
@@ -130,10 +131,10 @@ impl Watch {
             }),
         });
         let location = source.location();
-        let thread_shared = shared.clone();
+        let (thread_shared, thread_source) = (shared.clone(), source.clone());
         let spawned = std::thread::Builder::new()
             .name("pom-remote-watch".into())
-            .spawn(move || run(&thread_shared, source.as_ref(), waker.as_ref()));
+            .spawn(move || run(&thread_shared, thread_source.as_ref(), waker.as_ref()));
         if let Err(error) = spawned {
             shared.snapshot().connection = Connection::Disconnected {
                 reason: format!("could not start watching: {error}"),
@@ -143,11 +144,20 @@ impl Watch {
             _stopper: Arc::new(Stopper(shared.clone())),
             shared,
             location,
+            source,
         }
     }
 
     pub fn location(&self) -> &str {
         &self.location
+    }
+
+    /// Terminals of the shown workspace, when the project's machine opens them over a connection.
+    pub fn terminals(&self) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
+        let branch = self.shared.snapshot().branch.clone();
+        (!branch.is_empty())
+            .then(|| self.source.pty(&branch))
+            .flatten()
     }
 
     fn change(&self, edit: impl FnOnce(&mut Wanted)) {

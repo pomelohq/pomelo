@@ -373,6 +373,7 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
         "remote-disconnected" => (0, &[("REMOTEVIEW", "disconnected")]),
         "remote-logs" => (0, &[("REMOTEVIEW", "logs")]),
+        "remote-terminal" => (0, &[("REMOTEVIEW", "terminal")]),
         "remote-connect" => (0, &[("REMOTEVIEW", "connect")]),
         "remote-connect-projects" => (0, &[("REMOTEVIEW", "connect-projects")]),
         _ => return None,

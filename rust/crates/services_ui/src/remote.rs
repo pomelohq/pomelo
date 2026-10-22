@@ -51,10 +51,15 @@ pub struct RemoteServicesPanel {
     content_h: f32,
     viewport_h: f32,
     detail: Option<Detail>,
-    /// `repo/service` of each service row as last drawn, by row index.
-    targets: Vec<String>,
+    /// `repo/service` of each service row as last drawn, by row index, and whether it runs.
+    targets: Vec<(String, bool)>,
     roles: Vec<String>,
+    requests: Vec<PanelRequest>,
+    next_item: u64,
 }
+
+/// Item ids of the terminals this panel opens, clear of the terminal panel's own.
+const ITEM_BASE: u64 = 1 << 40;
 
 impl RemoteServicesPanel {
     pub fn new(watch: Watch) -> RemoteServicesPanel {
@@ -68,7 +73,68 @@ impl RemoteServicesPanel {
             detail: None,
             targets: Vec::new(),
             roles: Vec::new(),
+            requests: Vec::new(),
+            next_item: ITEM_BASE,
         }
+    }
+
+    /// The live terminal of a running service, or of an agent, when the host serves terminals.
+    fn open_terminal(&mut self, target: terminal::RemoteTarget, title: String) -> bool {
+        let Some(provider) = self.watch.terminals() else {
+            return false;
+        };
+        let snapshot = self.watch.snapshot();
+        let root = snapshot
+            .workspaces
+            .as_ref()
+            .and_then(|list| {
+                list.workspaces
+                    .iter()
+                    .find(|workspace| workspace.branch == snapshot.branch)
+            })
+            .map(|workspace| workspace.path.clone())
+            .unwrap_or_default();
+        let agent = matches!(target, terminal::RemoteTarget::Agent(_));
+        let id = match &target {
+            terminal::RemoteTarget::Agent(role) => format!("agent:{}/{role}", snapshot.branch),
+            terminal::RemoteTarget::Service(service) => {
+                format!("service:{}/{service}", snapshot.branch)
+            }
+            terminal::RemoteTarget::Shell { .. } | terminal::RemoteTarget::Holder(_) => {
+                return false
+            }
+        };
+        let number = self.next_item;
+        self.next_item += 1;
+        let item_id = id.clone();
+        let open = Box::new(move || {
+            let remote = terminal::RemoteOptions {
+                provider,
+                target,
+                mode: terminal::RemoteMode::ReadWrite,
+            };
+            match terminal_ui::TerminalItem::remote_console(
+                number,
+                root,
+                item_id,
+                title,
+                remote,
+                agent,
+                std::sync::Arc::new(ui::wake),
+            ) {
+                Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
+                Err(error) => {
+                    eprintln!("remote terminal: {error}");
+                    None
+                }
+            }
+        });
+        self.requests.push(if agent {
+            PanelRequest::RevealAgent { id, open }
+        } else {
+            PanelRequest::RevealTerminal { id, open }
+        });
+        true
     }
 
     /// Shows `service`'s recent output in place of the list.
@@ -197,7 +263,7 @@ impl RemoteServicesPanel {
             }
             let name = format!("{}/{}", service.repo, service.service);
             let index = self.targets.len();
-            self.targets.push(name.clone());
+            self.targets.push((name.clone(), service.up));
             let state = self.service_state(snapshot, &name, service.up, service.crashed);
             let hovered = Control::ALL
                 .iter()
@@ -599,17 +665,26 @@ impl SidePanelView for RemoteServicesPanel {
         }
         if let Some(index) = offset.checked_sub(AGENT_BASE) {
             if let Some(role) = self.roles.get(index as usize).cloned() {
-                self.open_detail(Some(Detail::Turn(role)));
+                let target = terminal::RemoteTarget::Agent(role.clone());
+                if !self.open_terminal(target, role.clone()) {
+                    self.open_detail(Some(Detail::Turn(role)));
+                }
             }
             return;
         }
         let Some((index, control)) = self.decode_row(id) else {
             return;
         };
-        let Some(target) = self.targets.get(index).cloned() else {
+        let Some((target, running)) = self.targets.get(index).cloned() else {
             return;
         };
         match control {
+            Control::Logs if running => {
+                let service = terminal::RemoteTarget::Service(target.clone());
+                if !self.open_terminal(service, target.clone()) {
+                    self.open_detail(Some(Detail::Logs(target)));
+                }
+            }
             Control::Row | Control::Logs => self.open_detail(Some(Detail::Logs(target))),
             Control::Start => self.watch.act(ServiceAction::Start, &target),
             Control::Stop => self.watch.act(ServiceAction::Stop, &target),
@@ -647,7 +722,7 @@ impl SidePanelView for RemoteServicesPanel {
     fn menu_action(&mut self, _item: u64) {}
 
     fn take_requests(&mut self) -> Vec<PanelRequest> {
-        Vec::new()
+        std::mem::take(&mut self.requests)
     }
 }
 

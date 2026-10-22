@@ -6,6 +6,7 @@ pub mod hyperlinks;
 pub mod input;
 pub mod mouse;
 pub mod pty_info;
+mod remote;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -31,6 +32,8 @@ pub use holder::HolderOptions;
 pub use hyperlinks::{HyperlinkMatch, PathWithPosition};
 pub use input::{Keystroke, Modifiers, TerminalAction};
 pub use mouse::{GridPoint, MouseButton, Side};
+pub use pom_rpc::pty::{Mode as RemoteMode, PtyProvider, Target as RemoteTarget};
+pub use remote::RemoteOptions;
 
 use mouse::grid_point_and_side;
 
@@ -281,6 +284,8 @@ pub struct TerminalOptions {
     pub scroll_history: usize,
     pub cursor_shape: CursorShape,
     pub holder: Option<HolderOptions>,
+    /// A holder on another machine, opened through its server; wins over `holder`.
+    pub remote: Option<RemoteOptions>,
 }
 
 impl Default for TerminalOptions {
@@ -292,6 +297,7 @@ impl Default for TerminalOptions {
             scroll_history: DEFAULT_SCROLL_HISTORY_LINES,
             cursor_shape: CursorShape::Block,
             holder: None,
+            remote: None,
         }
     }
 }
@@ -299,6 +305,7 @@ impl Default for TerminalOptions {
 enum Backend {
     Local(Notifier),
     Holder(holder::HolderBackend),
+    Remote(remote::RemoteBackend),
 }
 
 impl Backend {
@@ -306,6 +313,7 @@ impl Backend {
         match self {
             Backend::Local(notifier) => notifier.notify(bytes),
             Backend::Holder(holder) => holder.write(&bytes.into()),
+            Backend::Remote(remote) => remote.write(&bytes.into()),
         }
     }
 
@@ -317,6 +325,7 @@ impl Backend {
                 }
             }
             Backend::Holder(holder) => holder.resize(size),
+            Backend::Remote(remote) => remote.resize(size),
         }
     }
 }
@@ -384,6 +393,22 @@ impl Terminal {
         };
         let bounds = TerminalBounds::default();
         let term = Arc::new(FairMutex::new(Term::new(config, &bounds, listener.clone())));
+        if let Some(remote_options) = options.remote {
+            let backend = remote::RemoteBackend::attach(
+                remote_options,
+                bounds.window_size(),
+                term.clone(),
+                listener,
+            )?;
+            return Ok(Self::with_backend(
+                term,
+                Backend::Remote(backend),
+                events,
+                coalesced,
+                bounds,
+                pty_info::PtyProcessInfo::for_shell(0),
+            ));
+        }
         if let Some(holder_options) = options.holder {
             let env: Vec<(String, String)> = terminal_env(options.env).into_iter().collect();
             let argv = match options.shell {
@@ -455,7 +480,7 @@ impl Terminal {
         bounds: TerminalBounds,
         process: pty_info::PtyProcessInfo,
     ) -> Self {
-        let redraw_on_resize = matches!(pty, Backend::Holder(_));
+        let redraw_on_resize = matches!(pty, Backend::Holder(_) | Backend::Remote(_));
         Self {
             term,
             pty,
@@ -487,25 +512,47 @@ impl Terminal {
     pub fn holder(&self) -> Option<&HolderOptions> {
         match &self.pty {
             Backend::Holder(holder) => Some(&holder.options),
+            Backend::Local(_) | Backend::Remote(_) => None,
+        }
+    }
+
+    /// The holder the shell runs in, here or on another machine.
+    pub fn holder_name(&self) -> Option<String> {
+        match &self.pty {
+            Backend::Holder(holder) => Some(holder.options.name.clone()),
+            Backend::Remote(remote) => Some(remote.holder().to_string()),
             Backend::Local(_) => None,
         }
     }
 
+    pub fn remote(&self) -> Option<&RemoteOptions> {
+        match &self.pty {
+            Backend::Remote(remote) => Some(&remote.options),
+            Backend::Local(_) | Backend::Holder(_) => None,
+        }
+    }
+
     pub fn terminate(&mut self) {
-        if let Backend::Holder(holder) = &self.pty {
-            let (dir, name) = (holder.options.dir.clone(), holder.options.name.clone());
-            holder.detach();
-            std::thread::spawn(move || {
-                if let Err(error) = dir.kill_holder(&name) {
-                    eprintln!("terminal holder kill: {error}");
-                }
-            });
+        match &self.pty {
+            Backend::Holder(holder) => {
+                let (dir, name) = (holder.options.dir.clone(), holder.options.name.clone());
+                holder.detach();
+                std::thread::spawn(move || {
+                    if let Err(error) = dir.kill_holder(&name) {
+                        eprintln!("terminal holder kill: {error}");
+                    }
+                });
+            }
+            Backend::Remote(remote) => remote.close(),
+            Backend::Local(_) => {}
         }
     }
 
     pub fn make_primary(&mut self) {
-        if let Backend::Holder(holder) = &mut self.pty {
-            holder.make_primary();
+        match &mut self.pty {
+            Backend::Holder(holder) => holder.make_primary(),
+            Backend::Remote(remote) => remote.make_primary(),
+            Backend::Local(_) => {}
         }
     }
 
@@ -1143,6 +1190,7 @@ impl Drop for Terminal {
                 }
             }
             Backend::Holder(holder) => holder.detach(),
+            Backend::Remote(remote) => remote.detach(),
         }
     }
 }
@@ -1221,6 +1269,116 @@ mod tests {
             shell: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])),
             ..TerminalOptions::default()
         }
+    }
+
+    /// A server that prints a line, echoes what is typed, then starts over (RESET) and exits crashed.
+    fn scripted_server(
+        request: pom_rpc::Request,
+        context: &pom_rpc::RequestContext,
+    ) -> Result<serde_json::Value, pom_rpc::RemoteError> {
+        let failed = |error: pom_rpc::Error| pom_rpc::RemoteError::new("failed", error.to_string());
+        let params: pom_rpc::pty::AttachParams = serde_json::from_value(request.params)
+            .map_err(|error| pom_rpc::RemoteError::new("invalid_params", error.to_string()))?;
+        let connection = context.connection();
+        let mut sender = connection
+            .attach_stream(params.channel, 0)
+            .map_err(failed)?;
+        let events = params
+            .events
+            .map(|channel| connection.publisher(channel))
+            .transpose()
+            .map_err(failed)?;
+        std::thread::spawn(move || {
+            let run = || -> Result<(), pom_rpc::Error> {
+                sender.write(b"first-line\r\n")?;
+                let typed = sender.recv_input_timeout(Duration::from_secs(10))?;
+                sender.write(&typed.bytes)?;
+                std::thread::sleep(Duration::from_millis(300));
+                sender.reset(1_000)?;
+                sender.write(b"after-reset")?;
+                std::thread::sleep(Duration::from_millis(300));
+                if let Some(events) = &events {
+                    let exit = pom_rpc::pty::Exit {
+                        holder: "term-demo-main-1".into(),
+                        crashed: true,
+                    };
+                    events.publish(pom_rpc::pty::EXIT_TOPIC, exit)?;
+                }
+                sender.finish("exit");
+                Ok(())
+            };
+            if let Err(error) = run() {
+                eprintln!("scripted server: {error}");
+            }
+        });
+        serde_json::to_value(pom_rpc::pty::Attached {
+            holder: "term-demo-main-1".into(),
+            ..pom_rpc::pty::Attached::default()
+        })
+        .map_err(|error| pom_rpc::RemoteError::new("internal", error.to_string()))
+    }
+
+    struct Scripted {
+        client: pom_rpc::Connection,
+        _server: pom_rpc::Connection,
+    }
+
+    impl PtyProvider for Scripted {
+        fn attach(
+            &self,
+            request: &pom_rpc::pty::Request,
+        ) -> Result<pom_rpc::pty::Terminal, String> {
+            let params = pom_rpc::pty::AttachParams {
+                holder: "term-demo-main-1".into(),
+                cols: request.cols,
+                rows: request.rows,
+                ..pom_rpc::pty::AttachParams::default()
+            };
+            pom_rpc::pty::Terminal::attach(&self.client, params, Duration::from_secs(5))
+                .map_err(|error| error.to_string())
+        }
+
+        fn close(&self, _holder: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_remote_terminal_types_resets_and_reports_the_exit() -> anyhow::Result<()> {
+        let (client, server) =
+            pom_rpc::mock::connected(pom_rpc::Config::default(), scripted_server)?;
+        let options = TerminalOptions {
+            remote: Some(RemoteOptions {
+                provider: Arc::new(Scripted {
+                    client,
+                    _server: server,
+                }),
+                target: RemoteTarget::Shell { cwd: None },
+                mode: RemoteMode::ReadWrite,
+            }),
+            ..TerminalOptions::default()
+        };
+        let host = host();
+        let mut terminal = Terminal::spawn(options, Arc::new(|| {}))?;
+        assert_eq!(terminal.holder_name().as_deref(), Some("term-demo-main-1"));
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text().contains("first-line")
+        });
+        terminal.input(&b"typed-remotely"[..]);
+        wait_for(&mut terminal, &host, |t, _| {
+            t.screen_text().contains("typed-remotely")
+        });
+        wait_for(&mut terminal, &host, |t, _| {
+            let screen = t.screen_text();
+            screen.contains("after-reset") && !screen.contains("first-line")
+        });
+        wait_for(&mut terminal, &host, |t, outcome| {
+            outcome.close || t.child_exit().is_some()
+        });
+        assert!(terminal
+            .child_exit()
+            .is_some_and(|status| !status.success()));
+        Ok(())
     }
 
     #[test]

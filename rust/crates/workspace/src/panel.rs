@@ -286,6 +286,16 @@ pub enum PanelRequest {
         id: String,
         open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
     },
+    /// Like `Reveal`, in the terminal panel.
+    RevealTerminal {
+        id: String,
+        open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
+    },
+    /// Like `Reveal`, in the agent dock.
+    RevealAgent {
+        id: String,
+        open: Box<dyn FnOnce() -> Option<Box<dyn crate::Item>>>,
+    },
     OpenUrl(String),
     Copy(String),
     /// A side agent that may edit, on `prompt` about `cwd`.

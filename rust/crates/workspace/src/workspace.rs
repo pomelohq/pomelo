@@ -2442,6 +2442,14 @@ impl Layout {
             .is_some_and(|project| project.host.is_some())
     }
 
+    pub fn offers_terminal(&self) -> bool {
+        !self.terminal_hidden && (!self.is_remote() || self.terminal_view.is_some())
+    }
+
+    pub fn offers_agent(&self) -> bool {
+        !self.agent_hidden && (!self.is_remote() || self.agent_view.is_some())
+    }
+
     pub fn func_offered(&self, i: usize) -> bool {
         if self.func_hidden.get(i).copied().unwrap_or(false) || self.is_remote() {
             return false;
@@ -2466,11 +2474,11 @@ impl Layout {
                 v.push(Shown::Func(*kind));
             }
         }
-        if !self.terminal_hidden && !self.is_remote() && self.terminal_side == side {
+        if self.offers_terminal() && self.terminal_side == side {
             v.push(Shown::Terminal);
         }
         // Listed last so functions and the terminal take priority when the agent is not the active panel.
-        if !self.agent_hidden && !self.is_remote() && side == self.agent_side {
+        if self.offers_agent() && side == self.agent_side {
             v.push(Shown::Agent);
         }
         v
@@ -3529,7 +3537,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             row = row.child(toggle(ui::IconKind::Ticket, STATUS_TICKET, false));
             has = true;
         }
-        if !layout.terminal_hidden && !layout.is_remote() && layout.terminal_side == side {
+        if layout.offers_terminal() && layout.terminal_side == side {
             row = row.child(toggle(
                 ui::IconKind::Terminal,
                 BOTTOM_TOGGLE,
@@ -3537,7 +3545,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             ));
             has = true;
         }
-        if !layout.agent_hidden && !layout.is_remote() && side == layout.agent_side {
+        if layout.offers_agent() && side == layout.agent_side {
             let active = layout.agent_shown();
             row = row.child(toggle(ui::IconKind::Sparkle, AGENT_TOGGLE, active));
             has = true;

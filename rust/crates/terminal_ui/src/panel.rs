@@ -26,10 +26,24 @@ fn terminal_of(pane: &mut Pane) -> Option<&mut TerminalItem> {
         .downcast_mut::<TerminalItem>()
 }
 
-/// A new shell in `cwd` (the project root when `None`), noting the failure for the empty panel to show.
-#[derive(Clone, Debug)]
+/// Where a panel's shells run: holders on this machine, or on the project's machine through its server.
+#[derive(Clone)]
+pub enum HolderPlace {
+    Local(pom_ptyhost::SocketDir),
+    Remote(std::sync::Arc<dyn terminal::PtyProvider>),
+}
+
+/// How a terminal is backed: a holder here, or one on another machine.
+#[derive(Clone)]
+pub enum Backing {
+    Holder(terminal::HolderOptions),
+    Remote(terminal::RemoteOptions),
+}
+
+#[derive(Clone)]
 pub struct HolderScope {
-    pub dir: pom_ptyhost::SocketDir,
+    pub place: HolderPlace,
+    /// Starts a local holder; unused for a remote one.
     pub binary: PathBuf,
     pub prefix: String,
     pub group: Option<pom_ptyhost::HolderGroup>,
@@ -43,13 +57,35 @@ impl HolderScope {
         format!("{}-{millis}-{id}", self.prefix)
     }
 
-    fn options(&self, name: String) -> terminal::HolderOptions {
-        terminal::HolderOptions {
-            dir: self.dir.clone(),
-            name,
-            binary: self.binary.clone(),
-            attach_only: false,
-            group: self.group.clone(),
+    /// A new shell, or the running holder `saved` when there is one to go back to.
+    fn backing(&self, id: u64, cwd: Option<&Path>, saved: Option<String>) -> Backing {
+        match &self.place {
+            HolderPlace::Local(dir) => Backing::Holder(terminal::HolderOptions {
+                dir: dir.clone(),
+                name: saved
+                    .filter(|name| dir.holder_alive(name))
+                    .unwrap_or_else(|| self.new_name(id)),
+                binary: self.binary.clone(),
+                attach_only: false,
+                group: self.group.clone(),
+            }),
+            HolderPlace::Remote(provider) => Backing::Remote(terminal::RemoteOptions {
+                provider: provider.clone(),
+                target: match saved {
+                    Some(holder) => terminal::RemoteTarget::Holder(holder),
+                    None => terminal::RemoteTarget::Shell {
+                        cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
+                    },
+                },
+                mode: terminal::RemoteMode::ReadWrite,
+            }),
+        }
+    }
+
+    fn local_dir(&self) -> Option<&pom_ptyhost::SocketDir> {
+        match &self.place {
+            HolderPlace::Local(dir) => Some(dir),
+            HolderPlace::Remote(_) => None,
         }
     }
 
@@ -84,11 +120,11 @@ fn spawn_terminal(
     next_item_id: &mut u64,
     spawn_error: &mut Option<String>,
     cwd: Option<PathBuf>,
-    holder: Option<terminal::HolderOptions>,
+    backing: Option<Backing>,
 ) -> Option<TerminalItem> {
     let id = *next_item_id;
     *next_item_id += 1;
-    match TerminalItem::spawn(id, root.to_path_buf(), cwd, waker.clone(), holder) {
+    match TerminalItem::spawn(id, root.to_path_buf(), cwd, waker.clone(), backing) {
         Ok(item) => {
             *spawn_error = None;
             Some(item)
@@ -126,23 +162,34 @@ impl TerminalPanel {
 
     /// The agent dock's panel: one pane of agent sessions, which are opened for it rather than from it.
     pub fn agent_dock(root: PathBuf, waker: Waker) -> Self {
+        Self::agent_panel(root, waker, true)
+    }
+
+    /// The agent dock of a project on another machine: it shows the agents running there, and starts none.
+    pub fn remote_agent_dock(root: PathBuf, waker: Waker) -> Self {
+        Self::agent_panel(root, waker, false)
+    }
+
+    fn agent_panel(root: PathBuf, waker: Waker, starts_agents: bool) -> Self {
+        let mut buttons = Vec::new();
+        if starts_agents {
+            buttons.push(PaneButton {
+                icon: IconKind::Plus,
+                action: PaneButtonAction::NewItem,
+            });
+            buttons.push(PaneButton {
+                icon: IconKind::Clock,
+                action: PaneButtonAction::History,
+            });
+        }
+        buttons.push(PaneButton {
+            icon: IconKind::Maximize,
+            action: PaneButtonAction::ToggleZoom,
+        });
         let mut panes = PaneGroupView::new(PaneGroupConfig {
             id_base: AGENT_VIEW_BASE,
             show_nav: false,
-            buttons: vec![
-                PaneButton {
-                    icon: IconKind::Plus,
-                    action: PaneButtonAction::NewItem,
-                },
-                PaneButton {
-                    icon: IconKind::Clock,
-                    action: PaneButtonAction::History,
-                },
-                PaneButton {
-                    icon: IconKind::Maximize,
-                    action: PaneButtonAction::ToggleZoom,
-                },
-            ],
+            buttons,
             max_panes: 1,
             split_filter: None,
             zoom_whole_group: true,
@@ -207,33 +254,36 @@ impl TerminalPanel {
     }
 
     fn spawn_item(&mut self, cwd: Option<PathBuf>) -> Option<TerminalItem> {
-        let holder = self
+        let backing = self
             .holders
             .as_ref()
-            .map(|scope| scope.options(scope.new_name(self.next_item_id)));
+            .map(|scope| scope.backing(self.next_item_id, cwd.as_deref(), None));
         spawn_terminal(
             &self.root,
             &self.waker,
             &mut self.next_item_id,
             &mut self.spawn_error,
             cwd,
-            holder,
+            backing,
         )
     }
 
+    /// Shells of this panel no saved tab names any more; a remote host's are closed with their tabs instead.
     fn reap_unclaimed(&self, kept: &[String]) {
         let Some(scope) = self.holders.clone() else {
             return;
         };
-        let unclaimed: Vec<String> = scope
-            .dir
+        let Some(dir) = scope.local_dir().cloned() else {
+            return;
+        };
+        let unclaimed: Vec<String> = dir
             .holders()
             .into_iter()
             .map(|(name, _)| name)
             .filter(|name| scope.owns(name) && !kept.contains(name))
             .collect();
         if !unclaimed.is_empty() {
-            std::thread::spawn(move || scope.dir.kill_holders_now(&unclaimed));
+            std::thread::spawn(move || dir.kill_holders_now(&unclaimed));
         }
     }
 
@@ -322,20 +372,30 @@ impl TerminalPanelView for TerminalPanel {
         let mut kept: Vec<String> = Vec::new();
         let mut make_item = |item: &SerializedItem| -> Option<Box<dyn Item>> {
             let cwd = crate::item::saved_cwd(item)?;
-            let cwd = cwd.is_dir().then_some(cwd);
-            let holder = holders.as_ref().map(|scope| {
-                let name = crate::item::saved_holder(item)
-                    .filter(|name| scope.owns(name) && scope.dir.holder_alive(name))
-                    .unwrap_or_else(|| scope.new_name(*next_item_id));
-                kept.push(name.clone());
-                scope.options(name)
+            let remote = holders
+                .as_ref()
+                .is_some_and(|scope| matches!(scope.place, HolderPlace::Remote(_)));
+            let cwd = (remote || cwd.is_dir()).then_some(cwd);
+            let backing = holders.as_ref().map(|scope| {
+                let saved = crate::item::saved_holder(item).filter(|name| scope.owns(name));
+                let backing = scope.backing(*next_item_id, cwd.as_deref(), saved);
+                if let Backing::Holder(options) = &backing {
+                    kept.push(options.name.clone());
+                }
+                backing
             });
-            spawn_terminal(root, waker, next_item_id, spawn_error, cwd, holder).map(
-                |mut terminal| {
-                    terminal.set_agent(agent);
-                    Box::new(terminal) as Box<dyn Item>
-                },
-            )
+            let mut spawned =
+                spawn_terminal(root, waker, next_item_id, spawn_error, cwd.clone(), backing);
+            if spawned.is_none() && remote {
+                let fresh = holders
+                    .as_ref()
+                    .map(|scope| scope.backing(*next_item_id, cwd.as_deref(), None));
+                spawned = spawn_terminal(root, waker, next_item_id, spawn_error, cwd, fresh);
+            }
+            spawned.map(|mut terminal| {
+                terminal.set_agent(agent);
+                Box::new(terminal) as Box<dyn Item>
+            })
         };
         let restored = self.panes.restore(saved, &mut make_item);
         self.reap_unclaimed(&kept);
@@ -721,7 +781,7 @@ mod tests {
         let dir = pom_ptyhost::SocketDir::new(temp.path());
         let mut holder = start_holder(&dir, "term-close-main-1");
         let scope = HolderScope {
-            dir: dir.clone(),
+            place: HolderPlace::Local(dir.clone()),
             binary: PathBuf::from("/nonexistent"),
             prefix: "term-close-main".into(),
             group: None,
@@ -758,7 +818,7 @@ mod tests {
         let mut stray = start_holder(&dir, "term-demo-main-2");
         let mut other = start_holder(&dir, "term-other-main-1");
         let scope = HolderScope {
-            dir: dir.clone(),
+            place: HolderPlace::Local(dir.clone()),
             binary: PathBuf::from("/nonexistent"),
             prefix: "term-demo-main".into(),
             group: None,

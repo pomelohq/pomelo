@@ -16,6 +16,53 @@ use pom_services::{ServiceHealth, SharedHealth};
 #[derive(Default)]
 struct Board {
     down: AtomicBool,
+    shell: Option<Arc<Shell>>,
+}
+
+const SHELL_OUTPUT: &[u8] = b"\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ ls\r\napi  web  pom.yml\r\n\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ pom status\r\napi/server   running  :3104\r\napi/jobs     running\r\nweb/app      running  :5276\r\nweb/storybook  crashed\r\n\x1b[32mdev@vm\x1b[0m:\x1b[34m~/pom/myproject/workspace--feat-login\x1b[0m$ ";
+
+fn serve_shell(
+    request: pom_rpc::Request,
+    context: &pom_rpc::RequestContext,
+) -> Result<serde_json::Value, pom_rpc::RemoteError> {
+    let failed = |error: pom_rpc::Error| pom_rpc::RemoteError::new("failed", error.to_string());
+    let params: pom_rpc::pty::AttachParams = serde_json::from_value(request.params)
+        .map_err(|error| pom_rpc::RemoteError::new("invalid_params", error.to_string()))?;
+    let mut sender = context
+        .connection()
+        .attach_stream(params.channel, 0)
+        .map_err(failed)?;
+    sender.write(SHELL_OUTPUT).map_err(failed)?;
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(30));
+        drop(sender);
+    });
+    serde_json::to_value(pom_rpc::pty::Attached {
+        holder: "term-myproject-feat-login-1-1".into(),
+        ..pom_rpc::pty::Attached::default()
+    })
+    .map_err(|error| pom_rpc::RemoteError::new("internal", error.to_string()))
+}
+
+struct Shell {
+    client: pom_rpc::Connection,
+    _server: pom_rpc::Connection,
+}
+
+impl pom_rpc::pty::PtyProvider for Shell {
+    fn attach(&self, request: &pom_rpc::pty::Request) -> Result<pom_rpc::pty::Terminal, String> {
+        let params = pom_rpc::pty::AttachParams {
+            cols: request.cols,
+            rows: request.rows,
+            ..pom_rpc::pty::AttachParams::default()
+        };
+        pom_rpc::pty::Terminal::attach(&self.client, params, Duration::from_secs(5))
+            .map_err(|error| error.to_string())
+    }
+
+    fn close(&self, _holder: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 impl Board {
@@ -139,6 +186,20 @@ impl ProjectSource for Board {
         self.check()?;
         Ok(format!("{} {target}", action.verb()))
     }
+
+    fn transport(&self) -> Option<pom_remote::TransportInfo> {
+        Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Server,
+            terminals: self.shell.is_some(),
+            ..pom_remote::TransportInfo::default()
+        })
+    }
+
+    fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
+        self.shell
+            .clone()
+            .map(|shell| shell as Arc<dyn pom_rpc::pty::PtyProvider>)
+    }
 }
 
 fn wait_until(watch: &pom_remote::Watch, done: impl Fn(&pom_remote::Snapshot) -> bool) {
@@ -213,7 +274,6 @@ fn connect_modal(on_host: bool) -> remote_ui::ConnectHostModal {
     modal
 }
 
-/// REMOTEVIEW=connected|logs|disconnected|connect|connect-projects
 pub fn render(
     mode: &str,
     out: &str,
@@ -221,7 +281,19 @@ pub fn render(
     scale: f32,
     renderer: &mut ui::UiRenderer,
 ) -> anyhow::Result<()> {
-    let board = Arc::new(Board::default());
+    let shell = (mode == "terminal")
+        .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
+        .transpose()?
+        .map(|(client, server)| {
+            Arc::new(Shell {
+                client,
+                _server: server,
+            })
+        });
+    let board = Arc::new(Board {
+        shell,
+        ..Board::default()
+    });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
     watch.set_visible(true);
     wait_until(&watch, |snapshot| {
@@ -281,12 +353,30 @@ pub fn render(
         view.set_side_panels(vec![Box::new(panel)]);
         let (notice, _) = remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject");
         view.set_center_notice(Some(notice));
+        if let Some(provider) = watch.terminals() {
+            let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
+            let panel = terminal_ui::TerminalPanel::with_holders(
+                root.clone(),
+                Arc::new(|| {}),
+                terminal_ui::HolderScope {
+                    place: terminal_ui::HolderPlace::Remote(provider),
+                    binary: std::path::PathBuf::new(),
+                    prefix: "term-myproject-feat-login".into(),
+                    group: None,
+                },
+            );
+            view.set_terminal_views(Some(Box::new(panel)), None);
+            view.open_terminal_in(root);
+        }
     });
     if mode == "logs" {
         wait_until(&watch, |snapshot| snapshot.logs.is_some());
     }
-    for _ in 0..4 {
+    for _ in 0..if mode == "terminal" { 40 } else { 4 } {
         app.draw(handle).expect("frame");
+        if mode == "terminal" {
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
     let frame = app.draw(handle).expect("frame");
     let mut layers: Vec<ui::Layer> = vec![(
