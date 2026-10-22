@@ -113,7 +113,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "agent_list",
-        "The coding-agent sessions of THIS workspace: role, state (idle, thinking, tool_use, awaiting_input, died), turn, and whether you may drive it. Only this workspace's sessions exist for you.",
+        "The coding-agent sessions of THIS workspace: role, state (idle, thinking, tool_use, awaiting_input, died), reason (pending_approval, idle_notification, stop, interrupted, stale or null), turn, and whether you may drive it. Only this workspace's sessions exist for you.",
         json!({"type": "object", "properties": {}}),
         true,
         Box::new(move |_| {
@@ -159,7 +159,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let schema = json!({"type": "object", "required": ["role", "text"], "properties": {"role": role_schema, "text": {"type": "string"}}});
     tools.push(tool(
         "agent_send",
-        "Send one turn to another agent session of THIS workspace and return its turn number. Refused if it is busy, if a person drives it, if you are sending too fast (once per 5 s, 20 per hour), or if agents are already two deep. Use agent_wait and agent_read for the result, or agent_ask for all three.",
+        "Send one turn to another agent session of THIS workspace and return its turn number. Refused while it is working or waits on a permission (reason pending_approval), if a person drives it, if you are sending too fast (once per 5 s, 20 per hour), or if agents are already two deep. Use agent_wait and agent_read for the result, or agent_ask for all three.",
         schema,
         false,
         Box::new(move |args| {

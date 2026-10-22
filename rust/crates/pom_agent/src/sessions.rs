@@ -67,6 +67,52 @@ pub struct SessionState {
     pub turn_state: TurnState,
     #[serde(default)]
     pub transcript: String,
+    /// Why the session is in its state; files written before this field derive it from `last_event`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+pub const PENDING_APPROVAL: &str = "pending_approval";
+pub const IDLE_NOTIFICATION: &str = "idle_notification";
+pub const STOP: &str = "stop";
+pub const INTERRUPTED: &str = "interrupted";
+pub const STALE: &str = "stale";
+
+const AWAITING_INPUT: &str = "awaiting_input";
+
+/// Why an event left the session in `state`, for the states a driver has to tell apart.
+fn reason_for(event: &str, state: &str) -> Option<&'static str> {
+    match event {
+        "Stop" => Some(STOP),
+        "Interrupted" => Some(INTERRUPTED),
+        "permission_request" | "PermissionRequest" => Some(PENDING_APPROVAL),
+        "Notification" if state == AWAITING_INPUT => Some(PENDING_APPROVAL),
+        "Notification" => Some(IDLE_NOTIFICATION),
+        _ => None,
+    }
+}
+
+impl SessionState {
+    /// The state and reason a driver acts on. A file from before `reason` existed may say
+    /// `awaiting_input` for the idle reminder: only one inside a running turn is a real approval.
+    pub fn status(&self) -> (String, Option<String>) {
+        if let Some(reason) = &self.reason {
+            return (self.state.clone(), Some(reason.clone()));
+        }
+        let legacy_idle_reminder = self.last_event == "Notification"
+            && self.state == AWAITING_INPUT
+            && self.turn_state != TurnState::Running;
+        if legacy_idle_reminder {
+            return (
+                AgentState::Idle.as_str().to_string(),
+                Some(IDLE_NOTIFICATION.into()),
+            );
+        }
+        (
+            self.state.clone(),
+            reason_for(&self.last_event, &self.state).map(str::to_string),
+        )
+    }
 }
 
 /// One session in a workspace's index.
@@ -247,6 +293,7 @@ pub fn record_event(
         let mut text = serde_json::to_string(&line).map_err(std::io::Error::other)?;
         text.push('\n');
         file.write_all(text.as_bytes())?;
+        let reason = reason_for(&event.event, &agent_state).map(str::to_string);
         let record = SessionState {
             schema: SCHEMA.into(),
             session_id: event.session_id.clone(),
@@ -260,6 +307,7 @@ pub fn record_event(
             event_ms: t_ms,
             turn,
             turn_state,
+            reason,
             transcript,
         };
         let blob = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
@@ -460,6 +508,84 @@ mod tests {
         assert_eq!(
             read_state(&state, "s").expect("s").turn_state,
             TurnState::Cancelled
+        );
+    }
+
+    #[test]
+    fn each_state_says_why_and_a_cleared_question_drops_the_reason() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let main = identity("claude", "ws-myproject-feat-login-claude-raw");
+        let step = |name: &str, agent_state: AgentState| {
+            record_event(&state, &main, &event("s", name, agent_state))
+                .expect("event")
+                .status()
+        };
+        let reason = |status: (String, Option<String>)| (status.0, status.1.unwrap_or_default());
+        assert_eq!(
+            reason(step("UserPromptSubmit", AgentState::Thinking)),
+            ("thinking".into(), String::new())
+        );
+        assert_eq!(
+            reason(step("PermissionRequest", AgentState::AwaitingInput)),
+            ("awaiting_input".into(), PENDING_APPROVAL.into())
+        );
+        assert_eq!(
+            reason(step("PostToolUse", AgentState::ToolUse)),
+            ("tool_use".into(), String::new())
+        );
+        assert_eq!(
+            reason(step("Stop", AgentState::Idle)),
+            ("idle".into(), STOP.into())
+        );
+        assert_eq!(
+            reason(step("Notification", AgentState::Idle)),
+            ("idle".into(), IDLE_NOTIFICATION.into())
+        );
+        assert_eq!(
+            read_state(&state, "s").expect("s").reason.as_deref(),
+            Some(IDLE_NOTIFICATION)
+        );
+    }
+
+    #[test]
+    fn a_state_file_without_a_reason_derives_it_and_frees_an_old_idle_reminder() {
+        let legacy = |last_event: &str, state: &str, turn_state: TurnState| {
+            let text = serde_json::json!({
+                "schema": SCHEMA, "session_id": "s", "holder": "h", "project": "myproject",
+                "branch": "feat-login", "role": "claude", "driver": "claude", "state": state,
+                "last_event": last_event, "event_ms": 1, "turn": 3, "turn_state": turn_state,
+            })
+            .to_string();
+            let record: SessionState = serde_json::from_str(&text).expect("old file");
+            assert_eq!(record.reason, None);
+            record.status()
+        };
+        let status = |state: &str, reason: &str| (state.to_string(), Some(reason.to_string()));
+        assert_eq!(
+            legacy("Notification", "awaiting_input", TurnState::Ended),
+            status("idle", IDLE_NOTIFICATION),
+            "the idle reminder after a turn read as a permission prompt"
+        );
+        assert_eq!(
+            legacy("Notification", "awaiting_input", TurnState::Running),
+            status("awaiting_input", PENDING_APPROVAL)
+        );
+        assert_eq!(
+            legacy("permission_request", "awaiting_input", TurnState::Running),
+            status("awaiting_input", PENDING_APPROVAL)
+        );
+        assert_eq!(
+            legacy("Stop", "idle", TurnState::Ended),
+            status("idle", STOP)
+        );
+        assert_eq!(
+            legacy("Interrupted", "idle", TurnState::Cancelled),
+            status("idle", INTERRUPTED)
+        );
+        assert_eq!(
+            legacy("PreToolUse", "tool_use", TurnState::Running),
+            ("tool_use".to_string(), None)
         );
     }
 }

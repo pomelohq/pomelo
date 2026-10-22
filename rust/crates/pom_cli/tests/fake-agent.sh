@@ -7,7 +7,7 @@ hook() {
     printf '%s' "$1" | "$POM" claude-hook --session >/dev/null
 }
 event() {
-    hook "{\"session_id\":\"$session\",\"hook_event_name\":\"$1\",\"cwd\":\"$PWD\",\"transcript_path\":\"$transcript\"$2}"
+    hook "{\"session_id\":\"$session\",\"hook_event_name\":\"$1\",\"cwd\":\"$PWD\",\"transcript_path\":\"$transcript\",\"permission_mode\":\"default\"$2}"
 }
 : >"$transcript"
 event SessionStart ""
@@ -19,7 +19,7 @@ while IFS= read -r line; do
     printf '{"type":"user","uuid":"u-%s","message":{"role":"user","content":"%s"}}\n' "$text" "$text" >>"$transcript"
     case "$text" in
     *needs-permission*)
-        event Notification ",\"message\":\"Claude needs your permission to use Bash\""
+        event Notification ",\"message\":\"Claude needs your permission to use Bash\",\"notification_type\":\"permission_prompt\""
         ;;
     *crash*)
         exit 1
@@ -29,6 +29,11 @@ while IFS= read -r line; do
     *)
         printf '{"type":"assistant","uuid":"a-%s","message":{"id":"m-%s","content":[{"type":"text","text":"echo: %s"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}}\n' "$text" "$text" "$text" >>"$transcript"
         event Stop ""
+        case "$text" in
+        *idle-reminder*)
+            event Notification ",\"message\":\"Claude is waiting for your input\",\"notification_type\":\"idle_prompt\""
+            ;;
+        esac
         ;;
     esac
 done

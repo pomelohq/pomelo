@@ -54,7 +54,7 @@ pub use presence::{
 pub use sessions::{
     events, events_path, now_ms, project_sessions, read_state, record_event, session_dir,
     with_lock, workspace_sessions, EventLine, IndexEntry, SessionEvent, SessionState, TurnState,
-    SCHEMA,
+    IDLE_NOTIFICATION, INTERRUPTED, PENDING_APPROVAL, SCHEMA, STALE, STOP,
 };
 pub use side::{
     format_tokens, last_answer, main_session, other_cli, record_side, second_opinion_launch,

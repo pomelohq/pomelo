@@ -129,7 +129,7 @@ projects and machine
 
 agents (one workspace at a time; --json for stable output)
   agent ls [workspace] [--all-workspaces]
-                     the workspace's agent sessions: role, state, turn, holder
+                     the workspace's agent sessions: role, state, reason, turn, holder
   agent start [workspace] [--role r] [--fresh] [--trust] [--prompt text | --prompt-file f]
               [--system-prompt-file f] [--tools t] [--allowed-tools t] [--disallowed-tools t]
               [--permission-mode m] [--model m] [--extra-mcp-config f]
@@ -141,8 +141,9 @@ agents (one workspace at a time; --json for stable output)
                      stream the workspace's agent events as NDJSON
   agent stop <workspace/role>
                      end a session
-  agent send <workspace/role> <text | --file f> [--queue] [--take]
-                     submit one turn (refused unless idle; --queue waits, --take takes the session over)
+  agent send <workspace/role> <text | --file f> [--queue] [--take] [--timeout d]
+                     submit one turn (refused while working or pending approval; --queue waits until
+                     idle, 30 min unless --timeout; --take takes the session over)
   agent wait <workspace/role> [--until idle|awaiting_input|turn-end] [--turn n] [--timeout d]
                      exit 0 reached, 2 timeout, 3 awaiting input, 4 died
   agent ask <workspace/role> <text | --file f> [--take] [--timeout d]

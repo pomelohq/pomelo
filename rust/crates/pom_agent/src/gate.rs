@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::caller::Caller;
 use crate::identity::{holder_role, workspace_prefix, HolderRole};
-use crate::sessions::{now_ms, with_lock};
+use crate::sessions::{now_ms, with_lock, PENDING_APPROVAL};
 
 /// Exit status of a command the gate refused.
 pub const REFUSED_EXIT: i32 = 6;
@@ -61,18 +61,37 @@ pub enum ApproveScope {
 /// Why the gate said no; `code` is stable for scripts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    OtherWorkspace { allowed: String },
-    NotAnAgent { holder: String },
-    NotDrivable { role: String },
+    OtherWorkspace {
+        allowed: String,
+    },
+    NotAnAgent {
+        holder: String,
+    },
+    NotDrivable {
+        role: String,
+    },
     SelfTarget,
-    TooDeep { max: u64 },
-    TooSoon { wait_ms: u64 },
-    HourlyLimit { per_hour: u32 },
-    Busy { state: String },
+    TooDeep {
+        max: u64,
+    },
+    TooSoon {
+        wait_ms: u64,
+    },
+    HourlyLimit {
+        per_hour: u32,
+    },
+    Busy {
+        state: String,
+        reason: Option<String>,
+    },
     QueueNotAllowed,
-    WaitTooLong { cap_s: u64 },
+    WaitTooLong {
+        cap_s: u64,
+    },
     ApproveAlwaysNotAllowed,
-    LeaseHeld { by: String },
+    LeaseHeld {
+        by: String,
+    },
 }
 
 impl Refusal {
@@ -127,10 +146,22 @@ impl std::fmt::Display for Refusal {
                     "the limit of {per_hour} sends per hour is reached"
                 )
             }
-            Refusal::Busy { state } => write!(
-                formatter,
-                "the session is busy ({state}); send again once it is idle"
-            ),
+            Refusal::Busy { state, reason } if reason.as_deref() == Some(PENDING_APPROVAL) => {
+                write!(
+                    formatter,
+                    "the session waits on a permission or question ({state}, {PENDING_APPROVAL}); answer it first"
+                )
+            }
+            Refusal::Busy { state, reason } => match reason {
+                Some(reason) => write!(
+                    formatter,
+                    "the session is busy ({state}, {reason}); send again once it is idle"
+                ),
+                None => write!(
+                    formatter,
+                    "the session is busy ({state}); send again once it is idle"
+                ),
+            },
             Refusal::QueueNotAllowed => {
                 write!(
                     formatter,
@@ -236,12 +267,15 @@ impl<'a> Gate<'a> {
         Ok(role)
     }
 
-    /// Whether a turn may go to `holder` now, and at which depth. `caller_depth` is the depth of the turn the
-    /// calling agent is in (0 for one a person sent). Records the send against the caller's rate.
+    /// Whether a turn may go to `holder` now, and at which depth. `target_state` and `target_reason` are the
+    /// session's status (`SessionState::status`), so only work or a pending approval holds a send back.
+    /// `caller_depth` is the depth of the turn the calling agent is in (0 for one a person sent). Records
+    /// the send against the caller's rate.
     pub fn send(
         &self,
         holder: &str,
         target_state: &str,
+        target_reason: Option<&str>,
         queue: bool,
         caller_depth: u64,
     ) -> Result<u64, Refusal> {
@@ -253,6 +287,7 @@ impl<'a> Gate<'a> {
         if target_state != "idle" && !queue {
             return Err(Refusal::Busy {
                 state: target_state.to_string(),
+                reason: target_reason.map(str::to_string),
             });
         }
         let depth = if agent { caller_depth + 1 } else { 0 };
@@ -397,7 +432,7 @@ mod tests {
         .expect("own workspace");
         assert_eq!(refused(gate.target(OTHER)), "other_workspace");
         assert_eq!(
-            refused(gate.send(OTHER, "idle", false, 0)),
+            refused(gate.send(OTHER, "idle", None, false, 0)),
             "other_workspace"
         );
         assert_eq!(
@@ -421,11 +456,17 @@ mod tests {
             "not_an_agent"
         );
         assert_eq!(
-            refused(gate.send("ws-myproject-feat-login-onboarder", "idle", false, 0)),
+            refused(gate.send("ws-myproject-feat-login-onboarder", "idle", None, false, 0)),
             "not_drivable"
         );
         assert_eq!(
-            refused(gate.send("ws-myproject-feat-login-agent-codex", "idle", false, 0)),
+            refused(gate.send(
+                "ws-myproject-feat-login-agent-codex",
+                "idle",
+                None,
+                false,
+                0
+            )),
             "not_drivable"
         );
     }
@@ -440,7 +481,7 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(refused(gate.send(MAIN, "idle", false, 0)), "self");
+        assert_eq!(refused(gate.send(MAIN, "idle", None, false, 0)), "self");
         assert_eq!(refused(gate.approve(MAIN, ApproveScope::Once)), "self");
     }
 
@@ -454,7 +495,7 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(gate.send(REVIEWER, "idle", false, 0), Ok(1));
+        assert_eq!(gate.send(REVIEWER, "idle", None, false, 0), Ok(1));
         let (_temp, state) = self::state();
         let gate = Gate::open(
             &state,
@@ -463,7 +504,7 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(gate.send(REVIEWER, "idle", false, 1), Ok(2));
+        assert_eq!(gate.send(REVIEWER, "idle", None, false, 1), Ok(2));
         let (_temp, state) = self::state();
         let gate = Gate::open(
             &state,
@@ -472,7 +513,10 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(refused(gate.send(REVIEWER, "idle", false, 2)), "depth");
+        assert_eq!(
+            refused(gate.send(REVIEWER, "idle", None, false, 2)),
+            "depth"
+        );
     }
 
     #[test]
@@ -485,8 +529,8 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(gate.send(REVIEWER, "idle", false, 0), Ok(1));
-        assert_eq!(refused(gate.send(REVIEWER, "idle", false, 0)), "rate");
+        assert_eq!(gate.send(REVIEWER, "idle", None, false, 0), Ok(1));
+        assert_eq!(refused(gate.send(REVIEWER, "idle", None, false, 0)), "rate");
     }
 
     #[test]
@@ -506,7 +550,10 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(refused(gate.send(REVIEWER, "idle", false, 0)), "rate_hour");
+        assert_eq!(
+            refused(gate.send(REVIEWER, "idle", None, false, 0)),
+            "rate_hour"
+        );
     }
 
     #[test]
@@ -519,8 +566,14 @@ mod tests {
             Limits::OPERATOR,
         )
         .expect("gate");
-        assert_eq!(refused(gate.send(REVIEWER, "thinking", false, 0)), "busy");
-        assert_eq!(refused(gate.send(REVIEWER, "thinking", true, 0)), "queue");
+        assert_eq!(
+            refused(gate.send(REVIEWER, "thinking", None, false, 0)),
+            "busy"
+        );
+        assert_eq!(
+            refused(gate.send(REVIEWER, "thinking", None, true, 0)),
+            "queue"
+        );
         let operator = Gate::open(
             &state,
             Caller::Operator,
@@ -529,14 +582,40 @@ mod tests {
         )
         .expect("gate");
         assert_eq!(
-            refused(operator.send(REVIEWER, "thinking", false, 0)),
+            refused(operator.send(REVIEWER, "thinking", None, false, 0)),
             "busy"
         );
-        assert_eq!(operator.send(REVIEWER, "thinking", true, 0), Ok(0));
+        assert_eq!(operator.send(REVIEWER, "thinking", None, true, 0), Ok(0));
         assert_eq!(
-            operator.send(MAIN, "idle", false, 0),
+            operator.send(MAIN, "idle", None, false, 0),
             Ok(0),
             "no rate for operators by default"
+        );
+    }
+
+    #[test]
+    fn only_work_or_a_pending_approval_holds_a_send_back() {
+        let (_temp, state) = state();
+        let operator = Gate::open(
+            &state,
+            Caller::Operator,
+            workspace("feat-login"),
+            Limits::OPERATOR,
+        )
+        .expect("gate");
+        assert_eq!(
+            operator.send(REVIEWER, "idle", Some("idle_notification"), false, 0),
+            Ok(0)
+        );
+        let refusal = operator
+            .send(REVIEWER, "awaiting_input", Some(PENDING_APPROVAL), false, 0)
+            .expect_err("pending");
+        assert_eq!(refusal.code(), "busy");
+        assert!(refusal.to_string().contains("answer it first"), "{refusal}");
+        assert_eq!(
+            refused(operator.send(REVIEWER, "tool_use", Some("stale"), false, 0)),
+            "busy",
+            "a stale working state keeps refusing"
         );
     }
 

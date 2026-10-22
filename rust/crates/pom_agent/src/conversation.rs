@@ -30,6 +30,8 @@ const END_TURN_QUIET: Duration = Duration::from_millis(800);
 /// A holder must be missing this many checks in a row before its session counts as dead.
 const DEAD_AFTER_MISSES: u32 = 3;
 const INTERRUPT_SETTLE: Duration = Duration::from_secs(3);
+/// How long `send --queue` waits for an operator that gave no timeout.
+pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 pub const NOT_SUBMITTED_EXIT: i32 = 5;
 pub const TIMEOUT_EXIT: i32 = 2;
@@ -186,19 +188,22 @@ impl Drive {
             lease.allows(gate.caller())?;
             lease
         };
-        let current = read_state(&self.state, &view.session_id)
-            .map(|record| record.state)
-            .unwrap_or_else(|| view.state.clone());
+        let (current, reason) = read_state(&self.state, &view.session_id)
+            .map(|record| record.status())
+            .unwrap_or_else(|| (view.state.clone(), view.reason.clone()));
         let depth = gate.send(
             &view.holder,
             &current,
+            reason.as_deref(),
             queue,
             self.caller_depth(gate.caller(), &view.workspace),
         )?;
         let queue_lock = session_dir(&self.state, &view.session_id).join("queue.lock");
         with_lock(&queue_lock, |_| {
             if queue {
-                self.wait_until_idle(view, timeout)?;
+                if let Err(error) = self.wait_until_idle(view, timeout.unwrap_or(QUEUE_TIMEOUT)) {
+                    return Ok(Err(error));
+                }
             }
             let before = read_state(&self.state, &view.session_id).map_or(view.turn, |record| record.turn);
             let origin = match gate.caller() {
@@ -250,23 +255,27 @@ impl Drive {
         .map_err(|error| DriveError::Failed(format!("could not send to {}: {error}", view.handle)))?
     }
 
-    fn wait_until_idle(
-        &self,
-        view: &SessionView,
-        timeout: Option<Duration>,
-    ) -> std::io::Result<()> {
+    fn wait_until_idle(&self, view: &SessionView, timeout: Duration) -> Result<(), DriveError> {
         let started = Instant::now();
         loop {
-            let idle = read_state(&self.state, &view.session_id)
-                .is_some_and(|record| record.state == "idle");
-            if idle {
+            let (state, reason) = read_state(&self.state, &view.session_id)
+                .map(|record| record.status())
+                .unwrap_or_else(|| (view.state.clone(), view.reason.clone()));
+            if state == "idle" {
                 return Ok(());
             }
-            if timeout.is_some_and(|timeout| started.elapsed() > timeout) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the session did not become idle",
-                ));
+            if started.elapsed() > timeout {
+                let why = reason.map_or_else(String::new, |reason| format!(", {reason}"));
+                let waited = match timeout.as_secs() {
+                    seconds if seconds >= 60 && seconds % 60 == 0 => {
+                        format!("{} min", seconds / 60)
+                    }
+                    seconds => format!("{seconds} s"),
+                };
+                return Err(DriveError::Timeout(format!(
+                    "--queue gave up after {waited} waiting for {} to become idle: it is still {state}{why}",
+                    view.handle
+                )));
             }
             std::thread::sleep(POLL);
         }
@@ -295,7 +304,7 @@ impl Drive {
             let (state, current, turn_state) = record
                 .as_ref()
                 .map_or((view.state.clone(), view.turn, TurnState::None), |record| {
-                    (record.state.clone(), record.turn, record.turn_state)
+                    (record.status().0, record.turn, record.turn_state)
                 });
             let outcome = |reached: &str,
                            stop_reason: Option<&str>,
@@ -697,6 +706,7 @@ mod tests {
             alive: false,
             drivable: true,
             state: "thinking".into(),
+            reason: None,
             turn: 1,
             last_event: String::new(),
             last_event_age_s: 0,
