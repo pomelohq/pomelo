@@ -674,6 +674,8 @@ struct App {
     settings_read: Option<std::time::SystemTime>,
     settings_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
+    /// The public address the workspaces' env files were last written for.
+    env_address: Option<pom_env::PublicAddress>,
     dev_requests: dev_services::DevRequestsTabs,
     module_store: module_store_tabs::ModuleStoreTabs,
     agent_registration: Arc<std::sync::Mutex<settings_ui::AgentPage>>,
@@ -700,7 +702,7 @@ const INVALID_SETTINGS: &str = "Invalid settings.json";
 
 /// After a config change: rewrites every workspace's env files, then lists running services whose command or
 /// env no longer matches what they were started with.
-fn refresh_env_and_find_stale(
+pub(crate) fn refresh_env_and_find_stale(
     runner: &pom_services::ServiceRunner,
     project: &pom_core::Project,
 ) -> Vec<pom_services::ServiceTarget> {
@@ -722,7 +724,10 @@ fn refresh_env_and_find_stale(
     stale
 }
 
-fn stale_name(target: &pom_services::ServiceTarget, project: &pom_core::Project) -> String {
+pub(crate) fn stale_name(
+    target: &pom_services::ServiceTarget,
+    project: &pom_core::Project,
+) -> String {
     let service = if target.repo.is_empty() {
         target.service.clone()
     } else {
@@ -1394,7 +1399,7 @@ impl App {
                 let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
                 let docker_running = || pom_doctor::docker_answers(path);
                 let compose_installed = || pom_doctor::compose_answers(path);
-                let findings = pom_doctor::diagnose(
+                let mut findings = pom_doctor::diagnose(
                     config.as_ref(),
                     &config_path,
                     &root,
@@ -1405,6 +1410,12 @@ impl App {
                         compose_installed: &compose_installed,
                     },
                 );
+                let network = pom_env::dev_network();
+                if let Some(finding) =
+                    pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len())
+                {
+                    pom_doctor::add_finding(&mut findings, finding);
+                }
                 if sender.send(findings).is_ok() {
                     ui::wake();
                 }
@@ -2200,8 +2211,7 @@ impl App {
                 state: pom_paths::StateDir::from_env(),
                 holders: pom_ptyhost::SocketDir::from_env(),
             };
-            match pom_proxy::DevProxy::start(Box::new(machine), pom_proxy::Ports::from_env(), serve)
-            {
+            match pom_proxy::DevProxy::start_on(Box::new(machine), pom_env::dev_network(), serve) {
                 Ok(proxy) => self.dev_proxy = Some(proxy),
                 Err(error) => eprintln!("dev proxy failed to start: {error}"),
             }

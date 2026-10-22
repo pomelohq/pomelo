@@ -23,6 +23,7 @@ fn is_free_text(id: u64) -> bool {
     JIRA_FIELDS.contains(&id)
         || id == settings_ui::CTRL_AGENT_COMMAND
         || id == settings_ui::CTRL_TERM_SHELL
+        || settings_ui::PROXY_TEXT_FIELDS.contains(&id)
 }
 
 const NUMBER_FIELDS: [u64; 10] = [
@@ -423,6 +424,14 @@ impl SettingsView {
         };
         if JIRA_FIELDS.contains(&id) {
             self.commit_jira(id, &buf);
+            return;
+        }
+        if settings_ui::PROXY_TEXT_FIELDS.contains(&id) {
+            match settings_ui::set_proxy_text(id, &buf, &mut self.settings) {
+                Ok(true) => self.persist(),
+                Ok(false) => {}
+                Err(error) => eprintln!("settings: {error}"),
+            }
             return;
         }
         if id == settings_ui::CTRL_TERM_SHELL {
@@ -1175,6 +1184,10 @@ impl SettingsView {
                 let max = (self.page_total_h - clip_h).max(0.0);
                 self.page_scroll = off.clamp(0.0, max);
             }
+        } else if settings_ui::PROXY_TEXT_FIELDS.contains(&id) {
+            self.commit_edit();
+            self.editing = Some((id, settings_ui::proxy_text(id, &self.settings)));
+            self.close_popover();
         } else if id == settings_ui::CTRL_AGENT_COMMAND || id == settings_ui::CTRL_TERM_SHELL {
             self.commit_edit();
             let seed = if id == settings_ui::CTRL_TERM_SHELL {

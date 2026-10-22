@@ -24,15 +24,42 @@ impl App {
         }
     }
 
-    /// Restart the servers when Settings turned one on or off or moved a port.
+    /// Restart the servers when Settings turned one on or off, moved a port or changed how they are reached.
     pub(crate) fn apply_dev_services_settings(&mut self) {
+        let network = pom_env::dev_network();
+        self.refresh_env_for_address(network.public());
         let Some(proxy) = &self.dev_proxy else {
             self.sync_dev_proxy();
             return;
         };
-        if proxy.serve() != self.desired_serve() || proxy.ports() != pom_proxy::Ports::from_env() {
+        if proxy.serve() != self.desired_serve() || *proxy.network() != network {
             self.restart_dev_proxy();
             self.dev_requests.refreshed = None;
+        }
+    }
+
+    /// Service URLs in env files follow the public address: rewrite them and flag the services to restart.
+    fn refresh_env_for_address(&mut self, address: pom_env::PublicAddress) {
+        let previous = self.env_address.replace(address.clone());
+        if previous.is_none_or(|previous| previous == address) {
+            return;
+        }
+        let mut notices = Vec::new();
+        for (id, main) in self.mains.iter_mut() {
+            let (Some(project), Some(services)) = (main.project.as_ref(), main.services.as_ref())
+            else {
+                continue;
+            };
+            main.stale = crate::refresh_env_and_find_stale(&services.runner, project);
+            let names: Vec<String> = main
+                .stale
+                .iter()
+                .map(|target| crate::stale_name(target, project))
+                .collect();
+            notices.push((*id, names));
+        }
+        for (id, names) in notices {
+            self.with_workspace_view(id, |view, _| view.set_stale_services(&names));
         }
     }
 
@@ -74,6 +101,13 @@ impl App {
             webhook_port: webhook.port,
             served_elsewhere,
             port_from_env: std::env::var_os("POM_WEB_PORT").is_some(),
+            service_url: {
+                let public = pom_env::dev_network().public();
+                public.url(&format!(
+                    "<service>.<repo>.<ticket or branch>.{}",
+                    public.domain
+                ))
+            },
             modules_method: String::new(),
         }
     }

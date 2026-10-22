@@ -413,11 +413,13 @@ impl ServiceRunner {
     pub fn proxy_url(&self, config: &Config, target: &ServiceTarget) -> Option<String> {
         self.port(config, target)?;
         let dir = config.repos.get(&target.repo)?;
-        Some(format!(
-            "http://{}:{}",
-            pom_env::service_host(&target.service, alias(&target.repo, dir), &target.branch),
-            pom_env::dev_ports().proxy
-        ))
+        let public = pom_env::dev_network().public();
+        Some(public.url(&pom_env::service_host(
+            &target.service,
+            alias(&target.repo, dir),
+            &target.branch,
+            &public.domain,
+        )))
     }
 
     fn lease_key(&self, config: &Config, target: &ServiceTarget) -> Option<String> {
@@ -726,8 +728,8 @@ impl EnvSources for ServiceRunner {
         }
     }
 
-    fn proxy_port(&self) -> u16 {
-        pom_env::dev_ports().proxy
+    fn public_address(&self) -> pom_env::PublicAddress {
+        pom_env::dev_network().public()
     }
 }
 

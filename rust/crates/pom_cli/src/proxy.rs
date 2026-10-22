@@ -1,5 +1,6 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -38,6 +39,7 @@ pub(crate) fn registered_routes(state: &StateDir) -> Vec<ProjectRoute> {
 
 /// `pom proxy`: the dev proxy and webhook relay in the foreground, re-reading the projects every few seconds.
 pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {
+    let network = pom_env::dev_network();
     let ports = Ports::from_env();
     if pom_proxy::listening(ports.proxy) {
         return Err(format!(
@@ -49,15 +51,35 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
         state: state.clone(),
         holders: pom_ptyhost::SocketDir::from_env(),
     };
-    let proxy = DevProxy::start(Box::new(machine), ports, pom_proxy::Serve::default())
-        .map_err(|error| error.to_string())?;
+    let proxy = DevProxy::start_on(
+        Box::new(machine),
+        network.clone(),
+        pom_proxy::Serve::default(),
+    )
+    .map_err(|error| error.to_string())?;
     if !proxy.proxy_running() {
         return Err(format!("could not listen on port {}", ports.proxy));
     }
+    let (proxy_where, relay_host) = if network.public().is_local() && !network.exposed() {
+        (
+            format!("http://*.localhost:{}", ports.proxy),
+            "127.0.0.1".to_string(),
+        )
+    } else {
+        let listen = SocketAddr::new(network.bind, ports.proxy);
+        (
+            format!(
+                "{listen} for {}",
+                network.public().url(&format!("*.{}", network.domain))
+            ),
+            SocketAddr::new(network.bind, ports.webhook)
+                .ip()
+                .to_string(),
+        )
+    };
     writeln!(
         out,
-        "dev proxy on http://*.localhost:{}  webhook relay on http://127.0.0.1:{}{}",
-        ports.proxy,
+        "dev proxy on {proxy_where}  webhook relay on http://{relay_host}:{}{}",
         ports.webhook,
         if proxy.webhook_running() {
             ""
@@ -119,11 +141,275 @@ pub(crate) fn service_url(config: &Config, branch: &str, repo: &str, service: &s
         .map(|dir| dir.alias.as_str())
         .filter(|alias| !alias.is_empty())
         .unwrap_or(repo);
-    format!(
-        "http://{service}.{alias}.{}.localhost:{}",
-        pom_env::workspace_label(branch),
-        Ports::from_env().proxy
-    )
+    let public = pom_env::dev_network().public();
+    public.url(&pom_env::service_host(
+        service,
+        alias,
+        branch,
+        &public.domain,
+    ))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ProxyConfigCommand {
+    Show { json: bool },
+    Set { key: String, value: String },
+    Reset { key: String },
+}
+
+const PROXY_KEYS: [&str; 5] = [
+    "bind",
+    "domain",
+    "public_scheme",
+    "public_port",
+    "trusted_proxies",
+];
+
+pub(crate) fn parse_config(rest: &[&str]) -> Result<ProxyConfigCommand, String> {
+    let known = |key: &str| -> Result<String, String> {
+        let key = key.strip_prefix("proxy.").unwrap_or(key);
+        PROXY_KEYS
+            .contains(&key)
+            .then(|| key.to_string())
+            .ok_or_else(|| format!("unknown proxy setting {key} ({})", PROXY_KEYS.join(", ")))
+    };
+    match rest {
+        [] => Ok(ProxyConfigCommand::Show { json: false }),
+        ["-o" | "--output", "json"] => Ok(ProxyConfigCommand::Show { json: true }),
+        ["set", key, values @ ..] if !values.is_empty() || *key == "trusted_proxies" => {
+            Ok(ProxyConfigCommand::Set {
+                key: known(key)?,
+                value: values.join(" "),
+            })
+        }
+        ["set", ..] => Err("usage: pom proxy config set <key> <value>".into()),
+        ["reset", key] => Ok(ProxyConfigCommand::Reset { key: known(key)? }),
+        _ => Err("usage: pom proxy config [-o json] | set <key> <value> | reset <key>".into()),
+    }
+}
+
+/// The proxy block with one key changed, refusing a value the proxy could not use.
+fn apply_proxy_setting(
+    mut proxy: settings::ProxySettings,
+    key: &str,
+    value: Option<&str>,
+) -> Result<settings::ProxySettings, String> {
+    let defaults = settings::ProxySettings::default();
+    match (key, value) {
+        ("bind", Some(value)) => proxy.bind = settings::parse_bind(value)?.to_string(),
+        ("bind", None) => proxy.bind = defaults.bind,
+        ("domain", Some(value)) => proxy.domain = settings::parse_domain(value)?,
+        ("domain", None) => proxy.domain = defaults.domain,
+        ("public_scheme", Some(value)) => {
+            proxy.public_scheme = settings::parse_scheme(value)?.to_string()
+        }
+        ("public_scheme", None) => proxy.public_scheme = defaults.public_scheme,
+        ("public_port", Some(value)) => {
+            proxy.public_port = value
+                .trim()
+                .parse()
+                .map_err(|_| format!("{value} is not a port (0 uses the proxy's own)"))?
+        }
+        ("public_port", None) => proxy.public_port = defaults.public_port,
+        ("trusted_proxies", Some(value)) => {
+            proxy.trusted_proxies = value
+                .split([',', ' '])
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| settings::Cidr::parse(entry).map(|range| range.to_string()))
+                .collect::<Result<_, _>>()?
+        }
+        ("trusted_proxies", None) => proxy.trusted_proxies = defaults.trusted_proxies,
+        (other, _) => return Err(format!("unknown proxy setting {other}")),
+    }
+    Ok(proxy)
+}
+
+fn read_settings_file(path: &Path) -> Result<serde_json::Value, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(serde_json::Value::Object(serde_json::Map::new()))
+        }
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
+fn show_network(
+    network: &pom_env::DevNetwork,
+    json: bool,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let public = network.public();
+    let example = public.url(&format!("<service>.<repo>.<workspace>.{}", public.domain));
+    let trusted: Vec<String> = network
+        .trusted_proxies
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    if json {
+        let document = serde_json::json!({
+            "schema": "pom.proxy/v1",
+            "config": {
+                "bind": network.bind.to_string(),
+                "domain": network.domain,
+                "public_scheme": if network.https { "https" } else { "http" },
+                "public_port": network.public_port,
+                "trusted_proxies": trusted,
+            },
+            "proxy_port": network.ports.proxy,
+            "webhook_port": network.ports.webhook,
+            "exposed": network.exposed(),
+            "service_url": example,
+        });
+        return crate::say(out, &document.to_string());
+    }
+    let lines = [
+        format!("bind             {}", network.bind),
+        format!("domain           {}", network.domain),
+        format!(
+            "public_scheme    {}",
+            if network.https { "https" } else { "http" }
+        ),
+        format!("public_port      {}", network.public_port),
+        format!(
+            "trusted_proxies  {}",
+            if trusted.is_empty() {
+                "-".to_string()
+            } else {
+                trusted.join(", ")
+            }
+        ),
+        format!("service URLs     {example}"),
+    ];
+    for line in lines {
+        crate::say(out, &line)?;
+    }
+    if network.exposed() {
+        crate::say(
+            out,
+            &format!("warning: {}", pom_proxy::exposure_warning(network)),
+        )?;
+    }
+    Ok(())
+}
+
+/// `pom proxy config`: shows or changes how the dev proxy is reached. A new public address rewrites every
+/// workspace's env files, since service URLs in them change.
+pub(crate) fn config_command(
+    command: &ProxyConfigCommand,
+    state: &StateDir,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let (key, value) = match command {
+        ProxyConfigCommand::Show { json } => {
+            return show_network(&pom_env::dev_network(), *json, out)
+        }
+        ProxyConfigCommand::Set { key, value } => (key.as_str(), Some(value.as_str())),
+        ProxyConfigCommand::Reset { key } => (key.as_str(), None),
+    };
+    let path = settings::Settings::path().ok_or("no config directory (HOME is not set)")?;
+    let mut document = read_settings_file(&path)?;
+    let current = document
+        .get(pom_env::PROXY_KEY)
+        .cloned()
+        .map(serde_json::from_value::<settings::ProxySettings>)
+        .transpose()
+        .map_err(|error| format!("{}: proxy: {error}", path.display()))?
+        .unwrap_or_default();
+    let before = pom_env::dev_network();
+    let changed = apply_proxy_setting(current, key, value)?;
+    let fields = document
+        .as_object_mut()
+        .ok_or_else(|| format!("{} is not a JSON object", path.display()))?;
+    fields.insert(
+        pom_env::PROXY_KEY.to_string(),
+        serde_json::to_value(&changed).map_err(|error| error.to_string())?,
+    );
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    }
+    let text = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
+    std::fs::write(&path, format!("{text}\n"))
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    pom_env::forget_dev_network();
+    let after = pom_env::dev_network();
+    show_network(&after, false, out)?;
+    if after.public() != before.public() {
+        refresh_env_files(state, out)?;
+    }
+    if (after.bind, &after.trusted_proxies, &after.domain)
+        != (before.bind, &before.trusted_proxies, &before.domain)
+        && pom_proxy::listening(after.ports.proxy)
+    {
+        crate::say(
+            out,
+            "restart the running proxy to apply this (the app restarts its own; stop `pom proxy` and run it again)",
+        )?;
+    }
+    Ok(())
+}
+
+/// Rewrites every registered workspace's env files and lists the running services still on the old URLs.
+fn refresh_env_files(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {
+    let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+    let mut stale = Vec::new();
+    for route in registered_routes(state) {
+        let Some(config_path) = pom_core::config_in(&route.root) else {
+            continue;
+        };
+        let project = pom_core::Project::open(&config_path, state);
+        let Some(config) = project.config.as_ref().filter(|_| project.error.is_none()) else {
+            continue;
+        };
+        let runner = pom_services::ServiceRunner::new(pom_services::RunnerOptions {
+            project_root: project.root.clone(),
+            session: config.session.clone(),
+            state: state.clone(),
+            holders: pom_ptyhost::SocketDir::from_env(),
+            binary: binary.clone(),
+            docker: "docker".into(),
+        });
+        for workspace in &project.workspaces {
+            if let Err(error) = runner.refresh_workspace_env(config, &workspace.branch) {
+                crate::say(out, &format!("env for {}: {error}", workspace.branch))?;
+            }
+            let targets = pom_services::ServiceRunner::service_targets(
+                config,
+                &workspace.branch,
+                workspace.is_main,
+            );
+            stale.extend(
+                runner
+                    .stale_services(config, &targets)
+                    .into_iter()
+                    .map(|target| {
+                        let name = if target.repo.is_empty() {
+                            target.service
+                        } else {
+                            format!("{}/{}", target.repo, target.service)
+                        };
+                        format!("{name} ({}, {})", config.session, target.branch)
+                    }),
+            );
+        }
+    }
+    crate::say(
+        out,
+        "rewrote the workspaces' env files with the new service URLs",
+    )?;
+    if !stale.is_empty() {
+        crate::say(
+            out,
+            &format!(
+                "restart these running services to use them: {}",
+                stale.join(", ")
+            ),
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -147,6 +433,42 @@ mod tests {
             routes[0].root,
             std::path::absolute(&project).expect("absolute")
         );
+    }
+
+    #[test]
+    fn proxy_settings_are_validated_before_they_are_written() {
+        let proxy = settings::ProxySettings::default();
+        let set = |key: &str, value: &str| apply_proxy_setting(proxy.clone(), key, Some(value));
+        assert_eq!(set("bind", "[::]").map(|p| p.bind), Ok("::".into()));
+        assert!(set("bind", "my-vm").is_err());
+        assert_eq!(
+            set("domain", "Dev.Example.NET").map(|p| p.domain),
+            Ok("dev.example.net".into())
+        );
+        assert!(set("public_scheme", "ftp").is_err());
+        assert_eq!(set("public_port", "443").map(|p| p.public_port), Ok(443));
+        assert_eq!(
+            set("trusted_proxies", "127.0.0.1, 100.64.0.0/10").map(|p| p.trusted_proxies),
+            Ok(vec!["127.0.0.1/32".into(), "100.64.0.0/10".into()])
+        );
+        assert!(set("trusted_proxies", "everyone").is_err());
+        let changed = set("domain", "dev.example.net").unwrap();
+        assert_eq!(
+            apply_proxy_setting(changed, "domain", None),
+            Ok(settings::ProxySettings::default())
+        );
+        assert_eq!(
+            parse_config(&["set", "proxy.domain", "dev.example.net"]),
+            Ok(ProxyConfigCommand::Set {
+                key: "domain".into(),
+                value: "dev.example.net".into()
+            })
+        );
+        assert_eq!(
+            parse_config(&["-o", "json"]),
+            Ok(ProxyConfigCommand::Show { json: true })
+        );
+        assert!(parse_config(&["set", "port", "1"]).is_err());
     }
 
     #[test]

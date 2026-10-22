@@ -6,14 +6,10 @@ use crate::template;
 
 pub const BIND_IP: &str = "127.0.0.1";
 pub const DEV_PROXY_PREFIX: &str = "/_pom_dev";
-const LOCAL_DOMAIN: &str = "localhost";
 
-/// The dev proxy's host for `service` of repo `alias` in the workspace on `branch`.
-pub fn service_host(service: &str, alias: &str, branch: &str) -> String {
-    format!(
-        "{service}.{alias}.{}.{LOCAL_DOMAIN}",
-        workspace_label(branch)
-    )
+/// The dev proxy's host for `service` of repo `alias` in the workspace on `branch`, under `domain`.
+pub fn service_host(service: &str, alias: &str, branch: &str, domain: &str) -> String {
+    format!("{service}.{alias}.{}.{domain}", workspace_label(branch))
 }
 const LOCAL_PROFILE: &str = "local";
 
@@ -31,8 +27,9 @@ pub trait EnvSources {
     fn service_port(&self, ws_key: &str, service_key: &str) -> Option<u16>;
     fn slot(&self, shared_name: &str, ws_key: &str) -> Option<SlotAllocation>;
     fn secret(&self, session: &str, name: &str) -> Option<String>;
-    fn proxy_port(&self) -> u16 {
-        crate::DEFAULT_PROXY_PORT
+    /// How URLs through the dev proxy look from a browser.
+    fn public_address(&self) -> crate::PublicAddress {
+        crate::PublicAddress::local(crate::DEFAULT_PROXY_PORT)
     }
 }
 
@@ -155,12 +152,13 @@ impl ResolveContext<'_> {
                 _ => None,
             };
         }
-        let host = service_host(service, &alias, self.branch);
+        let public = self.sources.public_address();
+        let host = service_host(service, &alias, self.branch, &public.domain);
         match field {
             "port" => Some(self.service_port(dir, &alias, service).to_string()),
+            "url" => Some(public.url(&host)),
+            "ws" => Some(public.ws(&host)),
             "host" => Some(host),
-            "url" => Some(format!("http://{host}:{}", self.sources.proxy_port())),
-            "ws" => Some(format!("ws://{host}:{}", self.sources.proxy_port())),
             _ => None,
         }
     }

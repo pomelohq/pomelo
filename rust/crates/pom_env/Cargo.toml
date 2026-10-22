@@ -11,11 +11,9 @@ path = "src/pom_env.rs"
 [dependencies]
 pom_config = { path = "../pom_config" }
 pom_paths = { path = "../pom_paths" }
+settings = { path = "../settings" }
 serde_json.workspace = true
 sha1 = "0.10"
 indexmap = "2"
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
-
-[dev-dependencies]
-settings = { path = "../settings" }
