@@ -8,6 +8,7 @@ pub enum Section {
     Root,
     Repo,
     Lifecycle,
+    RepoTest,
     Service,
     ServiceHealthCheck,
     ServiceQueue,
@@ -23,10 +24,11 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 15] = [
+    pub const ALL: [Section; 16] = [
         Section::Root,
         Section::Repo,
         Section::Lifecycle,
+        Section::RepoTest,
         Section::Service,
         Section::ServiceHealthCheck,
         Section::ServiceQueue,
@@ -47,6 +49,7 @@ impl Section {
             Section::Root => "",
             Section::Repo => "repos.<repo>.",
             Section::Lifecycle => "repos.<repo>.lifecycle.",
+            Section::RepoTest => "repos.<repo>.test.",
             Section::Service => "repos.<repo>.services.<service>.",
             Section::ServiceHealthCheck => "repos.<repo>.services.<service>.healthcheck.",
             Section::ServiceQueue => "repos.<repo>.services.<service>.queue.",
@@ -67,6 +70,7 @@ impl Section {
             Section::Root => "Top level",
             Section::Repo => "Repos",
             Section::Lifecycle => "Repo lifecycle",
+            Section::RepoTest => "Repo test profile",
             Section::Service => "Services",
             Section::ServiceHealthCheck => "Service healthcheck",
             Section::ServiceQueue => "Service queue",
@@ -87,6 +91,7 @@ impl Section {
             Section::Root => "The keys at the top of `pom.yml`.",
             Section::Repo => "Each entry of `repos:` is one repository, keyed by its clone folder name.",
             Section::Lifecycle => "A repo's `lifecycle:` block groups how it is built and run. Every key here also works directly on the repo; when both are set, the `lifecycle:` value wins.",
+            Section::RepoTest => "How `pom run` runs the repo's tests. With a `test:` block, `pom run test` (or `pom run` of `command`) applies the test profile without `--profile test`: variables the env file sets replace the workspace's dev values, except connection values (a template with a `db.`, `shared.`, `slot.`, `branch`, `bind_ip` or `<repo>.<service>` token, and `PORT`), which always keep the workspace's.",
             Section::Service => "Each entry of a repo's (or preset's) `services:` is one long-running process. `name: <cmd>` is short for `name: { cmd: <cmd> }`.",
             Section::ServiceHealthCheck => "When a service counts as ready, for `pom start --wait` and `pom status`: give `http` or `cmd`. Without a healthcheck a service with a port is ready once the port listens.",
             Section::ServiceQueue => "The background-job queue a worker service drains, in the workspace's Redis slot. `pom queue wait-idle <service>` waits until it is empty, e.g. before a test checks what a job did.",
@@ -213,6 +218,10 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Repo, "env", "map", "", "The repo's environment, with templates resolved; services get it injected, and it is written to `.env.local` where the repo keeps env files (a root `.env` or `.env.development`, `apps/<name>/.env`, a service's `dir`). If any value is a map, the keys are file names instead: each file gets its own keys on top of `*`, the base for every file. Edit it here, never in the generated file.", "env:\n  DATABASE_URL: postgresql://{{shared.postgres.url}}/{{db.main}}\n\nenv:\n  \"*\":\n    REDIS_URL: redis://{{shared.redis.host}}:{{shared.redis.port}}/{{shared.redis.slot}}\n  .env.development.local:\n    DATABASE_URL: postgresql://{{shared.postgres.url}}/{{db.main}}\n  .env.test.local:\n    DATABASE_URL: postgresql://{{shared.postgres.url}}/{{db.test}}"),
     field(Repo, "services", "map", "", "The repo's long-running processes; see Services.", ""),
     field(Repo, "lifecycle", "map", "", "How the repo is built and run; see Repo lifecycle.", ""),
+    field(Repo, "test", "map", "", "How `pom run` runs the repo's tests; see Repo test profile.", "test:\n  command: bin/rspec"),
+    field(RepoTest, "command", "command", "commands.test", "What `pom run test` runs, with the test profile. Running this command by hand (`pom run \"bin/rspec\"`) applies the profile too.", "command: bin/rspec"),
+    field(RepoTest, "env_file", "path", ".env.test", "The env file the test profile reads, relative to the repo folder; `<env_file>.local` is read after it and wins. A file Pomelo generated is skipped.", "env_file: apps/web/.env.test"),
+    field(RepoTest, "env", "map", "", "Variables set under the test profile, with templates resolved. They win over everything, connection values included, so this is where a test database goes.", "env:\n  DATABASE_URL: \"{{db.test.url}}\"\n  SOME_ALLOWED_DOMAINS: \"\""),
     field(Repo, "pre_start", "command", "", "Same as `lifecycle.pre_start`.", ""),
     field(Repo, "commands", "map", "", "Same as `lifecycle.commands`.", ""),
     field(Repo, "setup", "list of commands", "", "Same as `lifecycle.setup`.", ""),
@@ -415,6 +424,7 @@ ui: { editor: code }
 repos:
   api:
     lifecycle: { tasks: [{ key: k, desc: d, cmd: c }] }
+    test: { command: c, env_file: .env.test, env: { A: b } }
     shared_services: [{ postgres: { db_name: x } }]
     services:
       server: { cmd: run, healthcheck: { http: /health, cmd: "true", interval: 1s, timeout: 3s }, queue: { kind: sidekiq, prefix: bull, queues: [default], redis: redis } }

@@ -274,3 +274,67 @@ pub fn http_to_ws(url: &str) -> String {
         url.to_string()
     }
 }
+
+/// A connection variable points at something this workspace owns (its databases, shared services, service
+/// ports and hosts), so no env file written for another machine may replace it. Decided from the template,
+/// never from the variable's name; `PORT` is the one exception, since a service's port is always leased.
+pub fn is_connection_var(config: &Config, name: &str, template: &str) -> bool {
+    name == "PORT"
+        || template::tokens(template)
+            .iter()
+            .any(|token| is_workspace_token(config, token.key))
+}
+
+fn is_workspace_token(config: &Config, key: &str) -> bool {
+    let mut parts = key.split('.');
+    let head = parts.next().unwrap_or_default();
+    let has_name = parts.next().is_some();
+    match head {
+        "bind_ip" | "branch" => true,
+        "db" | "shared" | "slot" => has_name,
+        "secret" => false,
+        _ => {
+            has_name
+                && config
+                    .repos
+                    .iter()
+                    .any(|(name, dir)| name == head || dir.alias == head)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_vars_come_from_workspace_tokens() {
+        let mut config = Config::default();
+        config.repos.insert(
+            "api".into(),
+            Dir {
+                alias: "be".into(),
+                ..Dir::default()
+            },
+        );
+        let connection = |name: &str, template: &str| is_connection_var(&config, name, template);
+        assert!(connection("DATABASE_URL", "{{db.main.url}}"));
+        assert!(connection(
+            "REDIS_URL",
+            "redis://{{shared.redis.host}}:{{shared.redis.port}}/{{slot.redis}}"
+        ));
+        assert!(connection("API_URL", "{{be.server.url}}"));
+        assert!(connection("API_URL", "{{api.server.path}}"));
+        assert!(connection("BUCKET", "uploads-{{branch.safe}}"));
+        assert!(connection("HOST", "{{bind_ip}}"));
+        assert!(connection("PORT", "3000"));
+        assert!(connection(
+            "DB",
+            "postgres://{{secret.DB_USER}}@{{shared.postgres.host}}"
+        ));
+        assert!(!connection("DATABASE_URL", "postgres://localhost/dev"));
+        assert!(!connection("API_TOKEN", "{{secret.API_TOKEN}}"));
+        assert!(!connection("SOME_ALLOWED_DOMAINS", "example.com"));
+        assert!(!connection("OTHER", "{{nope.server.url}}"));
+    }
+}

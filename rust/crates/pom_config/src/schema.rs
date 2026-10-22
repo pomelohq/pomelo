@@ -54,6 +54,28 @@ pub struct Dir {
     pub commands: IndexMap<String, String>,
     pub pre_delete: Vec<String>,
     pub plugins: IndexMap<String, Node>,
+    pub test: Option<RepoTest>,
+}
+
+/// How `pom run` runs a repo's tests: the command and what the test profile layers over the dev env.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoTest {
+    pub command: String,
+    /// Relative to the repo folder; `.env.test` when empty.
+    pub env_file: String,
+    pub env: IndexMap<String, String>,
+}
+
+impl RepoTest {
+    pub const DEFAULT_ENV_FILE: &'static str = ".env.test";
+
+    pub fn env_file(&self) -> &str {
+        if self.env_file.is_empty() {
+            Self::DEFAULT_ENV_FILE
+        } else {
+            &self.env_file
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -288,6 +310,16 @@ impl Dir {
         dir.commands = decoder.string_map(field("commands"));
         dir.pre_delete = decoder.strings(field("pre_delete"));
         dir.plugins = decoder.map(field("plugins"), "map[string]Node", |_, n| n.clone());
+        dir.test = field("test")
+            .and_then(|n| decoder.fields(n, "RepoTest"))
+            .map(|n| {
+                let test = |name: &'static str| key(n, Section::RepoTest, name);
+                RepoTest {
+                    command: decoder.string(test("command")),
+                    env_file: decoder.string(test("env_file")),
+                    env: decoder.string_map(test("env")),
+                }
+            });
         if let Some(lifecycle) = field("lifecycle").and_then(|n| decoder.fields(n, "Lifecycle")) {
             dir.fold_lifecycle(decoder, lifecycle);
         }

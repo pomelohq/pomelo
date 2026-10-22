@@ -589,3 +589,23 @@ repos:
         );
     }
 }
+
+#[test]
+fn repo_test_block() {
+    let project = Project::new(
+        "session: myproject\nrepos:\n  api:\n    test:\n      command: bin/rspec\n      env:\n        DATABASE_URL: \"{{db.test.url}}\"\n  web: {}\n",
+    );
+    let config = project.load();
+    let test = config.repos["api"].test.clone().expect("test block");
+    assert_eq!(test.command, "bin/rspec");
+    assert_eq!(test.env_file(), ".env.test");
+    assert_eq!(test.env["DATABASE_URL"], "{{db.test.url}}");
+    assert!(config.repos["web"].test.is_none());
+
+    let escaping = Project::new("repos:\n  api:\n    test: { env_file: ../.env.test }\n");
+    let error = escaping
+        .load()
+        .validate()
+        .expect_err("rejects a path outside the repo");
+    assert!(error.contains("test.env_file"), "{error}");
+}

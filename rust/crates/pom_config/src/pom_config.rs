@@ -16,9 +16,9 @@ pub use depgraph::{CycleError, DepGraph};
 pub use lookup::ResolvedService;
 pub use migrate::{migrate_fragments, Migrated};
 pub use schema::{
-    AgentsConfig, CodeAgentsConfig, Config, Dir, EnvFileEntry, HealthCheck, Preset, Service,
-    ServiceHealthCheck, ServiceQueue, SharedServiceDef, SharedServiceRef, Shortcut, SyncConfig,
-    UiConfig, DEFAULT_ENV_FILE, DEFAULT_SESSION,
+    AgentsConfig, CodeAgentsConfig, Config, Dir, EnvFileEntry, HealthCheck, Preset, RepoTest,
+    Service, ServiceHealthCheck, ServiceQueue, SharedServiceDef, SharedServiceRef, Shortcut,
+    SyncConfig, UiConfig, DEFAULT_ENV_FILE, DEFAULT_SESSION,
 };
 
 use crate::yaml_node::Node;
