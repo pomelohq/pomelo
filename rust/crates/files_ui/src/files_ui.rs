@@ -9811,8 +9811,7 @@ impl FunctionView for FilesView {
     }
 
     fn active_file_path(&self) -> Option<PathBuf> {
-        let id = self.panes.active_item()?.id()?;
-        Some(self.root.join(id))
+        self.panes.active_item()?.abs_path()
     }
 
     fn open_diff(&mut self, path: &Path, base: Option<String>) {
@@ -12963,5 +12962,23 @@ mod disk_reload_tests {
             buffer.history_bytes(),
             text.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod active_file_tests {
+    use super::*;
+    use workspace::FunctionView;
+
+    #[test]
+    fn a_file_outside_the_folder_keeps_its_own_path() {
+        let temp = tempfile::tempdir().expect("temp");
+        let folder = temp.path().join("workspace--feat-login");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let config = temp.path().join("pom.yml");
+        std::fs::write(&config, "session: myproject\n").expect("file");
+        let mut files = FilesView::scanned(folder);
+        files.open_file_at(&config, None, None);
+        assert_eq!(files.active_file_path(), Some(config));
     }
 }
