@@ -2276,15 +2276,28 @@ impl App {
                     eprintln!("workspaces: idle sleep and max_running are off: {error}");
                 }
             }
-            let waker =
-                binary.map(|binary| pom_workspace::waker(state.clone(), holders.clone(), binary));
+            let waker = binary
+                .clone()
+                .map(|binary| pom_workspace::waker(state.clone(), holders.clone(), binary));
+            let push = binary.map(|binary| {
+                pom_push::PushSync::start(pom_push::Machine {
+                    state: state.clone(),
+                    holders: holders.clone(),
+                    binary,
+                })
+            });
             let machine = pom_proxy::SystemMachine {
                 state,
                 holders,
                 waker,
             };
             match pom_proxy::DevProxy::start_on(Box::new(machine), pom_env::dev_network(), serve) {
-                Ok(proxy) => self.dev_proxy = Some(proxy),
+                Ok(proxy) => {
+                    if let Some(push) = push {
+                        proxy.set_github_hook(push.hook());
+                    }
+                    self.dev_proxy = Some(proxy);
+                }
                 Err(error) => eprintln!("dev proxy failed to start: {error}"),
             }
         }

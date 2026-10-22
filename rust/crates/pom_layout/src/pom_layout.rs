@@ -98,6 +98,33 @@ pub fn repo_worktree(project_root: &Path, repo: &str, branch: &str, is_main: boo
     workspace_root(project_root, branch, is_main).join(repo)
 }
 
+/// `git@host:owner/name.git`, `ssh://git@host/owner/name` and `https://host/owner/name` all as `host/owner/name`,
+/// so the same repo matches however each machine cloned it.
+pub fn normalize_remote(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+    let (host, path) = if let Some((_, rest)) = url.split_once("://") {
+        match rest.split_once('/') {
+            Some((authority, path)) => (authority, path),
+            None => (rest, ""),
+        }
+    } else {
+        match url.split_once(':') {
+            Some((authority, path)) if !authority.contains('/') && !authority.is_empty() => {
+                (authority, path)
+            }
+            _ => return url.to_string(),
+        }
+    };
+    let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+    let host = host.split_once(':').map_or(host, |(host, _)| host);
+    format!(
+        "{}/{}",
+        host.to_ascii_lowercase(),
+        path.trim_start_matches('/')
+    )
+}
+
 /// A checkout or a worktree (`.git` is a dir or a file).
 pub fn is_git_repo(path: &Path) -> bool {
     std::fs::metadata(path.join(".git")).is_ok_and(|meta| meta.is_dir() || meta.is_file())
@@ -298,6 +325,21 @@ impl WorkspaceState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remotes_match_however_they_were_cloned() {
+        let expected = "github.com/acme/api";
+        for url in [
+            "git@github.com:acme/api.git",
+            "ssh://git@github.com/acme/api",
+            "https://github.com/acme/api.git",
+            "https://GitHub.com/acme/api/",
+            "ssh://git@github.com:22/acme/api.git",
+        ] {
+            assert_eq!(normalize_remote(url), expected, "{url}");
+        }
+        assert_eq!(normalize_remote("/srv/git/api.git"), "/srv/git/api");
+    }
 
     fn git_repo(path: &Path) {
         std::fs::create_dir_all(path.join(".git")).expect("mkdir .git");

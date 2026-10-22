@@ -206,6 +206,48 @@ pub struct SyncConfig {
     pub interval_sec: i64,
     pub refresh_main: bool,
     pub refresh_interval_sec: i64,
+    /// `pull`, `notify` or `off`; empty means notify.
+    pub on_push: String,
+}
+
+/// What a signed GitHub push for a workspace's branch does to that workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OnPush {
+    /// Fast-forward a clean worktree and restart what the change touched.
+    Pull,
+    #[default]
+    Notify,
+    Off,
+}
+
+impl OnPush {
+    pub const NAMES: [&'static str; 3] = ["pull", "notify", "off"];
+
+    pub fn parse(text: &str) -> Option<OnPush> {
+        match text.trim() {
+            "pull" => Some(OnPush::Pull),
+            "" | "notify" => Some(OnPush::Notify),
+            "off" | "false" => Some(OnPush::Off),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            OnPush::Pull => "pull",
+            OnPush::Notify => "notify",
+            OnPush::Off => "off",
+        }
+    }
+}
+
+impl Config {
+    pub fn on_push(&self) -> OnPush {
+        self.sync
+            .as_ref()
+            .and_then(|sync| OnPush::parse(&sync.on_push))
+            .unwrap_or_default()
+    }
 }
 
 /// How the workspace's coding agents may be driven: a policy command consulted before each tool call.
@@ -274,6 +316,7 @@ impl Config {
                 interval_sec: decoder.int(key(node, Section::Sync, "interval_sec")),
                 refresh_main: decoder.bool(key(node, Section::Sync, "refresh_main")),
                 refresh_interval_sec: decoder.int(key(node, Section::Sync, "refresh_interval_sec")),
+                on_push: decoder.string(key(node, Section::Sync, "on_push")),
             });
         config.agents = field("agents")
             .and_then(|node| decoder.fields(node, "AgentsConfig"))

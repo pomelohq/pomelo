@@ -35,6 +35,22 @@ pub struct WorkspaceSummary {
     pub state: String,
     pub in_progress: Option<String>,
     pub failed: Option<FailedRun>,
+    /// Commits origin has on the workspace's branches that its worktrees do not, as of the last fetch.
+    pub remote_ahead: u64,
+    /// What the last GitHub push for the workspace did.
+    pub last_sync: Option<LastSync>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastSync {
+    pub time: String,
+    /// `pulled`, `notified`, `dirty`, `diverged`, `up_to_date`, `deleted`, `failed`...
+    pub outcome: String,
+    pub repo: String,
+    pub commits: u64,
+    pub restarted: Vec<String>,
+    pub detail: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

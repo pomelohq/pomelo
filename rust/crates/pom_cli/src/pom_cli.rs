@@ -14,6 +14,7 @@ mod marks;
 mod modules;
 mod onboard;
 mod proxy;
+mod push;
 mod remote;
 mod run;
 mod transfer;
@@ -153,6 +154,12 @@ config
   env set <repo> KEY=VALUE...
   env unset <repo> KEY...
   doctor [--json]    what keeps the project from running, and how to fix it
+  github webhook setup [--rotate] [--json]
+                     the payload URL for a GitHub webhook on the relay's /_pom/github, and the
+                     project's webhook secret (made once and shown once; --rotate replaces it)
+  sync status [--limit n] [--json]
+                     recent GitHub push deliveries and what each did to the workspaces
+                     (pulled, notified, left alone because of local changes); see sync.on_push
 
 projects and machine
   project ls [--json]         the projects this machine knows: name, folder, whether its pom.yml is there
@@ -253,6 +260,8 @@ enum Command {
     Agent(agent::AgentCommand),
     Host(remote::HostCommand),
     Projects { json: bool },
+    Github(push::WebhookSetup),
+    SyncStatus(push::SyncStatus),
     Version,
     Help,
 }
@@ -325,6 +334,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                 return transfer::execute(command, &invocation, cwd, out, err);
             }
             Command::Projects { json } => projects(&StateDir::from_env(), json, out),
+            Command::SyncStatus(ref request) => push::status(&StateDir::from_env(), request, out),
             Command::Queue(ref queue) => {
                 return match Session::open(&invocation, cwd) {
                     Ok(session) => session.queue_command(queue, out, err),
@@ -479,7 +489,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "queue"
                         | "proxy"
                         | "host"
-                        | "project")
+                        | "project"
+                        | "github"
+                        | "sync")
                 )
             )
         {
@@ -608,6 +620,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                 json: args.has("--json") || args.json()?,
             }
         }
+        "github" => Command::Github(push::parse_github(rest)?),
+        "sync" => Command::SyncStatus(push::parse_sync(rest)?),
         "version" => Command::Version,
         "help" => Command::Help,
         other => return Err(format!("unknown command {other}")),
@@ -801,6 +815,9 @@ impl Session {
             Command::Run(request) => self.run_command(request, out),
             Command::Commands => self.list_commands(out),
             Command::Lifecycle(command) => self.lifecycle_command(command, out),
+            Command::Github(request) => {
+                push::setup(&self.state, &self.config.session, request, out)
+            }
             Command::Ports
             | Command::Proxy
             | Command::ProxyConfig(_)
@@ -814,6 +831,7 @@ impl Session {
             | Command::Host(_)
             | Command::Transfer(_)
             | Command::Projects { .. }
+            | Command::SyncStatus(_)
             | Command::Queue(_)
             | Command::Version
             | Command::Help => Ok(()),

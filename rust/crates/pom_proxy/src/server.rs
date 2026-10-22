@@ -21,7 +21,8 @@ use crate::routing::{
     ProblemKind, Route, Router,
 };
 use crate::{
-    capture_of, clock, finish, record, Capture, Delivery, ProxyLog, ProxyLogEntry, RequestKind,
+    capture_of, clock, finish, record, Capture, Delivery, GithubDelivery, GithubHook, ProxyLog,
+    ProxyLogEntry, RequestKind, GITHUB_PATH,
 };
 
 pub(crate) type Body = BoxBody<Bytes, hyper::Error>;
@@ -104,6 +105,7 @@ pub(crate) struct Shared {
     pub router: Arc<Router>,
     pub log: Arc<ProxyLog>,
     network: pom_env::DevNetwork,
+    github: std::sync::RwLock<Option<GithubHook>>,
     local: Client<HttpConnector, Body>,
     external: Client<hyper_tls::HttpsConnector<HttpConnector>, Body>,
 }
@@ -119,6 +121,7 @@ impl Shared {
             router,
             log,
             network,
+            github: std::sync::RwLock::new(None),
             local: Client::builder(TokioExecutor::new())
                 .pool_idle_timeout(Duration::from_secs(30))
                 .pool_max_idle_per_host(24)
@@ -128,6 +131,18 @@ impl Shared {
                 .pool_max_idle_per_host(12)
                 .build(hyper_tls::HttpsConnector::new_with_connector(external)),
         }
+    }
+}
+
+impl Shared {
+    pub fn set_github(&self, hook: GithubHook) {
+        if let Ok(mut current) = self.github.write() {
+            *current = Some(hook);
+        }
+    }
+
+    fn github(&self) -> Option<GithubHook> {
+        self.github.read().ok()?.clone()
     }
 }
 
@@ -694,6 +709,9 @@ async fn listening(port: u16) -> Option<SocketAddr> {
 }
 
 async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+    if request.uri().path().trim_end_matches('/') == GITHUB_PATH {
+        return handle_github(shared, request).await;
+    }
     if !shared.router.has_projects() {
         return text_response(503, "relay not configured");
     }
@@ -820,4 +838,79 @@ fn no_webhook_route(path: &str) -> Response<Body> {
         404,
         &format!("no webhook route for {path} (use /<repo>/<service>)"),
     )
+}
+
+fn json_response(status: u16, body: String) -> Response<Body> {
+    let mut response = Response::new(full(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    response
+}
+
+/// `/_pom/github`: hands the delivery to the hook (which checks the signature) and logs what it decided.
+async fn handle_github(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+    let started = Instant::now();
+    let time = clock();
+    let Some(hook) = shared.github() else {
+        return text_response(404, "GitHub sync is not served by this process");
+    };
+    if request.method() != hyper::Method::POST {
+        return text_response(405, "POST a GitHub webhook delivery here");
+    }
+    let header = |name: &str| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut delivery = GithubDelivery {
+        event: header("x-github-event"),
+        id: header("x-github-delivery"),
+        signature: header("x-hub-signature-256"),
+        content_type: header("content-type"),
+        body: Vec::new(),
+    };
+    let method = request.method().to_string();
+    let request_headers = header_list(request.headers());
+    let (_, body) = request.into_parts();
+    match Limited::new(body, WEBHOOK_BODY_CAP).collect().await {
+        Ok(collected) => delivery.body = collected.to_bytes().to_vec(),
+        Err(error) => {
+            return text_response(
+                413,
+                &format!("the delivery could not be read whole ({error})"),
+            )
+        }
+    }
+    let request_capture = capture_of(&delivery.body);
+    let routes = shared.router.routes();
+    let event = delivery.event.clone();
+    let reply = match tokio::task::spawn_blocking(move || hook(&delivery, &routes)).await {
+        Ok(reply) => reply,
+        Err(error) => return text_response(500, &format!("relay: {error}")),
+    };
+    let response = json_response(reply.status, reply.body.clone());
+    shared.log.add(
+        ProxyLogEntry {
+            kind: RequestKind::Webhook,
+            time,
+            method,
+            path: GITHUB_PATH.to_string(),
+            repo: reply.repo,
+            service: format!("github {event}"),
+            target: reply.summary,
+            status: reply.status,
+            ms: started.elapsed().as_millis() as u64,
+            request_headers,
+            response_headers: header_list(response.headers()),
+            ..ProxyLogEntry::default()
+        },
+        request_capture,
+        capture_of(reply.body.as_bytes()),
+    );
+    response
 }

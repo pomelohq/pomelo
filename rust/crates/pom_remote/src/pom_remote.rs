@@ -16,9 +16,9 @@ use serde::{Deserialize, Serialize};
 pub use editor::{editor_argv, find_program};
 pub use local::{ordered_services, service_output, status_report, workspace_list, LocalSource};
 pub use source::{
-    remote_projects, run_pom, AgentTurn, FailedRun, ProjectEntry, ProjectSource, RemoteSource,
-    ServiceAction, SourceError, StatusReport, WorkspaceList, WorkspaceSummary, PROJECT_SCHEMA,
-    WORKSPACE_SCHEMA,
+    remote_projects, run_pom, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource,
+    RemoteSource, ServiceAction, SourceError, StatusReport, WorkspaceList, WorkspaceSummary,
+    PROJECT_SCHEMA, WORKSPACE_SCHEMA,
 };
 pub use ssh::{
     control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,

@@ -5,12 +5,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub(crate) const LOCAL: Duration = Duration::from_secs(15);
-pub(crate) const NETWORK: Duration = Duration::from_secs(90);
-pub(crate) const PUSH: Duration = Duration::from_secs(30);
+pub const LOCAL: Duration = Duration::from_secs(15);
+pub const NETWORK: Duration = Duration::from_secs(90);
+pub const PUSH: Duration = Duration::from_secs(30);
 
 /// Runs `git -C dir args` with extra `env`: its stdout on success, else the command and what it printed.
-pub(crate) fn git_with(
+pub fn git_with(
     dir: &Path,
     args: &[&str],
     env: &[(&str, &str)],
@@ -83,22 +83,22 @@ pub(crate) fn git_with(
     }
 }
 
-pub(crate) fn git(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+pub fn git(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
     git_with(dir, args, &[], timeout)
 }
 
-pub(crate) fn current_branch(dir: &Path) -> Option<String> {
+pub fn current_branch(dir: &Path) -> Option<String> {
     git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], LOCAL)
         .ok()
         .filter(|branch| !branch.is_empty() && branch != "HEAD")
 }
 
-pub(crate) fn is_dirty(dir: &Path) -> Result<bool, String> {
+pub fn is_dirty(dir: &Path) -> Result<bool, String> {
     git(dir, &["status", "--porcelain"], LOCAL).map(|status| !status.is_empty())
 }
 
 /// The branch `origin/HEAD` points at, if the clone knows it.
-pub(crate) fn origin_default_branch(dir: &Path) -> Option<String> {
+pub fn origin_default_branch(dir: &Path) -> Option<String> {
     git(
         dir,
         &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],

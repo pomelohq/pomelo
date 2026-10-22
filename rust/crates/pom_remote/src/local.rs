@@ -12,8 +12,8 @@ use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 
 use crate::source::{
-    last_turn, AgentTurn, FailedRun, ProjectSource, ServiceAction, SourceError, StatusReport,
-    WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
+    last_turn, AgentTurn, FailedRun, LastSync, ProjectSource, ServiceAction, SourceError,
+    StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
 };
 
 fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
@@ -32,6 +32,7 @@ pub fn workspace_list(
     runner: &ServiceRunner,
     state: &StateDir,
 ) -> WorkspaceList {
+    let last_syncs = pom_push::last_syncs(state, &config.session);
     let workspaces = project
         .workspaces
         .iter()
@@ -69,6 +70,15 @@ pub fn workspace_list(
                 running,
                 in_progress: pom_workspace::active_run(state, &workspace.branch),
                 failed,
+                remote_ahead: pom_push::remote_ahead(workspace),
+                last_sync: last_syncs.get(&workspace.branch).map(|record| LastSync {
+                    time: record.time.clone(),
+                    outcome: record.outcome.name().to_string(),
+                    repo: record.repo.clone(),
+                    commits: record.commits,
+                    restarted: record.restarted.clone(),
+                    detail: record.detail.clone(),
+                }),
             }
         })
         .collect();
