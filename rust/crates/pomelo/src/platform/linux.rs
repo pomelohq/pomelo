@@ -175,3 +175,61 @@ pub(crate) fn editing_modifiers(
         _ => (ctrl, alt, false),
     }
 }
+
+static SIGNAL_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+static TERMINATION_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn note_termination_signal(_signal: libc::c_int) {
+    let fd = SIGNAL_PIPE.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        // Only async-signal-safe calls here: the byte wakes the thread that tells the event loop.
+        unsafe { libc::write(fd, [1u8].as_ptr().cast(), 1) };
+    }
+}
+
+/// SIGINT and SIGTERM (Ctrl+C in a terminal, a session logout, `kill`) end the run the way closing its
+/// windows does, so the next launch does not take it for a crash.
+pub(crate) fn quit_on_termination_signals(wake: impl Fn() + Send + 'static) {
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        eprintln!("signals: {}", std::io::Error::last_os_error());
+        return;
+    }
+    let [read_fd, write_fd] = fds;
+    SIGNAL_PIPE.store(write_fd, std::sync::atomic::Ordering::Relaxed);
+    let watcher = std::thread::Builder::new()
+        .name("termination-signals".into())
+        .spawn(move || {
+            let mut byte = 0u8;
+            loop {
+                let read = unsafe { libc::read(read_fd, (&mut byte as *mut u8).cast(), 1) };
+                if read == 1 {
+                    TERMINATION_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    wake();
+                } else if read == 0
+                    || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted
+                {
+                    return;
+                }
+            }
+        });
+    if let Err(error) = watcher {
+        eprintln!("signals: {error}");
+        return;
+    }
+    for signal in [libc::SIGINT, libc::SIGTERM] {
+        let handler = note_termination_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = handler;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(signal, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+pub(crate) fn termination_requested() -> bool {
+    TERMINATION_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
+}

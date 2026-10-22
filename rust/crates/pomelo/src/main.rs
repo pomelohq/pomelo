@@ -3434,9 +3434,15 @@ impl ApplicationHandler for App {
         auto_update::install_on_quit();
     }
 
-    // The event loop only serves the native menu and key equivalents, which exist on macOS alone.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, _event: ()) {
+        if platform::termination_requested() {
+            let windows: Vec<WindowId> = self.mains.keys().copied().collect();
+            for id in windows {
+                self.close_main(id, event_loop);
+            }
+            event_loop.exit();
+            return;
+        }
         #[cfg(target_os = "macos")]
         for command in app_menu::take_selected() {
             let target = self
@@ -4522,6 +4528,7 @@ fn main() -> anyhow::Result<()> {
     if uses_real_state().is_some() {
         notifications::start();
     }
+    platform::quit_on_termination_signals(ui::wake);
     let mut app = App::default();
     let (marker, last_run) = begin_run();
     app.run_marker = marker;

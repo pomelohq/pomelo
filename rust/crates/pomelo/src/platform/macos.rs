@@ -319,3 +319,9 @@ pub(crate) fn editing_modifiers(
 ) -> (bool, bool, bool) {
     (command, option, control)
 }
+
+pub(crate) fn quit_on_termination_signals(_wake: impl Fn() + Send + 'static) {}
+
+pub(crate) fn termination_requested() -> bool {
+    false
+}
