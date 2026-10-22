@@ -181,6 +181,18 @@ jobs:
           shared-key: linux-cli
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build -p pom_cli --bin pom
+      # Workspace caps need a systemd user manager, which the container below lacks: run them on the runner.
+      - name: Workspace limits in a real systemd user session
+        run: |
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export XDG_RUNTIME_DIR
+          for _ in $(seq 1 30); do
+            if [ -S "$XDG_RUNTIME_DIR/systemd/private" ]; then break; fi
+            sleep 1
+          done
+          cat "/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers" || true
+          POM_REAL_CGROUP=1 cargo test -p pom_ptyhost --test limits_real -- --nocapture
       - name: pom links no display libraries
         run: |
           ldd target/debug/pom

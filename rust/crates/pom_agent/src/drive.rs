@@ -143,6 +143,8 @@ pub struct Drive {
     pub home: PathBuf,
     pub binary: PathBuf,
     pub tool_path: String,
+    /// pom.yml's `limits:`, which cap the agents' holders with the rest of their workspace.
+    pub limits: pom_config::LimitsConfig,
 }
 
 fn view_of(record: &SessionState, alive: bool, drivable: bool, now: u64) -> SessionView {
@@ -184,6 +186,18 @@ pub fn split_handle(handle: &str, default_branch: &str) -> (String, String) {
 }
 
 impl Drive {
+    pub(crate) fn holder_group(&self, branch: &str) -> pom_ptyhost::HolderGroup {
+        let limit = self.limits.for_workspace(branch);
+        pom_ptyhost::HolderGroup::new(
+            &self.project,
+            branch,
+            pom_ptyhost::Limits {
+                cpu_percent: limit.cpu_percent(),
+                memory_bytes: limit.memory_bytes(),
+            },
+        )
+    }
+
     fn alive(&self, holder: &str) -> bool {
         self.holders.holder_alive(holder)
     }
@@ -340,9 +354,11 @@ impl Drive {
                 )));
             }
         } else {
+            let group = self.holder_group(&workspace.branch);
             pom_ptyhost::spawn_holder(
                 &self.holders,
                 &SpawnRequest {
+                    group: Some(&group),
                     binary: &self.binary,
                     name: &launch.holder,
                     cwd: &launch.cwd,
@@ -658,6 +674,7 @@ mod tests {
             home: temp.join("home"),
             binary: PathBuf::from("/bin/false"),
             tool_path: "/usr/bin:/bin".into(),
+            limits: Default::default(),
         }
     }
 

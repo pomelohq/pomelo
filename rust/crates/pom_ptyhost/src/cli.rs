@@ -12,7 +12,7 @@ use crate::server;
 use crate::session::StartOptions;
 
 const DETACH_BYTE: u8 = 0x1c;
-const USAGE: &str = "usage: pty run <name> [--cwd DIR] [--cols N] [--rows N] -- <cmd> [args...]\n       pty attach <name>\n       pty kill <name>";
+const USAGE: &str = "usage: pty run <name> [--cwd DIR] [--cols N] [--rows N] [--group PROJECT/WORKSPACE] -- <cmd> [args...]\n       pty attach <name>\n       pty kill <name>";
 
 /// Runs the `pty` subcommand in `args` (the full argv) and returns the exit code, or `None` when `args` is
 /// not a `pty` invocation.
@@ -53,6 +53,7 @@ struct RunArgs {
     cwd: Option<PathBuf>,
     cols: u16,
     rows: u16,
+    group: Option<String>,
     argv: Vec<String>,
 }
 
@@ -66,6 +67,7 @@ fn parse_run(args: &[String]) -> io::Result<RunArgs> {
         cwd: None,
         cols: 0,
         rows: 0,
+        group: None,
         argv: command.to_vec(),
     };
     while let Some(flag) = flags.next() {
@@ -74,6 +76,7 @@ fn parse_run(args: &[String]) -> io::Result<RunArgs> {
             "--cwd" => parsed.cwd = Some(PathBuf::from(value)),
             "--cols" => parsed.cols = value.parse().map_err(|_| usage())?,
             "--rows" => parsed.rows = value.parse().map_err(|_| usage())?,
+            "--group" => parsed.group = Some(value.clone()),
             _ => return Err(usage()),
         }
     }
@@ -101,6 +104,11 @@ fn run_holder(dir: &SocketDir, args: &[String]) -> io::Result<()> {
             on_exit: None,
         },
     )?;
+    if let Some(group) = &args.group {
+        if let Err(error) = dir.record_group(&args.name, group) {
+            eprintln!("pty: record the workspace of {}: {error}", args.name);
+        }
+    }
     session.wait();
     // Give the cleanup thread a moment to remove the socket and pidfile before the process exits.
     std::thread::sleep(Duration::from_millis(50));
@@ -233,6 +241,7 @@ mod tests {
                 cwd: Some(PathBuf::from("/tmp")),
                 cols: 120,
                 rows: 40,
+                group: None,
                 argv: strings(&["zsh", "-lc", "npm run dev"]),
             }
         );

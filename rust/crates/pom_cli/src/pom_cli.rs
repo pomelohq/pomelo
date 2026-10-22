@@ -138,7 +138,9 @@ projects and machine
   init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
   onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
-  ps [--watch]       CPU and memory of every holder Pomelo started
+  ps [--watch | --json]
+                     CPU and memory of every holder Pomelo started, and of each workspace together
+                     (from its cgroup when it has limits on Linux, with its caps)
   disk [--json]      free space where Pomelo writes (home, its state, Docker's data, LVM thin
                      pools; warns past 80% with what to run) and the projects' node_modules
   modules [list|prune|clear]
@@ -215,7 +217,7 @@ enum Command {
     Commands,
     Lifecycle(LifecycleCommand),
     Onboard(OnboardCommand),
-    Ps { watch: bool },
+    Ps { watch: bool, json: bool },
     Disk { json: bool },
     Modules(modules::ModulesCommand),
     Completion(String),
@@ -283,7 +285,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
                     .and_then(|path| env::edit(command, &path, out))
             }
             Command::Onboard(ref command) => onboard::execute(command, cwd, out),
-            Command::Ps { watch } => machine::ps(watch, out),
+            Command::Ps { watch, json } => machine::ps(watch, json, out),
             Command::Disk { json } => machine::disk(&StateDir::from_env(), json, out),
             Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
             Command::Completion(ref shell) => completion::print(shell, out),
@@ -517,9 +519,19 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         }
         "init" | "onboard" => Command::Onboard(onboard::parse(name, rest)?),
         "ps" => match rest {
-            [] => Command::Ps { watch: false },
-            ["-w" | "--watch"] => Command::Ps { watch: true },
-            _ => return Err("usage: pom ps [--watch]".into()),
+            [] => Command::Ps {
+                watch: false,
+                json: false,
+            },
+            ["-w" | "--watch"] => Command::Ps {
+                watch: true,
+                json: false,
+            },
+            ["--json"] | ["-o" | "--output", "json"] => Command::Ps {
+                watch: false,
+                json: true,
+            },
+            _ => return Err("usage: pom ps [--watch | --json]".into()),
         },
         "disk" => Command::Disk {
             json: match rest {
@@ -605,6 +617,19 @@ pub(crate) fn doctor(
         pom_doctor::add_finding(&mut findings, finding);
     }
     let linux = pom_doctor::linux_findings(path, has_tool("docker"));
+    let backend = pom_ptyhost::limits::Backend::from_env();
+    let support = pom_doctor::LimitSupport {
+        linux: cfg!(target_os = "linux"),
+        backend: backend.name().to_string(),
+        controllers: pom_ptyhost::limits::available_controllers(&backend),
+        linger: pom_ptyhost::limits::lingering(),
+    };
+    let configured = config
+        .as_ref()
+        .is_some_and(|config| !config.limits.is_empty());
+    let linux = linux
+        .into_iter()
+        .chain(pom_doctor::limit_findings(configured, &support));
     for finding in machine::disk_check(&StateDir::from_env())
         .findings
         .into_iter()

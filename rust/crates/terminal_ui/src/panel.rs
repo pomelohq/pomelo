@@ -32,6 +32,7 @@ pub struct HolderScope {
     pub dir: pom_ptyhost::SocketDir,
     pub binary: PathBuf,
     pub prefix: String,
+    pub group: Option<pom_ptyhost::HolderGroup>,
 }
 
 impl HolderScope {
@@ -48,6 +49,7 @@ impl HolderScope {
             name,
             binary: self.binary.clone(),
             attach_only: false,
+            group: self.group.clone(),
         }
     }
 
@@ -722,6 +724,7 @@ mod tests {
             dir: dir.clone(),
             binary: PathBuf::from("/nonexistent"),
             prefix: "term-close-main".into(),
+            group: None,
         };
         let mut panel =
             TerminalPanel::with_holders(std::env::temp_dir(), std::sync::Arc::new(|| {}), scope);
@@ -758,6 +761,7 @@ mod tests {
             dir: dir.clone(),
             binary: PathBuf::from("/nonexistent"),
             prefix: "term-demo-main".into(),
+            group: None,
         };
         let mut panel =
             TerminalPanel::with_holders(std::env::temp_dir(), std::sync::Arc::new(|| {}), scope);

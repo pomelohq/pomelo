@@ -25,6 +25,8 @@ pub struct HolderOptions {
     pub name: String,
     pub binary: PathBuf,
     pub attach_only: bool,
+    /// The workspace a new holder joins, capped by its limits.
+    pub group: Option<pom_ptyhost::HolderGroup>,
 }
 
 pub(crate) struct HolderBackend {

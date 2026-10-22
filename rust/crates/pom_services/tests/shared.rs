@@ -25,6 +25,8 @@ shared_services:
     volumes: ["pgdata:/var/lib/postgresql/data"]
     db_user: app
     db_password: secret
+    cpu: 1.5
+    memory: 1G
   redis:
     image: redis:7
     ports: ["6379:6379"]
@@ -136,6 +138,8 @@ services:
       POSTGRES_DB: "postgres"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    cpus: 1.50
+    mem_limit: 1073741824
     healthcheck:
       disable: true
     networks:

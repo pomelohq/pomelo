@@ -13,8 +13,8 @@ mod snapshots;
 mod tool_path;
 
 pub use control::{
-    login_shell, service_command, shell_quote, RunnerOptions, ServiceError, ServiceRunner,
-    ServiceTarget,
+    holder_group, login_shell, service_command, shell_quote, RunnerOptions, ServiceError,
+    ServiceRunner, ServiceTarget,
 };
 pub use env_files::{EnvLine, ServiceExplain, WorkspaceEnv, HEADER as GENERATED_ENV_HEADER};
 pub use health::{cmd_ok, http_ok, parse_duration, ServiceHealth, WaitOutcome};

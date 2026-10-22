@@ -591,9 +591,11 @@ impl Drive {
             settings = crate::launch::shell_quote(&merged.to_string()),
         );
         let argv = pom_shell::Shell::user().script_argv(&script);
+        let group = self.holder_group(&view.workspace);
         pom_ptyhost::spawn_holder(
             &self.holders,
             &pom_ptyhost::SpawnRequest {
+                group: Some(&group),
                 binary: &self.binary,
                 name: &view.holder,
                 cwd,
@@ -695,6 +697,7 @@ mod tests {
             home: temp.path().into(),
             binary: "/bin/false".into(),
             tool_path: String::new(),
+            limits: Default::default(),
         };
         let view = |session: &str, holder: &str| SessionView {
             handle: format!("feat-login/{session}"),

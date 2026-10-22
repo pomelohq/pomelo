@@ -12,7 +12,7 @@ use pom_env::{EnvSources, SlotAllocation, BIND_IP};
 use pom_layout::WorkspaceState;
 use pom_paths::StateDir;
 use pom_ports::{PortManager, PortState, Probe, SystemProbe};
-use pom_ptyhost::{SocketDir, SpawnRequest};
+use pom_ptyhost::{HolderGroup, SocketDir, SpawnRequest};
 use pom_secrets::SecretStore;
 
 use crate::env_files::{alias, WorkspaceEnv};
@@ -445,7 +445,8 @@ impl ServiceRunner {
             .filter(|service| !service.cmd.is_empty())
             .ok_or_else(|| ServiceError::UnknownService(target.service.clone()))?;
         let cwd = pom_layout::workspace_root(&self.project_root, &target.branch, target.is_main);
-        self.spawn(holder, &cwd, &service.cmd, Vec::new())
+        let group = holder_group(config, &target.branch);
+        self.spawn(holder, &cwd, &service.cmd, Vec::new(), Some(&group))
     }
 
     fn start_repo_service(
@@ -490,7 +491,8 @@ impl ServiceRunner {
         if let Some(key) = &lease {
             self.ports.set_holder(key, holder);
         }
-        self.spawn(holder, &worktree, &command, service_env)
+        let group = holder_group(config, &target.branch);
+        self.spawn(holder, &worktree, &command, service_env, Some(&group))
     }
 
     /// The service's port, moving to a new one when something outside our leases already listens on
@@ -575,6 +577,7 @@ impl ServiceRunner {
         cwd: &Path,
         command: &str,
         env: Vec<(String, String)>,
+        group: Option<&HolderGroup>,
     ) -> Result<(), ServiceError> {
         let fingerprint = launch_fingerprint(cwd, command, &env);
         let mut full_env = vec![("PATH".to_string(), tool_path().to_string())];
@@ -583,6 +586,7 @@ impl ServiceRunner {
         pom_ptyhost::spawn_holder(
             &self.holders,
             &SpawnRequest {
+                group,
                 binary: &self.binary,
                 name: holder,
                 cwd,
@@ -686,6 +690,19 @@ impl ServiceRunner {
         self.workspace_env(config, branch).write_env_files()?;
         Ok(())
     }
+}
+
+/// The workspace a holder of `branch` belongs to, with the cap pom.yml's `limits:` gives it.
+pub fn holder_group(config: &Config, branch: &str) -> HolderGroup {
+    let limit = config.limits.for_workspace(branch);
+    HolderGroup::new(
+        &config.session,
+        branch,
+        pom_ptyhost::Limits {
+            cpu_percent: limit.cpu_percent(),
+            memory_bytes: limit.memory_bytes(),
+        },
+    )
 }
 
 /// Where, with what command and env a service starts.

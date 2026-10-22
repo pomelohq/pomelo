@@ -3596,6 +3596,7 @@ dependencies = [
  "pom_sessions",
  "pom_shell",
  "pom_workspace",
+ "serde",
  "serde_json",
  "settings",
  "tempfile",

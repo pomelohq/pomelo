@@ -75,7 +75,7 @@ impl ServiceRunner {
             .map(|(key, value)| (key.clone(), with_port(value, port)))
             .collect();
         self.ports.set_holder(&key, &holder);
-        self.spawn(&holder, &cwd, &command, env)?;
+        self.spawn(&holder, &cwd, &command, env, None)?;
         self.wait_healthy(config, name);
         Ok(holder)
     }
