@@ -5,6 +5,7 @@ mod marks;
 mod queue;
 mod shared;
 mod shared_command;
+mod shared_health;
 mod slots;
 mod snapshots;
 mod tool_path;
@@ -23,6 +24,9 @@ pub use queue::{bull_queues_from_keys, count_commands, tally, Count, QueueCounts
 pub use shared::{
     database_names, database_names_where, run_within, Endpoint, PortOwner, SharedAction,
     COMPOSE_FILE, SHARED_NETWORK,
+};
+pub use shared_health::{
+    postgres_answers, redis_answers, tcp_answers, CommandProbe, SharedHealth, SharedProbe,
 };
 pub use slots::SlotStore;
 pub use snapshots::{

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pom_config::Config;
 use pom_paths::StateDir;
@@ -61,18 +61,38 @@ fn shared_stack_comes_up_creates_databases_and_stops() {
             .collect()
     );
 
-    // Postgres accepts connections a moment after its container starts.
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        match runner.ensure_databases(&config, "feat/x") {
-            Ok(()) => break,
-            Err(error) if Instant::now() < deadline => {
-                eprintln!("waiting for postgres: {error}");
-                std::thread::sleep(Duration::from_secs(1));
-            }
-            Err(error) => panic!("databases: {error}"),
-        }
+    let names = ["postgres", "redis"].map(str::to_string);
+    runner
+        .wait_shared_ready(&config, &names, Duration::from_secs(60))
+        .expect("both answer on their host ports");
+    assert!(runner
+        .shared_health(&config)
+        .iter()
+        .all(|health| health.up && health.ready));
+    for name in &names {
+        let health = Command::new("docker")
+            .env("PATH", pom_services::tool_path())
+            .args(["compose", "-f"])
+            .arg(runner.compose_file())
+            .args([
+                "-p",
+                &format!("{SESSION}-shared"),
+                "ps",
+                "--format",
+                "{{.Health}}",
+                name,
+            ])
+            .output()
+            .expect("ps");
+        assert_eq!(
+            String::from_utf8_lossy(&health.stdout).trim(),
+            "",
+            "{name} has no container healthcheck"
+        );
     }
+    runner
+        .create_databases_when_ready(&config, &pom_services::database_names(&config, "feat/x"))
+        .expect("databases");
     let port = runner.shared_host_port("postgres");
     let listed = Command::new("docker")
         .env("PATH", pom_services::tool_path())

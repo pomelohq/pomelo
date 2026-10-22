@@ -3,7 +3,7 @@
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use pom_config::{Config, ServiceHealthCheck};
@@ -65,7 +65,7 @@ pub enum WaitOutcome {
     },
 }
 
-fn loopbacks(port: u16) -> [SocketAddr; 2] {
+pub(crate) fn loopbacks(port: u16) -> [SocketAddr; 2] {
     [
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
         SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port),
@@ -107,7 +107,8 @@ pub fn http_ok(port: u16, path: &str, timeout: Duration) -> bool {
 
 /// `command` exited 0 within `timeout`, run with `sh` in `cwd` with `env`.
 pub fn cmd_ok(command: &str, cwd: &Path, env: &[(String, String)], timeout: Duration) -> bool {
-    let child = Command::new("sh")
+    let mut child = Command::new("sh");
+    child
         .arg("-c")
         .arg(command)
         .current_dir(cwd)
@@ -115,29 +116,8 @@ pub fn cmd_ok(command: &str, cwd: &Path, env: &[(String, String)], timeout: Dura
         .envs(
             env.iter()
                 .map(|(key, value)| (key.as_str(), value.as_str())),
-        )
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    let Ok(mut child) = child else {
-        return false;
-    };
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
-            _ => {
-                if let Err(error) = child.kill() {
-                    eprintln!("services: healthcheck {command}: {error}");
-                }
-                // Reaps the killed check; its status no longer matters.
-                let _ = child.wait();
-                return false;
-            }
-        }
-    }
+        );
+    crate::shared_health::exit_code_within(&mut child, timeout) == Some(0)
 }
 
 fn last_lines(output: &[u8], count: usize) -> String {

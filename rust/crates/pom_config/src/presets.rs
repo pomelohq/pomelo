@@ -2,8 +2,7 @@ use std::collections::HashSet;
 
 use indexmap::IndexMap;
 
-use crate::schema::{Config, Dir, HealthCheck, Preset, SharedServiceDef};
-use crate::yaml_node::Node;
+use crate::schema::{Config, Dir, Preset, SharedServiceDef};
 
 impl Config {
     /// Presets only fill what the repo left unset; nested `preset:` lists expand depth-first so a
@@ -125,12 +124,6 @@ fn well_known_service(kind: &str) -> Option<SharedServiceDef> {
                 ("POSTGRES_DB", "postgres"),
             ]),
             volumes: strings(&["shared_postgres:/var/lib/postgresql/data"]),
-            healthcheck: Some(HealthCheck {
-                test: Some(Node::scalar("pg_isready -U postgres -h 127.0.0.1")),
-                interval: "5s".into(),
-                timeout: "3s".into(),
-                retries: 3,
-            }),
             db_user: "postgres".into(),
             db_password: "postgres".into(),
             ..SharedServiceDef::default()

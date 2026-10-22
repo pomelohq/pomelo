@@ -70,6 +70,7 @@ struct EntryShared {
     name: String,
     kind: &'static str,
     running: bool,
+    ready: bool,
     #[serde(skip_serializing_if = "is_zero")]
     port: u16,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -299,6 +300,7 @@ impl Workspace {
                 name: name.clone(),
                 kind: if def.is_command() { "cmd" } else { "image" },
                 running: running.contains(name),
+                ready: running.contains(name) && self.runner.shared_ready(config, name),
                 port: self.runner.shared_host_port(name),
                 url: env.shared_url(name).unwrap_or_default(),
                 used_by: pom_db::service_users(config, name),

@@ -320,7 +320,7 @@ fn well_known_shared_defaults() {
     assert_eq!(postgres.image, "postgres:16");
     assert_eq!(postgres.ports, ["5432"]);
     assert_eq!(postgres.environment["POSTGRES_USER"], "postgres");
-    assert!(postgres.healthcheck.is_some());
+    assert!(postgres.healthcheck.is_none());
     assert_eq!(postgres.db_user, "postgres");
     let redis = &config.shared_services["redis"];
     assert_eq!(redis.image, "redis:7-alpine");
