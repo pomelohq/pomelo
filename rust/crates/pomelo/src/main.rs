@@ -475,6 +475,8 @@ struct MainWindow {
     entity: ui::Entity<workspace::WorkspaceView>,
     cursor: (f64, f64),
     dirty: bool,
+    /// Minimized, fully covered, on another Space or on a sleeping display: changes wait until it is seen.
+    hidden: bool,
     last_drawn: Instant,
     /// Frames present within the resize transaction until this long after the last resize.
     resizing_until: Option<Instant>,
@@ -1621,6 +1623,7 @@ impl App {
                 entity,
                 cursor: (0.0, 0.0),
                 dirty: false,
+                hidden: false,
                 last_drawn: Instant::now(),
                 resizing_until: None,
                 project: None,
@@ -2583,6 +2586,10 @@ impl App {
         let Some(m) = self.mains.get_mut(&id) else {
             return;
         };
+        if m.hidden {
+            m.dirty = true;
+            return;
+        }
         m.last_drawn = Instant::now();
         let fullscreen = is_native_fullscreen(&m.window);
         m.entity
@@ -3489,7 +3496,7 @@ impl ApplicationHandler for App {
             Some(a) => self
                 .mains
                 .iter()
-                .filter(|(_, m)| m.entity.read(a.app()).ticking())
+                .filter(|(_, m)| !m.hidden && m.entity.read(a.app()).ticking())
                 .map(|(id, _)| *id)
                 .collect(),
             None => Vec::new(),
@@ -3518,7 +3525,7 @@ impl ApplicationHandler for App {
         let dirty: Vec<WindowId> = self
             .mains
             .iter()
-            .filter(|(_, m)| m.dirty)
+            .filter(|(_, m)| m.dirty && !m.hidden)
             .filter_map(|(id, m)| {
                 let due = m.last_drawn + FRAME_INTERVAL;
                 if now >= due {
@@ -3540,7 +3547,7 @@ impl ApplicationHandler for App {
                 .iter()
                 .filter(|(_, m)| {
                     let view = m.entity.read(a.app());
-                    view.editor_focused() || view.terminal_focused()
+                    !m.hidden && (view.editor_focused() || view.terminal_focused())
                 })
                 .map(|(id, _)| *id)
                 .collect(),
@@ -4169,6 +4176,14 @@ impl ApplicationHandler for App {
                     }
                 }
                 WindowEvent::RedrawRequested => self.draw_settings(),
+                WindowEvent::Occluded(occluded) => {
+                    if let Some(ui) = self.settings_ui.as_mut() {
+                        ui.set_hidden(occluded);
+                    }
+                    if !occluded {
+                        self.draw_settings();
+                    }
+                }
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     if let (Some(ui), Some(win)) =
                         (self.settings_ui.as_mut(), self.settings_window.as_ref())
@@ -4351,6 +4366,15 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => self.draw_main(id),
+            WindowEvent::Occluded(occluded) => {
+                if let Some(m) = self.mains.get_mut(&id) {
+                    m.hidden = occluded;
+                    m.ui.set_hidden(occluded);
+                    if !occluded {
+                        m.dirty = true;
+                    }
+                }
+            }
             _ => {}
         }
     }

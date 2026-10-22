@@ -23,7 +23,6 @@ use glyphon::{
     Attrs, Buffer, Cache, Color, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
     Style, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport, Weight,
 };
-use wgpu::util::DeviceExt;
 use wgpu::{
     CompositeAlphaMode, DeviceDescriptor, Instance, LoadOp, MultisampleState, Operations,
     PresentMode, RenderPassColorAttachment, RenderPassDescriptor, RequestAdapterOptions, StoreOp,
@@ -413,8 +412,9 @@ pub struct UiRenderer {
     config: SurfaceConfiguration,
     scale: f32,
     pipeline: wgpu::RenderPipeline,
-    vbuf: wgpu::Buffer,
-    capacity: usize,
+    shape_verts: VertexBuffer,
+    icon_verts: VertexBuffer,
+    hidden: bool,
     font_system: FontSystem,
     swash_cache: SwashCache,
     atlas: TextAtlas,
@@ -432,9 +432,69 @@ pub struct UiRenderer {
     icon_sampler: wgpu::Sampler,
     icon_cache: std::collections::HashMap<IconTexKey, wgpu::BindGroup>,
     msaa: wgpu::TextureView,
+    frames_drawn: u64,
 }
 
 const SAMPLES: u32 = 4;
+
+enum FrameTarget {
+    Surface(wgpu::SurfaceTexture),
+    Offscreen(wgpu::Texture),
+}
+
+impl FrameTarget {
+    fn view(&self) -> wgpu::TextureView {
+        let texture = match self {
+            FrameTarget::Surface(frame) => &frame.texture,
+            FrameTarget::Offscreen(texture) => texture,
+        };
+        texture.create_view(&TextureViewDescriptor::default())
+    }
+}
+
+/// A vertex buffer rewritten in place each frame and only reallocated when a frame outgrows it.
+struct VertexBuffer {
+    label: &'static str,
+    buffer: wgpu::Buffer,
+    allocations: u64,
+}
+
+impl VertexBuffer {
+    fn new(device: &wgpu::Device, label: &'static str, size: u64) -> Self {
+        VertexBuffer {
+            label,
+            buffer: Self::allocate(device, label, size),
+            allocations: 1,
+        }
+    }
+
+    fn allocate(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        let needed = bytes.len() as u64;
+        if needed > self.buffer.size() {
+            self.buffer = Self::allocate(device, self.label, needed.next_power_of_two());
+            self.allocations += 1;
+        }
+        queue.write_buffer(&self.buffer, 0, bytes);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RenderStats {
+    pub frames_drawn: u64,
+    pub vertex_buffer_allocations: u64,
+}
 
 fn make_msaa(
     device: &wgpu::Device,
@@ -1528,13 +1588,8 @@ impl UiRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let capacity = 256;
-        let vbuf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("ui-verts"),
-            size: (capacity * 64) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let shape_verts = VertexBuffer::new(&device, "ui-verts", 256 * 64);
+        let icon_verts = VertexBuffer::new(&device, "ui-icon-verts", 64 * 6 * 36);
 
         let mut font_system = FontSystem::new();
         let (sans_family, mono_family) = load_ui_fonts(&mut font_system);
@@ -1690,8 +1745,10 @@ impl UiRenderer {
             scale,
             msaa,
             pipeline,
-            vbuf,
-            capacity,
+            shape_verts,
+            icon_verts,
+            hidden: false,
+            frames_drawn: 0,
             font_system,
             swash_cache,
             atlas,
@@ -1852,6 +1909,9 @@ impl UiRenderer {
 
     pub fn render(&mut self, rects: &[Rect], tris: &[Tri], texts: &[Text]) -> Result<()> {
         self.drop_released_images();
+        let Some(target) = self.begin_frame() else {
+            return Ok(());
+        };
         let vw = self.config.width as f32;
         let vh = self.config.height as f32;
         const FLOATS_PER_VERT: usize = 16; // pos2 + color4 + local2 + hsize2 + radius1 + bcolor4 + bwidth1
@@ -1898,19 +1958,8 @@ impl UiRenderer {
             }
         }
         let vert_count = verts.len() / FLOATS_PER_VERT;
-        if vert_count > self.capacity {
-            self.capacity = vert_count.next_power_of_two();
-            self.vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("ui-verts"),
-                size: (self.capacity * 64) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !verts.is_empty() {
-            self.queue
-                .write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&verts));
-        }
+        self.shape_verts
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&verts));
 
         // Shape each text run into its own buffer, then prepare the glyph atlas.
         let bounds = TextBounds {
@@ -1981,19 +2030,7 @@ impl UiRenderer {
             &mut self.swash_cache,
         )?;
 
-        let frame = match &self.surface {
-            Some(surface) => match self.acquire_frame(surface) {
-                Some(frame) => Some(frame),
-                None => return Ok(()),
-            },
-            None => None,
-        };
-        let target = match (&frame, &self.offscreen) {
-            (Some(f), _) => &f.texture,
-            (None, Some(tex)) => tex,
-            (None, None) => return Ok(()),
-        };
-        let view = target.create_view(&TextureViewDescriptor::default());
+        let view = target.view();
         let mut encoder = self.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -2014,17 +2051,51 @@ impl UiRenderer {
             });
             if vert_count > 0 {
                 pass.set_pipeline(&self.pipeline);
-                pass.set_vertex_buffer(0, self.vbuf.slice(..));
+                pass.set_vertex_buffer(0, self.shape_verts.buffer.slice(..));
                 pass.draw(0..vert_count as u32, 0..1);
             }
             self.text_renderers[0].render(&self.atlas, &self.viewport, &mut pass)?;
         }
+        self.finish_frame(encoder, target);
+        Ok(())
+    }
+
+    /// Queued buffer writes are freed only by a submit, so a hidden window must not prepare frames at all.
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+    }
+
+    pub fn stats(&self) -> RenderStats {
+        RenderStats {
+            frames_drawn: self.frames_drawn,
+            vertex_buffer_allocations: self.shape_verts.allocations + self.icon_verts.allocations,
+        }
+    }
+
+    fn begin_frame(&mut self) -> Option<FrameTarget> {
+        let target = if self.hidden {
+            None
+        } else {
+            match (&self.surface, &self.offscreen) {
+                (Some(surface), _) => self.acquire_frame(surface).map(FrameTarget::Surface),
+                (None, Some(texture)) => Some(FrameTarget::Offscreen(texture.clone())),
+                (None, None) => None,
+            }
+        };
+        if target.is_none() {
+            // Resources dropped since the last submit are only reclaimed when the device is polled.
+            let _ = self.device.poll(wgpu::PollType::Poll);
+        }
+        target
+    }
+
+    fn finish_frame(&mut self, encoder: wgpu::CommandEncoder, target: FrameTarget) {
         self.queue.submit(Some(encoder.finish()));
-        if let Some(frame) = frame {
+        if let FrameTarget::Surface(frame) = target {
             self.queue.present(frame);
         }
         self.atlas.trim();
-        Ok(())
+        self.frames_drawn += 1;
     }
 
     /// Read the offscreen framebuffer back as RGBA8 (headless only). Call after `render`.
@@ -2176,6 +2247,9 @@ impl UiRenderer {
     /// scrolling menu list (clipped) sits above the body yet below an unclipped tooltip.
     pub fn render_frame(&mut self, clear: Rgba, layers: &[Layer]) -> Result<()> {
         self.drop_released_images();
+        let Some(target) = self.begin_frame() else {
+            return Ok(());
+        };
         const FPV: usize = 16;
         let mut verts: Vec<f32> = Vec::new();
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(layers.len());
@@ -2244,50 +2318,16 @@ impl UiRenderer {
                 icon_draws.push(draws);
             }
         }
-        let icon_vbuf = if icon_verts.is_empty() {
-            None
-        } else {
-            Some(
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("ui-icon-verts"),
-                        contents: bytemuck::cast_slice(&icon_verts),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-            )
-        };
-        let total_vc = verts.len() / FPV;
-        if total_vc > self.capacity {
-            self.capacity = total_vc.next_power_of_two();
-            self.vbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("ui-verts"),
-                size: (self.capacity * 64) as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !verts.is_empty() {
-            self.queue
-                .write_buffer(&self.vbuf, 0, bytemuck::cast_slice(&verts));
-        }
+        self.icon_verts
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&icon_verts));
+        self.shape_verts
+            .write(&self.device, &self.queue, bytemuck::cast_slice(&verts));
         // Prepare all layers' text before any pass, so the atlas is final and every bind group is valid.
         for (i, (_, _, texts, _, _)) in layers.iter().enumerate() {
             self.prepare_layer(texts, i as u8)?;
         }
 
-        let frame = match &self.surface {
-            Some(surface) => match self.acquire_frame(surface) {
-                Some(frame) => Some(frame),
-                None => return Ok(()),
-            },
-            None => None,
-        };
-        let target = match (&frame, &self.offscreen) {
-            (Some(f), _) => &f.texture,
-            (None, Some(tex)) => tex,
-            (None, None) => return Ok(()),
-        };
-        let view = target.create_view(&TextureViewDescriptor::default());
+        let view = target.view();
         let mut encoder = self.device.create_command_encoder(&Default::default());
         for (i, (_, _, _, _, clip)) in layers.iter().enumerate() {
             let load = if i == 0 {
@@ -2332,19 +2372,17 @@ impl UiRenderer {
             let (start, end) = ranges[i];
             if end > start {
                 pass.set_pipeline(&self.pipeline);
-                pass.set_vertex_buffer(0, self.vbuf.slice(..));
+                pass.set_vertex_buffer(0, self.shape_verts.buffer.slice(..));
                 pass.draw(start as u32..end as u32, 0..1);
             }
             // Icons for this layer: one draw per icon, binding its cached alpha mask.
-            if let Some(ibuf) = &icon_vbuf {
-                if !icon_draws[i].is_empty() {
-                    pass.set_pipeline(&self.icon_pipeline);
-                    pass.set_vertex_buffer(0, ibuf.slice(..));
-                    for (key, vs, ve) in &icon_draws[i] {
-                        if let Some(bg) = self.icon_cache.get(key) {
-                            pass.set_bind_group(0, bg, &[]);
-                            pass.draw(*vs..*ve, 0..1);
-                        }
+            if !icon_draws[i].is_empty() {
+                pass.set_pipeline(&self.icon_pipeline);
+                pass.set_vertex_buffer(0, self.icon_verts.buffer.slice(..));
+                for (key, vs, ve) in &icon_draws[i] {
+                    if let Some(bg) = self.icon_cache.get(key) {
+                        pass.set_bind_group(0, bg, &[]);
+                        pass.draw(*vs..*ve, 0..1);
                     }
                 }
             }
@@ -2376,11 +2414,7 @@ impl UiRenderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        self.queue.submit(Some(encoder.finish()));
-        if let Some(frame) = frame {
-            self.queue.present(frame);
-        }
-        self.atlas.trim();
+        self.finish_frame(encoder, target);
         Ok(())
     }
 
@@ -2573,6 +2607,73 @@ mod tests {
         let (_, _, pixels) = renderer.read_rgba().expect("read back");
         // Blending in sRGB gives the midpoint, 128; blending in linear light would give about 188.
         assert!(pixels[0].abs_diff(128) <= 2, "got {}", pixels[0]);
+    }
+
+    #[test]
+    fn steady_frames_reuse_their_buffers_and_a_hidden_window_queues_no_gpu_work() {
+        let Ok(mut renderer) = UiRenderer::new_headless(64, 64, 1.0) else {
+            return;
+        };
+        let clear = Rgba::new(0.0, 0.0, 0.0, 1.0);
+        let rects = [Rect::new(
+            0.0,
+            0.0,
+            32.0,
+            32.0,
+            Rgba::new(1.0, 0.0, 0.0, 1.0),
+        )];
+        let icons = [IconQuad {
+            x: 4.0,
+            y: 4.0,
+            w: 16.0,
+            h: 16.0,
+            kind: IconKind::File,
+            color: Rgba::new(1.0, 1.0, 1.0, 1.0),
+            material: None,
+            image: None,
+        }];
+        let text = |line: &str| Text {
+            x: 0.0,
+            y: 40.0,
+            size: 12.0,
+            color: Rgba::new(1.0, 1.0, 1.0, 1.0),
+            text: line.to_string(),
+            font: TextFont::Ui,
+            weight: 400,
+            italic: false,
+            wrap: 0.0,
+            scale: 1.0,
+        };
+        let draw = |renderer: &mut UiRenderer, line: &str| {
+            let texts = [text(line)];
+            let layers: Vec<Layer> = vec![(&rects, &[], &texts, &icons, None)];
+            renderer.render_frame(clear, &layers).expect("render");
+        };
+
+        draw(&mut renderer, "warm up");
+        let warm = renderer.stats();
+        assert_eq!(warm.frames_drawn, 1);
+        for frame in 0..20 {
+            draw(&mut renderer, &format!("frame {frame}"));
+        }
+        let steady = renderer.stats();
+        assert_eq!(
+            steady.vertex_buffer_allocations,
+            warm.vertex_buffer_allocations
+        );
+        assert_eq!(steady.frames_drawn, warm.frames_drawn + 20);
+
+        renderer.set_hidden(true);
+        let shaped = renderer.shaped_cache.len();
+        for frame in 0..20 {
+            draw(&mut renderer, &format!("hidden {frame}"));
+        }
+        assert_eq!(renderer.stats(), steady);
+        assert_eq!(renderer.shaped_cache.len(), shaped, "nothing was prepared");
+
+        renderer.set_hidden(false);
+        draw(&mut renderer, "shown again");
+        assert_eq!(renderer.stats().frames_drawn, steady.frames_drawn + 1);
     }
 
     #[test]
