@@ -5,6 +5,8 @@ name: Release
 #   Pomelo-<v>.dmg                 install / what older apps' Sparkle feed installs
 #   Pomelo-<v>.app.tar.gz (+ .sig) what the in-app updater downloads and verifies
 #   appcast.xml                    the Sparkle feed apps from before the rewrite poll
+#   Pomelo-<v>-linux-<arch>.tar.gz the Linux app and pom with install.sh (x86_64, aarch64); no in-app updater
+#   pom-<v>-linux-<arch>.tar.gz    pom alone with install.sh, for a server without a desktop
 # Secrets: MACOS_CERT_P12, MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY, KEYCHAIN_PASSWORD, NOTARY_APPLE_ID,
 # NOTARY_APP_PASSWORD, NOTARY_TEAM_ID, SPARKLE_ED_PRIVATE_KEY; DOCS_DISPATCH_TOKEN is optional.
 on:
@@ -168,6 +170,91 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
           rm -f "$RUNNER_TEMP/sparkle_ed_key"
+
+  # Linux has no signing or update feed: each architecture builds the app and CLI tarballs on its own runner,
+  # and they join the release once the macOS job has published it.
+  linux:
+    name: Linux tarball (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the libraries the window and fonts build against
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libx11-xcb-dev \
+            libxcursor-dev libxrandr-dev libxi-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+      # Installs the toolchain rust/rust-toolchain.toml pins.
+      - run: rustup show
+      - name: Embed the published grammars index
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/grammars/index.json"
+          if curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/grammars-index.json" "$url"; then
+            cargo run --release -q -p grammar_packager -- check-index --index "$RUNNER_TEMP/grammars-index.json"
+            cp "$RUNNER_TEMP/grammars-index.json" grammars/index.json
+          else
+            echo "::warning::could not download the published grammars index; the release carries the repository's copy"
+          fi
+          cargo run --release -q -p grammar_packager -- check-index --index grammars/index.json
+      - name: Build the tarballs
+        run: |
+          scripts/bundle-linux.sh prod
+          for TARBALL in target/Pomelo-*-linux-${{ matrix.arch }}.tar.gz target/pom-*-linux-${{ matrix.arch }}.tar.gz; do
+            tar -tzf "$TARBALL" | grep -q '/install.sh$'
+          done
+      # The CLI tarball is for servers without a desktop: pom must not need a display stack to start.
+      - name: pom links no display libraries
+        run: |
+          ldd target/release/pom
+          if ldd target/release/pom | grep -Ei 'libx11|libxcb|libxkb|wayland|libgl|libegl|vulkan|fontconfig|freetype'; then
+            echo "::error::pom links a display library"; exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: |
+            rust/target/Pomelo-*-linux-${{ matrix.arch }}.tar.gz
+            rust/target/pom-*-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  linux-publish:
+    name: Attach the Linux tarballs
+    needs: [release, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: linux-*
+          merge-multiple: true
+          path: linux
+      - name: Upload to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: linux
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          shopt -s nullglob
+          FILES=(Pomelo-"$VERSION"-linux-*.tar.gz pom-"$VERSION"-linux-*.tar.gz)
+          if [ "${#FILES[@]}" -eq 0 ]; then
+            echo "::error::no Linux tarball for $VERSION"; exit 1
+          fi
+          sha256sum "${FILES[@]}" > checksums-linux.txt
+          gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber "${FILES[@]}" checksums-linux.txt
 
   # The docs site mirrors this repo's CHANGELOG at build time but only rebuilds on its own pushes: kick its
   # deploy so the Changelog page shows this release. Skips quietly without DOCS_DISPATCH_TOKEN.
