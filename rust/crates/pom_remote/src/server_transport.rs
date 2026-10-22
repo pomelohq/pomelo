@@ -4,6 +4,7 @@
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,7 @@ pub enum ProxyFailure {
 pub struct ProxyProcess {
     child: Arc<Mutex<Child>>,
     stderr: Arc<Mutex<VecDeque<String>>>,
+    stderr_closed: Arc<AtomicBool>,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -68,7 +70,11 @@ impl ProxyProcess {
 
     /// Why the session ended, from its exit status and stderr.
     pub fn failure(&self, timeout: Duration) -> ProxyFailure {
+        let deadline = Instant::now() + timeout;
         let status = self.wait_exit(timeout);
+        while !self.stderr_closed.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         classify(status.and_then(|status| status.code()), &self.stderr())
     }
 }
@@ -125,7 +131,8 @@ pub fn open(ssh: &Ssh, host: &Host) -> std::io::Result<(pom_rpc::Transport, Prox
     let stdout = child.stdout.take().ok_or_else(|| missing("stdout"))?;
     let stderr_pipe = child.stderr.take().ok_or_else(|| missing("stderr"))?;
     let stderr = Arc::new(Mutex::new(VecDeque::new()));
-    let kept = stderr.clone();
+    let stderr_closed = Arc::new(AtomicBool::new(false));
+    let (kept, closed) = (stderr.clone(), stderr_closed.clone());
     std::thread::Builder::new()
         .name("pom-server-ssh-stderr".into())
         .spawn(move || {
@@ -137,11 +144,19 @@ pub fn open(ssh: &Ssh, host: &Host) -> std::io::Result<(pom_rpc::Transport, Prox
                 }
                 lines.push_back(line);
             }
+            closed.store(true, Ordering::Release);
         })?;
     let child = Arc::new(Mutex::new(child));
     let closing = child.clone();
     let transport = pom_rpc::Transport::new(stdout, stdin).with_closer(move || stop(&closing));
-    Ok((transport, ProxyProcess { child, stderr }))
+    Ok((
+        transport,
+        ProxyProcess {
+            child,
+            stderr,
+            stderr_closed,
+        },
+    ))
 }
 
 #[cfg(test)]

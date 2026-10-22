@@ -19,6 +19,7 @@ use crate::dispatch::Dispatcher;
 use crate::log::{RequestRecord, ServerLog, ROTATE_AT};
 use crate::paths::{ensure_private_dir, ServerPaths};
 use crate::peer;
+use crate::pty::Caller;
 
 pub const DEFAULT_IDLE_EXIT_MINUTES: u64 = 30;
 pub const SOCKET_CHECK_EVERY: Duration = Duration::from_secs(30);
@@ -131,13 +132,16 @@ impl Shared {
             version: self.version.clone(),
             uptime_seconds: self.started.elapsed().as_secs(),
             connections: self.connections.load(Ordering::Acquire),
-            streams: 0,
+            streams: self.dispatcher.ptys().streams(),
             socket: self.paths.socket.clone(),
             log: self.log.path().to_path_buf(),
         }
     }
 
-    fn answer(&self, request: &Request) -> Result<Value, RemoteError> {
+    fn answer(&self, request: &Request, caller: &Caller<'_>) -> Result<Value, RemoteError> {
+        if let Some(answer) = self.dispatcher.dispatch_pty(request, caller) {
+            return answer;
+        }
         match request.method.as_str() {
             method::SERVER_INFO => serde_json::to_value(self.info()).map_err(|error| {
                 RemoteError::new(pom_rpc::error_code::INTERNAL, error.to_string())
@@ -153,6 +157,7 @@ impl Shared {
     fn handle(
         &self,
         connection: u64,
+        client: &str,
         request: Request,
         context: &RequestContext,
     ) -> Result<Value, RemoteError> {
@@ -160,7 +165,12 @@ impl Shared {
         let bytes_in = serde_json::to_vec(&request.params)
             .map(|bytes| bytes.len())
             .unwrap_or_default();
-        let result = self.answer(&request);
+        let caller = Caller {
+            connection,
+            client,
+            context,
+        };
+        let result = self.answer(&request, &caller);
         let bytes_out = match &result {
             Ok(value) => serde_json::to_vec(value)
                 .map(|bytes| bytes.len())
@@ -207,9 +217,13 @@ impl Shared {
                 return;
             }
         };
+        let client_id = Arc::new(Mutex::new(String::new()));
         let handler = {
-            let shared = self.clone();
-            move |request: Request, context: &RequestContext| shared.handle(id, request, context)
+            let (shared, client_id) = (self.clone(), client_id.clone());
+            move |request: Request, context: &RequestContext| {
+                let client = locked(&client_id).clone();
+                shared.handle(id, &client, request, context)
+            }
         };
         let config = Config {
             dead_after: self.dead_after,
@@ -220,6 +234,7 @@ impl Shared {
             .config(config)
             .handler(handler)
             .accept(move |client| {
+                *locked(&client_id) = sanitized(client.client_id.as_deref().unwrap_or_default());
                 let mut hello = Hello::new(version);
                 hello.server_id = Some(server_id);
                 hello.client_id = client.client_id.clone();
@@ -247,8 +262,15 @@ impl Shared {
             }
         };
         self.live().remove(&id);
+        self.dispatcher.ptys().disconnect(id);
         self.log.line(&format!("conn={id} closed: {reason}"));
     }
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// A version string from a client goes into the log, so only its harmless characters do.

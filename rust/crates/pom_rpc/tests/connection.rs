@@ -531,8 +531,6 @@ fn a_flooding_stream_does_not_delay_control_frames() {
 
 #[test]
 fn round_robin_shares_the_pipe_between_streams() {
-    // Far more than any socket buffer holds, so both streams are queued while the writer is
-    // still stuck on the first one.
     let size = 4 * MEBIBYTE;
     let (server, mut raw) = raw_client_with(Config {
         window: size as u64,

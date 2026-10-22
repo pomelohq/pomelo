@@ -15,6 +15,7 @@ pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_remote = { path = "../pom_remote" }
 pom_rpc = { path = "../pom_rpc" }
+pom_shell = { path = "../pom_shell" }
 pom_workspace = { path = "../pom_workspace" }
 serde.workspace = true
 serde_json.workspace = true

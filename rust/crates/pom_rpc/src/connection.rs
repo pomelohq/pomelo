@@ -973,6 +973,10 @@ impl PendingRequest {
         self.canceller().cancel();
     }
 
+    pub fn forget(mut self) {
+        self.finished = true;
+    }
+
     /// For cancelling from another thread while this one waits.
     pub fn canceller(&self) -> Canceller {
         Canceller {
@@ -1143,25 +1147,7 @@ impl StreamReceiver {
     /// Marks everything before the absolute `offset` as consumed. ACKs go out in batches, never more than a
     /// quarter window apart, so the sender never waits on a batch.
     pub fn ack(&self, offset: u64) {
-        let window = self.inner.config.window;
-        let mut state = self.inner.lock();
-        if state.closed.is_some() {
-            return;
-        }
-        let Some(stream) = state.incoming.get_mut(&self.channel) else {
-            return;
-        };
-        let offset = offset.min(stream.received_end.unwrap_or(stream.consumed));
-        if offset <= stream.consumed {
-            return;
-        }
-        stream.consumed = offset;
-        if stream.consumed - stream.acked < ACK_BATCH.min(window / 4).max(1) {
-            return;
-        }
-        stream.acked = stream.consumed;
-        let frame = Frame::offset_only(Kind::Ack, self.channel, stream.acked);
-        self.inner.queue_control(&mut state, frame);
+        acknowledge(&self.inner, self.channel, offset);
     }
 
     /// Input numbering starts at 0; set it when resuming so the peer can drop bytes it already has.
@@ -1173,26 +1159,79 @@ impl StreamReceiver {
 
     /// Sent ahead of stream data: input is small and latency matters more than fairness.
     pub fn send_input(&self, bytes: &[u8]) -> Result<(), Error> {
-        let mut guard = self.inner.lock();
-        guard.check_open()?;
-        let state = &mut *guard;
-        let Some(stream) = state.incoming.get_mut(&self.channel) else {
-            return Err(Error::ChannelEnded("the stream ended".to_string()));
-        };
-        let mut frames = Vec::new();
-        for chunk in bytes.chunks(MAX_DATA) {
-            frames.push(Frame::bytes(
-                Kind::Input,
-                self.channel,
-                stream.input_offset,
-                chunk,
-            )?);
-            stream.input_offset += chunk.len() as u64;
-        }
-        state.priority.extend(frames);
-        self.inner.writer_wakeup.notify_one();
-        Ok(())
+        send_input(&self.inner, self.channel, bytes)
     }
+
+    pub fn handle(&self) -> StreamHandle {
+        StreamHandle {
+            channel: self.channel,
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct StreamHandle {
+    channel: u32,
+    inner: Arc<Inner>,
+}
+
+impl StreamHandle {
+    pub fn channel(&self) -> u32 {
+        self.channel
+    }
+
+    pub fn ack(&self, offset: u64) {
+        acknowledge(&self.inner, self.channel, offset);
+    }
+
+    pub fn send_input(&self, bytes: &[u8]) -> Result<(), Error> {
+        send_input(&self.inner, self.channel, bytes)
+    }
+}
+
+fn acknowledge(inner: &Inner, channel: u32, offset: u64) {
+    let window = inner.config.window;
+    let mut state = inner.lock();
+    if state.closed.is_some() {
+        return;
+    }
+    let Some(stream) = state.incoming.get_mut(&channel) else {
+        return;
+    };
+    let offset = offset.min(stream.received_end.unwrap_or(stream.consumed));
+    if offset <= stream.consumed {
+        return;
+    }
+    stream.consumed = offset;
+    if stream.consumed - stream.acked < ACK_BATCH.min(window / 4).max(1) {
+        return;
+    }
+    stream.acked = stream.consumed;
+    let frame = Frame::offset_only(Kind::Ack, channel, stream.acked);
+    inner.queue_control(&mut state, frame);
+}
+
+fn send_input(inner: &Inner, channel: u32, bytes: &[u8]) -> Result<(), Error> {
+    let mut guard = inner.lock();
+    guard.check_open()?;
+    let state = &mut *guard;
+    let Some(stream) = state.incoming.get_mut(&channel) else {
+        return Err(Error::ChannelEnded("the stream ended".to_string()));
+    };
+    let mut frames = Vec::new();
+    for chunk in bytes.chunks(MAX_DATA) {
+        frames.push(Frame::bytes(
+            Kind::Input,
+            channel,
+            stream.input_offset,
+            chunk,
+        )?);
+        stream.input_offset += chunk.len() as u64;
+    }
+    state.priority.extend(frames);
+    inner.writer_wakeup.notify_one();
+    Ok(())
 }
 
 impl Drop for StreamReceiver {
@@ -1208,7 +1247,7 @@ impl Drop for StreamReceiver {
 pub struct StreamSender {
     channel: u32,
     inner: Arc<Inner>,
-    input: Receiver<InputChunk>,
+    input: Option<Receiver<InputChunk>>,
     finished: bool,
 }
 
@@ -1324,11 +1363,13 @@ impl StreamSender {
     }
 
     pub fn recv_input(&self) -> Result<InputChunk, Error> {
-        self.input.recv().map_err(|_| ended_error(&self.inner))
+        self.input_receiver()?
+            .recv()
+            .map_err(|_| ended_error(&self.inner))
     }
 
     pub fn recv_input_timeout(&self, timeout: Duration) -> Result<InputChunk, Error> {
-        match self.input.recv_timeout(timeout) {
+        match self.input_receiver()?.recv_timeout(timeout) {
             Ok(chunk) => Ok(chunk),
             Err(RecvTimeoutError::Timeout) => Err(Error::Timeout),
             Err(RecvTimeoutError::Disconnected) => Err(ended_error(&self.inner)),
@@ -1336,10 +1377,41 @@ impl StreamSender {
     }
 
     pub fn try_recv_input(&self) -> Result<Option<InputChunk>, Error> {
-        match self.input.try_recv() {
+        match self.input_receiver()?.try_recv() {
             Ok(chunk) => Ok(Some(chunk)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err(ended_error(&self.inner)),
+        }
+    }
+
+    fn input_receiver(&self) -> Result<&Receiver<InputChunk>, Error> {
+        self.input
+            .as_ref()
+            .ok_or_else(|| Error::ChannelEnded("the input was taken".to_string()))
+    }
+
+    pub fn take_input(&mut self) -> Option<InputReceiver> {
+        self.input.take().map(|receiver| InputReceiver {
+            receiver,
+            inner: self.inner.clone(),
+        })
+    }
+
+    pub fn wait_credit(&self, at_least: u64, timeout: Duration) -> Result<u64, Error> {
+        let window = self.inner.config.window;
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.inner.lock();
+        loop {
+            guard.check_open()?;
+            let Some(stream) = guard.outgoing.get(&self.channel) else {
+                return Err(Error::ChannelEnded("the receiver left".to_string()));
+            };
+            let credit = window.saturating_sub(stream.queued_offset - stream.acked);
+            let now = Instant::now();
+            if credit >= at_least.min(window) || now >= deadline {
+                return Ok(credit);
+            }
+            guard = self.inner.wait_changed(guard, deadline - now);
         }
     }
 
@@ -1376,6 +1448,25 @@ impl StreamSender {
 impl Drop for StreamSender {
     fn drop(&mut self) {
         self.end("closed");
+    }
+}
+
+pub struct InputReceiver {
+    receiver: Receiver<InputChunk>,
+    inner: Arc<Inner>,
+}
+
+impl InputReceiver {
+    pub fn recv(&self) -> Result<InputChunk, Error> {
+        self.receiver.recv().map_err(|_| ended_error(&self.inner))
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<InputChunk, Error> {
+        match self.receiver.recv_timeout(timeout) {
+            Ok(chunk) => Ok(chunk),
+            Err(RecvTimeoutError::Timeout) => Err(Error::Timeout),
+            Err(RecvTimeoutError::Disconnected) => Err(ended_error(&self.inner)),
+        }
     }
 }
 
@@ -1590,7 +1681,7 @@ impl Connection {
         Ok(StreamSender {
             channel,
             inner: self.inner.clone(),
-            input: receiver,
+            input: Some(receiver),
             finished: false,
         })
     }

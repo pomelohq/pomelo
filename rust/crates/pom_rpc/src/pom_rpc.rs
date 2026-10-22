@@ -7,11 +7,13 @@ mod error;
 mod frame;
 #[cfg(unix)]
 pub mod mock;
+pub mod pty;
 
 pub use connection::{
-    Canceller, Config, Connection, ConnectionBuilder, ConnectionState, InputChunk, PendingRequest,
-    Publisher, PushEvent, RequestContext, RequestHandler, StreamEvent, StreamReceiver,
-    StreamSender, Subscription, Transport, DEFAULT_WINDOW, MAX_CHANNELS, MAX_PENDING_REQUESTS,
+    Canceller, Config, Connection, ConnectionBuilder, ConnectionState, InputChunk, InputReceiver,
+    PendingRequest, Publisher, PushEvent, RequestContext, RequestHandler, StreamEvent,
+    StreamHandle, StreamReceiver, StreamSender, Subscription, Transport, DEFAULT_WINDOW,
+    MAX_CHANNELS, MAX_PENDING_REQUESTS,
 };
 pub use envelope::{
     decode, error_code, End, Hello, Push, RemoteError, Request, Response, PROTOCOL_VERSION,

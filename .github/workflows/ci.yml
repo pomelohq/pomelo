@@ -215,7 +215,8 @@ jobs:
             '
 
   # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
-  # lock, idle and socket-removed exits, and the app's reads through `pom server proxy` behind a fake ssh.
+  # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), and the
+  # app's reads and shells through `pom server proxy` behind a fake ssh.
   pom-server:
     name: pom server (Linux)
     needs: changes
@@ -235,9 +236,23 @@ jobs:
           workspaces: rust
           shared-key: linux-cli
           save-if: false
-      - run: cargo test -p pom_server -p pom_rpc
+      # pom_ptyhost builds the holder binary the terminal tests run.
+      - run: cargo test -p pom_server -p pom_rpc -p pom_ptyhost
       - run: cargo test -p pom_remote server
       - run: cargo test -p pom_cli --test remote server
+      # Measures keystrokes through a real ssh session without a tty; sshd and its key live only on this runner.
+      - name: Keystrokes through a real sshd on this runner
+        continue-on-error: true
+        run: |
+          sudo apt-get install -yq --no-install-recommends openssh-server >/dev/null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -q -f ~/.ssh/pom_ci_key
+          cat ~/.ssh/pom_ci_key.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          printf 'Host localhost\n  IdentityFile ~/.ssh/pom_ci_key\n  StrictHostKeyChecking accept-new\n' >> ~/.ssh/config
+          sudo systemctl start ssh || sudo service ssh start
+          ssh -o BatchMode=yes localhost true
+          POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd -- --nocapture
 
   # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
   postgres:

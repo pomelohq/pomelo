@@ -165,11 +165,17 @@ fn serve_client(
                 reader_session.remove_client(client);
                 reader_session.unsubscribe_id(subscription_id);
             })?;
-        for chunk in subscription.output.iter() {
+        while let Some(chunk) = subscription.recv() {
             stream.write_all(&chunk)?;
         }
         Ok(())
     })();
+    if result.is_ok() && subscription.overflowed() {
+        if let Err(error) = stream.shutdown(std::net::Shutdown::Write) {
+            eprintln!("ptyhost: stop a client's output: {error}");
+        }
+        return result;
+    }
     if let Err(error) = stream.shutdown(std::net::Shutdown::Both) {
         if error.kind() != io::ErrorKind::NotConnected {
             eprintln!("ptyhost: close client: {error}");

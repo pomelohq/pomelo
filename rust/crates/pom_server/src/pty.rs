@@ -1,0 +1,753 @@
+//! Terminals for a remote app: `pty.open` starts or finds a holder of a workspace, `pty.attach` bridges it onto
+//! a stream. The bridge always drains the holder, because a holder drops output for a client that falls behind;
+//! when the app stops acknowledging, it detaches instead and resumes from the holder's ring by offset.
+
+use std::collections::{HashMap, VecDeque};
+use std::io::{self, BufReader, Read};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use pom_ptyhost::{HolderConnection, SocketDir, SpawnRequest};
+use pom_remote::{LocalSource, ProjectSource, WorkspaceTerminals};
+use pom_rpc::pty::{
+    AttachParams, Attached, ChannelParams, CloseParams, Exit, Kind, Mode, OpenParams, Opened,
+    ResizeParams, EXIT_TOPIC, MAX_SIZE,
+};
+use pom_rpc::{
+    error_code, Connection, InputReceiver, Publisher, RemoteError, RequestContext, StreamSender,
+    MAX_DATA,
+};
+use serde_json::Value;
+
+const RING: u64 = pom_ptyhost::RING_CAPACITY as u64;
+const HOLDER_START: Duration = Duration::from_secs(5);
+/// How often a waiting bridge looks up from its wait to notice a detach.
+const POLL: Duration = Duration::from_millis(100);
+const MAX_CLAIM: usize = 256;
+const MAX_TERMINAL_ID: usize = 64;
+
+fn invalid(message: impl Into<String>) -> RemoteError {
+    RemoteError::new(error_code::INVALID_PARAMS, message)
+}
+
+fn failed(message: impl Into<String>) -> RemoteError {
+    RemoteError::new(crate::dispatch::FAILED, message)
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub fn check_size(cols: u16, rows: u16) -> Result<(), RemoteError> {
+    if (1..=MAX_SIZE).contains(&cols) && (1..=MAX_SIZE).contains(&rows) {
+        Ok(())
+    } else {
+        Err(invalid(format!(
+            "cols and rows must be 1..{MAX_SIZE}, got {cols}x{rows}"
+        )))
+    }
+}
+
+/// A holder this server may touch: one of `workspace`'s shells, services or agents.
+pub fn check_holder(workspace: &WorkspaceTerminals, holder: &str) -> Result<(), RemoteError> {
+    let (kind, rest) = holder.split_once('-').unwrap_or_default();
+    let shaped = matches!(kind, "ws" | "svc" | "term")
+        && holder.len() <= 255
+        && !rest.is_empty()
+        && rest
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '-'));
+    if !shaped {
+        return Err(invalid(format!("{holder:?} is not a holder name")));
+    }
+    if !workspace.owns(holder) {
+        return Err(invalid(format!(
+            "{holder} is not a terminal of this workspace"
+        )));
+    }
+    Ok(())
+}
+
+/// `cwd` must name a directory inside the workspace's worktree, symlinks resolved.
+pub fn check_cwd(worktree: &Path, cwd: &str) -> Result<PathBuf, RemoteError> {
+    let path = Path::new(cwd);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        worktree.join(path)
+    };
+    let resolved =
+        std::fs::canonicalize(&path).map_err(|error| invalid(format!("cwd {cwd}: {error}")))?;
+    let root = std::fs::canonicalize(worktree)
+        .map_err(|error| failed(format!("{}: {error}", worktree.display())))?;
+    if !resolved.starts_with(&root) || !resolved.is_dir() {
+        return Err(invalid(format!(
+            "cwd {cwd} is not a folder inside the workspace"
+        )));
+    }
+    Ok(resolved)
+}
+
+fn check_text(what: &str, text: &str, limit: usize) -> Result<(), RemoteError> {
+    if text.len() > limit || text.chars().any(char::is_control) {
+        return Err(invalid(format!("{what} is not valid")));
+    }
+    Ok(())
+}
+
+/// The shell a new terminal runs, and the variables it gets on top of the server's.
+#[derive(Clone, Debug)]
+pub struct ShellCommand {
+    pub argv: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+impl ShellCommand {
+    pub fn login() -> ShellCommand {
+        let mut env = vec![
+            ("TERM_PROGRAM".to_string(), "pomelo".to_string()),
+            (
+                "TERM_PROGRAM_VERSION".to_string(),
+                env!("CARGO_PKG_VERSION").to_string(),
+            ),
+        ];
+        if std::env::var_os("LANG").is_none() {
+            env.push(("LANG".to_string(), "en_US.UTF-8".to_string()));
+        }
+        ShellCommand {
+            argv: pom_shell::Shell::user().interactive_argv(),
+            env,
+        }
+    }
+}
+
+/// Input already written per (client terminal, holder), so a resent chunk is never typed twice.
+#[derive(Default)]
+struct Inputs {
+    applied: Mutex<HashMap<(String, String), u64>>,
+}
+
+impl Inputs {
+    /// Where a terminal's numbering goes on: its own `resume` point, or what the holder already took.
+    fn start(&self, key: &(String, String), resume: Option<u64>) -> u64 {
+        let mut applied = locked(&self.applied);
+        let known = applied.entry(key.clone()).or_insert(0);
+        match resume {
+            Some(offset) => offset,
+            None => *known,
+        }
+    }
+
+    /// The part of `bytes` (numbered from `offset`) not written yet.
+    fn fresh<'a>(&self, key: &(String, String), offset: u64, bytes: &'a [u8]) -> &'a [u8] {
+        let mut applied = locked(&self.applied);
+        let done = applied.entry(key.clone()).or_insert(0);
+        let end = offset.saturating_add(bytes.len() as u64);
+        let skip = done.saturating_sub(offset).min(bytes.len() as u64) as usize;
+        *done = (*done).max(end);
+        bytes.get(skip..).unwrap_or_default()
+    }
+}
+
+/// The holder's output read so far and not yet handed to the stream.
+struct Flow {
+    buffer: VecDeque<Vec<u8>>,
+    buffered: usize,
+    /// The holder offset right after the last buffered byte.
+    end: u64,
+    /// The reading connection while attached; `None` while detached for lack of credit.
+    reader: Option<HolderConnection>,
+    /// Bumped at every detach, so a reader that outlived its connection stops.
+    generation: u64,
+    holder_gone: bool,
+    closing: Option<String>,
+}
+
+/// One holder bridged onto one stream of one connection.
+pub struct Bridge {
+    holder: String,
+    dir: SocketDir,
+    window: u64,
+    flow: Mutex<Flow>,
+    changed: Condvar,
+    /// Input, sizes, primary and claim go through a connection of their own, kept while reading detaches.
+    writer: Mutex<HolderConnection>,
+    last_resize: Mutex<u64>,
+    events: Option<Arc<Publisher>>,
+}
+
+struct Resumed {
+    start: u64,
+    end: u64,
+    data: Vec<u8>,
+    connection: HolderConnection,
+    output: BufReader<UnixStream>,
+}
+
+impl Bridge {
+    fn flow(&self) -> MutexGuard<'_, Flow> {
+        locked(&self.flow)
+    }
+
+    /// Attaches a reader from `since`. A ring that no longer holds `since` replays from its start; replayed
+    /// bytes the holder scrubbed (device queries) come back as NULs so offsets stay exact.
+    fn open_reader(&self, since: u64, exact: bool) -> io::Result<Resumed> {
+        let attached = pom_ptyhost::attach(&self.dir, &self.holder, since)?;
+        let end = attached.end;
+        let in_ring = since <= end && end - since <= RING;
+        let length = attached.snapshot.len() as u64;
+        let start = match (in_ring, exact) {
+            (true, true) => since,
+            _ => end.saturating_sub(RING).max(end.saturating_sub(length)),
+        };
+        let padding = (end - start).saturating_sub(length) as usize;
+        let mut data = vec![0u8; padding];
+        data.extend_from_slice(&attached.snapshot);
+        Ok(Resumed {
+            start,
+            end,
+            data,
+            connection: attached.connection,
+            output: attached.output,
+        })
+    }
+
+    fn adopt(self: &Arc<Self>, resumed: Resumed) -> io::Result<()> {
+        let generation = {
+            let mut flow = self.flow();
+            flow.buffered += resumed.data.len();
+            if !resumed.data.is_empty() {
+                flow.buffer.push_back(resumed.data);
+            }
+            flow.end = resumed.end;
+            flow.generation += 1;
+            flow.reader = Some(resumed.connection);
+            flow.generation
+        };
+        self.changed.notify_all();
+        let bridge = self.clone();
+        let output = resumed.output;
+        std::thread::Builder::new()
+            .name("pom-server-pty-read".into())
+            .spawn(move || bridge.read(output, generation))
+            .map(|_| ())
+    }
+
+    fn detach_reader(flow: &mut Flow) {
+        flow.generation += 1;
+        if let Some(reader) = flow.reader.take() {
+            if let Err(error) = reader.shutdown() {
+                if error.kind() != io::ErrorKind::NotConnected {
+                    eprintln!("pom server: detach from a holder: {error}");
+                }
+            }
+        }
+    }
+
+    fn read(self: Arc<Self>, mut output: BufReader<UnixStream>, generation: u64) {
+        let mut chunk = vec![0u8; MAX_DATA];
+        loop {
+            let read = output.read(&mut chunk);
+            let mut flow = self.flow();
+            if flow.generation != generation {
+                return;
+            }
+            match read {
+                Ok(0) => break,
+                Ok(count) => {
+                    flow.buffer
+                        .push_back(chunk.get(..count).unwrap_or_default().to_vec());
+                    flow.buffered += count;
+                    flow.end += count as u64;
+                    if flow.buffered as u64 >= self.window {
+                        Self::detach_reader(&mut flow);
+                    }
+                    drop(flow);
+                    self.changed.notify_all();
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        // The command exited, or the holder stopped the output of a reader that fell behind: resuming tells which.
+        let mut flow = self.flow();
+        if flow.generation == generation {
+            flow.reader = None;
+        }
+        drop(flow);
+        self.changed.notify_all();
+    }
+
+    fn close(&self, reason: &str) {
+        let mut flow = self.flow();
+        if flow.closing.is_none() {
+            flow.closing = Some(reason.to_string());
+        }
+        drop(flow);
+        self.changed.notify_all();
+    }
+
+    fn shut_down(&self) {
+        Self::detach_reader(&mut self.flow());
+        if let Err(error) = locked(&self.writer).shutdown() {
+            if error.kind() != io::ErrorKind::NotConnected {
+                eprintln!("pom server: close a holder writer: {error}");
+            }
+        }
+    }
+
+    fn resize(&self, seq: u64, cols: u16, rows: u16) -> io::Result<()> {
+        let mut last = locked(&self.last_resize);
+        if seq < *last {
+            return Ok(());
+        }
+        *last = seq;
+        locked(&self.writer).resize(cols, rows)
+    }
+
+    fn exit(&self) {
+        let crashed = self
+            .dir
+            .crash_info(&self.holder)
+            .is_some_and(|info| info.crashed);
+        if let Some(events) = &self.events {
+            let exit = Exit {
+                holder: self.holder.clone(),
+                crashed,
+            };
+            if let Err(error) = events.publish(EXIT_TOPIC, exit) {
+                eprintln!("pom server: pty.exit: {error}");
+            }
+        }
+    }
+
+    /// Hands buffered output to the stream as credit allows, resuming the holder once the app caught up.
+    fn pump(self: Arc<Self>, mut sender: StreamSender) -> String {
+        let half = self.window - self.window / 2;
+        loop {
+            let mut flow = self.flow();
+            while flow.closing.is_none() && flow.buffer.is_empty() && flow.reader.is_some() {
+                flow = match self.changed.wait_timeout(flow, POLL) {
+                    Ok((flow, _)) => flow,
+                    Err(poisoned) => poisoned.into_inner().0,
+                };
+            }
+            if let Some(reason) = flow.closing.clone() {
+                drop(flow);
+                sender.finish(&reason);
+                return reason;
+            }
+            if let Some(mut bytes) = flow.buffer.pop_front() {
+                drop(flow);
+                let written = match sender.try_write(&bytes) {
+                    Ok(0) => {
+                        if sender.wait_credit(1, POLL).is_err() {
+                            self.close("client gone");
+                        }
+                        0
+                    }
+                    Ok(written) => written,
+                    Err(_) => {
+                        self.close("client gone");
+                        0
+                    }
+                };
+                let mut flow = self.flow();
+                flow.buffered -= written;
+                if written < bytes.len() {
+                    bytes.drain(..written);
+                    flow.buffer.push_front(bytes);
+                }
+                continue;
+            }
+            if flow.holder_gone {
+                drop(flow);
+                self.exit();
+                sender.finish("exit");
+                return "exit".to_string();
+            }
+            let from = flow.end;
+            drop(flow);
+            match sender.wait_credit(half, POLL) {
+                Ok(credit) if credit >= half => {}
+                Ok(_) => continue,
+                Err(_) => {
+                    self.close("client gone");
+                    continue;
+                }
+            }
+            match self.open_reader(from, true) {
+                // A restarted service runs in a new holder of the same name, behind this offset.
+                Ok(resumed) if resumed.start < from => {
+                    if let Err(error) = resumed.connection.shutdown() {
+                        eprintln!("pom server: leave a replaced holder: {error}");
+                    }
+                    self.flow().holder_gone = true;
+                }
+                Ok(resumed) => {
+                    if resumed.start != from && sender.reset(resumed.start).is_err() {
+                        self.close("client gone");
+                        continue;
+                    }
+                    if let Err(error) = self.adopt(resumed) {
+                        eprintln!("pom server: resume {}: {error}", self.holder);
+                        self.close("resume failed");
+                    }
+                }
+                Err(_) => {
+                    let gone = !self.dir.holder_alive(&self.holder);
+                    if gone {
+                        self.flow().holder_gone = true;
+                    } else {
+                        std::thread::sleep(POLL);
+                    }
+                }
+            }
+        }
+    }
+
+    fn forward_input(
+        self: Arc<Self>,
+        input: InputReceiver,
+        inputs: Arc<Inputs>,
+        key: (String, String),
+        mode: Mode,
+    ) {
+        while let Ok(chunk) = input.recv() {
+            if mode == Mode::ReadOnly {
+                continue;
+            }
+            let fresh = inputs.fresh(&key, chunk.offset, &chunk.bytes);
+            if fresh.is_empty() {
+                continue;
+            }
+            if let Err(error) = locked(&self.writer).input(fresh) {
+                eprintln!("pom server: input to {}: {error}", self.holder);
+            }
+        }
+        self.close("detached");
+    }
+}
+
+type Streams = Mutex<HashMap<(u64, u32), Arc<Bridge>>>;
+
+/// Every bridged terminal of every connection, the input already typed, and the push channels for exits.
+pub struct Ptys {
+    holders: SocketDir,
+    binary: PathBuf,
+    shell: Mutex<ShellCommand>,
+    streams: Arc<Streams>,
+    inputs: Arc<Inputs>,
+    publishers: Arc<Publishers>,
+    next_shell: AtomicU64,
+}
+
+type Publishers = Mutex<HashMap<(u64, u32), Arc<Publisher>>>;
+
+/// Who asks: the connection, the client's id from its HELLO, and the connection itself.
+pub struct Caller<'a> {
+    pub connection: u64,
+    pub client: &'a str,
+    pub context: &'a RequestContext,
+}
+
+fn params<T: serde::de::DeserializeOwned + Default>(value: &Value) -> Result<T, RemoteError> {
+    if value.is_null() {
+        return Ok(T::default());
+    }
+    serde_json::from_value(value.clone()).map_err(|error| invalid(format!("bad params: {error}")))
+}
+
+fn to_value(value: impl serde::Serialize) -> Result<Value, RemoteError> {
+    serde_json::to_value(value)
+        .map_err(|error| RemoteError::new(error_code::INTERNAL, error.to_string()))
+}
+
+impl Ptys {
+    pub fn new(holders: SocketDir, binary: PathBuf) -> Ptys {
+        Ptys {
+            holders,
+            binary,
+            shell: Mutex::new(ShellCommand::login()),
+            streams: Arc::new(Mutex::new(HashMap::new())),
+            inputs: Arc::new(Inputs::default()),
+            publishers: Arc::new(Mutex::new(HashMap::new())),
+            next_shell: AtomicU64::new(1),
+        }
+    }
+
+    pub fn set_shell(&self, shell: ShellCommand) {
+        *locked(&self.shell) = shell;
+    }
+
+    pub fn streams(&self) -> usize {
+        locked(&self.streams).len()
+    }
+
+    fn stream(&self, connection: u64, channel: u32) -> Result<Arc<Bridge>, RemoteError> {
+        locked(&self.streams)
+            .get(&(connection, channel))
+            .cloned()
+            .ok_or_else(|| invalid(format!("no terminal on channel {channel}")))
+    }
+
+    pub fn open(&self, source: &LocalSource, raw: &Value) -> Result<Value, RemoteError> {
+        let params: OpenParams = params(raw)?;
+        check_size(params.cols, params.rows)?;
+        let workspace = source
+            .workspace_terminals(&params.branch)
+            .map_err(|error| failed(error.to_string()))?;
+        let holder = match params.kind {
+            Kind::Shell => self.open_shell(&workspace, &params)?,
+            Kind::Service => {
+                let service = params
+                    .service
+                    .as_deref()
+                    .ok_or_else(|| invalid("a service terminal needs service"))?;
+                crate::dispatch::check_name("service", service)?;
+                let holder = source
+                    .service_holder(&params.branch, service)
+                    .map_err(|error| failed(error.to_string()))?;
+                self.running(&holder, &format!("{service} is not running"))?
+            }
+            Kind::Agent => {
+                let role = params
+                    .role
+                    .as_deref()
+                    .ok_or_else(|| invalid("an agent terminal needs role"))?;
+                crate::dispatch::check_name("agent role", role)?;
+                let holder = source
+                    .agents(&params.branch)
+                    .map_err(|error| failed(error.to_string()))?
+                    .into_iter()
+                    .find(|agent| agent.role == role)
+                    .map(|agent| agent.holder)
+                    .ok_or_else(|| failed(format!("no agent {}/{role}", params.branch)))?;
+                self.running(&holder, &format!("agent {role} is not running"))?
+            }
+        };
+        check_holder(&workspace, &holder)?;
+        to_value(Opened { holder })
+    }
+
+    fn running(&self, holder: &str, message: &str) -> Result<String, RemoteError> {
+        if self.holders.holder_alive(holder) {
+            Ok(holder.to_string())
+        } else {
+            Err(failed(message))
+        }
+    }
+
+    fn open_shell(
+        &self,
+        workspace: &WorkspaceTerminals,
+        params: &OpenParams,
+    ) -> Result<String, RemoteError> {
+        let cwd = match &params.cwd {
+            Some(cwd) => check_cwd(&workspace.worktree, cwd)?,
+            None => workspace.worktree.clone(),
+        };
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis());
+        let holder = format!(
+            "{}-{millis}-{}",
+            workspace.shell_prefix(),
+            self.next_shell.fetch_add(1, Ordering::AcqRel)
+        );
+        let shell = locked(&self.shell).clone();
+        let request = SpawnRequest {
+            binary: &self.binary,
+            name: &holder,
+            cwd: &cwd,
+            cols: params.cols,
+            rows: params.rows,
+            argv: &shell.argv,
+            env: &shell.env,
+            group: Some(&workspace.group),
+        };
+        pom_ptyhost::spawn_holder(&self.holders, &request)
+            .map_err(|error| failed(format!("start a shell: {error}")))?;
+        pom_ptyhost::wait_for_holder(&self.holders, &holder, HOLDER_START)
+            .map_err(|error| failed(format!("the shell did not start: {error}")))?;
+        Ok(holder)
+    }
+
+    fn publisher(
+        &self,
+        connection: &Connection,
+        id: u64,
+        channel: u32,
+    ) -> Result<Arc<Publisher>, RemoteError> {
+        let mut publishers = locked(&self.publishers);
+        if let Some(publisher) = publishers.get(&(id, channel)) {
+            return Ok(publisher.clone());
+        }
+        let publisher = Arc::new(
+            connection
+                .publisher(channel)
+                .map_err(|error| invalid(format!("events: {error}")))?,
+        );
+        publishers.insert((id, channel), publisher.clone());
+        Ok(publisher)
+    }
+
+    pub fn attach(
+        &self,
+        source: &LocalSource,
+        caller: &Caller<'_>,
+        raw: &Value,
+    ) -> Result<Value, RemoteError> {
+        let params: AttachParams = params(raw)?;
+        check_size(params.cols, params.rows)?;
+        check_text("terminal", &params.terminal, MAX_TERMINAL_ID)?;
+        if let Some(claim) = &params.claim {
+            check_text("claim", claim, MAX_CLAIM)?;
+        }
+        let workspace = source
+            .workspace_terminals(&params.branch)
+            .map_err(|error| failed(error.to_string()))?;
+        check_holder(&workspace, &params.holder)?;
+        self.running(&params.holder, &format!("{} is not running", params.holder))?;
+        let connection = caller.context.connection();
+        let events = params
+            .events
+            .map(|channel| self.publisher(connection, caller.connection, channel))
+            .transpose()?;
+        let unreachable = |error: io::Error| failed(format!("{}: {error}", params.holder));
+        let mut writer =
+            pom_ptyhost::connect_writer(&self.holders, &params.holder).map_err(unreachable)?;
+        if let Some(claim) = &params.claim {
+            writer.claim(claim).map_err(unreachable)?;
+        }
+        writer
+            .resize(params.cols, params.rows)
+            .map_err(unreachable)?;
+        if params.primary {
+            writer.primary().map_err(unreachable)?;
+        }
+        let bridge = Arc::new(Bridge {
+            holder: params.holder.clone(),
+            dir: self.holders.clone(),
+            window: connection.config().window,
+            flow: Mutex::new(Flow {
+                buffer: VecDeque::new(),
+                buffered: 0,
+                end: 0,
+                reader: None,
+                generation: 0,
+                holder_gone: false,
+                closing: None,
+            }),
+            changed: Condvar::new(),
+            writer: Mutex::new(writer),
+            last_resize: Mutex::new(0),
+            events,
+        });
+        let resumed = bridge
+            .open_reader(params.since, params.since > 0)
+            .map_err(unreachable)?;
+        let (start, end) = (resumed.start, resumed.end);
+        let mut sender = match connection.attach_stream(params.channel, start) {
+            Ok(sender) => sender,
+            Err(error) => {
+                bridge.shut_down();
+                return Err(invalid(format!("channel {}: {error}", params.channel)));
+            }
+        };
+        let input = sender.take_input();
+        bridge.adopt(resumed).map_err(unreachable)?;
+        let key = (
+            format!("{}/{}", caller.client, params.terminal),
+            params.holder.clone(),
+        );
+        let input_from = self.inputs.start(&key, params.input_from);
+        let stream_key = (caller.connection, params.channel);
+        locked(&self.streams).insert(stream_key, bridge.clone());
+        if let Some(input) = input {
+            let (bridge, inputs) = (bridge.clone(), self.inputs.clone());
+            let mode = params.mode;
+            std::thread::Builder::new()
+                .name("pom-server-pty-input".into())
+                .spawn(move || bridge.forward_input(input, inputs, key, mode))
+                .map_err(|error| failed(error.to_string()))?;
+        }
+        let (streams, publishers) = (self.streams.clone(), self.publishers.clone());
+        let events_key = params.events.map(|channel| (caller.connection, channel));
+        let pumped = bridge.clone();
+        std::thread::Builder::new()
+            .name("pom-server-pty-pump".into())
+            .spawn(move || {
+                pumped.clone().pump(sender);
+                pumped.shut_down();
+                locked(&streams).remove(&stream_key);
+                if let Some(events_key) = events_key {
+                    locked(&publishers).remove(&events_key);
+                }
+            })
+            .map_err(|error| failed(error.to_string()))?;
+        to_value(Attached {
+            holder: params.holder,
+            start,
+            end,
+            input_from,
+        })
+    }
+
+    pub fn resize(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {
+        let params: ResizeParams = params(raw)?;
+        check_size(params.cols, params.rows)?;
+        self.stream(caller.connection, params.channel)?
+            .resize(params.seq, params.cols, params.rows)
+            .map_err(|error| failed(error.to_string()))?;
+        Ok(Value::Null)
+    }
+
+    pub fn primary(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {
+        let params: ChannelParams = params(raw)?;
+        let bridge = self.stream(caller.connection, params.channel)?;
+        locked(&bridge.writer)
+            .primary()
+            .map_err(|error| failed(error.to_string()))?;
+        Ok(Value::Null)
+    }
+
+    /// Ends the stream; the holder and its command keep running.
+    pub fn detach(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {
+        let params: ChannelParams = params(raw)?;
+        self.stream(caller.connection, params.channel)?
+            .close("detached");
+        Ok(Value::Null)
+    }
+
+    pub fn close(&self, source: &LocalSource, raw: &Value) -> Result<Value, RemoteError> {
+        let params: CloseParams = params(raw)?;
+        let workspace = source
+            .workspace_terminals(&params.branch)
+            .map_err(|error| failed(error.to_string()))?;
+        check_holder(&workspace, &params.holder)?;
+        match self.holders.kill_holder(&params.holder) {
+            Ok(()) => Ok(Value::Null),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Value::Null),
+            Err(error) => Err(failed(error.to_string())),
+        }
+    }
+
+    /// A client went away: its streams end and their holders keep running.
+    pub fn disconnect(&self, connection: u64) {
+        let bridges: Vec<Arc<Bridge>> = locked(&self.streams)
+            .iter()
+            .filter(|((owner, _), _)| *owner == connection)
+            .map(|(_, bridge)| bridge.clone())
+            .collect();
+        for bridge in bridges {
+            bridge.close("client gone");
+        }
+        locked(&self.publishers).retain(|(owner, _), _| *owner != connection);
+    }
+}

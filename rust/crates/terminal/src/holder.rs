@@ -6,6 +6,7 @@ use std::io::{self, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,7 @@ pub(crate) struct HolderBackend {
     connection: HolderConnection,
     /// The command the holder runs (the shell), for the tab title's foreground process.
     pub(crate) shell_pid: Option<u32>,
+    detached: Arc<AtomicBool>,
 }
 
 impl HolderBackend {
@@ -64,15 +66,22 @@ impl HolderBackend {
             .holder_pid(&options.name)
             .and_then(first_child)
             .map(|pid| pid as u32);
-        let (dir, name) = (options.dir.clone(), options.name.clone());
+        let detached = Arc::new(AtomicBool::new(false));
+        let reading = Reading {
+            dir: options.dir.clone(),
+            name: options.name.clone(),
+            offset: attached.end,
+            detached: detached.clone(),
+        };
         let output = attached.output;
         std::thread::Builder::new()
             .name("terminal-holder".into())
-            .spawn(move || read_output(output, processor, &term, &listener, &dir, &name))?;
+            .spawn(move || read_output(output, processor, &term, &listener, reading))?;
         Ok(HolderBackend {
             options,
             connection: attached.connection,
             shell_pid,
+            detached,
         })
     }
 
@@ -96,6 +105,7 @@ impl HolderBackend {
     }
 
     pub(crate) fn detach(&self) {
+        self.detached.store(true, Ordering::Release);
         if let Err(error) = self.connection.shutdown() {
             if error.kind() != io::ErrorKind::NotConnected {
                 eprintln!("terminal holder detach: {error}");
@@ -104,15 +114,22 @@ impl HolderBackend {
     }
 }
 
+struct Reading {
+    dir: SocketDir,
+    name: String,
+    offset: u64,
+    detached: Arc<AtomicBool>,
+}
+
 fn read_output<L: EventListener>(
     mut output: std::io::BufReader<std::os::unix::net::UnixStream>,
     mut processor: Processor,
     term: &FairMutex<Term<L>>,
     listener: &L,
-    dir: &SocketDir,
-    name: &str,
+    mut reading: Reading,
 ) {
     let mut buffer = vec![0u8; 64 * 1024];
+    let mut _resumed: Option<HolderConnection> = None;
     loop {
         // A synchronized update holds frames until it ends or times out; wake up in time to end it.
         let timeout = processor.sync_timeout().sync_timeout().map(|deadline| {
@@ -124,9 +141,23 @@ fn read_output<L: EventListener>(
             eprintln!("terminal holder: {error}");
         }
         match output.read(&mut buffer) {
-            Ok(0) => break,
+            Ok(0) => {
+                if reading.detached.load(Ordering::Acquire) {
+                    break;
+                }
+                let Ok(attached) = pom_ptyhost::attach(&reading.dir, &reading.name, reading.offset)
+                else {
+                    break;
+                };
+                processor.advance(&mut *term.lock(), &attached.snapshot);
+                listener.send_event(BackendEvent::Wakeup);
+                reading.offset = attached.end;
+                output = attached.output;
+                _resumed = Some(attached.connection);
+            }
             Ok(read) => {
                 processor.advance(&mut *term.lock(), &buffer[..read]);
+                reading.offset += read as u64;
                 listener.send_event(BackendEvent::Wakeup);
             }
             Err(error)
@@ -144,6 +175,7 @@ fn read_output<L: EventListener>(
     }
     // The connection ends when the command exits (or we detached). Only an exit reports a status; the
     // exiting holder removes its pidfile a moment after closing the connection.
+    let (dir, name) = (&reading.dir, reading.name.as_str());
     let deadline = Instant::now() + Duration::from_secs(1);
     while dir.holder_alive(name) {
         if Instant::now() >= deadline {
