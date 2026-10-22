@@ -401,6 +401,7 @@ pub fn local_only_reason(host: &str) -> String {
 /// The buttons of the page in place of the editor, in the order `CenterNotice::actions` lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeAction {
+    OpenInEditor,
     Reconnect,
 }
 
@@ -426,13 +427,14 @@ pub fn remote_notice(
             list.workspaces.len()
         ));
     }
-    let mut actions = Vec::new();
+    let mut actions = vec![NoticeAction::OpenInEditor];
     if retry {
-        actions.push(NoticeAction::Reconnect);
+        actions.insert(0, NoticeAction::Reconnect);
     }
     let labels = actions
         .iter()
         .map(|action| match action {
+            NoticeAction::OpenInEditor => "Open in Editor".to_string(),
             NoticeAction::Reconnect => "Reconnect".to_string(),
         })
         .collect();

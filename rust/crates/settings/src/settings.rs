@@ -135,6 +135,9 @@ pub struct Settings {
     pub split_diff: bool,
     /// The app "Open in External Editor" uses; empty picks the first one installed.
     pub external_editor: String,
+    /// The command that opens a remote project's worktree over SSH (`{host}`, `{path}`, `{url}`); empty tries
+    /// the known ones.
+    pub remote_editor: String,
     pub terminal_font_size: f32,
     pub terminal_font_family: String,
     pub terminal_font_weight: f32,
@@ -230,6 +233,7 @@ impl Default for Settings {
             soft_wrap: false,
             split_diff: true,
             external_editor: String::new(),
+            remote_editor: String::new(),
             terminal_font_size: 15.0,
             terminal_font_family: ".PomeloMono".into(),
             terminal_font_weight: 400.0,

@@ -2,6 +2,7 @@
 //! command that runs `pom` on one of them, and the [`ProjectSource`] a view reads a project through, here or there.
 //! Pomelo relies on the user's own SSH config and keys.
 
+mod editor;
 mod local;
 mod source;
 mod ssh;
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use editor::{editor_argv, find_program};
 pub use local::{ordered_services, service_output, status_report, workspace_list, LocalSource};
 pub use source::{
     remote_projects, run_pom, AgentTurn, FailedRun, ProjectEntry, ProjectSource, RemoteSource,
