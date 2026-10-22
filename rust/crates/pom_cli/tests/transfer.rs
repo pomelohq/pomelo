@@ -479,3 +479,136 @@ fn a_workspace_database_travels_with_its_rows() {
     );
     assert_eq!(vm.env_value("feat-db", "DATABASE"), "pomxferb_api_feat-db");
 }
+
+/// Stands in for `ssh`: logs its argv, then runs the remote command line as the "vm" machine would, in its home
+/// with its own state and config. No real SSH is involved.
+const FAKE_SSH: &str = r#"#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg"; done >> "$FAKE_SSH_LOG"
+printf '%s\n' '--end--' >> "$FAKE_SSH_LOG"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --) shift; break ;;
+    -o|-p) shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$1" in
+  *down*) echo "ssh: connect to host $1 port 22: Connection refused" >&2; exit 255 ;;
+esac
+export HOME="$REMOTE_HOME" XDG_STATE_HOME="$REMOTE_HOME/state" POMELO_CONFIG_DIR="$REMOTE_HOME/config"
+export POM_PTY_SOCK_DIR="$REMOTE_HOME/s" ZDOTDIR="$REMOTE_HOME/zdot" POM_SESSIONS_ROOT="$REMOTE_HOME/pom"
+unset POM_BUNDLE_PASSPHRASE
+cd "$HOME" || exit 1
+exec /bin/sh -c "$2"
+"#;
+
+#[test]
+fn a_project_and_its_workspace_stream_to_a_host_over_ssh() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::Builder::new()
+        .prefix("pomx")
+        .tempdir_in("/tmp")
+        .expect("temp");
+    let origin = origin(temp.path());
+    let mac = Machine::new(temp.path().join("mac"), &origin);
+    let vm_home = temp.path().join("vm");
+    for dir in ["zdot", ".local/bin"] {
+        std::fs::create_dir_all(vm_home.join(dir)).expect("vm dir");
+    }
+    std::os::unix::fs::symlink(POM, vm_home.join(".local/bin/pom")).expect("remote pom");
+    let bin = temp.path().join("bin");
+    std::fs::create_dir_all(&bin).expect("bin");
+    std::fs::write(bin.join("ssh"), FAKE_SSH).expect("ssh");
+    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    let log = temp.path().join("ssh.log");
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let over_ssh = |args: &[&str]| {
+        mac.command(args)
+            .env("PATH", &path)
+            .env("XDG_RUNTIME_DIR", temp.path().join("run"))
+            .env("FAKE_SSH_LOG", &log)
+            .env("REMOTE_HOME", &vm_home)
+            .env(pom_passphrase_env(), "not-used-over-ssh")
+            .output()
+            .expect("pom")
+    };
+    SecretStore::new(mac.state(), "demo")
+        .set("API_KEY", "k-123")
+        .expect("secret");
+    let added = mac.pom(&["host", "add", "dev", "ssh://dev@dev.example.net"]);
+    assert!(added.status.success(), "{}", text(&added));
+
+    let project = over_ssh(&["project", "export", "--to", "dev", "--json"]);
+    assert!(project.status.success(), "{}", text(&project));
+    let report = json(&project);
+    assert_eq!(report["action"], "project-export");
+    assert_eq!(report["remote"]["action"], "project-import");
+    let vm_root = vm_home.join("pom/demo");
+    assert!(vm_root.join("pom.yml").is_file());
+    assert!(pom_layout_is_repo(&vm_root.join("workspace--main/api")));
+
+    let created = mac.pom(&["ws", "create", "feat-x"]);
+    assert!(created.status.success(), "{}", text(&created));
+    let source = mac.worktree("feat-x");
+    std::fs::write(source.join("one.txt"), "first\n").expect("file");
+    git(&source, &["add", "one.txt"]);
+    git(&source, &["commit", "-q", "-m", "first"]);
+    std::fs::write(source.join("README"), "hello\nchanged\n").expect("modify");
+
+    let exported = over_ssh(&["ws", "export", "feat-x", "--to", "dev", "--json"]);
+    assert!(exported.status.success(), "{}", text(&exported));
+    let report = json(&exported);
+    assert_eq!(report["output"], "host dev");
+    assert_eq!(report["remote"]["action"], "import");
+    let target = vm_root.join("workspace--feat-x/api");
+    assert_eq!(
+        git(&target, &["rev-parse", "HEAD"]),
+        git(&source, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        git(&target, &["diff", "HEAD"]),
+        git(&source, &["diff", "HEAD"])
+    );
+    let vm_state = StateDir::new(vm_home.join("state/pom"));
+    assert_eq!(
+        SecretStore::new(vm_state, "demo")
+            .get("API_KEY")
+            .expect("get")
+            .as_deref(),
+        Some("k-123")
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("ssh log");
+    assert!(calls.contains("ControlMaster=auto"), "{calls}");
+    assert!(calls.contains("dev@dev.example.net"), "{calls}");
+    let last = calls
+        .split("--end--\n")
+        .filter(|call| !call.is_empty())
+        .last()
+        .unwrap_or_default();
+    assert!(
+        last.contains("ws import - --passphrase-stdin --json"),
+        "{last}"
+    );
+    assert!(!calls.contains("k-123") && !calls.contains("not-used-over-ssh"));
+
+    let added = mac.pom(&["host", "add", "down", "ssh://dev@down.example.net"]);
+    assert!(added.status.success(), "{}", text(&added));
+    let unreachable = over_ssh(&["ws", "export", "feat-x", "--to", "down"]);
+    assert_eq!(
+        unreachable.status.code(),
+        Some(69),
+        "{}",
+        text(&unreachable)
+    );
+    assert!(text(&unreachable).contains("could not reach host down"));
+}
+
+fn pom_layout_is_repo(path: &Path) -> bool {
+    path.join(".git").exists()
+}

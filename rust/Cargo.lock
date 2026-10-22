@@ -3911,6 +3911,7 @@ dependencies = [
  "pom_paths",
  "pom_secrets",
  "pom_services",
+ "pom_sessions",
  "pom_workspace",
  "serde",
  "serde_json",
