@@ -939,13 +939,14 @@ mod tests {
 
         let looks = fake.looks.load(Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(
-            fake.looks.load(Ordering::SeqCst),
-            looks,
-            "no polling while pushes come"
+        let later = fake.looks.load(Ordering::SeqCst);
+        // Polling would look about six times meanwhile; at most the safety look may land.
+        assert!(
+            later <= looks + 1,
+            "no polling while pushes come: {looks} then {later}"
         );
         let deadline = Instant::now() + Duration::from_secs(5);
-        while fake.looks.load(Ordering::SeqCst) == looks {
+        while fake.looks.load(Ordering::SeqCst) <= later {
             assert!(Instant::now() < deadline, "no safety look");
             std::thread::sleep(Duration::from_millis(20));
         }
