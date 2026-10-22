@@ -604,7 +604,12 @@ pub(crate) fn doctor(
     if let Some(finding) = pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len()) {
         pom_doctor::add_finding(&mut findings, finding);
     }
-    for finding in machine::disk_check(&StateDir::from_env()).findings {
+    let linux = pom_doctor::linux_findings(path, has_tool("docker"));
+    for finding in machine::disk_check(&StateDir::from_env())
+        .findings
+        .into_iter()
+        .chain(linux)
+    {
         pom_doctor::add_finding(&mut findings, finding);
     }
     let write = |out: &mut dyn Write, line: String| {
