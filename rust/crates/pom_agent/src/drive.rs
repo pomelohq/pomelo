@@ -15,7 +15,7 @@ use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
 use crate::sessions::{
     events, now_ms, read_state, record_event, workspace_sessions, EventLine, SessionEvent,
-    SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE, SCHEMA,
+    SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE, SCHEMA, STALE,
     STARTING_STATE,
 };
 use crate::turns::{read_turns, settle_transcript, RecordedTurn, SETTLE_CAP, SETTLE_QUIET};
@@ -37,6 +37,8 @@ pub enum DriveError {
     Failed(String),
     /// The agent waits at its "do you trust this folder" prompt and nothing answered it.
     NeedsTrust(String),
+    /// A queued send waited its whole timeout for the session to become idle.
+    Timeout(String),
 }
 
 /// `pom agent start` found the agent waiting at its folder trust prompt.
@@ -53,6 +55,7 @@ impl DriveError {
             DriveError::Refused(_) => crate::gate::REFUSED_EXIT,
             DriveError::NotSubmitted(_) => crate::conversation::NOT_SUBMITTED_EXIT,
             DriveError::NeedsTrust(_) => NEEDS_TRUST_EXIT,
+            DriveError::Timeout(_) => crate::conversation::TIMEOUT_EXIT,
             DriveError::NotFound(_) | DriveError::Invalid(_) | DriveError::Failed(_) => 1,
         }
     }
@@ -65,11 +68,18 @@ impl DriveError {
             DriveError::Invalid(_) => "invalid",
             DriveError::Failed(_) => "failed",
             DriveError::NeedsTrust(_) => "needs_trust",
+            DriveError::Timeout(_) => "timeout",
         }
     }
 
     pub fn to_json(&self) -> Value {
-        json!({"schema": SCHEMA, "error": self.code(), "message": self.to_string()})
+        let mut value =
+            json!({"schema": SCHEMA, "error": self.code(), "message": self.to_string()});
+        if let DriveError::Refused(Refusal::Busy { state, reason }) = self {
+            value["state"] = json!(state);
+            value["reason"] = json!(reason);
+        }
+        value
     }
 }
 
@@ -84,7 +94,8 @@ impl std::fmt::Display for DriveError {
             DriveError::NotFound(message)
             | DriveError::Invalid(message)
             | DriveError::Failed(message)
-            | DriveError::NeedsTrust(message) => write!(formatter, "{message}"),
+            | DriveError::NeedsTrust(message)
+            | DriveError::Timeout(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -108,6 +119,8 @@ pub struct SessionView {
     pub drivable: bool,
     /// `idle`, `thinking`, `tool_use`, `compacting`, `awaiting_input`, `died` or `unknown`.
     pub state: String,
+    /// `pending_approval`, `idle_notification`, `stop`, `interrupted`, `stale` or none.
+    pub reason: Option<String>,
     pub turn: u64,
     pub last_event: String,
     pub last_event_age_s: u64,
@@ -133,16 +146,15 @@ pub struct Drive {
 
 fn view_of(record: &SessionState, alive: bool, drivable: bool, now: u64) -> SessionView {
     let age = now.saturating_sub(record.event_ms);
-    let working = matches!(
-        record.state.as_str(),
-        "thinking" | "tool_use" | "compacting"
-    );
+    let (status, reason) = record.status();
+    let working = matches!(status.as_str(), "thinking" | "tool_use" | "compacting");
+    let stale = working && alive && age > STALE_AFTER_MS;
     let state = if working && !alive {
         "died".to_string()
     } else if !alive && record.last_event == "SessionEnd" {
         "ended".to_string()
     } else {
-        record.state.clone()
+        status
     };
     SessionView {
         handle: format!("{}/{}", record.branch, record.role),
@@ -154,10 +166,11 @@ fn view_of(record: &SessionState, alive: bool, drivable: bool, now: u64) -> Sess
         alive,
         drivable,
         state,
+        reason: if stale { Some(STALE.into()) } else { reason },
         turn: record.turn,
         last_event: record.last_event.clone(),
         last_event_age_s: age / 1000,
-        stale: working && alive && age > STALE_AFTER_MS,
+        stale,
     }
 }
 
@@ -225,6 +238,7 @@ impl Drive {
                 alive: true,
                 drivable: role.drivable,
                 state: "unknown".into(),
+                reason: None,
                 turn: 0,
                 last_event: String::new(),
                 last_event_age_s: 0,
@@ -401,6 +415,7 @@ impl Drive {
                 alive: false,
                 drivable: true,
                 state: "starting".into(),
+                reason: None,
                 turn: 0,
                 last_event: String::new(),
                 last_event_age_s: 0,

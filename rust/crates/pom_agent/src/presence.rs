@@ -143,7 +143,7 @@ pub fn workspace_agent_state(
         .into_iter()
         .filter(|entry| holders.holder_alive(&entry.holder))
         .filter_map(|entry| read_state(state, &entry.session_id))
-        .filter_map(|record| AgentState::parse(&record.state))
+        .filter_map(|record| AgentState::parse(&record.status().0))
         .max_by_key(|state| urgency(*state))
 }
 

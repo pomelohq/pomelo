@@ -676,10 +676,11 @@ fn print_list(
         ),
     )?;
     for view in views {
-        let state = if view.stale {
-            format!("{} (stale)", view.state)
-        } else {
-            view.state.clone()
+        let state = match &view.reason {
+            Some(reason) if view.stale || reason == pom_agent::PENDING_APPROVAL => {
+                format!("{} ({reason})", view.state)
+            }
+            _ => view.state.clone(),
         };
         line(
             out,

@@ -20,10 +20,11 @@ const HOOK_WRAPPER: &str = "claude-hook";
 const SESSION_WRAPPER: &str = "claude-session-hook";
 const POLICY_WRAPPER: &str = "claude-policy-hook";
 const SESSION_FLAG: &str = "--session";
-const HOOK_EVENTS: [&str; 8] = [
+const HOOK_EVENTS: [&str; 9] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
+    "PermissionRequest",
     "PostToolUse",
     "PreCompact",
     "Stop",
@@ -71,16 +72,29 @@ impl AgentState {
     }
 }
 
-/// The state a hook event means. Only a permission or elicitation prompt really blocks on the user;
-/// Claude's idle reminder is also a notification and must not light every idle agent up.
+/// Notification types that put a dialog in front of the prompt until the user answers it.
+const BLOCKING_NOTIFICATIONS: [&str; 4] = [
+    "permission_prompt",
+    "worker_permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+];
+const IDLE_PROMPT: &str = "idle_prompt";
+
+/// The state a hook event means; `notification` is the Notification's type. Only a permission or
+/// elicitation dialog blocks on the user; the idle reminder means the prompt is free, and any other
+/// notification (auth, background agents) says nothing about this session.
 pub fn event_state(event: &str, notification: &str) -> Option<AgentState> {
     Some(match event {
         "SessionStart" | "Stop" | "SessionEnd" => AgentState::Idle,
         "UserPromptSubmit" => AgentState::Thinking,
         "PreToolUse" | "PostToolUse" | "PostToolBatch" => AgentState::ToolUse,
         "PreCompact" => AgentState::Compacting,
-        "Notification" if notification == "permission" => AgentState::AwaitingInput,
-        "Notification" => AgentState::Idle,
+        "PermissionRequest" => AgentState::AwaitingInput,
+        "Notification" if BLOCKING_NOTIFICATIONS.contains(&notification) => {
+            AgentState::AwaitingInput
+        }
+        "Notification" if notification == IDLE_PROMPT => AgentState::Idle,
         _ => return None,
     })
 }
@@ -103,19 +117,24 @@ fn state_file(state: &StateDir, branch: &str) -> PathBuf {
         .join(format!("state-{}.json", branch.replace('/', "_")))
 }
 
-fn notification_kind(event: &str, input: &[u8], body: &Map<String, Value>) -> String {
-    if event == "Notification" {
-        let raw = String::from_utf8_lossy(input).to_lowercase();
-        if raw.contains("permission") || raw.contains("elicitation") {
-            "permission".into()
-        } else {
-            "idle".into()
-        }
+/// A Notification's type. Versions before `notification_type` only tell it by the message; never search
+/// the whole payload, since every hook carries `permission_mode` and paths may say anything.
+fn notification_kind(event: &str, body: &Map<String, Value>) -> String {
+    if event != "Notification" {
+        return String::new();
+    }
+    if let Some(kind) = body.get("notification_type").and_then(Value::as_str) {
+        return kind.to_string();
+    }
+    let message = body
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_lowercase();
+    if message.contains("permission") || message.contains("needs your input") {
+        "permission_prompt".into()
     } else {
-        body.get("notification_type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
+        IDLE_PROMPT.into()
     }
 }
 
@@ -130,7 +149,7 @@ pub fn session_event(input: &[u8]) -> Option<SessionEvent> {
         return None;
     }
     let event = field("hook_event_name");
-    let notification = notification_kind(event, input, &body);
+    let notification = notification_kind(event, &body);
     let tool = body
         .get("tool_name")
         .and_then(Value::as_str)
@@ -166,7 +185,7 @@ pub fn record_hook(
         return Ok(None);
     };
     let event = field("hook_event_name");
-    let notification = notification_kind(event, input, &body);
+    let notification = notification_kind(event, &body);
     let Some(agent_state) = event_state(event, &notification) else {
         return Ok(None);
     };
@@ -453,7 +472,7 @@ mod tests {
         let ask = event(json!({"session_id": "s1", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash"}))
             .expect("event");
         assert_eq!(ask.state, Some(AgentState::AwaitingInput));
-        assert_eq!(ask.notification.as_deref(), Some("permission"));
+        assert_eq!(ask.notification.as_deref(), Some("permission_prompt"));
         let tool = event(
             json!({"session_id": "s1", "hook_event_name": "PreToolUse", "tool_name": "Read"}),
         )
@@ -464,6 +483,104 @@ mod tests {
             None,
             "no session id"
         );
+    }
+
+    fn claude_payload(cwd: &str, event: &str, extra: Value) -> Value {
+        let mut body = json!({
+            "session_id": "3f2a",
+            "transcript_path": format!("/Users/me/.claude/projects/{}/3f2a.jsonl", cwd.replace('/', "-")),
+            "cwd": cwd,
+            "permission_mode": "default",
+            "hook_event_name": event,
+        });
+        if let (Some(body), Value::Object(extra)) = (body.as_object_mut(), extra) {
+            body.extend(extra);
+        }
+        body
+    }
+
+    #[test]
+    fn a_notification_is_told_by_its_type_never_by_the_rest_of_the_payload() {
+        let (_temp, state) = state();
+        let hook = |body: Value| {
+            record_hook(&state, body.to_string().as_bytes())
+                .expect("hook")
+                .map(|(_, agent_state)| agent_state)
+        };
+        let cwd = "/p/workspace--feat-x/api";
+        assert_eq!(
+            hook(claude_payload(
+                cwd,
+                "Notification",
+                json!({"message": "Claude needs your permission to use Bash", "title": "Claude Code", "notification_type": "permission_prompt"})
+            )),
+            Some(AgentState::AwaitingInput)
+        );
+        assert_eq!(
+            hook(claude_payload(
+                cwd,
+                "Notification",
+                json!({"message": "Claude is waiting for your input", "title": "Claude Code", "notification_type": "idle_prompt"})
+            )),
+            Some(AgentState::Idle),
+            "permission_mode is in every payload; the idle reminder still means idle"
+        );
+        assert_eq!(
+            hook(claude_payload(
+                cwd,
+                "Notification",
+                json!({"message": "Claude needs your input", "notification_type": "elicitation_dialog"})
+            )),
+            Some(AgentState::AwaitingInput)
+        );
+        assert_eq!(
+            hook(claude_payload(
+                cwd,
+                "Notification",
+                json!({"message": "Signed in", "notification_type": "auth_success"})
+            )),
+            None,
+            "other notifications say nothing about the session"
+        );
+        let permissive = "/Users/me/permission-audit/workspace--feat-permissions/api";
+        assert_eq!(
+            hook(claude_payload(
+                permissive,
+                "Notification",
+                json!({"message": "Claude is waiting for your input", "notification_type": "idle_prompt"})
+            )),
+            Some(AgentState::Idle),
+            "a path that says permission is not a permission prompt"
+        );
+        assert_eq!(
+            hook(claude_payload(
+                permissive,
+                "Notification",
+                json!({"message": "Claude is waiting for your input"})
+            )),
+            Some(AgentState::Idle),
+            "without notification_type only the message counts"
+        );
+        assert_eq!(
+            hook(claude_payload(
+                permissive,
+                "Notification",
+                json!({"message": "Claude needs your permission to use Bash"})
+            )),
+            Some(AgentState::AwaitingInput)
+        );
+        let request = session_event(
+            claude_payload(
+                cwd,
+                "PermissionRequest",
+                json!({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "permission_suggestions": []}),
+            )
+            .to_string()
+            .as_bytes(),
+        )
+        .expect("event");
+        assert_eq!(request.state, Some(AgentState::AwaitingInput));
+        assert_eq!(request.tool.as_deref(), Some("Bash"));
     }
 
     #[test]

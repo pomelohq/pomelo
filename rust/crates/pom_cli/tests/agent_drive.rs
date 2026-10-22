@@ -369,3 +369,140 @@ fn takeover_and_release_move_the_lease_and_say_so_on_watch() {
         .count();
     assert_eq!(messages, 1, "every turn sent is logged once");
 }
+
+impl Fixture {
+    fn state_file(&self) -> PathBuf {
+        self.temp
+            .path()
+            .join("state/pom/agents/sessions/s1/state.json")
+    }
+
+    fn reviewer(&self) -> Value {
+        self.json(&["agent", "ls", "feat", "--json"])["sessions"][0].clone()
+    }
+
+    /// Rewrites state.json the way a version that classified the idle reminder as a permission prompt left
+    /// it, an event two hours old and no `reason`.
+    fn age_into_legacy_idle_reminder(&self) {
+        let path = self.state_file();
+        let mut record: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("state")).expect("json");
+        let record = record.as_object_mut().expect("object");
+        record.remove("reason");
+        record.insert("state".into(), "awaiting_input".into());
+        record.insert("last_event".into(), "Notification".into());
+        record.insert("turn_state".into(), "ended".into());
+        let two_hours_ago = pom_agent::now_ms() - 2 * 60 * 60 * 1000;
+        record.insert("event_ms".into(), two_hours_ago.into());
+        std::fs::write(&path, Value::Object(record.clone()).to_string()).expect("write");
+    }
+
+    fn send(&self, text: &str, extra: &[&str]) -> Output {
+        let mut args = vec!["agent", "send", "feat/reviewer", text, "--json"];
+        args.extend_from_slice(extra);
+        self.pom(&args)
+    }
+}
+
+#[test]
+fn the_idle_reminder_leaves_a_session_idle_and_sendable() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("idle-reminder", &["--take"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    fixture.until("the idle reminder", |fixture| {
+        fixture.reviewer()["last_event"] == "Notification"
+    });
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "idle");
+    assert_eq!(reviewer["reason"], "idle_notification");
+    let next = fixture.send("hello", &[]);
+    assert_eq!(
+        next.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&next.stderr)
+    );
+}
+
+#[test]
+fn a_session_idle_for_hours_under_an_old_state_file_takes_send_and_queue_at_once() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("hello", &["--take"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    fixture.until("the turn to end", |fixture| {
+        fixture.reviewer()["state"] == "idle"
+    });
+
+    fixture.age_into_legacy_idle_reminder();
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "idle");
+    assert_eq!(reviewer["reason"], "idle_notification");
+    assert!(reviewer["last_event_age_s"].as_u64().unwrap_or(0) > 3600);
+    let plain = fixture.send("again", &[]);
+    assert_eq!(
+        plain.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&plain.stderr)
+    );
+    fixture.until("the turn to end", |fixture| {
+        fixture.reviewer()["last_event"] == "Stop"
+    });
+
+    fixture.age_into_legacy_idle_reminder();
+    let started = Instant::now();
+    let queued = fixture.send("queued", &["--queue"]);
+    assert_eq!(
+        queued.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&queued.stderr)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the queue does not wait on an idle session"
+    );
+}
+
+#[test]
+fn a_pending_approval_still_refuses_a_send_and_a_queue_says_what_it_waited_on() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("needs-permission", &["--take"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    fixture.until("the permission prompt", |fixture| {
+        fixture.reviewer()["state"] == "awaiting_input"
+    });
+    assert_eq!(fixture.reviewer()["reason"], "pending_approval");
+
+    let refused = fixture.send("hello", &[]);
+    assert_eq!(refused.status.code(), Some(6));
+    let error = stderr_json(&refused);
+    assert_eq!(error["error"], "busy");
+    assert_eq!(error["reason"], "pending_approval");
+
+    let queued = fixture.send("hello", &["--queue", "--timeout", "1s"]);
+    assert_eq!(queued.status.code(), Some(2));
+    let error = stderr_json(&queued);
+    assert_eq!(error["error"], "timeout");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("pending_approval")),
+        "{error}"
+    );
+}
