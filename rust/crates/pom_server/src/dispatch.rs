@@ -9,13 +9,15 @@ use std::time::{Duration, Instant};
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_remote::server_api::{
-    method, op_state, ActParams, AgentListing, LogsParams, OpParams, OpResult, ProjectParams,
-    TurnParams, WorkspaceParams,
+    method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
+    AgentStartParams, AgentStarted, LogsParams, OpParams, OpResult, ProjectParams, TurnParams,
+    WatchBranchParams, WatchChannel, WatchParams, WorkspaceParams,
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
 use crate::pty::{Caller, Ptys};
+use crate::watch::Watches;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -97,6 +99,20 @@ pub fn check_name(what: &str, name: &str) -> Result<(), RemoteError> {
         Ok(())
     } else {
         Err(invalid(format!("{name:?} is not a valid {what}")))
+    }
+}
+
+/// A holder name or request id: letters, digits, '.', '_' or '-'.
+fn check_word(what: &str, text: &str) -> Result<(), RemoteError> {
+    let valid = !text.is_empty()
+        && text.len() <= 255
+        && text
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '-'));
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(format!("{text:?} is not a valid {what}")))
     }
 }
 
@@ -213,12 +229,14 @@ pub struct Dispatcher {
     binary: PathBuf,
     ops: Ops,
     ptys: Ptys,
+    watches: Watches,
 }
 
 impl Dispatcher {
     pub fn new(state: StateDir, holders: SocketDir, binary: PathBuf, op_memory: Duration) -> Self {
         Dispatcher {
             ptys: Ptys::new(holders.clone(), binary.clone()),
+            watches: Watches::new(state.clone()),
             state,
             holders,
             binary,
@@ -228,6 +246,36 @@ impl Dispatcher {
 
     pub fn ptys(&self) -> &Ptys {
         &self.ptys
+    }
+
+    pub fn watches(&self) -> &Watches {
+        &self.watches
+    }
+
+    /// A client went away: its terminals detach and its watches stop.
+    pub fn disconnect(&self, connection: u64) {
+        self.ptys.disconnect(connection);
+        self.watches.disconnect(connection);
+    }
+
+    /// The methods that need to know who asks: watches publish on the caller's connection.
+    pub fn dispatch_watch(
+        &self,
+        request: &Request,
+        caller: &Caller<'_>,
+    ) -> Option<Result<Value, RemoteError>> {
+        let raw = &request.params;
+        Some(match request.method.as_str() {
+            method::WATCH_SUBSCRIBE => params::<WatchParams>(raw).and_then(|params| {
+                let source = self.source(&params.cfg)?;
+                self.watches.subscribe(source, caller, params)
+            }),
+            method::WATCH_SET_BRANCH => params::<WatchBranchParams>(raw)
+                .and_then(|params| self.watches.set_branch(caller, params)),
+            method::WATCH_UNSUBSCRIBE => params::<WatchChannel>(raw)
+                .and_then(|params| self.watches.unsubscribe(caller, params)),
+            _ => return None,
+        })
     }
 
     pub fn dispatch_pty(
@@ -311,6 +359,56 @@ impl Dispatcher {
                     .map_err(failed)
             }
             method::SVC_ACT => self.act(params(raw)?),
+            method::AGENT_START => {
+                let params: AgentStartParams = params(raw)?;
+                check_branch(&params.branch)?;
+                check_name("agent role", &params.role)?;
+                let source = self.source(&params.cfg)?;
+                let session = source
+                    .start_agent(&params.branch, &params.role, params.person)
+                    .map_err(failed)?;
+                to_value(AgentStarted {
+                    schema: pom_agent::SCHEMA.to_string(),
+                    session,
+                })
+            }
+            method::AGENT_CLAIM => {
+                let params: TurnParams = params(raw)?;
+                check_branch(&params.branch)?;
+                check_name("agent role", &params.role)?;
+                let source = self.source(&params.cfg)?;
+                to_value(
+                    source
+                        .claim_agent(&params.branch, &params.role)
+                        .map_err(failed)?,
+                )
+            }
+            method::AGENT_TAKE_OVER => {
+                let params: AgentHolderParams = params(raw)?;
+                check_branch(&params.branch)?;
+                check_word("holder", &params.holder)?;
+                let source = self.source(&params.cfg)?;
+                source
+                    .take_over_agent(&params.branch, &params.holder)
+                    .map_err(failed)?;
+                Ok(Value::Null)
+            }
+            method::AGENT_ANSWER => {
+                let params: AgentAnswerParams = params(raw)?;
+                check_branch(&params.branch)?;
+                check_word("holder", &params.holder)?;
+                check_word("request", &params.request)?;
+                let source = self.source(&params.cfg)?;
+                source
+                    .answer_agent(
+                        &params.branch,
+                        &params.holder,
+                        &params.request,
+                        params.allow,
+                    )
+                    .map_err(failed)?;
+                Ok(Value::Null)
+            }
             method::OP_RESULT => {
                 let params: OpParams = params(raw)?;
                 check_op_id(&params.op_id)?;

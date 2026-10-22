@@ -179,6 +179,8 @@ pub struct Bridge {
     writer: Mutex<HolderConnection>,
     last_resize: Mutex<u64>,
     events: Option<Arc<Publisher>>,
+    /// The client's stream, which names this terminal in its `pty.exit`.
+    channel: u32,
 }
 
 struct Resumed {
@@ -319,6 +321,7 @@ impl Bridge {
             let exit = Exit {
                 holder: self.holder.clone(),
                 crashed,
+                channel: self.channel,
             };
             if let Err(error) = events.publish(EXIT_TOPIC, exit) {
                 eprintln!("pom server: pty.exit: {error}");
@@ -648,6 +651,7 @@ impl Ptys {
             writer: Mutex::new(writer),
             last_resize: Mutex::new(0),
             events,
+            channel: params.channel,
         });
         let resumed = bridge
             .open_reader(params.since, params.since > 0)
@@ -678,7 +682,11 @@ impl Ptys {
                 .map_err(|error| failed(error.to_string()))?;
         }
         let (streams, publishers) = (self.streams.clone(), self.publishers.clone());
-        let events_key = params.events.map(|channel| (caller.connection, channel));
+        // A shared channel serves the connection's other terminals too, so it stays until the client goes.
+        let events_key = params
+            .events
+            .filter(|_| !params.shared_events)
+            .map(|channel| (caller.connection, channel));
         let pumped = bridge.clone();
         std::thread::Builder::new()
             .name("pom-server-pty-pump".into())

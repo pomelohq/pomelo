@@ -9,6 +9,7 @@ use pom_agent::SessionView;
 use pom_services::{ServiceHealth, SharedHealth};
 use serde::{Deserialize, Serialize};
 
+use crate::server_api::{AgentsUpdate, StatusUpdate, TurnUpdate, WorkspacesUpdate};
 use crate::{Host, Ssh, EXIT_UNREACHABLE};
 
 pub const WORKSPACE_SCHEMA: &str = "pom.workspace/v1";
@@ -159,6 +160,41 @@ pub struct TransportInfo {
     pub remote_version: Option<String>,
     pub version_mismatch: bool,
     pub terminals: bool,
+    /// The server pushes changes, so nothing needs asking again and again.
+    pub pushes: bool,
+    /// The server starts agents and moves their leases.
+    pub agents: bool,
+}
+
+/// One value a machine pushed because it changed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Update {
+    Workspaces(WorkspacesUpdate),
+    Status(StatusUpdate),
+    Agents(AgentsUpdate),
+    Turn(TurnUpdate),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum FeedEvent {
+    Update(Update),
+    /// Nothing changed meanwhile.
+    Idle,
+    /// The pushes stopped (the connection went); ask again to know where things stand.
+    Ended(String),
+}
+
+/// What a machine pushes about one workspace of a project.
+pub trait Feed: Send + Sync {
+    fn next(&self, timeout: Duration) -> FeedEvent;
+    /// Follows another workspace, and the last turn of agent `turn`.
+    fn follow(&self, branch: &str, turn: Option<&str>) -> Result<(), SourceError>;
+}
+
+fn unsupported(what: &str) -> SourceError {
+    SourceError::Failed(format!(
+        "{what} needs pom server on the project's machine; update pom there"
+    ))
 }
 
 /// A project's state and controls, read on whichever machine runs it.
@@ -179,6 +215,31 @@ pub trait ProjectSource: Send + Sync {
     }
     fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
         None
+    }
+    /// Pushes about `branch` (empty: only the workspace list) when the machine sends them; `None` means ask.
+    fn events(
+        &self,
+        _branch: &str,
+        _turn: Option<&str>,
+    ) -> Result<Option<Arc<dyn Feed>>, SourceError> {
+        Ok(None)
+    }
+    /// Starts agent `role` (`claude` for the workspace's main one) for the person here to drive.
+    fn start_agent(&self, _branch: &str, _role: &str) -> Result<SessionView, SourceError> {
+        Err(unsupported("Starting an agent"))
+    }
+    /// The person here takes the agent in `holder` over from whoever drives it.
+    fn take_over_agent(&self, _branch: &str, _holder: &str) -> Result<(), SourceError> {
+        Err(unsupported("Taking an agent over"))
+    }
+    fn answer_agent(
+        &self,
+        _branch: &str,
+        _holder: &str,
+        _request: &str,
+        _allow: bool,
+    ) -> Result<(), SourceError> {
+        Err(unsupported("Answering an agent"))
     }
 }
 

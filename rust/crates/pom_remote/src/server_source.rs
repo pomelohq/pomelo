@@ -6,20 +6,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pom_agent::SessionView;
-use pom_rpc::pty::{self, PtyProvider};
-use pom_rpc::{error_code, CloseReason, Connection, Error, Hello};
+use pom_rpc::pty::{self, PtyProvider, SharedEvents};
+use pom_rpc::{error_code, CloseReason, Connection, Error, Hello, PushEvent, Subscription};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::server_api::{
-    method, ActParams, AgentListing, LogsParams, ProjectParams, TurnParams, WorkspaceParams,
-    REQUIRED,
+    method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
+    AgentStarted, LogsParams, ProjectParams, TurnParams, WatchBranchParams, WatchParams,
+    WorkspaceParams, AGENTS, PUSH, REQUIRED,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
 use crate::{
-    version_mismatch, AgentTurn, Host, HostTransport, ProjectSource, RemoteSource, ServiceAction,
-    SourceError, Ssh, StatusReport, TransportInfo, Via, WorkspaceList,
+    version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, ProjectSource, RemoteSource,
+    ServiceAction, SourceError, Ssh, StatusReport, TransportInfo, Update, Via, WorkspaceList,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,7 +30,10 @@ const EXIT_WAIT: Duration = Duration::from_secs(2);
 
 struct Link {
     connection: Connection,
-    _process: ProxyProcess,
+    _process: Option<ProxyProcess>,
+    /// The server takes every terminal's events on one channel.
+    shares_events: bool,
+    events: Option<Arc<SharedEvents>>,
 }
 
 impl Drop for Link {
@@ -54,10 +58,13 @@ pub struct ServerSource {
     inner: Arc<Inner>,
 }
 
+pub type Opener = Arc<dyn Fn() -> std::io::Result<pom_rpc::Transport> + Send + Sync>;
+
 struct Inner {
     host: Host,
     config: String,
     ssh: Ssh,
+    opener: Option<Opener>,
     fallback: RemoteSource,
     link: Mutex<LinkState>,
     info: Mutex<Option<TransportInfo>>,
@@ -82,6 +89,14 @@ pub fn project_source(host: Host, config: String, ssh: Ssh) -> Arc<dyn ProjectSo
 
 impl ServerSource {
     pub fn new(host: Host, config: String, ssh: Ssh) -> ServerSource {
+        Self::build(host, config, ssh, None)
+    }
+
+    pub fn with_opener(host: Host, config: String, opener: Opener) -> ServerSource {
+        Self::build(host, config, Ssh::system(), Some(opener))
+    }
+
+    fn build(host: Host, config: String, ssh: Ssh, opener: Option<Opener>) -> ServerSource {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|elapsed| elapsed.as_nanos())
@@ -92,6 +107,7 @@ impl ServerSource {
                 host,
                 config,
                 ssh,
+                opener,
                 link: Mutex::new(LinkState::Closed),
                 info: Mutex::new(None),
                 client_id: format!("{}-{nanos:x}", std::process::id()),
@@ -130,13 +146,17 @@ impl Inner {
             _ => *link = LinkState::Closed,
         }
         let name = &self.host.name;
-        let (transport, process) =
-            server_transport::open(&self.ssh, &self.host).map_err(|error| {
-                SourceError::Unreachable(match error.kind() {
-                    std::io::ErrorKind::NotFound => "ssh is not installed".to_string(),
-                    _ => error.to_string(),
-                })
-            })?;
+        let opened = match &self.opener {
+            Some(open) => open().map(|transport| (transport, None)),
+            None => server_transport::open(&self.ssh, &self.host)
+                .map(|(transport, process)| (transport, Some(process))),
+        };
+        let (transport, process) = opened.map_err(|error| {
+            SourceError::Unreachable(match error.kind() {
+                std::io::ErrorKind::NotFound => "ssh is not installed".to_string(),
+                _ => error.to_string(),
+            })
+        })?;
         let mut hello = Hello::new(VERSION);
         hello.client_id = Some(self.client_id.clone());
         let config = pom_rpc::Config {
@@ -156,19 +176,28 @@ impl Inner {
                     self.fall_back(&mut link, reason);
                     return Ok(None);
                 }
-                let terminals = pom_rpc::pty::METHODS
-                    .iter()
-                    .all(|method| server.features.iter().any(|feature| feature == method));
+                let offers = |wanted: &[&str]| {
+                    wanted
+                        .iter()
+                        .all(|method| server.features.iter().any(|feature| feature == method))
+                };
+                let terminals = offers(pom_rpc::pty::METHODS);
+                let shares_events = offers(&[pty::SHARED_EVENTS]);
+                let (pushes, agents) = (offers(PUSH), offers(AGENTS));
                 *locked(&self.info) = Some(TransportInfo {
                     via: Via::Server,
                     fallback_reason: None,
                     version_mismatch: version_mismatch(VERSION, &server.pom_version),
                     remote_version: Some(server.pom_version),
                     terminals,
+                    pushes,
+                    agents,
                 });
                 *link = LinkState::Open(Link {
                     connection: connection.clone(),
                     _process: process,
+                    shares_events,
+                    events: None,
                 });
                 Ok(Some(connection))
             }
@@ -181,16 +210,19 @@ impl Inner {
                 self.fall_back(&mut link, reason);
                 Ok(None)
             }
-            Err(error) => match process.failure(EXIT_WAIT) {
-                ProxyFailure::NoServer(reason) => {
+            Err(error) => match process.as_ref().map(|process| process.failure(EXIT_WAIT)) {
+                None => Err(SourceError::Unreachable(format!(
+                    "pom server on {name} did not answer: {error}"
+                ))),
+                Some(ProxyFailure::NoServer(reason)) => {
                     self.fall_back(&mut link, format!("pom on {name}: {reason}"));
                     Ok(None)
                 }
-                ProxyFailure::Unreachable(reason) => Err(SourceError::Unreachable(reason)),
-                ProxyFailure::NotInstalled => Err(SourceError::Failed(format!(
+                Some(ProxyFailure::Unreachable(reason)) => Err(SourceError::Unreachable(reason)),
+                Some(ProxyFailure::NotInstalled) => Err(SourceError::Failed(format!(
                     "pom is not installed on {name}; check it with: pom host test {name}"
                 ))),
-                ProxyFailure::Other(reason) => Err(SourceError::Unreachable(format!(
+                Some(ProxyFailure::Other(reason)) => Err(SourceError::Unreachable(format!(
                     "pom server on {name} did not answer ({error}): {reason}"
                 ))),
             },
@@ -250,6 +282,37 @@ impl Inner {
                     return Err(SourceError::Unreachable(error.to_string()));
                 }
             }
+        }
+    }
+
+    /// The connection's shared events channel, opened on first use; `None` from a server without one.
+    fn shared_events(&self, connection: &Connection) -> Result<Option<Arc<SharedEvents>>, Error> {
+        let mut link = locked(&self.link);
+        let LinkState::Open(open) = &mut *link else {
+            return Ok(None);
+        };
+        if !open.shares_events || !open.connection.ptr_eq(connection) {
+            return Ok(None);
+        }
+        if let Some(events) = &open.events {
+            return Ok(Some(events.clone()));
+        }
+        let events = Arc::new(SharedEvents::open(connection)?);
+        open.events = Some(events.clone());
+        Ok(Some(events))
+    }
+
+    fn info(&self) -> Option<TransportInfo> {
+        locked(&self.info).clone()
+    }
+
+    fn server_only<T>(&self, route: Route<T>, what: &str) -> Result<T, SourceError> {
+        match route {
+            Route::Server(value) => Ok(value),
+            Route::Fallback => Err(SourceError::Failed(format!(
+                "{what} needs pom server on {}; it is read over plain ssh",
+                self.host.name
+            ))),
         }
     }
 
@@ -350,12 +413,159 @@ impl ProjectSource for ServerSource {
     }
 
     fn transport(&self) -> Option<TransportInfo> {
-        locked(&self.inner.info).clone()
+        self.inner.info()
     }
 
     fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {
-        let info = locked(&self.inner.info).clone()?;
+        let info = self.inner.info()?;
         (info.via == Via::Server && info.terminals).then(|| self.terminals(branch))
+    }
+
+    fn events(
+        &self,
+        branch: &str,
+        turn: Option<&str>,
+    ) -> Result<Option<Arc<dyn Feed>>, SourceError> {
+        let Some(connection) = self.inner.connection()? else {
+            return Ok(None);
+        };
+        if !self.inner.info().is_some_and(|info| info.pushes) {
+            return Ok(None);
+        }
+        let unreachable = |error: Error| {
+            SourceError::Unreachable(format!(
+                "{} stopped answering: {error}",
+                self.inner.host.name
+            ))
+        };
+        let subscription = connection.subscribe().map_err(unreachable)?;
+        let params = WatchParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            topics: topic::ALL.iter().map(|name| name.to_string()).collect(),
+            channel: subscription.channel(),
+            turn: turn.map(str::to_string),
+        };
+        connection
+            .start_request(method::WATCH_SUBSCRIBE, params)
+            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))
+            .map_err(|error| match error {
+                Error::Remote(error) => SourceError::Failed(error.message),
+                other => unreachable(other),
+            })?;
+        Ok(Some(Arc::new(ServerFeed {
+            inner: self.inner.clone(),
+            connection,
+            channel: subscription.channel(),
+            subscription: Mutex::new(subscription),
+        })))
+    }
+
+    fn start_agent(&self, branch: &str, role: &str) -> Result<SessionView, SourceError> {
+        let params = AgentStartParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            role: role.to_string(),
+            person: true,
+        };
+        let route = self
+            .inner
+            .request::<AgentStarted>(method::AGENT_START, params, ACT_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Starting an agent")
+            .map(|started| started.session)
+    }
+
+    fn take_over_agent(&self, branch: &str, holder: &str) -> Result<(), SourceError> {
+        let params = AgentHolderParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            holder: holder.to_string(),
+        };
+        let route = self.inner.request::<serde_json::Value>(
+            method::AGENT_TAKE_OVER,
+            params,
+            READ_TIMEOUT,
+        )?;
+        self.inner
+            .server_only(route, "Taking an agent over")
+            .map(|_| ())
+    }
+
+    fn answer_agent(
+        &self,
+        branch: &str,
+        holder: &str,
+        request: &str,
+        allow: bool,
+    ) -> Result<(), SourceError> {
+        let params = AgentAnswerParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            holder: holder.to_string(),
+            request: request.to_string(),
+            allow,
+        };
+        let route =
+            self.inner
+                .request::<serde_json::Value>(method::AGENT_ANSWER, params, READ_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Answering an agent")
+            .map(|_| ())
+    }
+}
+
+/// The values one watch pushes, read off its subscription.
+struct ServerFeed {
+    inner: Arc<Inner>,
+    connection: Connection,
+    /// Kept apart from the subscription, which its reader holds while it waits.
+    channel: u32,
+    subscription: Mutex<Subscription>,
+}
+
+impl ServerFeed {
+    fn update(name: &str, value: serde_json::Value) -> Option<Update> {
+        match name {
+            topic::WORKSPACES => serde_json::from_value(value).ok().map(Update::Workspaces),
+            topic::STATUS => serde_json::from_value(value).ok().map(Update::Status),
+            topic::AGENTS => serde_json::from_value(value).ok().map(Update::Agents),
+            topic::TURN => serde_json::from_value(value).ok().map(Update::Turn),
+            _ => None,
+        }
+    }
+}
+
+impl Feed for ServerFeed {
+    fn next(&self, timeout: Duration) -> FeedEvent {
+        match locked(&self.subscription).recv_timeout(timeout) {
+            Ok(PushEvent::Value { topic, value }) => match Self::update(&topic, value) {
+                Some(update) => FeedEvent::Update(update),
+                None => FeedEvent::Idle,
+            },
+            Ok(PushEvent::End { reason }) => FeedEvent::Ended(reason),
+            Err(Error::Timeout) => FeedEvent::Idle,
+            Err(error) => FeedEvent::Ended(error.to_string()),
+        }
+    }
+
+    fn follow(&self, branch: &str, turn: Option<&str>) -> Result<(), SourceError> {
+        let params = WatchBranchParams {
+            channel: self.channel,
+            branch: branch.to_string(),
+            turn: turn.map(str::to_string),
+        };
+        self.connection
+            .start_request(method::WATCH_SET_BRANCH, params)
+            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))
+            .map(|_| ())
+            .map_err(|error| match error {
+                Error::Remote(error) => SourceError::Failed(error.message),
+                other => SourceError::Unreachable(format!(
+                    "{} stopped answering: {other}",
+                    self.inner.host.name
+                )),
+            })
     }
 }
 
@@ -450,7 +660,17 @@ impl PtyProvider for Terminals {
             rows: request.rows,
             ..pty::AttachParams::default()
         };
-        pty::Terminal::attach(&connection, params, TERMINAL_TIMEOUT).map_err(|error| match error {
+        let shared = self
+            .inner
+            .shared_events(&connection)
+            .map_err(|error| error.to_string())?;
+        let attached = match shared {
+            Some(events) => {
+                pty::Terminal::attach_shared(&connection, &events, params, TERMINAL_TIMEOUT)
+            }
+            None => pty::Terminal::attach(&connection, params, TERMINAL_TIMEOUT),
+        };
+        attached.map_err(|error| match error {
             Error::Remote(error) => error.message,
             other => other.to_string(),
         })
