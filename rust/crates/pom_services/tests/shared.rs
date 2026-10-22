@@ -132,9 +132,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      disable: true
     networks:
       - default
       - pomelo-shared
@@ -148,9 +146,7 @@ services:
     volumes:
       - shared_redis:/data
     healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      disable: true
     networks:
       - default
       - pomelo-shared
@@ -164,9 +160,7 @@ services:
     volumes:
       - shared_redis-2:/data
     healthcheck:
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      disable: true
     networks:
       - default
       - pomelo-shared
@@ -349,4 +343,88 @@ fn a_new_slot_is_emptied_before_the_workspace_uses_it() {
         slot.slot
     )));
     assert!(slots.pending("redis").is_empty());
+}
+
+#[test]
+fn a_preset_postgres_gets_no_healthcheck_that_runs_in_its_container() {
+    let fixture = Fixture::new("postgres\\n", "", "");
+    let root = fixture.temp.path().join("project");
+    std::fs::write(
+        root.join("pom.yml"),
+        "session: demo\nshared_services:\n  postgres:\nrepos:\n  api:\n    services:\n      server: rails s\n",
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let postgres = &config.shared_services["postgres"];
+    assert!(
+        postgres
+            .healthcheck
+            .as_ref()
+            .and_then(|check| check.test.as_ref())
+            .is_none(),
+        "the preset carries no in-container test"
+    );
+    assert_eq!(
+        pom_services::SharedProbe::of("postgres", postgres),
+        pom_services::SharedProbe::Postgres {
+            user: "postgres".into()
+        }
+    );
+    fixture.runner.ensure_shared(&config).expect("up");
+    let text = std::fs::read_to_string(fixture.runner.compose_file()).expect("compose");
+    assert!(
+        text.contains("    healthcheck:\n      disable: true\n"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("test:") && !text.contains("pg_isready"),
+        "{text}"
+    );
+    assert_eq!(fixture.runner.shared_health(&config).len(), 1);
+    let calls = fixture.calls();
+    assert!(
+        calls.iter().all(|call| !call.contains(" exec ")
+            && !call.starts_with("exec ")
+            && !call.contains("inspect")),
+        "{calls:#?}"
+    );
+}
+
+#[test]
+fn a_shared_service_is_ready_once_its_published_port_answers() {
+    let fixture = Fixture::new("search\\n", "", "");
+    let root = fixture.temp.path().join("project");
+    std::fs::write(
+        root.join("pom.yml"),
+        "session: demo\nshared_services:\n  search:\n    image: my/search\n    ports: [\"9200\"]\nrepos:\n  api:\n    services:\n      server: rails s\n",
+    )
+    .expect("pom.yml");
+    let config = Config::load(&root.join("pom.yml")).expect("config");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    std::fs::write(
+        fixture.runner.compose_file(),
+        format!("name: demo-shared\n\nservices:\n  search:\n    ports:\n      - \"{port}:9200\"\n"),
+    )
+    .expect("compose");
+    let accepting = std::thread::spawn(move || {
+        let held = listener.accept().map(|(stream, _)| stream);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        drop(held);
+    });
+    assert!(fixture.runner.shared_ready(&config, "search"));
+    assert!(accepting.join().is_ok());
+    assert!(
+        !fixture.runner.shared_ready(&config, "search"),
+        "nothing listens once the listener is gone"
+    );
+    assert_eq!(
+        fixture.runner.wait_shared_ready(
+            &config,
+            &["search".to_string()],
+            std::time::Duration::from_millis(300)
+        ),
+        Err(vec!["search".to_string()])
+    );
+    assert!(fixture.calls().iter().all(|call| !call.contains("exec")));
 }

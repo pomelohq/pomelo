@@ -2,7 +2,7 @@
 //! reached by every workspace on the port it was given.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pom_config::{Config, SharedServiceDef};
 use pom_env::BIND_IP;
@@ -11,8 +11,6 @@ use crate::control::{shell_quote, ServiceError, ServiceRunner};
 
 /// How long a starting command gets to pass its healthcheck before the services that use it start anyway.
 const HEALTH_WAIT: Duration = Duration::from_secs(30);
-const HEALTH_POLL: Duration = Duration::from_millis(500);
-const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl ServiceRunner {
     /// The holder a command shared service runs in, the same whichever workspace started it.
@@ -78,7 +76,7 @@ impl ServiceRunner {
             .collect();
         self.ports.set_holder(&key, &holder);
         self.spawn(&holder, &cwd, &command, env)?;
-        self.wait_healthy(name, def, port);
+        self.wait_healthy(config, name);
         Ok(holder)
     }
 
@@ -89,32 +87,15 @@ impl ServiceRunner {
         }
     }
 
-    /// Waits for the healthcheck's command to pass, so services that call this one find it up. One that never
-    /// passes only delays them: the service may still work, and its console says what went wrong.
-    fn wait_healthy(&self, name: &str, def: &SharedServiceDef, port: u16) {
-        let Some(test) = def
-            .healthcheck
-            .as_ref()
-            .and_then(|check| check.test.as_ref())
-            .and_then(|test| test.scalar_value())
-            .filter(|test| !test.trim().is_empty())
-        else {
-            return;
-        };
-        let deadline = Instant::now() + HEALTH_WAIT;
-        while Instant::now() < deadline {
-            let mut check = std::process::Command::new("/bin/sh");
-            check
-                .args(["-c", test])
-                .env("PATH", crate::tool_path())
-                .env("PORT", port.to_string())
-                .env("BIND_IP", BIND_IP);
-            if crate::run_within(&mut check, HEALTH_TIMEOUT).is_ok() {
-                return;
-            }
-            std::thread::sleep(HEALTH_POLL);
+    /// Waits for the service to answer, so services that call this one find it up. One that never answers
+    /// only delays them: the service may still work, and its console says what went wrong.
+    fn wait_healthy(&self, config: &Config, name: &str) {
+        if self
+            .wait_shared_ready(config, &[name.to_string()], HEALTH_WAIT)
+            .is_err()
+        {
+            eprintln!("services: shared {name} did not pass its healthcheck in time");
         }
-        eprintln!("services: shared {name} did not pass its healthcheck in time");
     }
 }
 

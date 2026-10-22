@@ -229,21 +229,8 @@ impl ServiceRunner {
                         }
                     }
                 }
-                if let Some(check) = &def.healthcheck {
-                    let or = |value: &str, fallback: &str| {
-                        if value.is_empty() {
-                            fallback.to_string()
-                        } else {
-                            value.to_string()
-                        }
-                    };
-                    let retries = if check.retries == 0 { 3 } else { check.retries };
-                    out.push_str(&format!(
-                        "    healthcheck:\n      interval: {}\n      timeout: {}\n      retries: {retries}\n",
-                        or(&check.interval, "10s"),
-                        or(&check.timeout, "3s"),
-                    ));
-                }
+                // Readiness is probed from the host; an image's own HEALTHCHECK would `docker exec` on a timer.
+                out.push_str("    healthcheck:\n      disable: true\n");
                 out.push_str(&format!(
                     "    networks:\n      - default\n      - {SHARED_NETWORK}\n    restart: unless-stopped\n\n"
                 ));

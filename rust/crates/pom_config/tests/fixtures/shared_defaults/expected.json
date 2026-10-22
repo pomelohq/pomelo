@@ -55,11 +55,6 @@
         "POSTGRES_PASSWORD": "other",
         "POSTGRES_USER": "postgres"
       },
-      "healthcheck": {
-        "interval": "5s",
-        "retries": 3,
-        "timeout": "3s"
-      },
       "image": "postgres:16",
       "ports": [
         "5432"

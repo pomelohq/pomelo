@@ -37,10 +37,12 @@ pub const USAGE: &str = "usage: pom [-w <workspace>] [-c <pom.yml>] <command> [a
 services
   start <target> [--wait [--timeout 120s]]
                      start a service, a repo's services, or a `workspaces:` group; --wait blocks until
-                     each is ready (its healthcheck, else its port): exit 0 ready, 2 timeout, 3 stopped
+                     each is ready (its healthcheck, else its port) and the shared services answer
+                     on their host port: exit 0 ready, 2 timeout, 3 stopped
   stop [target]      stop them; with no target, every service of the workspace
   restart <target>   stop, then start
-  status [-o json]   services of the workspace and whether they run (json: up, ready, healthy)
+  status [-o json]   services of the workspace and whether they run (json: up, ready, healthy;
+                     shared: up, ready)
   logs <service> [--since <mark>] [--raw] [-o json]
                      recent output of a service, or only what it printed since a mark
   logs --mark <name> record where every service's output has got to
@@ -785,10 +787,12 @@ impl Session {
             let running = self.runner.shared_running();
             say(out, "\nshared (all workspaces)")?;
             for name in self.config.shared_services.keys() {
-                let state = if running.contains(name) {
+                let state = if !running.contains(name) {
+                    "stopped"
+                } else if self.runner.shared_ready(&self.config, name) {
                     "running"
                 } else {
-                    "stopped"
+                    "starting"
                 };
                 let port = self.runner.shared_host_port(name);
                 say(out, &format!("  {name:width$}  {state:8}  :{port}"))?;
@@ -814,6 +818,21 @@ impl Session {
             }
         };
         let timeout = start.timeout.unwrap_or(DEFAULT_WAIT);
+        let started = std::time::Instant::now();
+        if targets.iter().any(|target| !target.is_workspace_level()) {
+            let names: Vec<String> = self.config.shared_services.keys().cloned().collect();
+            if let Err(silent) = self.runner.wait_shared_ready(&self.config, &names, timeout) {
+                for name in &silent {
+                    report(err, &format!("  shared/{name}  not ready"));
+                }
+                report(
+                    err,
+                    &format!("error: not ready after {}s", timeout.as_secs()),
+                );
+                return WAIT_TIMED_OUT;
+            }
+        }
+        let timeout = timeout.saturating_sub(started.elapsed());
         let describe = |health: &pom_services::ServiceHealth| {
             let state = if health.ready {
                 "ready"
@@ -945,19 +964,7 @@ impl Session {
                 );
             }
         }
-        let running = self.runner.shared_running();
-        let shared: Vec<serde_json::Value> = self
-            .config
-            .shared_services
-            .keys()
-            .map(|name| {
-                serde_json::json!({
-                    "name": name,
-                    "up": running.contains(name),
-                    "port": self.runner.shared_host_port(name),
-                })
-            })
-            .collect();
+        let shared = self.runner.shared_health(&self.config);
         let document = serde_json::json!({
             "schema": "pom.status/v1",
             "workspace": self.branch,

@@ -26,6 +26,7 @@ const VENV_BIN: &str = ".venv/bin";
 const RELOCATE_ATTEMPTS: usize = 3;
 /// A just-started Postgres takes a few seconds before it accepts connections.
 const DATABASE_WAIT: Duration = Duration::from_secs(30);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Start returns once the holder accepts clients, so its console can be opened right away.
 const HOLDER_START_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -219,8 +220,21 @@ impl ServiceRunner {
         config: &Config,
         names: &[String],
     ) -> Result<(), ServiceError> {
+        if names.is_empty() {
+            return Ok(());
+        }
         let deadline = std::time::Instant::now() + DATABASE_WAIT;
+        let endpoint = self.postgres_endpoint(config);
+        let ours = config.shared_services.contains_key("postgres");
         loop {
+            // psql runs through `docker exec`, so it is not retried until Postgres answers from the host.
+            if ours
+                && std::time::Instant::now() < deadline
+                && !crate::postgres_answers(endpoint.port, &endpoint.user, PROBE_TIMEOUT)
+            {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
             match self.create_databases(config, names) {
                 Err(error) if still_starting(&error) && std::time::Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(500));
