@@ -1,4 +1,5 @@
 mod disk;
+mod linux;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -11,6 +12,7 @@ pub use disk::{
     df_usage, disk_findings, docker_root, filesystems, format_bytes, thin_pools, Filesystem, Place,
     ThinPool, Usage, FULL_PERCENT,
 };
+pub use linux::{high_load, in_lxc, linux_findings, lxc_docker, stuck_finding, stuck_processes};
 
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(8);
 
