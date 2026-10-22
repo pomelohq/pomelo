@@ -512,6 +512,8 @@ struct MainWindow {
     /// The project's Jira ticket status per workspace.
     tickets: Option<workspaces_ui::TicketStatuses>,
     pull_requests: Option<pull_request_ui::PullRequests>,
+    /// Workspaces with merged PRs already offered for cleanup (or cleaned up), so each is offered once.
+    cleanup_offered: std::collections::BTreeSet<String>,
     doctor: Option<std::sync::mpsc::Receiver<Vec<pom_doctor::Finding>>>,
     doctor_findings: Vec<pom_doctor::Finding>,
     /// The result line of a repo's branch checkout started from the Git panel.
@@ -1655,6 +1657,7 @@ impl App {
                 ops: workspaces_ui::OpQueue::new(Arc::new(ui::wake)),
                 tickets: None,
                 pull_requests: None,
+                cleanup_offered: std::collections::BTreeSet::new(),
                 doctor: None,
                 doctor_findings: Vec::new(),
                 use_branch: None,
@@ -4494,6 +4497,21 @@ fn is_dev_build() -> bool {
 
 /// Whether this run owns the user's real state: agent registration and notifications are skipped for a
 /// run on a throwaway state dir (its wrappers would vanish) and when `POM_SKIP_GLOBAL_HOOK` is set.
+/// The shared node_modules store sheds unused copies once a day, off the launch path.
+fn prune_module_store_if_due() {
+    let spawned = std::thread::Builder::new()
+        .name("module-store-prune".into())
+        .spawn(|| {
+            let store = module_store::Store::new(&pom_paths::StateDir::from_env());
+            if let Err(error) = store.prune_if_due(&module_store::Options::from_settings_file()) {
+                eprintln!("node_modules store: prune: {error}");
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("node_modules store: prune: {error}");
+    }
+}
+
 fn uses_real_state() -> Option<(pom_agent::ClaudeHome, pom_paths::StateDir)> {
     if std::env::var_os("POM_SKIP_GLOBAL_HOOK").is_some() {
         return None;
@@ -4608,6 +4626,7 @@ fn main() -> anyhow::Result<()> {
     if uses_real_state().is_some() {
         notifications::start();
     }
+    prune_module_store_if_due();
     platform::quit_on_termination_signals(ui::wake);
     let mut app = App::default();
     let (marker, last_run) = begin_run();

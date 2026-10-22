@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::{
@@ -5,12 +6,13 @@ use crate::{
     WorkspaceContext,
 };
 
-pub const DELETE_STAGES: [&str; 5] = [
+pub const DELETE_STAGES: [&str; 6] = [
     "Stopping services",
     "Releasing IP and slots",
     "Running pre-delete commands",
     "Removing worktrees and databases",
     "Cleaning up folders",
+    "Cleaning up agent state and volumes",
 ];
 
 const STOP: usize = 0;
@@ -18,12 +20,17 @@ const RELEASE: usize = 1;
 const CLEANUP: usize = 2;
 const REMOVE: usize = 3;
 const FINALIZE: usize = 4;
+const FORGET: usize = 5;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DeleteRequest {
     pub branch: String,
     /// 0-based stage to start from when resuming a failed run.
     pub from_stage: usize,
+    /// Refuse, changing nothing, while a repo has uncommitted changes or commits no remote has.
+    pub keep_unsaved_work: bool,
+    /// Repo -> the commit its PR was last pushed at (see [`crate::unsaved_work`]).
+    pub pushed_heads: BTreeMap<String, String>,
 }
 
 struct CheckedOutRepo {
@@ -78,12 +85,20 @@ pub fn delete(
         if request.branch.trim().is_empty() || request.branch == default_branch {
             return Err(format!("{:?} is not a branch workspace", request.branch));
         }
+        if index == STOP && request.keep_unsaved_work {
+            let unsaved =
+                crate::unsaved_work(context.config, root, &request.branch, &request.pushed_heads);
+            if !unsaved.is_empty() {
+                return Err(format!("kept: {}", unsaved.join("; ")));
+            }
+        }
         match index {
             STOP => deletion.stop(scope),
             RELEASE => deletion.release(),
             CLEANUP => deletion.cleanup(scope),
             REMOVE => deletion.remove(scope),
             FINALIZE => deletion.finalize(),
+            FORGET => deletion.forget(scope),
             _ => Ok(StageResult::Skipped),
         }
     })
@@ -275,6 +290,20 @@ impl Deletion<'_> {
             }
             _ => {}
         }
+        Ok(StageResult::Done)
+    }
+
+    /// The agents' sessions, index, leases and log, and the Docker volumes labelled as this workspace's.
+    fn forget(&self, scope: &StageScope<'_>) -> Result<StageResult, String> {
+        let session = &self.context.config.session;
+        for error in pom_agent::forget_workspace(
+            self.context.state,
+            session,
+            self.branch,
+            &self.other_branches(),
+        ) {
+            scope.warn(error);
+        }
         let agent_state = self
             .context
             .state
@@ -282,8 +311,15 @@ impl Deletion<'_> {
             .join(format!("state-{}.json", self.branch.replace('/', "_")));
         if let Err(error) = std::fs::remove_file(agent_state) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("workspace: remove agent state: {error}");
+                scope.warn(format!("remove agent state: {error}"));
             }
+        }
+        match self.context.runner.remove_workspace_volumes(self.branch) {
+            Some(Ok(names)) if !names.is_empty() => {
+                scope.progress(format!("removed volumes {}", names.join(", ")))
+            }
+            Some(Err(error)) => scope.warn(format!("remove volumes: {error}")),
+            _ => {}
         }
         Ok(StageResult::Done)
     }

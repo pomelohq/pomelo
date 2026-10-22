@@ -534,6 +534,28 @@ fn from_node(node: &Value) -> PullRequest {
     pr
 }
 
+/// Why a workspace's work is done: every repo that has a PR has it merged (or closed, when `closed` counts),
+/// as `api #12 merged, web #7 closed`; `None` while one is open or no repo has a PR.
+pub fn finished_reason<'a>(
+    prs: impl IntoIterator<Item = (&'a str, &'a PullRequest)>,
+    merged: bool,
+    closed: bool,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    for (repo, pr) in prs {
+        let done = match pr.state.as_str() {
+            "MERGED" => merged,
+            "CLOSED" => closed,
+            _ => false,
+        };
+        if !done {
+            return None;
+        }
+        parts.push(format!("{repo} #{} {}", pr.number, pr.state.to_lowercase()));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
+}
+
 /// Which repo's branch to look up: `repo` is the workspace's name for it, `owner/name` the GitHub repo.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PrTarget {
@@ -568,15 +590,28 @@ pub fn fetch_heads(
     client: &Client,
     targets: &[PrTarget],
 ) -> (HashMap<String, Option<PullRequest>>, Option<ForgeError>) {
+    fetch_batched(client, targets, "OPEN, MERGED")
+}
+
+/// Like [`fetch_heads`], closed PRs included: the newest PR of each branch whatever its state.
+pub fn fetch_latest(
+    client: &Client,
+    targets: &[PrTarget],
+) -> (HashMap<String, Option<PullRequest>>, Option<ForgeError>) {
+    fetch_batched(client, targets, "OPEN, MERGED, CLOSED")
+}
+
+fn fetch_batched(
+    client: &Client,
+    targets: &[PrTarget],
+    states: &str,
+) -> (HashMap<String, Option<PullRequest>>, Option<ForgeError>) {
     let mut found = HashMap::new();
     let mut failure = None;
     for chunk in targets.chunks(BATCH) {
         let mut query = String::from("query {\n");
         for (index, target) in chunk.iter().enumerate() {
-            query.push_str(&format!(
-                "  p{index}: {}\n",
-                lookup(target, "OPEN, MERGED", "")
-            ));
+            query.push_str(&format!("  p{index}: {}\n", lookup(target, states, "")));
         }
         query.push_str("}\n");
         match client.graphql(&query) {
@@ -612,6 +647,33 @@ pub fn fetch_detail(client: &Client, target: &PrTarget) -> Result<Option<PullReq
 mod tests {
     use super::*;
     use crate::tests::{ok, Scripted};
+
+    #[test]
+    fn a_workspace_is_done_only_when_every_pr_it_has_is() {
+        let pr = |number: u64, state: &str| PullRequest {
+            number,
+            state: state.into(),
+            ..PullRequest::default()
+        };
+        let (merged, closed, open) = (pr(12, "MERGED"), pr(7, "CLOSED"), pr(3, "OPEN"));
+        assert_eq!(
+            finished_reason([("api", &merged)], true, false).as_deref(),
+            Some("api #12 merged")
+        );
+        assert_eq!(
+            finished_reason([("api", &merged), ("web", &closed)], true, false),
+            None
+        );
+        assert_eq!(
+            finished_reason([("api", &merged), ("web", &closed)], true, true).as_deref(),
+            Some("api #12 merged, web #7 closed")
+        );
+        assert_eq!(
+            finished_reason([("api", &merged), ("web", &open)], true, true),
+            None
+        );
+        assert_eq!(finished_reason([], true, true), None);
+    }
 
     fn node() -> Value {
         serde_json::json!({

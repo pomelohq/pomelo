@@ -143,6 +143,7 @@ case "$*" in
   "ps -q"*) echo pg-container ;;
   *"-tAc"*"SELECT 1"*) echo 1 ;;
   *server_version_num*) echo 160002 ;;
+  "volume ls -q --filter label=pom.workspace=demo/feat-x") echo demo_feat-x_cache ;;
 esac
 exit 0
 "#,
@@ -219,12 +220,21 @@ impl Fixture {
         Result<pom_workspace::Outcome, pom_workspace::PipelineError>,
         Vec<Event>,
     ) {
+        self.delete_with(DeleteRequest {
+            branch: branch.into(),
+            ..DeleteRequest::default()
+        })
+    }
+
+    fn delete_with(
+        &self,
+        request: DeleteRequest,
+    ) -> (
+        Result<pom_workspace::Outcome, pom_workspace::PipelineError>,
+        Vec<Event>,
+    ) {
         let events = Mutex::new(Vec::new());
         let sink = |event: Event| events.lock().expect("events").push(event);
-        let request = DeleteRequest {
-            branch: branch.into(),
-            from_stage: 0,
-        };
         let result = delete(&self.context(), &request, &sink);
         (result, events.into_inner().expect("events"))
     }
@@ -394,6 +404,107 @@ fn fresh_databases_seed_even_the_repos_that_copy_main() {
             && !docker.contains("TEMPLATE \"demo_api_main"),
         "{docker}"
     );
+}
+
+fn files_under(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                found.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn delete_leaves_no_agent_state_and_drops_the_workspace_volumes() {
+    let fixture = Fixture::new();
+    fixture.create(&request("feat-x")).0.expect("create");
+    let holder = "ws-demo-feat-x-claude-raw";
+    let identity = pom_agent::Identity {
+        holder: holder.into(),
+        role: "claude".into(),
+        project: "demo".into(),
+        branch: "feat-x".into(),
+        driver: "claude".into(),
+    };
+    let event = pom_agent::SessionEvent {
+        session_id: "s1".into(),
+        event: "SessionStart".into(),
+        state: Some(pom_agent::AgentState::Idle),
+        ..pom_agent::SessionEvent::default()
+    };
+    pom_agent::record_event(&fixture.state, &identity, &event).expect("session");
+    pom_agent::log_workspace(
+        &fixture.state,
+        "demo",
+        "feat-x",
+        serde_json::json!({"event": "lease"}),
+    )
+    .expect("log");
+    let agents = fixture.state.path("agents");
+    std::fs::create_dir_all(agents.join("leases")).expect("leases");
+    std::fs::write(agents.join(format!("leases/{holder}.json")), "{}").expect("lease");
+    std::fs::write(agents.join("state-feat-x.json"), "{}").expect("agent state");
+    assert_eq!(files_under(&agents).len(), 7, "{:?}", files_under(&agents));
+
+    let (result, _) = fixture.delete("feat-x");
+    result.expect("delete");
+    assert!(
+        files_under(&agents).is_empty(),
+        "{:?}",
+        files_under(&agents)
+    );
+    let docker = fixture.docker_calls();
+    assert!(docker.contains("volume rm demo_feat-x_cache"), "{docker}");
+}
+
+#[test]
+fn a_guarded_delete_keeps_a_workspace_with_uncommitted_changes_and_says_why() {
+    let fixture = Fixture::new();
+    let only_web = CreateRequest {
+        repos: vec!["web".into()],
+        skip_seed: true,
+        ..request("wip")
+    };
+    fixture.create(&only_web).0.expect("create");
+    let web = fixture.workspace("wip").join("web");
+    std::fs::write(web.join("README"), "changed\n").expect("edit");
+    let guarded = DeleteRequest {
+        branch: "wip".into(),
+        keep_unsaved_work: true,
+        ..DeleteRequest::default()
+    };
+
+    let (result, _) = fixture.delete_with(guarded.clone());
+    let error = result.expect_err("kept");
+    assert_eq!(error.stage, 0);
+    assert_eq!(error.message, "kept: web has 1 uncommitted change");
+    assert!(web.is_dir());
+    assert!(failed_run(&fixture.state, "wip").is_none());
+
+    git(&web, &["commit", "-q", "-am", "work"]);
+    let (result, _) = fixture.delete_with(guarded.clone());
+    assert_eq!(
+        result.expect_err("kept").message,
+        "kept: web has 1 commit not pushed"
+    );
+
+    let mut pushed = guarded;
+    pushed
+        .pushed_heads
+        .insert("web".into(), git(&web, &["rev-parse", "HEAD"]));
+    fixture
+        .delete_with(pushed)
+        .0
+        .expect("its PR has the commit");
+    assert!(!fixture.workspace("wip").exists());
 }
 
 #[test]

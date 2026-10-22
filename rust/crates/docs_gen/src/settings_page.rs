@@ -86,6 +86,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("modules_fallback", "Dev Services", "Where a copy-on-write clone is impossible: `\"hardlink\"`, `\"copy\"` or `\"install\"` (skip the store)."),
     ("modules_size_limit_gb", "Dev Services", "GB the node_modules store keeps at most; the least recently used copies go first."),
     ("modules_unused_days", "Dev Services", "Days a stored copy is kept without a workspace taking it (0 keeps them until the size limit)."),
+    ("workspaces.auto_cleanup", "Integrations", "Workspaces whose pull requests all merged: `\"off\"` leaves them, `\"ask\"` offers to delete them, `\"auto\"` deletes them (not the one on screen). One with uncommitted or unpushed work is always kept."),
     ("jira_only_mine", "Integrations", "The new-workspace ticket picker lists only Jira tickets assigned to you."),
     ("group_workspaces", "Integrations", "The WORKSPACES list is grouped under its tickets' statuses."),
     ("onboard_with_ai", "Kept by the app", "New projects are finished by the coding agent; off, you review the drafted pom.yml yourself."),

@@ -8,6 +8,7 @@ mod delete;
 mod git;
 mod prepare;
 mod repo_branch;
+mod unsaved;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -26,6 +27,7 @@ pub use repo_branch::{
     checked_out_elsewhere, checkout_label, fetch_origin, keep_repo_branch, list_branches,
     switch_repo_branch, use_another_branch, BranchInfo,
 };
+pub use unsaved::unsaved_work;
 
 /// Lines of a failed command's output kept in its warning.
 const OUTPUT_TAIL_LINES: usize = 20;

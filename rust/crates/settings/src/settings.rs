@@ -80,6 +80,7 @@ pub struct Settings {
     pub modules_fallback: String,
     pub modules_size_limit_gb: u64,
     pub modules_unused_days: u64,
+    pub workspaces: WorkspaceSettings,
     /// When the pointer hides until the mouse moves: "never", "on_typing" or "on_typing_and_action".
     pub hide_mouse: String,
     /// The key held to add a caret with a click: "alt", or "cmd_or_ctrl" (which leaves Alt-click the
@@ -200,6 +201,7 @@ impl Default for Settings {
             modules_fallback: "hardlink".into(),
             modules_size_limit_gb: 20,
             modules_unused_days: 14,
+            workspaces: WorkspaceSettings::default(),
             hide_mouse: "on_typing_and_action".into(),
             multi_cursor_modifier: "alt".into(),
             cursor_blink: true,
@@ -243,6 +245,22 @@ impl Default for Settings {
             agent_font_size: 12.0,
             terminal_shell: String::new(),
             terminal_scrollback: 10_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceSettings {
+    /// Workspaces whose pull requests all merged: "off" leaves them, "ask" offers to delete them, "auto"
+    /// deletes them (never one with uncommitted or unpushed work).
+    pub auto_cleanup: String,
+}
+
+impl Default for WorkspaceSettings {
+    fn default() -> Self {
+        WorkspaceSettings {
+            auto_cleanup: "off".into(),
         }
     }
 }

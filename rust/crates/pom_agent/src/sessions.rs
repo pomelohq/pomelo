@@ -15,10 +15,10 @@ use crate::hooks::AgentState;
 use crate::identity::Identity;
 
 pub const SCHEMA: &str = "pom.agent/v1";
-const SESSIONS_DIR: &str = "agents/sessions";
+pub(crate) const SESSIONS_DIR: &str = "agents/sessions";
 const INDEX_DIR: &str = "agents/index";
 const EVENTS_FILE: &str = "events.ndjson";
-const STATE_FILE: &str = "state.json";
+pub(crate) const STATE_FILE: &str = "state.json";
 
 /// Where a turn stands.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +174,7 @@ pub fn session_dir(state: &StateDir, session_id: &str) -> PathBuf {
     state.path(SESSIONS_DIR).join(safe(session_id))
 }
 
-fn index_path(state: &StateDir, project: &str, branch: &str) -> PathBuf {
+pub(crate) fn index_path(state: &StateDir, project: &str, branch: &str) -> PathBuf {
     state
         .path(INDEX_DIR)
         .join(safe(project))

@@ -1,9 +1,16 @@
+mod disk;
+
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use pom_config::Config;
 use serde::Serialize;
+
+pub use disk::{
+    df_usage, disk_findings, docker_root, filesystems, format_bytes, thin_pools, Filesystem, Place,
+    ThinPool, Usage, FULL_PERCENT,
+};
 
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(8);
 
