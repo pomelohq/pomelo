@@ -726,6 +726,12 @@ impl Session {
                 }
             }
         }
+        // The dev proxy routes only the projects it knows, and one run from the CLI alone was never opened in the app.
+        if let Err(error) =
+            pom_sessions::Projects::register(&self.state, &self.config.session, &self.project.root)
+        {
+            say(err, &format!("dev proxy: register the project: {error}"))?;
+        }
         if let Err(error) = proxy::ensure_running(out) {
             say(err, &format!("dev proxy: {error}"))?;
         }
