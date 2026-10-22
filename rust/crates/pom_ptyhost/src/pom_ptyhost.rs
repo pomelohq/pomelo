@@ -17,4 +17,4 @@ pub use process::{
     ancestors, descendants, parent_pid, peer_pid, process_alive, CrashInfo, SocketDir,
 };
 pub use server::{listen_and_serve, serve, serve_with_lease};
-pub use session::{Session, StartOptions, Subscription, RING_CAPACITY};
+pub use session::{Session, StartOptions, Subscription, RING_CAPACITY, SUBSCRIBER_BACKLOG};

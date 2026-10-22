@@ -3,7 +3,8 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitStatus;
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -13,8 +14,7 @@ use crate::queries::answer_queries;
 /// Output kept for reattaching clients. Larger than the previous core's 256 KB so a long build log isn't
 /// cut; clients of either core read it fine since snapshots are chunked.
 pub const RING_CAPACITY: usize = 1024 * 1024;
-/// Chunks a slow client may fall behind by before it misses live output (it still resumes from the ring).
-const SUBSCRIBER_BACKLOG: usize = 256;
+pub const SUBSCRIBER_BACKLOG: usize = 4 * 1024 * 1024;
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
 
@@ -31,17 +31,48 @@ pub struct StartOptions {
 }
 
 /// What a subscriber gets: the scrollback after its resume point, the absolute offset at the end of it, and
-/// the live output from there on (the channel closes when the command exits).
 pub struct Subscription {
     pub snapshot: Vec<u8>,
     pub end: u64,
-    pub output: Receiver<Arc<[u8]>>,
+    output: Receiver<Arc<[u8]>>,
+    backlog: Arc<Backlog>,
     id: u64,
+}
+
+#[derive(Default)]
+struct Backlog {
+    bytes: AtomicUsize,
+    overflowed: AtomicBool,
+}
+
+struct Subscriber {
+    sender: Sender<Arc<[u8]>>,
+    backlog: Arc<Backlog>,
 }
 
 impl Subscription {
     pub fn id(&self) -> u64 {
         self.id
+    }
+
+    fn took(&self, chunk: &Arc<[u8]>) {
+        self.backlog.bytes.fetch_sub(chunk.len(), Ordering::AcqRel);
+    }
+
+    pub fn recv(&self) -> Option<Arc<[u8]>> {
+        let chunk = self.output.recv().ok()?;
+        self.took(&chunk);
+        Some(chunk)
+    }
+
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<Arc<[u8]>, RecvTimeoutError> {
+        let chunk = self.output.recv_timeout(timeout)?;
+        self.took(&chunk);
+        Ok(chunk)
+    }
+
+    pub fn overflowed(&self) -> bool {
+        self.backlog.overflowed.load(Ordering::Acquire)
     }
 }
 
@@ -49,7 +80,7 @@ impl Subscription {
 struct Output {
     ring: VecDeque<u8>,
     total: u64,
-    subscribers: HashMap<u64, SyncSender<Arc<[u8]>>>,
+    subscribers: HashMap<u64, Subscriber>,
     next_subscriber: u64,
 }
 
@@ -135,11 +166,11 @@ impl Session {
                 if let Some(on_exit) = on_exit {
                     on_exit(&waiting.scrollback(), &status);
                 }
-                if let Ok(mut output) = waiting.output.lock() {
-                    output.subscribers.clear();
-                }
                 if let Ok(mut exit) = waiting.exit.lock() {
                     *exit = Some(status);
+                }
+                if let Ok(mut output) = waiting.output.lock() {
+                    output.subscribers.clear();
                 }
                 waiting.exited.notify_all();
             })?;
@@ -160,12 +191,14 @@ impl Session {
 
     /// Subscribe from absolute offset `since`: a stale or zero offset replays the whole ring.
     pub fn subscribe_since(&self, since: u64) -> Subscription {
-        let (sender, output) = std::sync::mpsc::sync_channel(SUBSCRIBER_BACKLOG);
+        let (sender, output) = std::sync::mpsc::channel();
+        let backlog = Arc::new(Backlog::default());
         let Ok(mut state) = self.inner.output.lock() else {
             return Subscription {
                 snapshot: Vec::new(),
                 end: 0,
                 output,
+                backlog,
                 id: u64::MAX,
             };
         };
@@ -182,12 +215,17 @@ impl Session {
         state.next_subscriber += 1;
         let id = state.next_subscriber;
         if self.exit_status().is_none() {
-            state.subscribers.insert(id, sender);
+            let subscriber = Subscriber {
+                sender,
+                backlog: backlog.clone(),
+            };
+            state.subscribers.insert(id, subscriber);
         }
         Subscription {
             snapshot,
             end,
             output,
+            backlog,
             id,
         }
     }
@@ -305,12 +343,18 @@ impl Inner {
         let excess = state.ring.len().saturating_sub(RING_CAPACITY);
         state.ring.drain(..excess);
         let shared: Arc<[u8]> = Arc::from(chunk);
-        state
-            .subscribers
-            .retain(|_, sender| match sender.try_send(shared.clone()) {
-                Ok(()) | Err(TrySendError::Full(_)) => true,
-                Err(TrySendError::Disconnected(_)) => false,
-            });
+        state.subscribers.retain(|_, subscriber| {
+            let behind = subscriber
+                .backlog
+                .bytes
+                .fetch_add(shared.len(), Ordering::AcqRel)
+                + shared.len();
+            if behind > SUBSCRIBER_BACKLOG {
+                subscriber.backlog.overflowed.store(true, Ordering::Release);
+                return false;
+            }
+            subscriber.sender.send(shared.clone()).is_ok()
+        });
     }
 }
 
@@ -395,7 +439,7 @@ mod tests {
             if String::from_utf8_lossy(&seen).contains(want) {
                 return true;
             }
-            match subscription.output.recv_timeout(Duration::from_millis(50)) {
+            match subscription.recv_timeout(Duration::from_millis(50)) {
                 Ok(chunk) => seen.extend_from_slice(&chunk),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {

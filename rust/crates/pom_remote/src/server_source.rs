@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pom_agent::SessionView;
+use pom_rpc::pty::{self, PtyProvider};
 use pom_rpc::{error_code, CloseReason, Connection, Error, Hello};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -50,6 +51,10 @@ enum Route<T> {
 }
 
 pub struct ServerSource {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     host: Host,
     config: String,
     ssh: Ssh,
@@ -58,6 +63,7 @@ pub struct ServerSource {
     info: Mutex<Option<TransportInfo>>,
     client_id: String,
     next_op: AtomicU64,
+    next_terminal: AtomicU64,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -81,17 +87,29 @@ impl ServerSource {
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or_default();
         ServerSource {
-            fallback: RemoteSource::new(host.clone(), config.clone(), ssh.clone()),
-            host,
-            config,
-            ssh,
-            link: Mutex::new(LinkState::Closed),
-            info: Mutex::new(None),
-            client_id: format!("{}-{nanos:x}", std::process::id()),
-            next_op: AtomicU64::new(1),
+            inner: Arc::new(Inner {
+                fallback: RemoteSource::new(host.clone(), config.clone(), ssh.clone()),
+                host,
+                config,
+                ssh,
+                link: Mutex::new(LinkState::Closed),
+                info: Mutex::new(None),
+                client_id: format!("{}-{nanos:x}", std::process::id()),
+                next_op: AtomicU64::new(1),
+                next_terminal: AtomicU64::new(1),
+            }),
         }
     }
 
+    pub fn terminals(&self, branch: &str) -> Arc<dyn PtyProvider> {
+        Arc::new(Terminals {
+            inner: self.inner.clone(),
+            branch: branch.to_string(),
+        })
+    }
+}
+
+impl Inner {
     fn fall_back(&self, link: &mut LinkState, reason: String) {
         *link = LinkState::Fallback;
         *locked(&self.info) = Some(TransportInfo {
@@ -138,11 +156,15 @@ impl ServerSource {
                     self.fall_back(&mut link, reason);
                     return Ok(None);
                 }
+                let terminals = pom_rpc::pty::METHODS
+                    .iter()
+                    .all(|method| server.features.iter().any(|feature| feature == method));
                 *locked(&self.info) = Some(TransportInfo {
                     via: Via::Server,
                     fallback_reason: None,
                     version_mismatch: version_mismatch(VERSION, &server.pom_version),
                     remote_version: Some(server.pom_version),
+                    terminals,
                 });
                 *link = LinkState::Open(Link {
                     connection: connection.clone(),
@@ -241,58 +263,65 @@ impl ServerSource {
 
 impl ProjectSource for ServerSource {
     fn location(&self) -> String {
-        format!("{} ({})", self.host.name, self.host.url.alias())
+        format!("{} ({})", self.inner.host.name, self.inner.host.url.alias())
     }
 
     fn workspaces(&self) -> Result<WorkspaceList, SourceError> {
         let params = ProjectParams {
-            cfg: self.config.clone(),
+            cfg: self.inner.config.clone(),
         };
-        match self.request(method::WS_LIST, params, READ_TIMEOUT)? {
+        match self.inner.request(method::WS_LIST, params, READ_TIMEOUT)? {
             Route::Server(list) => Ok(list),
-            Route::Fallback => self.fallback.workspaces(),
+            Route::Fallback => self.inner.fallback.workspaces(),
         }
     }
 
     fn status(&self, branch: &str) -> Result<StatusReport, SourceError> {
-        match self.request(method::WS_STATUS, self.workspace(branch), READ_TIMEOUT)? {
+        match self.inner.request(
+            method::WS_STATUS,
+            self.inner.workspace(branch),
+            READ_TIMEOUT,
+        )? {
             Route::Server(report) => Ok(report),
-            Route::Fallback => self.fallback.status(branch),
+            Route::Fallback => self.inner.fallback.status(branch),
         }
     }
 
     fn logs(&self, branch: &str, service: &str) -> Result<String, SourceError> {
         let params = LogsParams {
-            cfg: self.config.clone(),
+            cfg: self.inner.config.clone(),
             branch: branch.to_string(),
             service: service.to_string(),
         };
-        match self.request(method::SVC_LOGS, params, READ_TIMEOUT)? {
+        match self.inner.request(method::SVC_LOGS, params, READ_TIMEOUT)? {
             Route::Server(text) => Ok(text),
-            Route::Fallback => self.fallback.logs(branch, service),
+            Route::Fallback => self.inner.fallback.logs(branch, service),
         }
     }
 
     fn agents(&self, branch: &str) -> Result<Vec<SessionView>, SourceError> {
-        match self.request::<AgentListing>(
+        match self.inner.request::<AgentListing>(
             method::AGENT_LIST,
-            self.workspace(branch),
+            self.inner.workspace(branch),
             READ_TIMEOUT,
         )? {
             Route::Server(listing) => Ok(listing.sessions),
-            Route::Fallback => self.fallback.agents(branch),
+            Route::Fallback => self.inner.fallback.agents(branch),
         }
     }
 
     fn agent_turn(&self, branch: &str, role: &str) -> Result<Option<AgentTurn>, SourceError> {
         let params = TurnParams {
-            cfg: self.config.clone(),
+            cfg: self.inner.config.clone(),
             branch: branch.to_string(),
             role: role.to_string(),
         };
-        match self.request::<serde_json::Value>(method::AGENT_TURN, params, READ_TIMEOUT)? {
+        match self
+            .inner
+            .request::<serde_json::Value>(method::AGENT_TURN, params, READ_TIMEOUT)?
+        {
             Route::Server(document) => Ok(last_turn(&document)),
-            Route::Fallback => self.fallback.agent_turn(branch, role),
+            Route::Fallback => self.inner.fallback.agent_turn(branch, role),
         }
     }
 
@@ -304,23 +333,136 @@ impl ProjectSource for ServerSource {
         target: &str,
     ) -> Result<String, SourceError> {
         let params = ActParams {
-            cfg: self.config.clone(),
+            cfg: self.inner.config.clone(),
             branch: branch.to_string(),
             action: action.verb().to_string(),
             target: target.to_string(),
             op_id: format!(
                 "{}-{}",
-                self.client_id,
-                self.next_op.fetch_add(1, Ordering::Relaxed)
+                self.inner.client_id,
+                self.inner.next_op.fetch_add(1, Ordering::Relaxed)
             ),
         };
-        match self.request(method::SVC_ACT, params, ACT_TIMEOUT)? {
+        match self.inner.request(method::SVC_ACT, params, ACT_TIMEOUT)? {
             Route::Server(said) => Ok(said),
-            Route::Fallback => self.fallback.act(branch, action, target),
+            Route::Fallback => self.inner.fallback.act(branch, action, target),
         }
     }
 
     fn transport(&self) -> Option<TransportInfo> {
-        locked(&self.info).clone()
+        locked(&self.inner.info).clone()
+    }
+
+    fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {
+        let info = locked(&self.inner.info).clone()?;
+        (info.via == Via::Server && info.terminals).then(|| self.terminals(branch))
+    }
+}
+
+struct Terminals {
+    inner: Arc<Inner>,
+    branch: String,
+}
+
+const TERMINAL_TIMEOUT: Duration = Duration::from_secs(30);
+
+impl Terminals {
+    fn connection(&self) -> Result<Connection, String> {
+        let connection = self
+            .inner
+            .connection()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "{} is read over plain ssh, which has no terminals",
+                    self.inner.host.name
+                )
+            })?;
+        let supported = locked(&self.inner.info)
+            .as_ref()
+            .is_some_and(|info| info.terminals);
+        if !supported {
+            return Err(format!(
+                "pom server on {} has no terminals; update pom on the VM to get them",
+                self.inner.host.name
+            ));
+        }
+        Ok(connection)
+    }
+
+    fn ask<T: DeserializeOwned>(
+        connection: &Connection,
+        name: &str,
+        params: impl Serialize,
+    ) -> Result<T, String> {
+        let value = connection
+            .start_request(name, params)
+            .and_then(|mut pending| pending.wait_timeout(TERMINAL_TIMEOUT))
+            .map_err(|error| match error {
+                Error::Remote(error) => error.message,
+                other => other.to_string(),
+            })?;
+        serde_json::from_value(value).map_err(|error| format!("{name}: {error}"))
+    }
+}
+
+impl PtyProvider for Terminals {
+    fn attach(&self, request: &pty::Request) -> Result<pty::Terminal, String> {
+        let connection = self.connection()?;
+        let open = |kind, role, service, cwd| pty::OpenParams {
+            cfg: self.inner.config.clone(),
+            branch: self.branch.clone(),
+            kind,
+            role,
+            service,
+            cwd,
+            cols: request.cols,
+            rows: request.rows,
+        };
+        let holder = match &request.target {
+            pty::Target::Holder(holder) => holder.clone(),
+            pty::Target::Shell { cwd } => {
+                let params = open(pty::Kind::Shell, None, None, cwd.clone());
+                Self::ask::<pty::Opened>(&connection, pty::method::OPEN, params)?.holder
+            }
+            pty::Target::Service(service) => {
+                let params = open(pty::Kind::Service, None, Some(service.clone()), None);
+                Self::ask::<pty::Opened>(&connection, pty::method::OPEN, params)?.holder
+            }
+            pty::Target::Agent(role) => {
+                let params = open(pty::Kind::Agent, Some(role.clone()), None, None);
+                Self::ask::<pty::Opened>(&connection, pty::method::OPEN, params)?.holder
+            }
+        };
+        let params = pty::AttachParams {
+            cfg: self.inner.config.clone(),
+            branch: self.branch.clone(),
+            holder,
+            terminal: self
+                .inner
+                .next_terminal
+                .fetch_add(1, Ordering::Relaxed)
+                .to_string(),
+            mode: request.mode,
+            primary: request.primary,
+            claim: request.claim.clone(),
+            cols: request.cols,
+            rows: request.rows,
+            ..pty::AttachParams::default()
+        };
+        pty::Terminal::attach(&connection, params, TERMINAL_TIMEOUT).map_err(|error| match error {
+            Error::Remote(error) => error.message,
+            other => other.to_string(),
+        })
+    }
+
+    fn close(&self, holder: &str) -> Result<(), String> {
+        let connection = self.connection()?;
+        let params = pty::CloseParams {
+            cfg: self.inner.config.clone(),
+            branch: self.branch.clone(),
+            holder: holder.to_string(),
+        };
+        Self::ask::<serde_json::Value>(&connection, pty::method::CLOSE, params).map(|_| ())
     }
 }

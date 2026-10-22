@@ -175,6 +175,27 @@ pub fn ordered_services(
     Ok(ordered)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceTerminals {
+    pub session: String,
+    pub branch: String,
+    pub worktree: PathBuf,
+    pub group: pom_ptyhost::HolderGroup,
+}
+
+impl WorkspaceTerminals {
+    pub fn shell_prefix(&self) -> String {
+        format!("term-{}-{}", self.session, self.branch)
+    }
+
+    pub fn owns(&self, name: &str) -> bool {
+        ["term", "svc", "ws"].iter().any(|kind| {
+            name.strip_prefix(&format!("{kind}-{}-{}-", self.session, self.branch))
+                .is_some_and(|rest| !rest.is_empty())
+        })
+    }
+}
+
 /// A project on this machine.
 pub struct LocalSource {
     config_path: PathBuf,
@@ -249,6 +270,35 @@ impl LocalSource {
 
     pub fn config_path(&self) -> &Path {
         &self.config_path
+    }
+
+    pub fn workspace_terminals(&self, branch: &str) -> Result<WorkspaceTerminals, SourceError> {
+        let opened = self.open()?;
+        let worktree = opened
+            .project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == branch)
+            .map(|workspace| workspace.path.clone())
+            .ok_or_else(|| SourceError::Failed(format!("no workspace {branch}")))?;
+        Ok(WorkspaceTerminals {
+            session: pom_env::branch_safe(&opened.config.session),
+            branch: pom_env::branch_safe(branch),
+            worktree,
+            group: pom_services::holder_group(&opened.config, branch),
+        })
+    }
+
+    pub fn service_holder(&self, branch: &str, service: &str) -> Result<String, SourceError> {
+        let opened = self.open()?;
+        let is_main = Self::is_main(&opened.project, branch)?;
+        let (repo, name) = opened
+            .config
+            .find_service_entry(service)
+            .map_err(SourceError::Failed)?;
+        Ok(opened
+            .runner
+            .holder_name(&target(branch, is_main, &repo, &name)))
     }
 
     pub fn last_turn_document(

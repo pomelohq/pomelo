@@ -225,3 +225,42 @@ fn while_a_lease_is_set_only_the_client_that_claimed_it_can_type() {
         .expect("viewer input");
     read_until(&mut watcher, "viewer-again");
 }
+
+#[test]
+fn a_reader_far_behind_loses_its_output_not_chunks_and_resumes_by_offset() {
+    let holders = Holders::new();
+    let lines = 1_500_000;
+    let script = format!("stty -opost; seq 1 {lines}; cat");
+    holders.spawn("appsh-behind", &["sh", "-c", &script]);
+    let mut slow = holders.attach("appsh-behind", 0);
+    let mut expected = String::new();
+    for line in 1..=lines {
+        expected.push_str(&line.to_string());
+        expected.push('\n');
+    }
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while pom_ptyhost::output_end(&holders.dir, "appsh-behind", TIMEOUT).expect("end")
+        < expected.len() as u64
+    {
+        assert!(Instant::now() < deadline, "seq did not finish");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let mut read = slow.snapshot.clone();
+    slow.output
+        .read_to_end(&mut read)
+        .expect("read until the holder stops");
+    assert!(read.len() < expected.len(), "it fell behind");
+    assert_eq!(
+        &read[..],
+        &expected.as_bytes()[..read.len()],
+        "what it got is an exact prefix"
+    );
+
+    slow.connection
+        .input(b"still-typing\n")
+        .expect("its input still works");
+    let offset = slow.end + read.len() as u64 - slow.snapshot.len() as u64;
+    let mut resumed = holders.attach("appsh-behind", offset);
+    read_until(&mut resumed, "still-typing");
+}

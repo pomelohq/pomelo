@@ -440,6 +440,7 @@ impl Fixture {
             ("POM_NO_PROXY".into(), "1".into()),
             ("POM_WEB_PORT".into(), "1".into()),
             ("POM_PTY_SOCK_DIR".into(), path("s")),
+            ("SHELL".into(), "/bin/sh".into()),
         ]
     }
 
@@ -666,6 +667,60 @@ fn the_server_source_reads_what_the_local_one_does() {
 }
 
 #[test]
+fn a_shell_on_the_server_runs_what_is_typed() {
+    use pom_remote::ProjectSource;
+    use pom_rpc::pty::{Mode, Request, Target};
+    use pom_rpc::StreamEvent;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let server = fixture.server_source("dev");
+    assert!(
+        server.pty("feat").is_none(),
+        "unknown before the server answered"
+    );
+    server.workspaces().expect("connect");
+    assert!(server.transport().expect("transport").terminals);
+    let terminals = server.pty("feat").expect("terminals");
+    let request = Request {
+        target: Target::Shell { cwd: None },
+        cols: 80,
+        rows: 24,
+        mode: Mode::ReadWrite,
+        primary: true,
+        claim: None,
+    };
+    let terminal = terminals.attach(&request).expect("a shell");
+    let holder = terminal.attached.holder.clone();
+    assert!(holder.starts_with("term-demo-feat-"), "{holder}");
+    terminal
+        .control
+        .input(b"echo hi-$((20 + 1))\n")
+        .expect("type");
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !String::from_utf8_lossy(&seen).contains("hi-21") {
+        assert!(
+            Instant::now() < deadline,
+            "{:?}",
+            String::from_utf8_lossy(&seen)
+        );
+        match terminal.output.recv_timeout(Duration::from_millis(100)) {
+            Ok(StreamEvent::Data { offset, bytes }) => {
+                terminal.control.ack(offset + bytes.len() as u64);
+                seen.extend_from_slice(&bytes);
+            }
+            Ok(StreamEvent::Reset { .. }) | Err(pom_rpc::Error::Timeout) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    let holders = pom_ptyhost::SocketDir::new(fixture.temp.path().join("s"));
+    assert!(holders.holder_alive(&holder));
+    terminals.close(&holder).expect("close");
+    assert!(!holders.holder_alive(&holder));
+}
+
+#[test]
 fn a_dropped_server_session_is_reopened_from_scratch() {
     use pom_remote::ProjectSource;
     let fixture = Fixture::new();
@@ -794,4 +849,73 @@ fn the_server_proxy_starts_a_server_and_reconnect_never_does() {
     .expect("server log");
     assert!(log.contains("method=server.info"), "{log}");
     assert!(log.contains("exit: stopped"), "{log}");
+}
+
+#[test]
+fn a_real_sshd_keystroke_round_trip() {
+    use pom_remote::ProjectSource;
+    use pom_rpc::pty::{Mode, Request, Target};
+    use pom_rpc::StreamEvent;
+    if std::env::var_os("POM_REAL_SSH").is_none() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let state = StateDir::from_env();
+    let mut sessions = pom_sessions::Sessions::load(&state);
+    sessions.touch("demo", &fixture.root().to_string_lossy(), 10);
+    sessions.save(&state).expect("sessions");
+    let host = pom_remote::Host {
+        name: "localhost".into(),
+        url: pom_remote::HostUrl::parse("ssh://localhost").expect("url"),
+        pom_path: Some(POM.into()),
+        transport: None,
+    };
+    let server = pom_remote::ServerSource::new(
+        host,
+        fixture.config(),
+        pom_remote::Ssh::custom("ssh".into(), None, Vec::new()),
+    );
+    server.workspaces().expect("through sshd");
+    let terminals = server.pty("feat").expect("terminals");
+    let request = Request {
+        target: Target::Shell { cwd: None },
+        cols: 80,
+        rows: 24,
+        mode: Mode::ReadWrite,
+        primary: true,
+        claim: None,
+    };
+    let terminal = terminals.attach(&request).expect("a shell");
+    terminal.control.input(b"exec cat\n").expect("type");
+    std::thread::sleep(Duration::from_millis(500));
+    let mut times = Vec::new();
+    for index in 0..200u8 {
+        let key = b'a' + index % 26;
+        let started = Instant::now();
+        terminal.control.input(&[key]).expect("key");
+        loop {
+            match terminal.output.recv_timeout(Duration::from_secs(5)) {
+                Ok(StreamEvent::Data { offset, bytes }) => {
+                    terminal.control.ack(offset + bytes.len() as u64);
+                    if bytes.contains(&key) {
+                        break;
+                    }
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        times.push(started.elapsed());
+    }
+    times.sort();
+    let (p50, p99) = (times[100], times[197]);
+    eprintln!("real sshd keystroke round trip: p50 {p50:?} p99 {p99:?}");
+    if let Err(error) = terminals.close(&terminal.attached.holder) {
+        eprintln!("close: {error}");
+    }
+    let stopped = Command::new(POM).args(["server", "stop"]).output();
+    if let Err(error) = stopped {
+        eprintln!("pom server stop: {error}");
+    }
+    assert!(p50 < Duration::from_millis(60), "p50 {p50:?}");
+    assert!(p99 < Duration::from_millis(120), "p99 {p99:?}");
 }

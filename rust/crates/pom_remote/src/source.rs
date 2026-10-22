@@ -2,6 +2,7 @@
 //! ssh. Both answer with the same types, so a view never knows which one it reads.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use pom_agent::SessionView;
@@ -157,6 +158,7 @@ pub struct TransportInfo {
     pub fallback_reason: Option<String>,
     pub remote_version: Option<String>,
     pub version_mismatch: bool,
+    pub terminals: bool,
 }
 
 /// A project's state and controls, read on whichever machine runs it.
@@ -173,6 +175,9 @@ pub trait ProjectSource: Send + Sync {
     fn act(&self, branch: &str, action: ServiceAction, target: &str)
         -> Result<String, SourceError>;
     fn transport(&self) -> Option<TransportInfo> {
+        None
+    }
+    fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
         None
     }
 }

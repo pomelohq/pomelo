@@ -19,6 +19,10 @@ pub mod method {
     pub const AGENT_TURN: &str = "agent.turn";
     pub const SVC_ACT: &str = "svc.act";
     pub const OP_RESULT: &str = "op.result";
+    pub use pom_rpc::pty::method::{
+        ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
+        PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
+    };
 }
 
 /// Every method this build serves; the server's HELLO lists them as its features.
@@ -33,9 +37,14 @@ pub const METHODS: &[&str] = &[
     method::AGENT_TURN,
     method::SVC_ACT,
     method::OP_RESULT,
+    method::PTY_OPEN,
+    method::PTY_ATTACH,
+    method::PTY_RESIZE,
+    method::PTY_PRIMARY,
+    method::PTY_DETACH,
+    method::PTY_CLOSE,
 ];
 
-/// The methods a [`crate::ServerSource`] cannot do without.
 pub const REQUIRED: &[&str] = &[
     method::WS_LIST,
     method::WS_STATUS,

@@ -14,6 +14,8 @@ use pom_remote::server_api::{
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
+
+use crate::pty::{Caller, Ptys};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -210,16 +212,44 @@ pub struct Dispatcher {
     holders: SocketDir,
     binary: PathBuf,
     ops: Ops,
+    ptys: Ptys,
 }
 
 impl Dispatcher {
     pub fn new(state: StateDir, holders: SocketDir, binary: PathBuf, op_memory: Duration) -> Self {
         Dispatcher {
+            ptys: Ptys::new(holders.clone(), binary.clone()),
             state,
             holders,
             binary,
             ops: Ops::new(op_memory),
         }
+    }
+
+    pub fn ptys(&self) -> &Ptys {
+        &self.ptys
+    }
+
+    pub fn dispatch_pty(
+        &self,
+        request: &Request,
+        caller: &Caller<'_>,
+    ) -> Option<Result<Value, RemoteError>> {
+        let raw = &request.params;
+        let cfg = || {
+            let fields: pom_remote::server_api::WorkspaceParams = params(raw)?;
+            check_branch(&fields.branch)?;
+            self.source(&fields.cfg)
+        };
+        Some(match request.method.as_str() {
+            method::PTY_OPEN => cfg().and_then(|source| self.ptys.open(&source, raw)),
+            method::PTY_ATTACH => cfg().and_then(|source| self.ptys.attach(&source, caller, raw)),
+            method::PTY_RESIZE => self.ptys.resize(caller, raw),
+            method::PTY_PRIMARY => self.ptys.primary(caller, raw),
+            method::PTY_DETACH => self.ptys.detach(caller, raw),
+            method::PTY_CLOSE => cfg().and_then(|source| self.ptys.close(&source, raw)),
+            _ => return None,
+        })
     }
 
     fn source(&self, cfg: &str) -> Result<LocalSource, RemoteError> {
