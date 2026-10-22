@@ -11,9 +11,10 @@ use pom_agent::SessionView;
 
 use crate::server_api::AgentPresence;
 use crate::source::{
-    last_turn, AgentTurn, Feed, FeedEvent, LogEvent, LogFeed, ProjectSource, ServiceAction,
-    SourceError, StatusReport, TransportInfo, Update, WorkspaceList,
+    last_turn, AgentTurn, Feed, FeedEvent, LinkReport, LogEvent, LogFeed, ProjectSource,
+    ServiceAction, SourceError, StatusReport, TransportInfo, Update, WorkspaceList,
 };
+use pom_rpc::pty::LinkState;
 
 pub const POLL_EVERY: Duration = Duration::from_millis(2500);
 /// With pushes, a full look this often still catches anything a push missed.
@@ -21,6 +22,8 @@ pub const SAFETY_REFRESH: Duration = Duration::from_secs(30);
 const LOG_LINES: usize = 400;
 /// How often the push reader looks up from its wait to notice it should stop.
 const FEED_POLL: Duration = Duration::from_millis(250);
+/// How often the session's state is read, so a drop shows soon after it happens.
+const LINK_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timing {
@@ -42,6 +45,11 @@ pub enum Connection {
     #[default]
     Connecting,
     Connected,
+    /// The session dropped and attempt `attempt` to reopen it runs in `next_in`; what was read stays shown.
+    Reconnecting {
+        attempt: u32,
+        next_in: Duration,
+    },
     /// The last look failed to reach the machine; what was read before stays shown.
     Disconnected {
         reason: String,
@@ -75,6 +83,8 @@ pub struct Snapshot {
     pub pushing: bool,
     /// The shown service's output streams in as it prints, rather than being asked for again and again.
     pub logs_live: bool,
+    /// Times the session came back to a restarted server, so a view can say so once each time.
+    pub server_restarts: u64,
     /// Bumped on every change, so a reader can tell it has something new.
     pub generation: u64,
 }
@@ -333,8 +343,9 @@ impl Watch {
             .cloned()
     }
 
-    /// Looks again now (a Reconnect).
+    /// Looks again now (a Reconnect), reopening a dropped session at once.
     pub fn refresh_now(&self) {
+        self.source.reconnect_now();
         {
             let mut snapshot = self.shared.snapshot();
             if matches!(snapshot.connection, Connection::Disconnected { .. }) {
@@ -343,6 +354,11 @@ impl Watch {
             }
         }
         self.shared.poke(|wanted| wanted.now = true);
+    }
+
+    /// Reopens a dropped session now, as a window coming to the front does; nothing when it is up.
+    pub fn reconnect_now(&self) {
+        self.source.reconnect_now();
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -409,10 +425,12 @@ enum Job {
         service: String,
     },
     DropLogs,
+    Link(LinkReport),
 }
 
 #[derive(Default)]
 struct Clock {
+    link: Option<LinkReport>,
     look: Option<Instant>,
     logs: Option<Instant>,
     feed_tried: Option<Instant>,
@@ -427,6 +445,7 @@ fn remaining(at: Option<Instant>, every: Duration) -> Duration {
 
 fn next_job(
     shared: &Shared,
+    source: &dyn ProjectSource,
     live: Option<&Live>,
     logs: Option<&LiveLogs>,
     clock: &Clock,
@@ -466,9 +485,20 @@ fn next_job(
                 return Some(Job::DropLogs);
             }
         }
+        if let Some(report) = source
+            .link()
+            .filter(|report| Some(report) != clock.link.as_ref())
+        {
+            return Some(Job::Link(report));
+        }
         let followed = (wanted.branch.clone(), wanted.turn.clone());
-        let mut wait = timing.poll;
-        if wanted.visible {
+        let mut wait = timing.poll.min(LINK_POLL);
+        // While the session is down nothing can be asked; it looks again the moment it is back.
+        let offline = clock
+            .link
+            .as_ref()
+            .is_some_and(|report| report.state != LinkState::Connected);
+        if wanted.visible && !offline {
             match live {
                 None => {
                     let retry = remaining(clock.feed_tried, timing.poll);
@@ -543,8 +573,34 @@ fn run(
     let mut live: Option<Live> = None;
     let mut logs: Option<LiveLogs> = None;
     let mut clock = Clock::default();
-    while let Some(job) = next_job(shared, live.as_ref(), logs.as_ref(), &clock, timing) {
+    while let Some(job) = next_job(
+        shared,
+        source.as_ref(),
+        live.as_ref(),
+        logs.as_ref(),
+        &clock,
+        timing,
+    ) {
         match job {
+            Job::Link(report) => {
+                let back = report.state == LinkState::Connected
+                    && clock
+                        .link
+                        .as_ref()
+                        .is_some_and(|before| before.state != LinkState::Connected);
+                clock.link = Some(report.clone());
+                if back {
+                    clock.feed_tried = None;
+                    clock.logs_tried = None;
+                    shared.poke(|wanted| wanted.now = true);
+                }
+                shared.update(waker.as_ref(), |snapshot| {
+                    snapshot.server_restarts = report.restarts;
+                    if let Some(connection) = link_connection(&report.state) {
+                        snapshot.connection = connection;
+                    }
+                });
+            }
             Job::Act(action, target, branch) => act(
                 shared,
                 source.as_ref(),
@@ -654,6 +710,14 @@ fn read_logs(
                             }
                         });
                     }
+                    LogEvent::StartedOver => {
+                        text.clear();
+                        thread_shared.update(thread_waker.as_ref(), |snapshot| {
+                            if snapshot.branch == branch {
+                                snapshot.logs = Some((service.clone(), Ok(String::new())));
+                            }
+                        });
+                    }
                     LogEvent::Skipped | LogEvent::Idle => {}
                     LogEvent::Ended(_) => {
                         if !thread_stop.load(Ordering::Acquire) {
@@ -723,6 +787,20 @@ fn read_feed(
         feed,
         stop,
         followed,
+    }
+}
+
+/// What a session state shows as, when it overrides what the last look found.
+fn link_connection(state: &LinkState) -> Option<Connection> {
+    match state {
+        LinkState::Connected => None,
+        LinkState::Reconnecting { attempt, next_in } => Some(Connection::Reconnecting {
+            attempt: *attempt,
+            next_in: *next_in,
+        }),
+        LinkState::Disconnected { reason } => Some(Connection::Disconnected {
+            reason: reason.clone(),
+        }),
     }
 }
 
@@ -887,6 +965,9 @@ fn look(
         note(error);
     }
     let transport = source.transport();
+    let link = source
+        .link()
+        .and_then(|report| link_connection(&report.state));
     shared.update(waker, |snapshot| {
         snapshot.transport = transport;
         if snapshot.branch != branch {
@@ -894,7 +975,7 @@ fn look(
         }
         match unreachable {
             Some(reason) => {
-                snapshot.connection = Connection::Disconnected { reason };
+                snapshot.connection = link.unwrap_or(Connection::Disconnected { reason });
                 return;
             }
             None => {
@@ -940,6 +1021,8 @@ mod tests {
         feed: Option<Arc<FakeFeed>>,
         logs_asked: AtomicUsize,
         log_feed: Mutex<Option<std::sync::mpsc::Receiver<LogEvent>>>,
+        link: Mutex<Option<LinkReport>>,
+        kicked: AtomicUsize,
     }
 
     struct FakeLogs(Mutex<std::sync::mpsc::Receiver<LogEvent>>);
@@ -1045,6 +1128,12 @@ mod tests {
             _turn: Option<&str>,
         ) -> Result<Option<Arc<dyn Feed>>, SourceError> {
             Ok(self.feed.clone().map(|feed| feed as Arc<dyn Feed>))
+        }
+        fn link(&self) -> Option<LinkReport> {
+            locked(&self.link).clone()
+        }
+        fn reconnect_now(&self) {
+            self.kicked.fetch_add(1, Ordering::SeqCst);
         }
         fn follow_logs(
             &self,
@@ -1195,6 +1284,63 @@ mod tests {
 
         drop(pushes);
         wait_for(&watch, |snapshot| !snapshot.pushing);
+    }
+
+    #[test]
+    fn a_dropped_session_shows_as_reconnecting_then_disconnected_and_a_restart_is_counted() {
+        let fake = Arc::new(Fake::default());
+        let timing = Timing {
+            poll: Duration::from_millis(50),
+            safety: Duration::from_secs(60),
+        };
+        let watch = Watch::start_with(fake.clone(), "main", Arc::new(|| {}), timing);
+        watch.set_visible(true);
+        wait_for(&watch, |snapshot| {
+            snapshot.connection == Connection::Connected
+        });
+        *locked(&fake.link) = Some(LinkReport {
+            state: LinkState::Reconnecting {
+                attempt: 2,
+                next_in: Duration::from_secs(1),
+            },
+            restarts: 0,
+        });
+        fake.down.store(true, Ordering::SeqCst);
+        wait_for(&watch, |snapshot| {
+            matches!(
+                snapshot.connection,
+                Connection::Reconnecting { attempt: 2, .. }
+            )
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            matches!(watch.snapshot().connection, Connection::Reconnecting { .. }),
+            "a failed look does not turn it into disconnected"
+        );
+        *locked(&fake.link) = Some(LinkReport {
+            state: LinkState::Disconnected {
+                reason: "Connection refused".into(),
+            },
+            restarts: 0,
+        });
+        wait_for(&watch, |snapshot| {
+            matches!(snapshot.connection, Connection::Disconnected { .. })
+        });
+        watch.refresh_now();
+        assert_eq!(
+            fake.kicked.load(Ordering::SeqCst),
+            1,
+            "Reconnect reconnects"
+        );
+        fake.down.store(false, Ordering::SeqCst);
+        *locked(&fake.link) = Some(LinkReport {
+            state: LinkState::Connected,
+            restarts: 1,
+        });
+        let snapshot = wait_for(&watch, |snapshot| {
+            snapshot.connection == Connection::Connected && snapshot.server_restarts == 1
+        });
+        assert!(snapshot.workspaces.is_some(), "what was read stays");
     }
 
     #[test]

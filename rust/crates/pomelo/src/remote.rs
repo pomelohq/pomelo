@@ -20,6 +20,8 @@ pub(crate) struct RemoteWindow {
     terminals_for: Option<String>,
     /// The agent roles whose tabs were open when last saved, for the shown workspace.
     agent_tabs: Vec<String>,
+    /// Server restarts already told about.
+    restarts_told: u64,
 }
 
 impl RemoteWindow {
@@ -143,6 +145,7 @@ impl App {
                 notice_actions: Vec::new(),
                 terminals_for: None,
                 agent_tabs: Vec::new(),
+                restarts_told: 0,
             });
         }
         self.install_remote_views(id);
@@ -259,6 +262,9 @@ impl App {
             &remote.project,
         );
         remote.notice_actions = actions;
+        let restarted = snapshot.server_restarts > remote.restarts_told;
+        remote.restarts_told = snapshot.server_restarts;
+        let restart_notice = restarted.then(|| remote_ui::restart_notice(&remote.host));
         let title = remote_title(remote);
         main.window.set_title(&title);
         main.dirty = true;
@@ -266,6 +272,9 @@ impl App {
             view.update_project(info);
             view.set_agent_states(dots);
             view.set_center_notice(Some(notice));
+            if let Some(message) = restart_notice {
+                view.show_toast(message, None);
+            }
         });
         self.install_remote_terminals(id, &snapshot);
         self.open_started_agents(id);

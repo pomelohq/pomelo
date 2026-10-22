@@ -11,6 +11,10 @@ use std::time::{Duration, Instant};
 use crate::{Host, Ssh};
 
 const STDERR_LINES: usize = 64;
+/// `pom server proxy --reconnect` exits with this when no server runs: the client starts over instead.
+pub const EXIT_SERVER_GONE: i32 = 70;
+/// What an opener's error says when the server it was to reconnect to is gone.
+pub const SERVER_GONE: &str = "server_gone";
 
 /// How a `pom server proxy` session ended before the server answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +25,8 @@ pub enum ProxyFailure {
     NoServer(String),
     /// pom is not installed there.
     NotInstalled,
+    /// `--reconnect` found no server: it restarted, or stopped.
+    ServerGone,
     /// Anything else, with the last thing it said.
     Other(String),
 }
@@ -47,6 +53,11 @@ fn stop(child: &Mutex<Child>) -> std::io::Result<()> {
 }
 
 impl ProxyProcess {
+    /// The ssh child's process id.
+    pub fn pid(&self) -> u32 {
+        locked(&self.child).id()
+    }
+
     /// What ssh and the remote pom printed on stderr, oldest first.
     pub fn stderr(&self) -> Vec<String> {
         locked(&self.stderr).iter().cloned().collect()
@@ -103,6 +114,7 @@ pub fn classify(code: Option<i32>, stderr: &[String]) -> ProxyFailure {
             ProxyFailure::Unreachable(last.unwrap_or_else(|| "ssh could not connect".to_string()))
         }
         Some(127) => ProxyFailure::NotInstalled,
+        Some(EXIT_SERVER_GONE) => ProxyFailure::ServerGone,
         _ if unknown_command => ProxyFailure::NoServer(
             "its pom is older than pom server; update pom on the VM to get terminals".to_string(),
         ),
@@ -117,9 +129,16 @@ pub fn classify(code: Option<i32>, stderr: &[String]) -> ProxyFailure {
     }
 }
 
-/// Starts `ssh ... pom server proxy` on `host` and wraps its pipes.
-pub fn open(ssh: &Ssh, host: &Host) -> std::io::Result<(pom_rpc::Transport, ProxyProcess)> {
-    let args = ["server".to_string(), "proxy".to_string()];
+/// Starts `ssh ... pom server proxy` on `host` and wraps its pipes; `reconnect` never starts a server.
+pub fn open(
+    ssh: &Ssh,
+    host: &Host,
+    reconnect: bool,
+) -> std::io::Result<(pom_rpc::Transport, ProxyProcess)> {
+    let mut args = vec!["server".to_string(), "proxy".to_string()];
+    if reconnect {
+        args.push("--reconnect".to_string());
+    }
     let mut command = ssh.command_with(host, &args, &["IPQoS=lowdelay"]);
     let mut child = command
         .stdin(Stdio::piped())
@@ -183,7 +202,7 @@ mod tests {
         ));
         assert_eq!(
             classify(Some(70), &lines(&[r#"{"error":"server_gone"}"#])),
-            ProxyFailure::Other("server_gone".into())
+            ProxyFailure::ServerGone
         );
         assert_eq!(
             classify(Some(1), &lines(&["error: no socket dir"])),

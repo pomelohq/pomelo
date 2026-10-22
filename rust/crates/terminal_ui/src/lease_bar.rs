@@ -260,6 +260,12 @@ pub fn strip(
     if cards.is_empty() {
         return None;
     }
+    Some(tray(cards, width))
+}
+
+/// Cards on the panel's tray over a tab.
+pub(crate) fn tray(cards: Vec<Div>, width: f32) -> Node {
+    let colors = theme();
     // Each card sits on a ring with a darker edge under it, the way a raised card casts its shadow.
     let mut tray = div().col().w_px(width).px(7.0).pt(7.0).pb(5.0).gap(3.0);
     for card in cards {
@@ -274,15 +280,13 @@ pub fn strip(
             ),
         );
     }
-    Some(
-        div()
-            .col()
-            .w_px(width)
-            .bg(colors.panel_background)
-            .child(tray)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .into(),
-    )
+    div()
+        .col()
+        .w_px(width)
+        .bg(colors.panel_background)
+        .child(tray)
+        .child(div().h_px(1.0).bg(colors.border_variant))
+        .into()
 }
 
 fn shadow() -> Rgba {
@@ -310,7 +314,7 @@ fn attention_pill(text: &str) -> Div {
 }
 
 /// A small button: filled with the accent when `primary`, else ghost, with its keys in a chip after the text.
-fn button(
+pub(crate) fn button(
     id: u64,
     glyph: Option<IconKind>,
     text: &str,

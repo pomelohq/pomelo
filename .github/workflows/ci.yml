@@ -242,9 +242,10 @@ jobs:
       - run: cargo test -p pom_remote server
       - run: cargo test -p pom_remote watch
       - run: cargo test -p pom_cli --test remote server
-      # Measures keystrokes through a real ssh session without a tty; sshd and its key live only on this runner.
-      - name: Keystrokes through a real sshd on this runner
-        continue-on-error: true
+      # Proxies SIGKILLed mid-stream, a killed server and holder, a job followed again after the session died.
+      - run: cargo test -p pom_cli --test remote -- chaos session_dies reconnected --nocapture
+      # sshd and its throwaway key live only on this runner.
+      - name: Start a real sshd on this runner
         run: |
           sudo apt-get install -yq --no-install-recommends openssh-server >/dev/null
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -254,7 +255,12 @@ jobs:
           printf 'Host localhost\n  IdentityFile ~/.ssh/pom_ci_key\n  StrictHostKeyChecking accept-new\n' >> ~/.ssh/config
           sudo systemctl start ssh || sudo service ssh start
           ssh -o BatchMode=yes localhost true
-          POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd -- --nocapture
+      - name: Reconnect through the real sshd after its session is killed
+        run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_session -- --nocapture
+      # Measures keystrokes through a real ssh session without a tty.
+      - name: Keystrokes through the real sshd
+        continue-on-error: true
+        run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_keystroke -- --nocapture
 
   # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
   postgres:

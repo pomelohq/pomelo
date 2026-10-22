@@ -198,6 +198,8 @@ pub struct ServerInfo {
     pub log_follows: usize,
     /// Jobs still running.
     pub jobs: usize,
+    /// Terminals and followed streams of clients that went, kept for them to reconnect.
+    pub retained: usize,
     pub socket: PathBuf,
     pub log: PathBuf,
 }

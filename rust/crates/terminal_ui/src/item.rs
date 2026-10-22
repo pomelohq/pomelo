@@ -49,6 +49,7 @@ pub struct TerminalItem {
     toolbar: Option<Box<dyn ConsoleToolbar>>,
     /// Over an agent tab: who drives it when it is not the person here, and approvals waiting on them.
     lease_bar: Option<crate::lease_bar::LeaseBar>,
+    link_bar: crate::link_bar::LinkBar,
     /// The toolbar asked for the find bar.
     find_requested: bool,
     /// Text for other tabs' prompts, taken by the panel.
@@ -360,6 +361,7 @@ impl TerminalItem {
             agent: false,
             toolbar: None,
             lease_bar: None,
+            link_bar: crate::link_bar::LinkBar::default(),
             find_requested: false,
             outgoing: Vec::new(),
             pending_input: None,
@@ -916,12 +918,22 @@ impl Item for TerminalItem {
             .toolbar
             .as_ref()
             .map(|toolbar| toolbar.render(width, lines));
+        let link = self
+            .terminal
+            .remote_link()
+            .and_then(|(link, host)| self.link_bar.render(&link, &host, width));
         let lease = self.lease_bar.as_ref().and_then(|bar| bar.render(width));
-        match (lease, own) {
-            (Some(lease), Some(own)) => {
-                Some(div().col().w_px(width).child(lease).child(own).into())
+        let strips: Vec<Node> = [link, lease, own].into_iter().flatten().collect();
+        match strips.len() {
+            0 => None,
+            1 => strips.into_iter().next(),
+            _ => {
+                let mut column = div().col().w_px(width);
+                for strip in strips {
+                    column = column.child(strip);
+                }
+                Some(column.into())
             }
-            (lease, own) => lease.or(own),
         }
     }
 
@@ -937,6 +949,10 @@ impl Item for TerminalItem {
     }
 
     fn toolbar_click(&mut self, id: u64) -> bool {
+        if self.link_bar.is_retry(id) {
+            self.terminal.reconnect_remote();
+            return true;
+        }
         if self.lease_bar.as_mut().is_some_and(|bar| bar.click(id)) {
             return true;
         }

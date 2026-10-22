@@ -1,12 +1,14 @@
 //! A project on another machine read through the `pom server` there: one ssh session carries every request.
 //! A host whose pom has no server, or speaks another protocol, is read the H5 way instead ([`RemoteSource`]).
+//! A session that drops is reopened with backoff under the same client id: the same server lets every stream
+//! carry on where it was; a restarted one is told apart by its server id.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pom_agent::SessionView;
-use pom_rpc::pty::{self, PtyProvider, SharedEvents};
+use pom_rpc::pty::{self, LinkState, PtyProvider, ResumeError, SharedEvents};
 use pom_rpc::{
     error_code, CloseReason, Connection, Error, Hello, PushEvent, StreamEvent, StreamReceiver,
     Subscription,
@@ -16,11 +18,11 @@ use serde::Serialize;
 
 use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
-    AgentStarted, FollowLogsParams, JobFollowParams, JobParams, JobRequest, JobStartParams,
-    JobStarted, LogsParams, Progress, ProjectParams, TurnParams, WatchBranchParams, WatchParams,
-    WorkspaceParams, AGENTS, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
+    AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
+    JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, TurnParams, WatchBranchParams,
+    WatchParams, WorkspaceParams, AGENTS, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
-use crate::server_transport::{self, ProxyFailure, ProxyProcess};
+use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
 use crate::{
     version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, JobEvent, JobFeed, LogEvent,
@@ -32,10 +34,25 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// ssh may take its own connect timeout, then the proxy waits for a server to start.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const EXIT_WAIT: Duration = Duration::from_secs(2);
+/// The waits between reconnect attempts; past the last one the source counts as disconnected.
+pub const BACKOFF: [Duration; 6] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+];
+/// A caller that finds the session down waits this long for the reconnect under way.
+const LINK_WAIT: Duration = Duration::from_secs(5);
+/// How often the supervisor looks up from a wait to notice a retry, a wake from sleep or its end.
+const SUPERVISOR_TICK: Duration = Duration::from_millis(100);
+/// A wall clock that ran this much further than the monotonic one means the machine slept.
+const SLEPT: Duration = Duration::from_secs(5);
 
 struct Link {
     connection: Connection,
-    _process: Option<ProxyProcess>,
+    process: Option<ProxyProcess>,
     /// The server takes every terminal's events on one channel.
     shares_events: bool,
     events: Option<Arc<SharedEvents>>,
@@ -47,7 +64,8 @@ impl Drop for Link {
     }
 }
 
-enum LinkState {
+enum LinkSlot {
+    /// Never opened yet: the next caller opens it.
     Closed,
     Open(Link),
     /// The host cannot serve; every read goes over plain ssh from now on.
@@ -63,7 +81,16 @@ pub struct ServerSource {
     inner: Arc<Inner>,
 }
 
-pub type Opener = Arc<dyn Fn() -> std::io::Result<pom_rpc::Transport> + Send + Sync>;
+/// Opens a byte pipe to the host's server; `true` asks to reconnect to a running one only, and an error saying
+/// [`SERVER_GONE`] means none runs.
+pub type Opener = Arc<dyn Fn(bool) -> std::io::Result<pom_rpc::Transport> + Send + Sync>;
+
+struct Status {
+    link: LinkState,
+    /// Times the session came back to another server than the one it left.
+    restarts: u64,
+    supervised: bool,
+}
 
 struct Inner {
     host: Host,
@@ -71,8 +98,13 @@ struct Inner {
     ssh: Ssh,
     opener: Option<Opener>,
     fallback: RemoteSource,
-    link: Mutex<LinkState>,
+    link: Mutex<LinkSlot>,
     info: Mutex<Option<TransportInfo>>,
+    server_id: Mutex<String>,
+    status: Mutex<Status>,
+    changed: Condvar,
+    kick: AtomicBool,
+    backoff: Mutex<Vec<Duration>>,
     client_id: String,
     next_op: AtomicU64,
     next_terminal: AtomicU64,
@@ -113,13 +145,27 @@ impl ServerSource {
                 config,
                 ssh,
                 opener,
-                link: Mutex::new(LinkState::Closed),
+                link: Mutex::new(LinkSlot::Closed),
                 info: Mutex::new(None),
+                server_id: Mutex::new(String::new()),
+                status: Mutex::new(Status {
+                    link: LinkState::Connected,
+                    restarts: 0,
+                    supervised: false,
+                }),
+                changed: Condvar::new(),
+                kick: AtomicBool::new(false),
+                backoff: Mutex::new(BACKOFF.to_vec()),
                 client_id: format!("{}-{nanos:x}", std::process::id()),
                 next_op: AtomicU64::new(1),
                 next_terminal: AtomicU64::new(1),
             }),
         }
+    }
+
+    /// The waits between reconnect attempts, shorter in tests.
+    pub fn set_backoff(&self, steps: Vec<Duration>) {
+        *locked(&self.inner.backoff) = steps;
     }
 
     pub fn terminals(&self, branch: &str) -> Arc<dyn PtyProvider> {
@@ -128,39 +174,91 @@ impl ServerSource {
             branch: branch.to_string(),
         })
     }
+
+    /// The id the server knows this app by, the same across reconnects.
+    pub fn client_id(&self) -> &str {
+        &self.inner.client_id
+    }
+
+    /// The process id of the ssh session carrying the connection now, when it runs one.
+    pub fn session_pid(&self) -> Option<u32> {
+        match &*locked(&self.inner.link) {
+            LinkSlot::Open(open) => open.process.as_ref().map(ProxyProcess::pid),
+            _ => None,
+        }
+    }
+
+    /// The id of the server the session reaches now; empty before the first connect.
+    pub fn server_id(&self) -> String {
+        locked(&self.inner.server_id).clone()
+    }
+}
+
+/// Why opening a session failed.
+enum Failure {
+    /// `--reconnect` found no server.
+    ServerGone,
+    /// The host cannot serve; read it over plain ssh.
+    Fallback(String),
+    Source(SourceError),
+}
+
+struct Dialed {
+    connection: Connection,
+    server: Hello,
+    process: Option<ProxyProcess>,
+}
+
+/// A wait of `base` give or take a fifth, so many apps that lost one host do not all come back at once.
+fn jittered(base: Duration) -> Duration {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or_default();
+    let spread = f64::from(nanos % 1000) / 1000.0;
+    base.mul_f64(0.8 + 0.4 * spread)
 }
 
 impl Inner {
-    fn fall_back(&self, link: &mut LinkState, reason: String) {
-        *link = LinkState::Fallback;
+    fn set_link_state(&self, link: LinkState) {
+        let mut status = locked(&self.status);
+        if status.link != link {
+            status.link = link;
+        }
+        drop(status);
+        self.changed.notify_all();
+    }
+
+    fn link_state(&self) -> LinkState {
+        locked(&self.status).link.clone()
+    }
+
+    fn fall_back(&self, link: &mut LinkSlot, reason: String) {
+        *link = LinkSlot::Fallback;
         *locked(&self.info) = Some(TransportInfo {
             via: Via::Ssh,
             fallback_reason: Some(reason),
             ..TransportInfo::default()
         });
+        self.set_link_state(LinkState::Connected);
     }
 
-    /// The open connection, opening one if there is none; `None` once the host fell back to plain ssh.
-    fn connection(&self) -> Result<Option<Connection>, SourceError> {
-        let mut link = locked(&self.link);
-        match &*link {
-            LinkState::Fallback => return Ok(None),
-            LinkState::Open(open) if open.connection.state() == pom_rpc::ConnectionState::Open => {
-                return Ok(Some(open.connection.clone()))
-            }
-            _ => *link = LinkState::Closed,
-        }
+    /// Opens a session and says hello; `reconnect` only reaches a server that already runs.
+    fn dial(&self, reconnect: bool) -> Result<Dialed, Failure> {
         let name = &self.host.name;
         let opened = match &self.opener {
-            Some(open) => open().map(|transport| (transport, None)),
-            None => server_transport::open(&self.ssh, &self.host)
+            Some(open) => open(reconnect).map(|transport| (transport, None)),
+            None => server_transport::open(&self.ssh, &self.host, reconnect)
                 .map(|(transport, process)| (transport, Some(process))),
         };
         let (transport, process) = opened.map_err(|error| {
-            SourceError::Unreachable(match error.kind() {
+            if error.to_string() == SERVER_GONE {
+                return Failure::ServerGone;
+            }
+            Failure::Source(SourceError::Unreachable(match error.kind() {
                 std::io::ErrorKind::NotFound => "ssh is not installed".to_string(),
                 _ => error.to_string(),
-            })
+            }))
         })?;
         let mut hello = Hello::new(VERSION);
         hello.client_id = Some(self.client_id.clone());
@@ -175,78 +273,301 @@ impl Inner {
                     .find(|method| !server.features.iter().any(|feature| feature == *method))
                 {
                     connection.close();
-                    let reason = format!(
+                    return Err(Failure::Fallback(format!(
                         "pom server on {name} lacks {missing}; update pom on the VM to get terminals"
-                    );
-                    self.fall_back(&mut link, reason);
-                    return Ok(None);
+                    )));
                 }
-                let offers = |wanted: &[&str]| {
-                    wanted
-                        .iter()
-                        .all(|method| server.features.iter().any(|feature| feature == method))
-                };
-                let terminals = offers(pom_rpc::pty::METHODS);
-                let shares_events = offers(&[pty::SHARED_EVENTS]);
-                let (pushes, agents) = (offers(PUSH), offers(AGENTS));
-                let (live_logs, jobs) = (offers(LIVE_LOGS), offers(JOBS));
-                *locked(&self.info) = Some(TransportInfo {
-                    via: Via::Server,
-                    fallback_reason: None,
-                    version_mismatch: version_mismatch(VERSION, &server.pom_version),
-                    remote_version: Some(server.pom_version),
-                    terminals,
-                    pushes,
-                    agents,
-                    live_logs,
-                    jobs,
-                });
-                *link = LinkState::Open(Link {
-                    connection: connection.clone(),
-                    _process: process,
-                    shares_events,
-                    events: None,
-                });
-                Ok(Some(connection))
+                Ok(Dialed {
+                    connection,
+                    server,
+                    process,
+                })
             }
             Err(Error::Closed(CloseReason::Peer(message)))
                 if message.starts_with(error_code::PROTOCOL_MISMATCH) =>
             {
-                let reason = format!(
+                Err(Failure::Fallback(format!(
                     "pom server on {name} speaks another protocol; update pom on the VM to get terminals"
-                );
+                )))
+            }
+            Err(error) => Err(
+                match process.as_ref().map(|process| process.failure(EXIT_WAIT)) {
+                    None => Failure::Source(SourceError::Unreachable(format!(
+                        "pom server on {name} did not answer: {error}"
+                    ))),
+                    Some(ProxyFailure::ServerGone) => Failure::ServerGone,
+                    Some(ProxyFailure::NoServer(reason)) => {
+                        Failure::Fallback(format!("pom on {name}: {reason}"))
+                    }
+                    Some(ProxyFailure::Unreachable(reason)) => {
+                        Failure::Source(SourceError::Unreachable(reason))
+                    }
+                    Some(ProxyFailure::NotInstalled) => {
+                        Failure::Source(SourceError::Failed(format!(
+                            "pom is not installed on {name}; check it with: pom host test {name}"
+                        )))
+                    }
+                    Some(ProxyFailure::Other(reason)) => {
+                        Failure::Source(SourceError::Unreachable(format!(
+                            "pom server on {name} did not answer ({error}): {reason}"
+                        )))
+                    }
+                },
+            ),
+        }
+    }
+
+    /// Makes `dialed` the session: what the server offers, and whether it is the server the last one reached.
+    fn install(&self, link: &mut LinkSlot, dialed: Dialed) -> Connection {
+        let Dialed {
+            connection,
+            server,
+            process,
+        } = dialed;
+        let offers = |wanted: &[&str]| {
+            wanted
+                .iter()
+                .all(|method| server.features.iter().any(|feature| feature == method))
+        };
+        let shares_events = offers(&[pty::SHARED_EVENTS]);
+        *locked(&self.info) = Some(TransportInfo {
+            via: Via::Server,
+            fallback_reason: None,
+            version_mismatch: version_mismatch(VERSION, &server.pom_version),
+            remote_version: Some(server.pom_version.clone()),
+            terminals: offers(pom_rpc::pty::METHODS),
+            pushes: offers(PUSH),
+            agents: offers(AGENTS),
+            live_logs: offers(LIVE_LOGS),
+            jobs: offers(JOBS),
+        });
+        let server_id = server.server_id.unwrap_or_default();
+        let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
+        {
+            let mut status = locked(&self.status);
+            if !previous.is_empty() && previous != server_id {
+                status.restarts += 1;
+            }
+            status.link = LinkState::Connected;
+        }
+        self.changed.notify_all();
+        *link = LinkSlot::Open(Link {
+            connection: connection.clone(),
+            process,
+            shares_events,
+            events: None,
+        });
+        connection
+    }
+
+    /// The live session, without opening one.
+    fn live_connection(&self) -> Option<Connection> {
+        match &*locked(&self.link) {
+            LinkSlot::Open(open) if open.connection.state() == pom_rpc::ConnectionState::Open => {
+                Some(open.connection.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// The open connection, opening the first one; `None` once the host fell back to plain ssh. A session that
+    /// dropped is the supervisor's to reopen, so this waits a little for it rather than dialing too.
+    fn connection(self: &Arc<Self>) -> Result<Option<Connection>, SourceError> {
+        let mut link = locked(&self.link);
+        match &*link {
+            LinkSlot::Fallback => return Ok(None),
+            LinkSlot::Open(open) if open.connection.state() == pom_rpc::ConnectionState::Open => {
+                return Ok(Some(open.connection.clone()))
+            }
+            LinkSlot::Open(_) => {
+                drop(link);
+                return self.wait_for_link(LINK_WAIT);
+            }
+            LinkSlot::Closed => {}
+        }
+        match self.dial(false) {
+            Ok(dialed) => {
+                let connection = self.install(&mut link, dialed);
+                drop(link);
+                self.supervise();
+                Ok(Some(connection))
+            }
+            Err(Failure::Fallback(reason)) => {
                 self.fall_back(&mut link, reason);
                 Ok(None)
             }
-            Err(error) => match process.as_ref().map(|process| process.failure(EXIT_WAIT)) {
-                None => Err(SourceError::Unreachable(format!(
-                    "pom server on {name} did not answer: {error}"
-                ))),
-                Some(ProxyFailure::NoServer(reason)) => {
-                    self.fall_back(&mut link, format!("pom on {name}: {reason}"));
-                    Ok(None)
+            Err(Failure::ServerGone) => Err(SourceError::Unreachable(format!(
+                "pom server on {} is gone",
+                self.host.name
+            ))),
+            Err(Failure::Source(error)) => Err(error),
+        }
+    }
+
+    fn wait_for_link(&self, timeout: Duration) -> Result<Option<Connection>, SourceError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if matches!(*locked(&self.link), LinkSlot::Fallback) {
+                return Ok(None);
+            }
+            if let Some(connection) = self.live_connection() {
+                return Ok(Some(connection));
+            }
+            let status = locked(&self.status);
+            let reason = match &status.link {
+                LinkState::Disconnected { reason } => {
+                    return Err(SourceError::Unreachable(reason.clone()))
                 }
-                Some(ProxyFailure::Unreachable(reason)) => Err(SourceError::Unreachable(reason)),
-                Some(ProxyFailure::NotInstalled) => Err(SourceError::Failed(format!(
-                    "pom is not installed on {name}; check it with: pom host test {name}"
-                ))),
-                Some(ProxyFailure::Other(reason)) => Err(SourceError::Unreachable(format!(
-                    "pom server on {name} did not answer ({error}): {reason}"
-                ))),
-            },
+                _ => format!("reconnecting to {}", self.host.name),
+            };
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(SourceError::Unreachable(reason));
+            }
+            let wait = (deadline - now).min(SUPERVISOR_TICK);
+            drop(
+                self.changed
+                    .wait_timeout(status, wait)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
         }
     }
 
+    /// Starts the thread that reopens the session whenever it drops, once.
+    fn supervise(self: &Arc<Self>) {
+        {
+            let mut status = locked(&self.status);
+            if status.supervised {
+                return;
+            }
+            status.supervised = true;
+        }
+        let weak = Arc::downgrade(self);
+        let spawned = std::thread::Builder::new()
+            .name("pom-remote-reconnect".into())
+            .spawn(move || supervise(&weak));
+        if let Err(error) = spawned {
+            eprintln!("pom server session: no reconnect thread: {error}");
+            locked(&self.status).supervised = false;
+        }
+    }
+
+    /// Ends the session; the supervisor opens a new one.
     fn forget(&self) {
-        let mut link = locked(&self.link);
-        if matches!(*link, LinkState::Open(_)) {
-            *link = LinkState::Closed;
+        if let LinkSlot::Open(open) = &*locked(&self.link) {
+            open.connection.close();
         }
     }
 
-    /// One request; a connection that dropped is reopened from scratch and the request asked once more.
+    /// Tries to reconnect now: at a retry, a window coming to the front, a wake from sleep.
+    fn kick(&self) {
+        if self.link_state() != LinkState::Connected {
+            self.kick.store(true, Ordering::Release);
+        }
+        self.changed.notify_all();
+    }
+
+    /// Waits `delay`, cut short by a kick or by a wake from sleep; false once nothing else holds the source.
+    fn wait_or_kick(self: &Arc<Self>, delay: Option<Duration>) -> bool {
+        let started = (Instant::now(), SystemTime::now());
+        let mut status = locked(&self.status);
+        loop {
+            if Arc::strong_count(self) <= 1 {
+                return false;
+            }
+            if self.kick.swap(false, Ordering::AcqRel) {
+                return true;
+            }
+            let monotonic = started.0.elapsed();
+            let wall = started.1.elapsed().unwrap_or_default();
+            if wall > monotonic + SLEPT {
+                return true;
+            }
+            if delay.is_some_and(|delay| monotonic >= delay) {
+                return true;
+            }
+            status = self
+                .changed
+                .wait_timeout(status, SUPERVISOR_TICK)
+                .map(|(guard, _)| guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner().0);
+        }
+    }
+
+    /// One reconnect: to the same server when it still runs, else to a fresh one.
+    fn redial(&self, link: &mut LinkSlot) -> Result<(), Failure> {
+        let dialed = match self.dial(true) {
+            Err(Failure::ServerGone) => self.dial(false)?,
+            other => other?,
+        };
+        self.install(link, dialed);
+        Ok(())
+    }
+}
+
+/// Reopens the session each time it drops: attempts spaced by the backoff, then disconnected until kicked.
+fn supervise(weak: &Weak<Inner>) {
+    loop {
+        loop {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let connection = match &*locked(&inner.link) {
+                LinkSlot::Open(open) => open.connection.clone(),
+                LinkSlot::Fallback => return,
+                LinkSlot::Closed => break,
+            };
+            drop(inner);
+            if connection.wait_closed(SUPERVISOR_TICK).is_some() {
+                break;
+            }
+        }
+        let mut attempt = 0usize;
+        let mut reason = String::new();
+        loop {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let steps = locked(&inner.backoff).clone();
+            let delay = match steps.get(attempt) {
+                Some(step) => jittered(*step),
+                None => {
+                    inner.set_link_state(LinkState::Disconnected {
+                        reason: reason.clone(),
+                    });
+                    if !inner.wait_or_kick(None) {
+                        return;
+                    }
+                    attempt = 0;
+                    Duration::ZERO
+                }
+            };
+            inner.set_link_state(LinkState::Reconnecting {
+                attempt: u32::try_from(attempt + 1).unwrap_or(u32::MAX),
+                next_in: delay,
+            });
+            if !inner.wait_or_kick(Some(delay)) {
+                return;
+            }
+            let mut link = locked(&inner.link);
+            match inner.redial(&mut link) {
+                Ok(()) => break,
+                Err(Failure::Fallback(why)) => {
+                    inner.fall_back(&mut link, why);
+                    return;
+                }
+                Err(Failure::ServerGone) => reason = "pom server is gone".to_string(),
+                Err(Failure::Source(error)) => reason = error.to_string(),
+            }
+            attempt += 1;
+        }
+    }
+}
+
+impl Inner {
+    /// One request; a connection that dropped is waited for and the request asked once more.
     fn request<T: DeserializeOwned>(
-        &self,
+        self: &Arc<Self>,
         name: &str,
         params: impl Serialize,
         timeout: Duration,
@@ -296,7 +617,7 @@ impl Inner {
     /// The connection's shared events channel, opened on first use; `None` from a server without one.
     fn shared_events(&self, connection: &Connection) -> Result<Option<Arc<SharedEvents>>, Error> {
         let mut link = locked(&self.link);
-        let LinkState::Open(open) = &mut *link else {
+        let LinkSlot::Open(open) = &mut *link else {
             return Ok(None);
         };
         if !open.shares_events || !open.connection.ptr_eq(connection) {
@@ -326,7 +647,7 @@ impl Inner {
 
     /// The open connection when the server offers `wanted`.
     fn offering(
-        &self,
+        self: &Arc<Self>,
         wanted: impl Fn(&TransportInfo) -> bool,
     ) -> Result<Option<Connection>, SourceError> {
         let Some(connection) = self.connection()? else {
@@ -354,6 +675,29 @@ impl Inner {
             cfg: self.config.clone(),
             branch: branch.to_string(),
         }
+    }
+
+    fn follow(
+        &self,
+        connection: &Connection,
+        branch: &str,
+        service: &str,
+        since: u64,
+    ) -> Result<(StreamReceiver, FollowedLogs), Error> {
+        let stream = connection.open_stream()?;
+        let params = FollowLogsParams {
+            cfg: self.config.clone(),
+            branch: branch.to_string(),
+            service: service.to_string(),
+            since,
+            channel: stream.channel(),
+        };
+        let value = connection
+            .start_request(method::LOGS_FOLLOW, params)
+            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))?;
+        let followed = serde_json::from_value(value)
+            .map_err(|error| Error::Protocol(format!("logs.follow answer: {error}")))?;
+        Ok((stream, followed))
     }
 }
 
@@ -449,6 +793,18 @@ impl ProjectSource for ServerSource {
         self.inner.info()
     }
 
+    fn link(&self) -> Option<crate::LinkReport> {
+        let status = locked(&self.inner.status);
+        status.supervised.then(|| crate::LinkReport {
+            state: status.link.clone(),
+            restarts: status.restarts,
+        })
+    }
+
+    fn reconnect_now(&self) {
+        self.inner.kick();
+    }
+
     fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {
         let info = self.inner.info()?;
         (info.via == Via::Server && info.terminals).then(|| self.terminals(branch))
@@ -502,22 +858,16 @@ impl ProjectSource for ServerSource {
         let Some(connection) = self.inner.offering(|info| info.live_logs)? else {
             return Ok(None);
         };
-        let stream = connection
-            .open_stream()
-            .map_err(|error| self.inner.stopped_answering(error))?;
-        let params = FollowLogsParams {
-            cfg: self.inner.config.clone(),
-            branch: branch.to_string(),
-            service: service.to_string(),
-            since: 0,
-            channel: stream.channel(),
-        };
-        connection
-            .start_request(method::LOGS_FOLLOW, params)
-            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))
+        let (stream, followed) = self
+            .inner
+            .follow(&connection, branch, service, 0)
             .map_err(|error| self.inner.stopped_answering(error))?;
         Ok(Some(Box::new(ServerLogs {
-            stream: Mutex::new(stream),
+            inner: self.inner.clone(),
+            branch: branch.to_string(),
+            service: service.to_string(),
+            stream: Mutex::new(Some(stream)),
+            next: AtomicU64::new(followed.start),
         })))
     }
 
@@ -630,23 +980,71 @@ impl ProjectSource for ServerSource {
     }
 }
 
-/// A service's output streamed by the server, acknowledged as it is read.
+/// A service's output streamed by the server, acknowledged as it is read. A stream that drops with its session
+/// follows again from where it was once the session is back.
 struct ServerLogs {
-    stream: Mutex<StreamReceiver>,
+    inner: Arc<Inner>,
+    branch: String,
+    service: String,
+    stream: Mutex<Option<StreamReceiver>>,
+    /// The stream offset after the last byte read.
+    next: AtomicU64,
+}
+
+/// How long `next` waits before it asks again while the session is down.
+const OFFLINE_WAIT: Duration = Duration::from_millis(250);
+
+impl ServerLogs {
+    fn follow_again(&self, stream: &mut Option<StreamReceiver>, timeout: Duration) -> LogEvent {
+        let Some(connection) = self.inner.live_connection() else {
+            std::thread::sleep(timeout.min(OFFLINE_WAIT));
+            return LogEvent::Idle;
+        };
+        let since = self.next.load(Ordering::Acquire);
+        match self
+            .inner
+            .follow(&connection, &self.branch, &self.service, since)
+        {
+            Ok((receiver, followed)) => {
+                *stream = Some(receiver);
+                self.next.store(followed.start, Ordering::Release);
+                match followed.start.cmp(&since) {
+                    std::cmp::Ordering::Less => LogEvent::StartedOver,
+                    std::cmp::Ordering::Equal => LogEvent::Idle,
+                    std::cmp::Ordering::Greater => LogEvent::Skipped,
+                }
+            }
+            Err(Error::Remote(error)) => LogEvent::Ended(error.message),
+            Err(_) => {
+                std::thread::sleep(timeout.min(OFFLINE_WAIT));
+                LogEvent::Idle
+            }
+        }
+    }
 }
 
 impl LogFeed for ServerLogs {
     fn next(&self, timeout: Duration) -> LogEvent {
-        let stream = locked(&self.stream);
-        match stream.recv_timeout(timeout) {
+        let mut stream = locked(&self.stream);
+        let Some(receiver) = stream.as_ref() else {
+            return self.follow_again(&mut stream, timeout);
+        };
+        match receiver.recv_timeout(timeout) {
             Ok(StreamEvent::Data { offset, bytes }) => {
-                stream.ack(offset + bytes.len() as u64);
+                let end = offset + bytes.len() as u64;
+                receiver.ack(end);
+                self.next.store(end, Ordering::Release);
                 LogEvent::Data(bytes)
             }
-            Ok(StreamEvent::Reset { .. }) => LogEvent::Skipped,
-            Ok(StreamEvent::End { reason }) => LogEvent::Ended(reason),
+            Ok(StreamEvent::Reset { offset }) => {
+                self.next.store(offset, Ordering::Release);
+                LogEvent::Skipped
+            }
             Err(Error::Timeout) => LogEvent::Idle,
-            Err(error) => LogEvent::Ended(error.to_string()),
+            Ok(StreamEvent::End { .. }) | Err(_) => {
+                *stream = None;
+                LogEvent::Idle
+            }
         }
     }
 }
@@ -757,6 +1155,23 @@ impl Terminals {
         Ok(connection)
     }
 
+    /// Attaches on `connection`, the terminal tagged with the server it went through.
+    fn attach_on(
+        &self,
+        connection: &Connection,
+        params: pty::AttachParams,
+    ) -> Result<pty::Terminal, Error> {
+        let server = locked(&self.inner.server_id).clone();
+        let mut terminal = match self.inner.shared_events(connection)? {
+            Some(events) => {
+                pty::Terminal::attach_shared(connection, &events, params, TERMINAL_TIMEOUT)?
+            }
+            None => pty::Terminal::attach(connection, params, TERMINAL_TIMEOUT)?,
+        };
+        terminal.server = server;
+        Ok(terminal)
+    }
+
     fn ask<T: DeserializeOwned>(
         connection: &Connection,
         name: &str,
@@ -817,20 +1232,50 @@ impl PtyProvider for Terminals {
             rows: request.rows,
             ..pty::AttachParams::default()
         };
-        let shared = self
-            .inner
-            .shared_events(&connection)
-            .map_err(|error| error.to_string())?;
-        let attached = match shared {
-            Some(events) => {
-                pty::Terminal::attach_shared(&connection, &events, params, TERMINAL_TIMEOUT)
-            }
-            None => pty::Terminal::attach(&connection, params, TERMINAL_TIMEOUT),
+        self.attach_on(&connection, params)
+            .map_err(|error| match error {
+                Error::Remote(error) => error.message,
+                other => other.to_string(),
+            })
+    }
+
+    fn resume(&self, resume: &pty::Resume) -> Result<pty::Terminal, ResumeError> {
+        let connection = self.inner.live_connection().ok_or_else(|| {
+            ResumeError::Offline(format!("reconnecting to {}", self.inner.host.name))
+        })?;
+        let server = locked(&self.inner.server_id).clone();
+        let restarted = !resume.server.is_empty() && resume.server != server;
+        let params = pty::AttachParams {
+            cfg: self.inner.config.clone(),
+            branch: self.branch.clone(),
+            holder: resume.holder.clone(),
+            terminal: resume.terminal.clone(),
+            since: resume.since,
+            // A restarted server never wrote the unconfirmed input, and must never get it twice.
+            input_from: if restarted { None } else { resume.input_from },
+            mode: resume.mode,
+            primary: resume.primary,
+            cols: resume.cols,
+            rows: resume.rows,
+            ..pty::AttachParams::default()
         };
-        attached.map_err(|error| match error {
-            Error::Remote(error) => error.message,
-            other => other.to_string(),
-        })
+        self.attach_on(&connection, params)
+            .map_err(|error| match error {
+                Error::Remote(error) => ResumeError::Gone(error.message),
+                other => ResumeError::Offline(other.to_string()),
+            })
+    }
+
+    fn link(&self) -> LinkState {
+        self.inner.link_state()
+    }
+
+    fn host(&self) -> String {
+        self.inner.host.name.clone()
+    }
+
+    fn reconnect_now(&self) {
+        self.inner.kick();
     }
 
     fn close(&self, holder: &str) -> Result<(), String> {

@@ -27,7 +27,7 @@ case "$1" in
   *down*) echo "ssh: connect to host $1 port 22: Connection refused" >&2; exit 255 ;;
 esac
 cd "$HOME" || exit 1
-exec /bin/sh -c "$2"
+exec /bin/sh -c "exec $2"
 "#;
 
 struct Fixture {
@@ -903,17 +903,27 @@ fn the_server_starts_an_agent_pushes_its_state_and_takes_what_is_typed() {
 }
 
 #[test]
-fn a_dropped_server_session_is_reopened_from_scratch() {
+fn a_stopped_server_is_reconnected_to_from_scratch_and_counted_as_restarted() {
     use pom_remote::ProjectSource;
     let fixture = Fixture::new();
     fixture.add_dev();
     fixture.register_project();
     let server = fixture.server_source("dev");
     let first = server.workspaces().expect("first");
+    let before = server.server_id();
     let stopped = fixture.pom(&["server", "stop"]);
     assert!(stopped.status.success(), "{}", text(&stopped));
     assert_eq!(server.workspaces().expect("after the server went"), first);
-    assert_eq!(fixture.ssh_calls().len(), 2);
+    let calls = fixture.ssh_calls();
+    let proxies: Vec<&String> = calls.iter().filter_map(|call| call.last()).collect();
+    assert_eq!(proxies.len(), 3, "{proxies:?}");
+    assert!(
+        proxies[1].ends_with(" server proxy --reconnect"),
+        "{proxies:?}"
+    );
+    assert!(proxies[2].ends_with(" server proxy"), "{proxies:?}");
+    assert_ne!(server.server_id(), before);
+    assert_eq!(server.link().map(|report| report.restarts), Some(1));
 }
 
 #[test]
@@ -1385,6 +1395,7 @@ fn the_server_streams_a_service_output_and_an_older_server_is_asked_instead() {
         match feed.next(Duration::from_millis(100)) {
             LogEvent::Data(bytes) => seen.push_str(&String::from_utf8_lossy(&bytes)),
             LogEvent::Idle | LogEvent::Skipped => {}
+            LogEvent::StartedOver => seen.clear(),
             LogEvent::Ended(reason) => panic!("{reason}"),
         }
     }
@@ -1447,4 +1458,338 @@ fn the_server_streams_a_service_output_and_an_older_server_is_asked_instead() {
     source
         .act("feat", ServiceAction::Stop, "web")
         .expect("stop web");
+}
+
+/// SIGKILLs the process carrying `source`'s session, as a dropped network or a killed ssh would end it.
+fn kill_session(source: &pom_remote::ServerSource) {
+    let pid = source.session_pid().expect("a session process");
+    kill(pid);
+}
+
+fn kill(pid: u32) {
+    let killed = Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .output()
+        .expect("kill");
+    assert!(killed.status.success(), "{}", text(&killed));
+}
+
+fn connected(source: &pom_remote::ServerSource) -> bool {
+    use pom_remote::ProjectSource;
+    source
+        .link()
+        .is_some_and(|report| report.state == pom_remote::LinkState::Connected)
+        && source.session_pid().is_some()
+}
+
+/// A terminal's output placed by offset: offsets must follow on, except across a reset.
+struct Screen {
+    base: u64,
+    bytes: Vec<u8>,
+    received: usize,
+    resets: usize,
+    resumes: Vec<bool>,
+    exited: bool,
+}
+
+impl Screen {
+    fn new(start: u64) -> Screen {
+        Screen {
+            base: start,
+            bytes: Vec::new(),
+            received: 0,
+            resets: 0,
+            resumes: Vec::new(),
+            exited: false,
+        }
+    }
+
+    fn end(&self) -> u64 {
+        self.base + self.bytes.len() as u64
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.bytes).into_owned()
+    }
+
+    fn step(&mut self, output: &mut pom_rpc::pty::ResumingOutput) {
+        use pom_rpc::pty::TerminalEvent;
+        match output.next(Duration::from_millis(20)) {
+            TerminalEvent::Data { offset, bytes } => {
+                assert_eq!(offset, self.end(), "output must follow on");
+                self.received += bytes.len();
+                self.bytes.extend_from_slice(&bytes);
+                output.ack(self.end());
+            }
+            TerminalEvent::Reset { offset } => {
+                self.resets += 1;
+                self.base = offset;
+                self.bytes.clear();
+            }
+            TerminalEvent::Resumed { restarted } => self.resumes.push(restarted),
+            TerminalEvent::Exit { .. } => self.exited = true,
+            TerminalEvent::Idle | TerminalEvent::Reconnecting(_) => {}
+            TerminalEvent::Ended(reason) => panic!("ended: {reason}"),
+        }
+    }
+
+    fn until(
+        &mut self,
+        output: &mut pom_rpc::pty::ResumingOutput,
+        what: &str,
+        done: impl Fn(&Screen) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !done(self) {
+            assert!(
+                Instant::now() < deadline,
+                "no {what}: {:?}",
+                self.text().chars().rev().take(300).collect::<String>()
+            );
+            self.step(output);
+        }
+    }
+
+    /// How many times `needle` shows in the output after `after`.
+    fn count_after(&self, after: &str, needle: &str) -> usize {
+        let text = self.text();
+        let tail = text.split_once(after).map(|(_, tail)| tail).unwrap_or("");
+        tail.matches(needle).count()
+    }
+}
+
+#[test]
+fn chaos_a_proxy_killed_mid_stream_loses_and_repeats_nothing() {
+    use pom_remote::ProjectSource;
+    use pom_rpc::pty::{Mode, Request, ResumingTerminal, Target};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source = fixture.server_source("dev");
+    source.set_backoff(vec![Duration::from_millis(50); 6]);
+    source.workspaces().expect("connect");
+    let provider = source.pty("feat").expect("terminals");
+    let request = Request {
+        target: Target::Shell { cwd: None },
+        cols: 120,
+        rows: 40,
+        mode: Mode::ReadWrite,
+        primary: true,
+        claim: None,
+    };
+    let (terminal, mut output, attached) =
+        ResumingTerminal::attach(provider, &request).expect("a shell");
+    let holder = attached.holder.clone();
+    let holders = pom_ptyhost::SocketDir::new(fixture.temp.path().join("s"));
+    let mut screen = Screen::new(attached.start);
+    terminal
+        .input(b"stty -echo -opost; seq 1 300000; echo SEQ-DONE; exec cat\n")
+        .expect("type");
+
+    let mut kills = 0;
+    let mut kill_at = 100_000;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !(kills == 5 && screen.resumes.len() == 5 && screen.text().contains("SEQ-DONE\n")) {
+        assert!(
+            Instant::now() < deadline,
+            "kills {kills}, resumes {:?}",
+            screen.resumes
+        );
+        if kills < 5
+            && screen.resumes.len() == kills
+            && screen.received >= kill_at
+            && connected(&source)
+        {
+            kill_session(&source);
+            kills += 1;
+            kill_at = screen.received + 200_000;
+        }
+        screen.step(&mut output);
+    }
+    assert!(
+        screen.resumes.iter().all(|restarted| !restarted),
+        "the same server"
+    );
+    let (ring, end) =
+        pom_ptyhost::read_since(&holders, &holder, 0, Duration::from_secs(5)).expect("ring");
+    assert_eq!(screen.end(), end, "the client has all the holder printed");
+    let ring_start = end - ring.len() as u64;
+    assert!(screen.base <= ring_start, "the client holds the whole ring");
+    let held = &screen.bytes[(ring_start - screen.base) as usize..];
+    assert!(
+        held == ring.as_slice(),
+        "the client's output is the holder's"
+    );
+    let text = screen.text();
+    // After a reset the output starts mid-line, so its first line may be a fragment.
+    let skip = usize::from(screen.resets > 0);
+    let numbers: Vec<u64> = text
+        .lines()
+        .skip(skip)
+        .filter_map(|line| line.trim().parse().ok())
+        .collect();
+    let broken = numbers.windows(2).find(|pair| pair[1] != pair[0] + 1);
+    assert!(broken.is_none(), "no line lost or repeated: {broken:?}");
+    assert_eq!(numbers.last(), Some(&300_000));
+    eprintln!(
+        "chaos: {kills} kills, {} resets, {} bytes received, {} lines kept",
+        screen.resets,
+        screen.received,
+        numbers.len()
+    );
+
+    // Typed the moment the session dies: the keys reach the holder once, whether or not they left before.
+    terminal.input(b"abc\n").expect("type");
+    kill_session(&source);
+    screen.until(&mut output, "a resume", |screen| screen.resumes.len() == 6);
+    screen.until(&mut output, "abc", |screen| {
+        screen.count_after("SEQ-DONE", "abc") >= 1
+    });
+    terminal.input(b"after-kill\n").expect("type");
+    screen.until(&mut output, "after-kill", |screen| {
+        screen.count_after("SEQ-DONE", "after-kill") >= 1
+    });
+    assert_eq!(screen.count_after("SEQ-DONE", "abc"), 1, "typed once");
+
+    // The server itself dies: a fresh one serves, and nothing unconfirmed is typed twice.
+    terminal.input(b"pre\n").expect("type");
+    screen.until(&mut output, "pre", |screen| {
+        screen.count_after("after-kill", "pre") >= 1
+    });
+    let status = json(&fixture.pom(&["server", "status", "--json"]));
+    let server_pid = status["pid"].as_u64().expect("server pid");
+    kill(u32::try_from(server_pid).expect("pid"));
+    screen.until(&mut output, "a resume through a new server", |screen| {
+        screen.resumes.len() == 7
+    });
+    assert_eq!(screen.resumes.last(), Some(&true), "a restarted server");
+    assert_eq!(source.link().map(|report| report.restarts), Some(1));
+    terminal.input(b"post\n").expect("type");
+    screen.until(&mut output, "post", |screen| {
+        screen.count_after("after-kill", "post") >= 1
+    });
+    assert_eq!(screen.count_after("after-kill", "pre"), 1, "typed once");
+
+    holders.kill_holder(&holder).expect("kill the holder");
+    screen.until(&mut output, "the exit", |screen| screen.exited);
+}
+
+#[test]
+fn a_job_is_followed_again_from_its_last_event_after_the_session_dies() {
+    use pom_remote::server_api::{CreateArgs, JobRequest};
+    use pom_remote::{JobEvent, ProjectSource};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    let config = fixture.git_project();
+    let source = fixture.server_source_for(&config);
+    source.set_backoff(vec![Duration::from_millis(50); 6]);
+    source.workspaces().expect("connect");
+    let id = source
+        .start_job(
+            &JobRequest::Create(CreateArgs {
+                branch: "feat-y".into(),
+                ..CreateArgs::default()
+            }),
+            "app-9-create-feat-y",
+        )
+        .expect("start");
+    let first = job_events(&source, &id, 0, |event| event.seq >= 2);
+    let next = first.last().map(|event| event.seq + 1).expect("events");
+    kill_session(&source);
+    let feed = loop {
+        match source.follow_job(&id, next) {
+            Ok(feed) => break feed,
+            Err(pom_remote::SourceError::Unreachable(_)) => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let mut rest = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert!(Instant::now() < deadline, "the job never ended: {rest:?}");
+        match feed.next(Duration::from_millis(200)) {
+            JobEvent::Progress(progress) => {
+                let done = progress.done;
+                rest.push(progress);
+                if done {
+                    break;
+                }
+            }
+            JobEvent::Idle => {}
+            JobEvent::Ended(reason) => panic!("{reason}"),
+        }
+    }
+    assert_eq!(
+        rest.first().map(|event| event.seq),
+        Some(next),
+        "from where it was"
+    );
+    assert_eq!(rest.last().and_then(|event| event.exit), Some(0));
+}
+
+#[test]
+fn a_real_sshd_session_killed_mid_terminal_reconnects() {
+    use pom_remote::ProjectSource;
+    use pom_rpc::pty::{Mode, Request, ResumingTerminal, Target};
+    if std::env::var_os("POM_REAL_SSH").is_none() {
+        return;
+    }
+    let fixture = Fixture::new();
+    let state = StateDir::from_env();
+    let mut sessions = pom_sessions::Sessions::load(&state);
+    sessions.touch("demo", &fixture.root().to_string_lossy(), 10);
+    sessions.save(&state).expect("sessions");
+    let host = pom_remote::Host {
+        name: "localhost".into(),
+        url: pom_remote::HostUrl::parse("ssh://localhost").expect("url"),
+        pom_path: Some(POM.into()),
+        transport: None,
+    };
+    let source = pom_remote::ServerSource::new(
+        host,
+        fixture.config(),
+        pom_remote::Ssh::custom("ssh".into(), None, Vec::new()),
+    );
+    source.set_backoff(vec![Duration::from_millis(200); 6]);
+    source.workspaces().expect("through sshd");
+    let provider = source.pty("feat").expect("terminals");
+    let request = Request {
+        target: Target::Shell { cwd: None },
+        cols: 80,
+        rows: 24,
+        mode: Mode::ReadWrite,
+        primary: true,
+        claim: None,
+    };
+    let (terminal, mut output, attached) =
+        ResumingTerminal::attach(provider.clone(), &request).expect("a shell");
+    let mut screen = Screen::new(attached.start);
+    terminal
+        .input(b"stty -echo; echo ready-$((40 + 2)); exec cat\n")
+        .expect("type");
+    screen.until(&mut output, "ready", |screen| {
+        screen.text().contains("ready-42")
+    });
+    for round in 0..3 {
+        let line = format!("typed-{round}");
+        terminal
+            .input(format!("{line}\n").as_bytes())
+            .expect("type");
+        kill_session(&source);
+        screen.until(&mut output, "a resume", |screen| {
+            screen.resumes.len() == round + 1
+        });
+        screen.until(&mut output, &line, |screen| screen.text().contains(&line));
+        assert_eq!(screen.text().matches(&line).count(), 1, "{line} typed once");
+    }
+    assert!(screen.resumes.iter().all(|restarted| !restarted));
+    if let Err(error) = provider.close(&attached.holder) {
+        eprintln!("close: {error}");
+    }
+    let stopped = Command::new(POM).args(["server", "stop"]).output();
+    if let Err(error) = stopped {
+        eprintln!("pom server stop: {error}");
+    }
 }
