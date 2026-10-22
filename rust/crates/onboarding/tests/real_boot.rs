@@ -39,6 +39,7 @@ fn a_real_server_and_worker_boot_and_a_crashing_one_is_caught() {
     let machine = pom_doctor::Machine {
         has_tool: &has_tool,
         docker_running: &docker,
+        compose_installed: &docker,
     };
     let installed = HashMap::new();
     let input = VerifyInput {

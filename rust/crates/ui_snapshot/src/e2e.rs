@@ -199,9 +199,11 @@ pub fn run(out: &str, repos: &str) -> anyhow::Result<()> {
     let path = pom_services::tool_path();
     let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
     let docker_running = || pom_doctor::docker_answers(path);
+    let compose_installed = || pom_doctor::compose_answers(path);
     let machine = pom_doctor::Machine {
         has_tool: &has_tool,
         docker_running: &docker_running,
+        compose_installed: &compose_installed,
     };
     let installed = HashMap::new();
     let skipped: Vec<(String, String)> = std::env::var("E2E_SKIP")

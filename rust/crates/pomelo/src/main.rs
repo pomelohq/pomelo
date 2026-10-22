@@ -1393,6 +1393,7 @@ impl App {
                 let path = pom_services::tool_path();
                 let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
                 let docker_running = || pom_doctor::docker_answers(path);
+                let compose_installed = || pom_doctor::compose_answers(path);
                 let findings = pom_doctor::diagnose(
                     config.as_ref(),
                     &config_path,
@@ -1401,6 +1402,7 @@ impl App {
                     &pom_doctor::Machine {
                         has_tool: &has_tool,
                         docker_running: &docker_running,
+                        compose_installed: &compose_installed,
                     },
                 );
                 if sender.send(findings).is_ok() {

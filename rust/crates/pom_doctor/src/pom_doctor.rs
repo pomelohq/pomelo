@@ -59,12 +59,41 @@ impl Finding {
 pub struct Machine<'a> {
     pub has_tool: &'a dyn Fn(&str) -> bool,
     pub docker_running: &'a dyn Fn() -> bool,
+    pub compose_installed: &'a dyn Fn() -> bool,
 }
+
+const INSTALL_DOCKER: &str = if cfg!(target_os = "macos") {
+    "install Docker Desktop / OrbStack"
+} else {
+    "install Docker Engine and its Compose plugin (Ubuntu: `sudo apt install docker.io docker-compose-v2`; others: docs.docker.com/engine/install)"
+};
+
+const START_DOCKER: &str = if cfg!(target_os = "macos") {
+    "start Docker"
+} else {
+    "start it with `sudo systemctl start docker`; if it runs, let your user reach it: `sudo usermod -aG docker $USER`, then log in again"
+};
+
+const INSTALL_COMPOSE: &str = if cfg!(target_os = "macos") {
+    "update Docker Desktop / OrbStack, which ship Compose"
+} else {
+    "install the Compose plugin (Ubuntu: `sudo apt install docker-compose-v2`; others: docs.docker.com/compose/install/linux)"
+};
 
 pub fn on_path(path: &str, tool: &str) -> bool {
     path.split(':')
         .filter(|dir| !dir.is_empty())
         .any(|dir| Path::new(dir).join(tool).is_file())
+}
+
+/// Shared services run as a compose project; Linux packages of Docker often leave the plugin out.
+pub fn compose_answers(path: &str) -> bool {
+    Command::new("docker")
+        .args(["compose", "version"])
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 pub fn docker_answers(path: &str) -> bool {
@@ -154,14 +183,24 @@ pub fn diagnose(
             out.push(
                 Finding::new("tool.docker", Severity::Error, "docker not found")
                     .detail("shared services (postgres/redis/...) need Docker")
-                    .fix("install Docker Desktop / OrbStack"),
+                    .fix(INSTALL_DOCKER),
             );
         }
     } else if shared && !(machine.docker_running)() {
         out.push(
             Finding::new("docker.down", Severity::Error, "Docker not running")
                 .detail("shared services can't start until Docker is up")
-                .fix("start Docker"),
+                .fix(START_DOCKER),
+        );
+    } else if shared && !(machine.compose_installed)() {
+        out.push(
+            Finding::new(
+                "docker.compose",
+                Severity::Error,
+                "Docker Compose not found",
+            )
+            .detail("shared services run as a Compose project (`docker compose`)")
+            .fix(INSTALL_COMPOSE),
         );
     }
     for (name, def) in &config.shared_services {
@@ -340,6 +379,7 @@ mod tests {
             &Machine {
                 has_tool: &has_tool,
                 docker_running: &docker,
+                compose_installed: &|| true,
             },
         );
         let ids: Vec<&str> = findings.iter().map(|finding| finding.id.as_str()).collect();
@@ -372,6 +412,7 @@ mod tests {
             &Machine {
                 has_tool: &has_tool,
                 docker_running: &docker,
+                compose_installed: &|| true,
             },
         );
         assert_eq!(
@@ -402,6 +443,7 @@ mod tests {
             &Machine {
                 has_tool: &has_tool,
                 docker_running: &docker,
+                compose_installed: &|| true,
             },
         );
         let ids: Vec<&str> = findings.iter().map(|finding| finding.id.as_str()).collect();
@@ -435,8 +477,43 @@ mod tests {
             &Machine {
                 has_tool: &has_tool,
                 docker_running: &docker,
+                compose_installed: &|| true,
             },
         );
         assert_eq!(findings[0].id, "config.load");
+    }
+
+    #[test]
+    fn docker_without_compose_says_how_to_add_it() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let path = write(
+            temp.path(),
+            "session: demo\nshared_services:\n  postgres:\n    image: postgres:16\nrepos:\n  api:\n    env:\n      DATABASE_URL: \"{{shared.postgres.url}}\"\n    services:\n      web: rails s\n",
+        );
+        std::fs::create_dir_all(temp.path().join("workspace--main/api"))
+            .map_err(|error| error.to_string())?;
+        let config = Config::load(&path).map_err(|error| error.message)?;
+        let (has_tool, docker) = machine(true);
+        let findings = diagnose(
+            Some(&config),
+            &path,
+            temp.path(),
+            &[],
+            &Machine {
+                has_tool: &has_tool,
+                docker_running: &docker,
+                compose_installed: &|| false,
+            },
+        );
+        let compose = findings
+            .iter()
+            .find(|finding| finding.id == "docker.compose")
+            .ok_or("no compose finding")?;
+        assert_eq!(compose.severity, Severity::Error);
+        assert!(compose.fix.contains("Compose"), "{}", compose.fix);
+        if !cfg!(target_os = "macos") {
+            assert!(!compose.fix.contains("Docker Desktop"), "{}", compose.fix);
+        }
+        Ok(())
     }
 }

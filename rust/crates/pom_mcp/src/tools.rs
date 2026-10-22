@@ -1200,6 +1200,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             let path = pom_services::tool_path();
             let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
             let docker_running = || pom_doctor::docker_answers(path);
+            let compose_installed = || pom_doctor::compose_answers(path);
             let root = ws.config_path.parent().unwrap_or(Path::new("."));
             let findings = pom_doctor::diagnose(
                 config.as_ref(),
@@ -1209,6 +1210,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
                 &pom_doctor::Machine {
                     has_tool: &has_tool,
                     docker_running: &docker_running,
+                    compose_installed: &compose_installed,
                 },
             );
             pretty(&pom_doctor::report(&findings))

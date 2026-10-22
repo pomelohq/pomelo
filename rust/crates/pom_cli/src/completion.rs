@@ -45,7 +45,7 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("ps", &[]),
     ("disk", &[]),
     ("modules", &["list", "prune", "clear"]),
-    ("doctor", &[]),
+    ("doctor", &["--json"]),
     ("init", &[]),
     ("onboard", &[]),
     ("mcp", &[]),
