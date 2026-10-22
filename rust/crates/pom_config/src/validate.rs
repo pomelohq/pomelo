@@ -51,6 +51,7 @@ impl Config {
             }
         }
         self.check_shared_services(&mut errors);
+        self.limits.check(&mut errors);
         if errors.is_empty() {
             return Ok(());
         }
@@ -63,6 +64,7 @@ impl Config {
         let mut owners: IndexMap<u16, Vec<(String, bool)>> = IndexMap::new();
         for (name, def) in &self.shared_services {
             let context = format!("shared service {name:?}");
+            def.limit.check(&context, errors);
             match (def.image.is_empty(), def.cmd.is_empty()) {
                 (false, false) => errors.push(format!(
                     "{context}: set either image (a Docker container) or cmd (a command), not both"
@@ -81,6 +83,7 @@ impl Config {
                     ("slot_reset", !def.slot_reset.is_empty()),
                     ("db_user", !def.db_user.is_empty()),
                     ("db_password", !def.db_password.is_empty()),
+                    ("cpu and memory", !def.limit.is_empty()),
                 ];
                 for (field, set) in docker_only {
                     if set {

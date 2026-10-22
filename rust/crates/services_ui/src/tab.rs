@@ -514,6 +514,7 @@ impl ServiceItem {
                     name: process.clone(),
                     binary: std::env::current_exe().unwrap_or_default(),
                     attach_only: true,
+                    group: None,
                 }),
                 ..TerminalOptions::default()
             },

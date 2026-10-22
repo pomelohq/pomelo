@@ -91,6 +91,7 @@ fn now_seconds() -> i64 {
 fn terminal_view(
     root: std::path::PathBuf,
     workspace_key: &str,
+    group: Option<pom_ptyhost::HolderGroup>,
 ) -> Box<dyn workspace::TerminalPanelView> {
     let waker = std::sync::Arc::new(ui::wake);
     match std::env::current_exe() {
@@ -101,6 +102,7 @@ fn terminal_view(
                 dir: pom_ptyhost::SocketDir::from_env(),
                 binary,
                 prefix: format!("term-{workspace_key}"),
+                group,
             },
         )),
         Err(error) => {
@@ -1479,6 +1481,16 @@ impl App {
         let Ok(binary) = std::env::current_exe() else {
             return;
         };
+        let group = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.project.as_ref())
+            .and_then(|project| {
+                project
+                    .config
+                    .as_ref()
+                    .map(|config| pom_services::holder_group(config, project.active_branch()))
+            });
         let item_id = format!("agent:{}", launch.holder);
         let item_number = self.next_agent_item;
         self.next_agent_item += 1;
@@ -1490,6 +1502,7 @@ impl App {
                     name: launch.holder.clone(),
                     binary: binary.clone(),
                     attach_only: false,
+                    group: group.clone(),
                 };
                 match terminal_ui::TerminalItem::agent(
                     item_number,
@@ -2309,6 +2322,12 @@ impl App {
                 )
             },
         );
+        let terminal_group = project.and_then(|project| {
+            project
+                .config
+                .as_ref()
+                .map(|config| pom_services::holder_group(config, project.active_branch()))
+        });
         let title = project.map_or_else(
             || "Pomelo".to_string(),
             |project| format!("{} - {} - Pomelo", project.session, project.active_branch()),
@@ -2317,7 +2336,11 @@ impl App {
             view.set_project(
                 info,
                 files,
-                Some(terminal_view(terminal_root.clone(), &workspace_key)),
+                Some(terminal_view(
+                    terminal_root.clone(),
+                    &workspace_key,
+                    terminal_group,
+                )),
                 Some(Box::new(terminal_ui::TerminalPanel::agent_dock(
                     terminal_root,
                     Arc::new(ui::wake),

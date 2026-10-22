@@ -88,6 +88,7 @@ fn a_rust_holder_accepts_a_go_client() {
     pom_ptyhost::spawn_holder(
         &dir,
         &SpawnRequest {
+            group: None,
             binary: Path::new(BINARY),
             name: "rust-holder",
             cwd: Path::new("/"),

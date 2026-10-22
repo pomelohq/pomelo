@@ -30,6 +30,7 @@ impl Holders {
         pom_ptyhost::spawn_holder(
             &self.dir,
             &SpawnRequest {
+                group: None,
                 binary: Path::new(BINARY),
                 name,
                 cwd: Path::new("/"),

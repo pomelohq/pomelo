@@ -208,11 +208,12 @@ impl LocalSource {
             .ok_or_else(|| SourceError::Failed(format!("no workspace {branch}")))
     }
 
-    fn drive(&self, session: &str) -> Drive {
+    fn drive(&self, config: &pom_config::Config) -> Drive {
         Drive {
+            limits: config.limits.clone(),
             state: self.state.clone(),
             holders: self.holders.clone(),
-            project: session.to_string(),
+            project: config.session.clone(),
             home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
             binary: self.binary.clone(),
             tool_path: pom_services::tool_path().to_string(),
@@ -268,12 +269,12 @@ impl ProjectSource for LocalSource {
 
     fn agents(&self, branch: &str) -> Result<Vec<SessionView>, SourceError> {
         let opened = self.open()?;
-        Ok(self.drive(&opened.config.session).list(branch))
+        Ok(self.drive(&opened.config).list(branch))
     }
 
     fn agent_turn(&self, branch: &str, role: &str) -> Result<Option<AgentTurn>, SourceError> {
         let opened = self.open()?;
-        let drive = self.drive(&opened.config.session);
+        let drive = self.drive(&opened.config);
         let Some(view) = drive
             .list(branch)
             .into_iter()

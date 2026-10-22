@@ -2,6 +2,7 @@ mod decode;
 mod depgraph;
 pub mod edit;
 pub mod field_docs;
+mod limits;
 mod lookup;
 pub mod maintain;
 mod migrate;
@@ -13,6 +14,7 @@ pub mod yaml_node;
 use std::path::{Path, PathBuf};
 
 pub use depgraph::{CycleError, DepGraph};
+pub use limits::{parse_cpu, parse_memory, LimitsConfig, ResourceLimit};
 pub use lookup::ResolvedService;
 pub use migrate::{migrate_fragments, Migrated};
 pub use schema::{

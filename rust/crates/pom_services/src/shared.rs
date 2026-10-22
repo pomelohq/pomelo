@@ -232,6 +232,12 @@ impl ServiceRunner {
                         }
                     }
                 }
+                if let Some(percent) = def.limit.cpu_percent() {
+                    out.push_str(&format!("    cpus: {:.2}\n", f64::from(percent) / 100.0));
+                }
+                if let Some(bytes) = def.limit.memory_bytes() {
+                    out.push_str(&format!("    mem_limit: {bytes}\n"));
+                }
                 // Readiness is probed from the host; an image's own HEALTHCHECK would `docker exec` on a timer.
                 out.push_str("    healthcheck:\n      disable: true\n");
                 out.push_str(&format!(

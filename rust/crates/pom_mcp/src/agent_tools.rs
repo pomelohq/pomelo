@@ -54,6 +54,7 @@ impl Workspace {
     fn drive(&self) -> Result<Drive, String> {
         let config = self.config_for_agents()?;
         Ok(Drive {
+            limits: config.limits.clone(),
             state: self.state.clone(),
             holders: SocketDir::from_env(),
             project: config.session,

@@ -19,12 +19,14 @@ pub enum Section {
     Preset,
     Sync,
     Agents,
+    Limits,
+    WorkspaceLimits,
     CodeAgents,
     Ui,
 }
 
 impl Section {
-    pub const ALL: [Section; 16] = [
+    pub const ALL: [Section; 18] = [
         Section::Root,
         Section::Repo,
         Section::Lifecycle,
@@ -39,6 +41,8 @@ impl Section {
         Section::Preset,
         Section::Sync,
         Section::Agents,
+        Section::Limits,
+        Section::WorkspaceLimits,
         Section::CodeAgents,
         Section::Ui,
     ];
@@ -60,6 +64,8 @@ impl Section {
             Section::Preset => "presets.<preset>.",
             Section::Sync => "sync.",
             Section::Agents => "agents.",
+            Section::Limits => "limits.",
+            Section::WorkspaceLimits => "limits.workspaces.<branch>.",
             Section::CodeAgents => "code_agents.",
             Section::Ui => "ui.",
         }
@@ -81,6 +87,8 @@ impl Section {
             Section::Preset => "Presets",
             Section::Sync => "Sync",
             Section::Agents => "Agents",
+            Section::Limits => "Limits",
+            Section::WorkspaceLimits => "A workspace's limits",
             Section::CodeAgents => "code_agents (ignored)",
             Section::Ui => "ui (ignored)",
         }
@@ -102,6 +110,8 @@ impl Section {
             Section::Preset => "Each entry of `presets:` is a reusable repo fragment. A repo (or the workspace, with the top-level `preset:`) names presets; a preset only fills what the repo left unset. Inside a preset, write the lifecycle keys flat (`setup:`, `commands:`), not under `lifecycle:`.",
             Section::Sync => "Keep Main Fresh: pulling the main workspace on a schedule.",
             Section::Agents => "What the workspace's coding agents may do: a policy command Pomelo asks before every tool call an agent makes.",
+            Section::Limits => "How much CPU and memory each workspace's processes (its services, agents and terminals) may use together, on Linux with a systemd user session (cgroup v2). A workspace over its memory cap has its biggest process killed inside it, and one over its CPU cap is slowed, so the other workspaces and the machine keep running. Shared services are not counted; cap them with `cpu` and `memory` on the shared service. On macOS the keys are read but nothing is limited.",
+            Section::WorkspaceLimits => "One workspace's own cap, by branch name. A key it leaves out takes the value from `limits:`.",
             Section::CodeAgents => "Read so older files load, but nothing uses it: agent behavior is in the app's Settings.",
             Section::Ui => "Read so older files load, but nothing uses it: the app's Settings hold this.",
         }
@@ -191,6 +201,7 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Root, "prepare_main", "list", "reset, migrate, seed, snapshot", "The phases Prepare Main runs, in order: `reset`, `migrate`, `seed` and `snapshot`, which saves main's databases as the `main__baseline` snapshot new workspaces copy from without disconnecting main. Other names are skipped; a list with none of them runs only `reset`.", "prepare_main: [migrate, seed, snapshot]"),
     field(Root, "sync", "map", "", "Keep Main Fresh; see Sync.", ""),
     field(Root, "agents", "map", "", "A policy for the workspace's coding agents; see Agents.", ""),
+    field(Root, "limits", "map", "", "CPU and memory caps per workspace; see Limits.", ""),
     ignored(Root, "workspaces", "map", "Workspace groups; nothing reads them now."),
     ignored(Root, "combinations", "map", "Repo combinations; `config_normalize` deletes them."),
     ignored(Root, "code_agents", "map", "Agent switches; the app's Settings hold these now."),
@@ -288,6 +299,8 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Shared, "db_password", "string", "postgres for a Postgres", "For an `image`: the password `{{shared.<name>.url}}` and `.pass` carry.", ""),
     field(Shared, "capacity", "number", "", "For an `image`: how many workspaces share one instance. Each gets a slot, `{{shared.<name>.slot}}` (a Redis database number, for example); when an instance is full another starts at base port + instance.", "capacity: 64"),
     field(Shared, "slot_reset", "string", "", "For an `image` with `capacity`: a command run inside the instance's container to empty one slot, with `{{slot}}` replaced by its number. It runs when a workspace gives its slot back (deleted, or its folder is gone) and before a slot is handed to a new workspace, so no workspace sees another's data; a slot whose reset fails is not handed out. The redis preset empties the Redis database.", "slot_reset: redis-cli -n {{slot}} FLUSHDB | grep -qx OK"),
+    field(Shared, "cpu", "cores", "", "For an `image`: the CPU its container may use (Docker `cpus`). Shared services are unlimited without it.", "cpu: 2"),
+    field(Shared, "memory", "size", "", "For an `image`: the memory its container may use (Docker `mem_limit`).", "memory: 2G"),
     field(Shared, "host", "string", "localhost", "The host the app's database and storage browsers connect to. Templates always use `127.0.0.1`.", ""),
     field(HealthCheck, "test", "command or list", "the built-in probe", "A check run on the host, never in the container, with `$PORT` set to the service's host port: a shell command, `[CMD, ...]` (run as is) or `[CMD-SHELL, line]`. Ready once it exits 0. A command not installed on the host (exit 127) falls back to the built-in probe. A `cmd` service waits up to 30 seconds for it before the services that use it start.", "test: curl -sf http://127.0.0.1:$PORT/health"),
     field(HealthCheck, "interval", "duration", "1s", "Time between checks while Pomelo waits for the service (at most 1s).", "interval: 500ms"),
@@ -306,6 +319,11 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Preset, "seed_from_main", "bool", "false", "As on a repo.", ""),
     field(Preset, "tasks", "list", "", "As on a repo.", ""),
     field(Preset, "shortcuts", "list", "", "Older name of `tasks`.", ""),
+    field(Limits, "cpu", "cores or percent", "", "The CPU every workspace may use at most: cores (`2`, `1.5`) or a percentage of one core (`200%`).", "cpu: 2"),
+    field(Limits, "memory", "size", "", "The memory every workspace may use at most (`4G`, `512M`). Past it the kernel kills a process of that workspace.", "memory: 4G"),
+    field(Limits, "workspaces", "map", "", "Caps for single workspaces, by branch; see A workspace's limits.", "workspaces:\n  feat-heavy-tests: { cpu: 4, memory: 8G }"),
+    field(WorkspaceLimits, "cpu", "cores or percent", "limits.cpu", "This workspace's CPU cap.", "cpu: 4"),
+    field(WorkspaceLimits, "memory", "size", "limits.memory", "This workspace's memory cap.", "memory: 8G"),
     field(Sync, "auto_push", "bool", "false", "Push committed work on a timer.", ""),
     field(Sync, "interval_sec", "number", "180", "Seconds between pushes when `auto_push` is on; at least 30.", ""),
     field(Sync, "refresh_main", "bool", "false", "Keep Main Fresh: pull and migrate the main workspace on a schedule. Once it is set in the app, the app's choice wins.", "refresh_main: true"),
@@ -419,6 +437,7 @@ mod tests {
 session: myproject
 sync: { auto_push: false }
 agents: { policy: ./p.sh, policy_timeout_sec: 5 }
+limits: { cpu: 2, memory: 4G, workspaces: { feat: { cpu: 1, memory: 1G } } }
 code_agents: { disabled: false }
 ui: { editor: code }
 repos:
@@ -431,7 +450,7 @@ repos:
 presets:
   base: { env: { A: b } }
 shared_services:
-  postgres: { image: postgres:16, healthcheck: { test: "true" } }
+  postgres: { image: postgres:16, cpu: 1, memory: 1G, healthcheck: { test: "true" } }
 "#;
 
     #[test]

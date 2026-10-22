@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use pom_paths::StateDir;
@@ -49,27 +49,33 @@ fn process_table() -> HashMap<i32, Process> {
         .collect()
 }
 
-/// A holder with the CPU and memory of its whole process tree, and its children one level down.
-fn holder_rows(holders: &SocketDir) -> Vec<Vec<String>> {
-    let processes = process_table();
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for (pid, process) in &processes {
+type Children = HashMap<i32, Vec<i32>>;
+
+fn children_of(processes: &HashMap<i32, Process>) -> Children {
+    let mut children: Children = HashMap::new();
+    for (pid, process) in processes {
         children.entry(process.parent).or_default().push(*pid);
     }
-    let tree_total = |root: i32| {
-        let mut stack = vec![root];
-        let (mut cpu, mut rss) = (0.0, 0);
-        while let Some(pid) = stack.pop() {
-            if let Some(process) = processes.get(&pid) {
-                cpu += process.cpu;
-                rss += process.rss_kb;
-            }
-            stack.extend(children.get(&pid).into_iter().flatten());
+    children
+}
+
+/// CPU percent and resident kilobytes of `root` and everything under it.
+fn tree_total(processes: &HashMap<i32, Process>, children: &Children, root: i32) -> (f64, u64) {
+    let mut stack = vec![root];
+    let (mut cpu, mut rss) = (0.0, 0);
+    while let Some(pid) = stack.pop() {
+        if let Some(process) = processes.get(&pid) {
+            cpu += process.cpu;
+            rss += process.rss_kb;
         }
-        (cpu, rss)
-    };
-    let mut holders = holders.holders();
-    holders.sort();
+        stack.extend(children.get(&pid).into_iter().flatten());
+    }
+    (cpu, rss)
+}
+
+/// A holder with the CPU and memory of its whole process tree, and its children one level down.
+fn holder_rows(holders: &[(String, i32)], processes: &HashMap<i32, Process>) -> Vec<Vec<String>> {
+    let children = children_of(processes);
     let mut rows = vec![vec![
         "HOLDER".to_string(),
         "PID".to_string(),
@@ -78,19 +84,19 @@ fn holder_rows(holders: &SocketDir) -> Vec<Vec<String>> {
     ]];
     let (mut all_cpu, mut all_rss) = (0.0, 0);
     for (name, pid) in holders {
-        let (cpu, rss) = tree_total(pid);
+        let (cpu, rss) = tree_total(processes, &children, *pid);
         all_cpu += cpu;
         all_rss += rss;
         rows.push(vec![
-            name,
+            name.clone(),
             pid.to_string(),
             format!("{cpu:.1}"),
             megabytes(rss),
         ]);
-        let mut kids = children.get(&pid).cloned().unwrap_or_default();
+        let mut kids = children.get(pid).cloned().unwrap_or_default();
         kids.sort();
         for kid in kids {
-            let (cpu, rss) = tree_total(kid);
+            let (cpu, rss) = tree_total(processes, &children, kid);
             let command = processes
                 .get(&kid)
                 .map_or("", |process| process.command.as_str());
@@ -109,6 +115,178 @@ fn holder_rows(holders: &SocketDir) -> Vec<Vec<String>> {
         format!("{all_cpu:.1}"),
         megabytes(all_rss),
     ]);
+    rows
+}
+
+/// One holder as `pom ps` sees it: its workspace (from its pidfile) and the workspace cgroup it runs in.
+pub(crate) struct HolderSeen {
+    pub name: String,
+    pub pid: i32,
+    pub workspace: Option<(String, String)>,
+    pub cgroup: Option<PathBuf>,
+    pub cpu: f64,
+    pub memory_bytes: u64,
+}
+
+/// What one workspace's holders use together.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub(crate) struct WorkspaceUsage {
+    pub project: String,
+    pub workspace: String,
+    pub holders: Vec<String>,
+    pub cpu_percent: f64,
+    pub memory_bytes: u64,
+    pub cpu_limit_percent: Option<u32>,
+    pub memory_limit_bytes: Option<u64>,
+    /// `cgroup` when the kernel's accounting for the workspace cgroup is used, else `processes`.
+    pub source: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cgroup: Option<PathBuf>,
+}
+
+/// Holders grouped by workspace. A workspace whose holders all sit in one cgroup is measured from it, from two
+/// readings `interval` apart (that also counts processes that left a holder's tree); otherwise the holders'
+/// process trees are summed.
+pub(crate) fn workspace_usage(
+    holders: &[HolderSeen],
+    first: &HashMap<PathBuf, pom_ptyhost::limits::CgroupUsage>,
+    second: &HashMap<PathBuf, pom_ptyhost::limits::CgroupUsage>,
+    interval: Duration,
+) -> Vec<WorkspaceUsage> {
+    let mut grouped: std::collections::BTreeMap<(String, String), Vec<&HolderSeen>> =
+        Default::default();
+    for holder in holders {
+        if let Some(workspace) = &holder.workspace {
+            grouped.entry(workspace.clone()).or_default().push(holder);
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|((project, workspace), members)| {
+            let names = members.iter().map(|holder| holder.name.clone()).collect();
+            let shared = members
+                .first()
+                .and_then(|holder| holder.cgroup.clone())
+                .filter(|cgroup| {
+                    members
+                        .iter()
+                        .all(|holder| holder.cgroup.as_ref() == Some(cgroup))
+                });
+            let measured = shared.as_ref().and_then(|cgroup| {
+                let (before, after) = (first.get(cgroup)?, second.get(cgroup)?);
+                let spent = after.cpu_usec.saturating_sub(before.cpu_usec) as f64;
+                let cpu = spent / interval.as_micros().max(1) as f64 * 100.0;
+                Some((cpu, *after))
+            });
+            match measured {
+                Some((cpu, usage)) => WorkspaceUsage {
+                    project,
+                    workspace,
+                    holders: names,
+                    cpu_percent: cpu,
+                    memory_bytes: usage.memory_bytes,
+                    cpu_limit_percent: usage.cpu_max_percent,
+                    memory_limit_bytes: usage.memory_max,
+                    source: "cgroup",
+                    cgroup: shared,
+                },
+                None => WorkspaceUsage {
+                    project,
+                    workspace,
+                    holders: names,
+                    cpu_percent: members.iter().map(|holder| holder.cpu).sum(),
+                    memory_bytes: members.iter().map(|holder| holder.memory_bytes).sum(),
+                    cpu_limit_percent: None,
+                    memory_limit_bytes: None,
+                    source: "processes",
+                    cgroup: None,
+                },
+            }
+        })
+        .collect()
+}
+
+const CGROUP_SAMPLE: Duration = Duration::from_millis(500);
+
+fn seen_holders(holders: &SocketDir, processes: &HashMap<i32, Process>) -> Vec<HolderSeen> {
+    let children = children_of(processes);
+    let mut listed = holders.holders();
+    listed.sort();
+    listed
+        .into_iter()
+        .map(|(name, pid)| {
+            let (cpu, rss) = tree_total(processes, &children, pid);
+            let cgroup = pom_ptyhost::limits::cgroup_of(
+                Path::new("/proc"),
+                Path::new("/sys/fs/cgroup"),
+                pid,
+            )
+            .and_then(|path| pom_ptyhost::limits::workspace_cgroup(&path));
+            HolderSeen {
+                workspace: holders.holder_group(&name),
+                name,
+                pid,
+                cgroup,
+                cpu,
+                memory_bytes: rss * 1024,
+            }
+        })
+        .collect()
+}
+
+fn measure(holders: &[HolderSeen]) -> Vec<WorkspaceUsage> {
+    let cgroups: Vec<PathBuf> = holders
+        .iter()
+        .filter_map(|holder| holder.cgroup.clone())
+        .collect();
+    let read = || -> HashMap<PathBuf, pom_ptyhost::limits::CgroupUsage> {
+        cgroups
+            .iter()
+            .filter_map(|cgroup| Some((cgroup.clone(), pom_ptyhost::limits::read_usage(cgroup)?)))
+            .collect()
+    };
+    let first = read();
+    if !first.is_empty() {
+        std::thread::sleep(CGROUP_SAMPLE);
+    }
+    let second = read();
+    workspace_usage(holders, &first, &second, CGROUP_SAMPLE)
+}
+
+fn limit_text(usage: &WorkspaceUsage) -> String {
+    let cpu = usage.cpu_limit_percent.map(|percent| format!("{percent}%"));
+    let memory = usage
+        .memory_limit_bytes
+        .map(|bytes| megabytes(bytes / 1024));
+    match (cpu, memory) {
+        (None, None) => "-".to_string(),
+        (cpu, memory) => format!(
+            "{} / {}",
+            cpu.unwrap_or_else(|| "-".into()),
+            memory.unwrap_or_else(|| "-".into())
+        ),
+    }
+}
+
+fn workspace_rows(usage: &[WorkspaceUsage]) -> Vec<Vec<String>> {
+    let mut rows = vec![vec![
+        "WORKSPACE".to_string(),
+        "HOLDERS".to_string(),
+        "CPU%".to_string(),
+        "MEM".to_string(),
+        "LIMIT".to_string(),
+        "FROM".to_string(),
+    ]];
+    for workspace in usage {
+        rows.push(vec![
+            format!("{}/{}", workspace.project, workspace.workspace),
+            workspace.holders.len().to_string(),
+            format!("{:.1}", workspace.cpu_percent),
+            megabytes(workspace.memory_bytes / 1024),
+            limit_text(workspace),
+            workspace.source.to_string(),
+        ]);
+    }
     rows
 }
 
@@ -137,17 +315,42 @@ fn megabytes(kilobytes: u64) -> String {
     format!("{:.0}M", kilobytes as f64 / 1024.0)
 }
 
-pub(crate) fn ps(watch: bool, out: &mut dyn Write) -> Result<(), String> {
+pub(crate) fn ps(watch: bool, json: bool, out: &mut dyn Write) -> Result<(), String> {
     let holders = SocketDir::from_env();
     loop {
-        let rows = holder_rows(&holders);
+        let processes = process_table();
+        let seen = seen_holders(&holders, &processes);
+        let usage = measure(&seen);
+        if json {
+            let document = serde_json::json!({
+                "schema": "pom.ps/v1",
+                "workspaces": usage,
+                "holders": seen.iter().map(|holder| serde_json::json!({
+                    "name": holder.name,
+                    "pid": holder.pid,
+                    "project": holder.workspace.as_ref().map(|(project, _)| project),
+                    "workspace": holder.workspace.as_ref().map(|(_, workspace)| workspace),
+                    "cpu_percent": holder.cpu,
+                    "memory_bytes": holder.memory_bytes,
+                })).collect::<Vec<_>>(),
+            });
+            return say(out, &document.to_string());
+        }
         if watch {
             write!(out, "\x1b[H\x1b[2J").map_err(|error| error.to_string())?;
         }
-        if rows.len() <= 2 {
+        let pairs: Vec<(String, i32)> = seen
+            .iter()
+            .map(|holder| (holder.name.clone(), holder.pid))
+            .collect();
+        if pairs.is_empty() {
             say(out, "no holders running")?;
         } else {
-            table(out, "", &rows)?;
+            if !usage.is_empty() {
+                table(out, "", &workspace_rows(&usage))?;
+                say(out, "")?;
+            }
+            table(out, "", &holder_rows(&pairs, &processes))?;
         }
         if !watch {
             return Ok(());
@@ -354,6 +557,71 @@ pub(crate) fn disk(state: &StateDir, json: bool, out: &mut dyn Write) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn holder(
+        name: &str,
+        workspace: Option<(&str, &str)>,
+        cgroup: Option<&str>,
+        cpu: f64,
+        memory: u64,
+    ) -> HolderSeen {
+        HolderSeen {
+            name: name.into(),
+            pid: 1,
+            workspace: workspace.map(|(project, workspace)| (project.into(), workspace.into())),
+            cgroup: cgroup.map(PathBuf::from),
+            cpu,
+            memory_bytes: memory,
+        }
+    }
+
+    #[test]
+    fn a_workspace_in_one_cgroup_is_measured_from_it_and_the_rest_from_their_processes() {
+        use pom_ptyhost::limits::CgroupUsage;
+        let slice = "/sys/fs/cgroup/pom-p-feat.slice";
+        let holders = [
+            holder(
+                "svc-p-feat-api-web",
+                Some(("p", "feat")),
+                Some(slice),
+                5.0,
+                100,
+            ),
+            holder(
+                "ws-p-feat-claude-raw",
+                Some(("p", "feat")),
+                Some(slice),
+                5.0,
+                100,
+            ),
+            holder("svc-p-main-api-web", Some(("p", "main")), None, 12.5, 300),
+            holder("term-p-main-1", Some(("p", "main")), None, 1.5, 200),
+            holder("shr-p-mock", None, None, 50.0, 999),
+        ];
+        let reading = |usec: u64| CgroupUsage {
+            memory_bytes: 256 << 20,
+            cpu_usec: usec,
+            memory_max: Some(512 << 20),
+            cpu_max_percent: Some(200),
+        };
+        let first = HashMap::from([(PathBuf::from(slice), reading(1_000_000))]);
+        let second = HashMap::from([(PathBuf::from(slice), reading(1_500_000))]);
+        let usage = workspace_usage(&holders, &first, &second, Duration::from_secs(1));
+        assert_eq!(usage.len(), 2, "the shared holder belongs to no workspace");
+        let feat = &usage[0];
+        assert_eq!((feat.workspace.as_str(), feat.source), ("feat", "cgroup"));
+        assert_eq!(feat.cpu_percent, 50.0);
+        assert_eq!(feat.memory_bytes, 256 << 20);
+        assert_eq!(limit_text(feat), "200% / 512M");
+        let main = &usage[1];
+        assert_eq!(
+            (main.workspace.as_str(), main.source),
+            ("main", "processes")
+        );
+        assert_eq!((main.cpu_percent, main.memory_bytes), (14.0, 500));
+        assert_eq!(main.holders.len(), 2);
+        assert_eq!(limit_text(main), "-");
+    }
 
     #[test]
     fn sizes_read_plainly() {

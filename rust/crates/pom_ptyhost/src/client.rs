@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::frame;
+use crate::limits::{Backend, HolderGroup, Placement};
 use crate::process::SocketDir;
 
 /// A connection to a holder after its snapshot: write input and sizes through it, read raw live output from
@@ -157,6 +158,8 @@ pub struct SpawnRequest<'a> {
     pub argv: &'a [String],
     /// Added to the inherited environment.
     pub env: &'a [(String, String)],
+    /// The workspace it belongs to: recorded with the holder, and capped by the workspace's limits.
+    pub group: Option<&'a HolderGroup>,
 }
 
 /// Markers a coding agent sets for the processes it runs. A holder outlives whoever spawned it and is never part
@@ -178,11 +181,21 @@ pub const INHERITED_SESSION_MARKERS: &[&str] = &[
     "CLAUDE_EFFORT",
 ];
 
-fn holder_command(dir: &SocketDir, request: &SpawnRequest<'_>) -> Command {
-    let mut command = Command::new(request.binary);
+fn holder_command(dir: &SocketDir, request: &SpawnRequest<'_>, prefix: &[String]) -> Command {
+    let mut command = match prefix.split_first() {
+        Some((program, args)) => {
+            let mut command = Command::new(program);
+            command.args(args).arg(request.binary);
+            command
+        }
+        None => Command::new(request.binary),
+    };
     command
         .args(["pty", "run", request.name, "--cwd"])
         .arg(request.cwd);
+    if let Some(group) = request.group {
+        command.args(["--group", &group.label()]);
+    }
     if request.cols > 0 && request.rows > 0 {
         command
             .args(["--cols", &request.cols.to_string()])
@@ -207,12 +220,47 @@ pub fn spawn_holder(dir: &SocketDir, request: &SpawnRequest<'_>) -> io::Result<(
     if dir.holder_alive(request.name) {
         return Ok(());
     }
-    let mut command = holder_command(dir, request);
-    // SAFETY: setsid is async-signal-safe.
+    let placement = match request.group {
+        Some(group) => Backend::from_env()
+            .place(group, request.name)
+            .unwrap_or_else(|error| {
+                eprintln!(
+                    "ptyhost: {} runs without the limits of {}: {error}",
+                    request.name,
+                    group.label()
+                );
+                Placement::Unlimited
+            }),
+        None => Placement::Unlimited,
+    };
+    let prefix = match &placement {
+        Placement::Systemd { prefix, .. } => prefix.clone(),
+        _ => Vec::new(),
+    };
+    let procs = match &placement {
+        Placement::Directory { procs } => Some(
+            std::ffi::CString::new(procs.as_os_str().as_encoded_bytes())
+                .map_err(io::Error::other)?,
+        ),
+        _ => None,
+    };
+    let mut command = holder_command(dir, request, &prefix);
+    // SAFETY: setsid, open, write and close are async-signal-safe, and the path was built before the fork.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(io::Error::last_os_error());
+            }
+            if let Some(procs) = &procs {
+                let fd = libc::open(procs.as_ptr(), libc::O_WRONLY);
+                if fd < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let written = libc::write(fd, b"0".as_ptr().cast(), 1);
+                libc::close(fd);
+                if written != 1 {
+                    return Err(io::Error::last_os_error());
+                }
             }
             Ok(())
         });
@@ -240,6 +288,7 @@ mod tests {
         let command = holder_command(
             &dir,
             &SpawnRequest {
+                group: None,
                 binary: Path::new("/bin/true"),
                 name: "ws-myproject-feat-login-claude-raw",
                 cwd: Path::new("/"),
@@ -248,6 +297,7 @@ mod tests {
                 argv: &[],
                 env: &env,
             },
+            &[],
         );
         let envs: Vec<(String, Option<String>)> = command
             .get_envs()

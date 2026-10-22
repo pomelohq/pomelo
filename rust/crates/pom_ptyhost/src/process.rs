@@ -36,7 +36,7 @@ impl SocketDir {
     }
 
     /// Hashed so long holder names stay under the 104-byte Unix socket path limit.
-    fn stem(name: &str) -> String {
+    pub(crate) fn stem(name: &str) -> String {
         let digest = Sha1::digest(name.as_bytes());
         digest
             .iter()
@@ -96,6 +96,23 @@ impl SocketDir {
     pub fn holder_pid(&self, name: &str) -> Option<i32> {
         let text = std::fs::read_to_string(self.pidfile(name)).ok()?;
         text.lines().next()?.trim().parse().ok()
+    }
+
+    /// Adds the holder's workspace (`project/workspace`) to its pidfile, after its pid and name.
+    pub fn record_group(&self, name: &str, group: &str) -> std::io::Result<()> {
+        let path = self.pidfile(name);
+        let text = std::fs::read_to_string(&path)?;
+        let mut lines = text.lines();
+        let (Some(pid), Some(recorded)) = (lines.next(), lines.next()) else {
+            return Err(std::io::Error::other("pidfile without pid and name"));
+        };
+        std::fs::write(&path, format!("{pid}\n{recorded}\n{group}\n"))
+    }
+
+    /// The `project/workspace` the holder was started for, when it was started for one.
+    pub fn holder_group(&self, name: &str) -> Option<(String, String)> {
+        let text = std::fs::read_to_string(self.pidfile(name)).ok()?;
+        crate::limits::HolderGroup::parse_label(text.lines().nth(2)?.trim())
     }
 
     pub fn holder_alive(&self, name: &str) -> bool {
@@ -461,6 +478,11 @@ mod tests {
         let dir = SocketDir::new(temp.path());
         std::fs::write(dir.pidfile("ghost"), "999999\nghost\n")?;
         std::fs::write(dir.pidfile("me"), format!("{}\nme\n", std::process::id()))?;
+        dir.record_group("me", "myproject/feat/login")?;
+        assert_eq!(
+            dir.holder_group("me"),
+            Some(("myproject".into(), "feat/login".into()))
+        );
         assert_eq!(
             dir.holders(),
             vec![("me".to_string(), std::process::id() as i32)]

@@ -21,6 +21,7 @@ pub struct Config {
     pub ui: Option<UiConfig>,
     pub sync: Option<SyncConfig>,
     pub agents: Option<AgentsConfig>,
+    pub limits: crate::limits::LimitsConfig,
     pub seed: Vec<String>,
     pub prepare_main: Vec<String>,
     /// Preset names whose services run at workspace level rather than inside a repo.
@@ -156,6 +157,8 @@ pub struct SharedServiceDef {
     pub repo: String,
     /// The port `cmd` listens on, handed to it as `$PORT`; leased when unset.
     pub port: Option<u16>,
+    /// For an `image`: a cap on the container.
+    pub limit: crate::limits::ResourceLimit,
 }
 
 impl SharedServiceDef {
@@ -278,6 +281,19 @@ impl Config {
                 policy: decoder.string(key(node, Section::Agents, "policy")),
                 policy_timeout_sec: decoder.int(key(node, Section::Agents, "policy_timeout_sec")),
             });
+        if let Some(node) = field("limits").and_then(|node| decoder.fields(node, "LimitsConfig")) {
+            config.limits = crate::limits::LimitsConfig {
+                default: decode_limit(decoder, node, Section::Limits),
+                workspaces: decoder.map(
+                    key(node, Section::Limits, "workspaces"),
+                    "map[string]ResourceLimit",
+                    |decoder, node| match decoder.fields(node, "ResourceLimit") {
+                        Some(node) => decode_limit(decoder, node, Section::WorkspaceLimits),
+                        None => crate::limits::ResourceLimit::default(),
+                    },
+                ),
+            };
+        }
         config.seed = decoder.strings(field("seed"));
         config.prepare_main = decoder.strings(field("prepare_main"));
         config.workspace_presets = preset_names(field("preset"));
@@ -501,6 +517,7 @@ impl SharedServiceDef {
         def.cmd = decoder.string(field("cmd"));
         def.repo = decoder.string(field("repo"));
         def.port = decoder.opt_u16(field("port"));
+        def.limit = decode_limit(decoder, node, Section::Shared);
         def
     }
 }
@@ -510,6 +527,17 @@ fn tasks_node(node: &Node, section: Section) -> Option<&Node> {
     let tasks = key(node, section, "tasks");
     let shortcuts = key(node, section, "shortcuts");
     tasks.or(shortcuts)
+}
+
+fn decode_limit(
+    decoder: &mut Decoder,
+    node: &Node,
+    section: Section,
+) -> crate::limits::ResourceLimit {
+    crate::limits::ResourceLimit {
+        cpu: decoder.string(key(node, section, "cpu")),
+        memory: decoder.string(key(node, section, "memory")),
+    }
 }
 
 /// Every key the parser reads goes through here, so a test can check each one is documented.

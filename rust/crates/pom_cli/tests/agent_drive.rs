@@ -67,6 +67,7 @@ impl Fixture {
         pom_ptyhost::spawn_holder(
             &fixture.holders(),
             &SpawnRequest {
+                group: None,
                 binary: Path::new(POM),
                 name: HOLDER,
                 cwd: &root.join("workspace--feat"),

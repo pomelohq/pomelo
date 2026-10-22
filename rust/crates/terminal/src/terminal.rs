@@ -396,6 +396,7 @@ impl Terminal {
                 .unwrap_or_else(|| PathBuf::from("/"));
             let size = bounds.window_size();
             let spawn = pom_ptyhost::SpawnRequest {
+                group: holder_options.group.as_ref(),
                 binary: &holder_options.binary,
                 name: &holder_options.name,
                 cwd: &cwd,
@@ -1248,6 +1249,7 @@ mod tests {
                 name: "appsh-test".into(),
                 binary: PathBuf::from("/nonexistent"),
                 attach_only: false,
+                group: None,
             }),
             ..TerminalOptions::default()
         };
