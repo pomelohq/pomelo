@@ -7230,6 +7230,7 @@ dependencies = [
  "pom_layout",
  "pom_lock",
  "pom_paths",
+ "pom_remote",
  "pom_services",
  "pom_sync",
  "pom_workspace",

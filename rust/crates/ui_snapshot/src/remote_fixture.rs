@@ -310,6 +310,53 @@ fn project_info(snapshot: &pom_remote::Snapshot) -> workspace::ProjectInfo {
     }
 }
 
+/// A workspace being created on the host, its card fed the progress a job pushes: worktrees made, setup running.
+fn creating_on_host() -> workspace::WorkspaceOp {
+    use pom_remote::server_api::{progress_kind, Progress};
+    let mut op = workspace::WorkspaceOp {
+        id: 1,
+        branch: "feat-search".into(),
+        title: "Search page".into(),
+        status: workspace::OpStatus::Queued,
+        retryable: true,
+        remote: true,
+        ..workspace::WorkspaceOp::default()
+    };
+    let mut events = vec![Progress {
+        kind: progress_kind::STAGES.into(),
+        stages: pom_workspace::CREATE_STAGES
+            .iter()
+            .map(|stage| stage.to_string())
+            .collect(),
+        ..Progress::default()
+    }];
+    for stage in 0..5 {
+        for kind in [progress_kind::STAGE_STARTED, progress_kind::STAGE_DONE] {
+            events.push(Progress {
+                kind: kind.into(),
+                stage: Some(stage),
+                ..Progress::default()
+            });
+        }
+    }
+    events.push(Progress {
+        kind: progress_kind::STAGE_STARTED.into(),
+        stage: Some(5),
+        ..Progress::default()
+    });
+    events.push(Progress {
+        kind: progress_kind::LINE.into(),
+        stage: Some(5),
+        line: "api: npm install".into(),
+        ..Progress::default()
+    });
+    for (seq, mut event) in events.into_iter().enumerate() {
+        event.seq = seq as u64;
+        workspaces_ui::apply_progress(&mut op, &event);
+    }
+    op
+}
+
 fn hosts() -> Vec<Host> {
     [
         ("dev", "ssh://dev@dev.example.net"),
@@ -426,6 +473,9 @@ pub fn render(
         if connect {
             view.open_window_modal(Box::new(connect_modal(mode == "connect-projects")));
             return;
+        }
+        if mode == "create" {
+            view.set_workspace_ops(vec![creating_on_host()]);
         }
         let mut panel = services_ui::RemoteServicesPanel::new(watch.clone());
         if mode == "logs" {

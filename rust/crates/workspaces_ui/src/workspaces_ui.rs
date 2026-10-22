@@ -19,7 +19,9 @@ pub use bundle::{ExportConfig, ExportConfigModal, FileChooser, ImportConfig, Imp
 pub use forms::{
     CreateWorkspace, CreateWorkspaceModal, ModulesOutlook, RenameWorkspace, RenameWorkspaceModal,
 };
-pub use ops::{apply_event, apply_repo_state, Finished, OpContext, OpKind, OpQueue};
+pub use ops::{
+    apply_event, apply_progress, apply_repo_state, Finished, OpContext, OpKind, OpQueue,
+};
 pub use repo_branch_picker::{BranchSource, RepoBranches};
 pub use repo_edit::{
     PickReposModal, PickedRepos, RemoveRepo, RemoveRepoModal, RenameAlias, RenameAliasModal,

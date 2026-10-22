@@ -41,7 +41,7 @@ fn save_grouping(grouping: &workspace::Grouping) {
 }
 
 /// Claude, found the way the agent launcher finds it, asked for a name.
-fn namer() -> workspaces_ui::Namer {
+pub(crate) fn namer() -> workspaces_ui::Namer {
     let home = std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
@@ -82,12 +82,13 @@ impl App {
             .is_some_and(|main| main.remote.is_some())
         {
             if requests.new_workspace {
-                self.remote_only_on_host(id, "Creating a workspace");
-            } else if let Some((index, workspace::RowAction::OpenInEditor)) = requests.row {
-                self.open_remote_editor(id, Some(index));
-            } else if requests.row.is_some() || requests.reorder.is_some() {
+                self.open_remote_create(id);
+            } else if let Some((index, action)) = requests.row {
+                self.remote_row_action(id, index, action);
+            } else if requests.reorder.is_some() {
                 self.remote_only_on_host(id, "Changing a workspace");
             }
+            self.op_request(id, requests.op);
             return;
         }
         if requests.new_workspace {
@@ -115,7 +116,12 @@ impl App {
                 self.apply_workspace_grouping();
             }
         }
-        if let Some((op, action)) = requests.op {
+        self.op_request(id, requests.op);
+    }
+
+    /// Retry, dismiss, cancel or skip an operation's card, or start an agent on its failure.
+    fn op_request(&mut self, id: WindowId, request: Option<(u64, workspace::OpAction)>) {
+        if let Some((op, action)) = request {
             let failed = self
                 .mains
                 .get(&id)
@@ -276,6 +282,7 @@ impl App {
             }
             workspace::RowAction::AddMissingRepos => self.add_missing_repos(id, &target),
             workspace::RowAction::AddRepos => self.pick_repos(id, &target),
+            workspace::RowAction::Pull => self.pull_from_github(id, &target.branch),
             workspace::RowAction::OpenInEditor => {}
         }
     }
@@ -787,6 +794,7 @@ impl App {
             return;
         }
         self.rescan_project(id);
+        self.finish_remote_jobs(id, &finished);
         for done in finished.iter().filter(|done| done.ok) {
             if done.created {
                 let index = self
@@ -845,13 +853,30 @@ impl App {
                 eprintln!("could not save settings: {error}");
             }
         }
-        let Some(context) = self.op_context(id) else {
-            return;
-        };
         let title = if create.display_name.is_empty() {
             create.branch.clone()
         } else {
             create.display_name.clone()
+        };
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            let request =
+                pom_remote::server_api::JobRequest::Create(pom_remote::server_api::CreateArgs {
+                    branch: create.branch.clone(),
+                    repos: create.repos.clone(),
+                    environment: create.environment.clone(),
+                    fresh_databases: create.fresh_databases,
+                    display_name: create.display_name.clone(),
+                    from_stage: 0,
+                });
+            self.queue_remote_job(id, request, title);
+            return;
+        }
+        let Some(context) = self.op_context(id) else {
+            return;
         };
         if let Some(main) = self.mains.get(&id) {
             main.ops.enqueue(

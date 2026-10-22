@@ -359,6 +359,8 @@ pub struct WorkspaceOp {
     pub fix_dir: String,
     /// What skipping the failed stage would leave undone, empty when that stage can't be skipped.
     pub skip: String,
+    /// Runs on the project's host: it can be cancelled while it runs, and its fixes are not here.
+    pub remote: bool,
 }
 
 /// Where a workspace's ticket stands, for the list grouped by ticket status.
@@ -507,6 +509,8 @@ pub enum RowAction {
     AddRepos,
     /// Open a remote workspace's folder in an editor that works over SSH.
     OpenInEditor,
+    /// Pull every repo of the workspace from origin.
+    Pull,
 }
 
 // Header click ids for the session switcher (routed by the app). Kept distinct from dock geometry hits.
@@ -643,6 +647,7 @@ pub const MENU_WS_ADD_REPOS: u64 = 947;
 pub const MENU_WS_OPEN_EDITOR: u64 = 948;
 pub const MENU_WS_SLEEP: u64 = 949;
 pub const MENU_WS_WAKE: u64 = 939;
+pub const MENU_WS_PULL: u64 = 938;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,

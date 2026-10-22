@@ -213,6 +213,11 @@ impl Watch {
         &self.location
     }
 
+    /// What the watch reads, for work that runs beside it (a workspace job).
+    pub fn source(&self) -> Arc<dyn ProjectSource> {
+        self.source.clone()
+    }
+
     /// Terminals of the shown workspace, when the project's machine opens them over a connection.
     pub fn terminals(&self) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
         let branch = self.shared.snapshot().branch.clone();

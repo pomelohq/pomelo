@@ -3433,7 +3433,11 @@ impl WorkspaceView {
             return Vec::new();
         };
         if project.host.is_some() {
-            return remote_workspace_row_menu();
+            let sleeping = project
+                .states
+                .get(index)
+                .is_some_and(|state| !state.is_empty());
+            return remote_workspace_row_menu(sleeping);
         }
         let is_main = project.workspaces.get(index) == Some(&project.branch);
         workspace_row_menu(RowMenuFacts {
@@ -3485,6 +3489,9 @@ impl WorkspaceView {
             }
             crate::MENU_WS_OPEN_EDITOR => {
                 self.workspace_requests.row = Some((index, crate::RowAction::OpenInEditor));
+            }
+            crate::MENU_WS_PULL => {
+                self.workspace_requests.row = Some((index, crate::RowAction::Pull));
             }
             crate::MENU_WS_DELETE => {
                 self.workspace_requests.row = Some((index, crate::RowAction::AskDelete));
@@ -8708,20 +8715,29 @@ pub struct RowMenuFacts {
     pub missing: bool,
 }
 
-/// A remote workspace's menu: only what works without its files here.
-pub fn remote_workspace_row_menu() -> Vec<MenuItem> {
-    vec![MenuItem {
-        id: crate::MENU_WS_OPEN_EDITOR,
-        label: "Open in Editor".into(),
+/// A remote workspace's menu: only what works without its files here, run on its host.
+pub fn remote_workspace_row_menu(sleeping: bool) -> Vec<MenuItem> {
+    let item = |id: u64, label: &'static str, sep: bool| MenuItem {
+        id,
+        label: label.into(),
         checked: false,
-        sep: false,
+        sep,
         disabled: false,
         danger: false,
         icon: None,
         hint: None,
         color: None,
         header: false,
-    }]
+    };
+    vec![
+        item(crate::MENU_WS_OPEN_EDITOR, "Open in Editor", false),
+        if sleeping {
+            item(crate::MENU_WS_WAKE, "Wake Workspace", true)
+        } else {
+            item(crate::MENU_WS_SLEEP, "Sleep Workspace", true)
+        },
+        item(crate::MENU_WS_PULL, "Pull from Origin", false),
+    ]
 }
 
 pub fn workspace_row_menu(facts: RowMenuFacts) -> Vec<MenuItem> {
@@ -9578,11 +9594,21 @@ mod tests {
         }
         assert!(layout.is_remote());
         assert!((0..PaneKind::ALL.len()).all(|index| !layout.func_offered(index)));
-        let menu: Vec<u64> = remote_workspace_row_menu()
-            .iter()
-            .map(|item| item.id)
-            .collect();
-        assert_eq!(menu, vec![crate::MENU_WS_OPEN_EDITOR]);
+        let menu = |sleeping: bool| -> Vec<u64> {
+            remote_workspace_row_menu(sleeping)
+                .iter()
+                .map(|item| item.id)
+                .collect()
+        };
+        assert_eq!(
+            menu(false),
+            vec![
+                crate::MENU_WS_OPEN_EDITOR,
+                crate::MENU_WS_SLEEP,
+                crate::MENU_WS_PULL
+            ]
+        );
+        assert_eq!(menu(true)[1], crate::MENU_WS_WAKE);
         for side in [
             DockPosition::Left,
             DockPosition::Right,
