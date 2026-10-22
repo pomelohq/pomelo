@@ -70,6 +70,10 @@ fn the_socket_is_private_and_a_second_server_is_refused() {
     assert_eq!(mode(&paths.socket), 0o600);
     let pid = std::fs::read_to_string(&paths.pid).expect("pid");
     assert_eq!(pid.trim(), std::process::id().to_string());
+    assert_eq!(
+        pom_server::running_versions(&paths.dir),
+        [("9.9.9".to_string(), Some(std::process::id()))]
+    );
 
     match pom_server::bind(options(temp.path())) {
         Err(StartError::AlreadyRunning(Some(running))) => {
@@ -93,6 +97,8 @@ fn the_socket_is_private_and_a_second_server_is_refused() {
     assert_eq!(thread.join().expect("run"), "stopped");
     assert!(!paths.socket.exists());
     assert!(!paths.pid.exists());
+    assert!(paths.lock.exists());
+    assert!(pom_server::running_versions(&paths.dir).is_empty());
     drop(handle);
 
     let (handle, _, thread) = start(options(temp.path()));

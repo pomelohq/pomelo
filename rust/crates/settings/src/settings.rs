@@ -81,6 +81,8 @@ pub struct Settings {
     pub modules_size_limit_gb: u64,
     pub modules_unused_days: u64,
     pub workspaces: WorkspaceSettings,
+    /// Read where it applies: `pom server` on the remote host, the unconfirmed input by the app.
+    pub server: ServerSettings,
     /// When the pointer hides until the mouse moves: "never", "on_typing" or "on_typing_and_action".
     pub hide_mouse: String,
     /// The key held to add a caret with a click: "alt", or "cmd_or_ctrl" (which leaves Alt-click the
@@ -202,6 +204,7 @@ impl Default for Settings {
             modules_size_limit_gb: 20,
             modules_unused_days: 14,
             workspaces: WorkspaceSettings::default(),
+            server: ServerSettings::default(),
             hide_mouse: "on_typing_and_action".into(),
             multi_cursor_modifier: "alt".into(),
             cursor_blink: true,
@@ -268,6 +271,39 @@ impl Default for WorkspaceSettings {
             idle_sleep_minutes: 0,
             max_running: 0,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerSettings {
+    /// Minutes `pom server` keeps running with no client before it exits; 0 never.
+    pub idle_exit_minutes: u64,
+    /// Minutes the server remembers a vanished client's terminals so a reconnect carries them on.
+    pub reconnect_retention_minutes: u64,
+    /// KiB of typed input the app keeps until the server has surely written it, to send again after a drop.
+    pub unconfirmed_input_kib: u64,
+}
+
+impl Default for ServerSettings {
+    fn default() -> Self {
+        ServerSettings {
+            idle_exit_minutes: 30,
+            reconnect_retention_minutes: 10,
+            unconfirmed_input_kib: 64,
+        }
+    }
+}
+
+impl ServerSettings {
+    /// The `server` object of settings.json alone, so a bad key elsewhere in the file cannot reset it.
+    pub fn load() -> ServerSettings {
+        Settings::path()
+            .and_then(|path| std::fs::read(path).ok())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value.get("server").cloned())
+            .and_then(|server| serde_json::from_value(server).ok())
+            .unwrap_or_default()
     }
 }
 
@@ -538,6 +574,15 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_server_key_left_out_keeps_its_default() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"server": {"idle_exit_minutes": 0}}"#).unwrap();
+        assert_eq!(settings.server.idle_exit_minutes, 0);
+        assert_eq!(settings.server.reconnect_retention_minutes, 10);
+        assert_eq!(settings.server.unconfirmed_input_kib, 64);
+    }
 
     #[test]
     fn keys_from_a_newer_version_survive_a_save() {

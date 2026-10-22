@@ -3,7 +3,7 @@
 //! A session that drops is reopened with backoff under the same client id: the same server lets every stream
 //! carry on where it was; a restarted one is told apart by its server id.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -111,6 +111,7 @@ struct Inner {
     client_id: String,
     next_op: AtomicU64,
     next_terminal: AtomicU64,
+    unconfirmed_input_limit: AtomicUsize,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -119,11 +120,21 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// What reads `config` on `host`: its server, unless hosts.json picks plain ssh.
-pub fn project_source(host: Host, config: String, ssh: Ssh) -> Arc<dyn ProjectSource> {
+/// What reads `config` on `host`: its server, unless hosts.json picks plain ssh. Its terminals keep up to
+/// `unconfirmed_input_limit` bytes of typed input to send again after a drop.
+pub fn project_source(
+    host: Host,
+    config: String,
+    ssh: Ssh,
+    unconfirmed_input_limit: usize,
+) -> Arc<dyn ProjectSource> {
     match host.transport {
         Some(HostTransport::Ssh) => Arc::new(RemoteSource::new(host, config, ssh)),
-        Some(HostTransport::Server) | None => Arc::new(ServerSource::new(host, config, ssh)),
+        Some(HostTransport::Server) | None => {
+            let source = ServerSource::new(host, config, ssh);
+            source.set_unconfirmed_input_limit(unconfirmed_input_limit);
+            Arc::new(source)
+        }
     }
 }
 
@@ -162,8 +173,15 @@ impl ServerSource {
                 client_id: format!("{}-{nanos:x}", std::process::id()),
                 next_op: AtomicU64::new(1),
                 next_terminal: AtomicU64::new(1),
+                unconfirmed_input_limit: AtomicUsize::new(pty::UNCONFIRMED_INPUT_LIMIT),
             }),
         }
+    }
+
+    pub fn set_unconfirmed_input_limit(&self, bytes: usize) {
+        self.inner
+            .unconfirmed_input_limit
+            .store(bytes, Ordering::Release);
     }
 
     /// The waits between reconnect attempts, shorter in tests.
@@ -1231,6 +1249,10 @@ impl Terminals {
 }
 
 impl PtyProvider for Terminals {
+    fn unconfirmed_input_limit(&self) -> usize {
+        self.inner.unconfirmed_input_limit.load(Ordering::Acquire)
+    }
+
     fn attach(&self, request: &pty::Request) -> Result<pty::Terminal, String> {
         let connection = self.connection()?;
         let open = |kind, role, service, cwd| pty::OpenParams {

@@ -141,8 +141,19 @@ impl App {
             eprintln!("failed to record the remote project: {error}");
         }
         let can_install = !crate::is_dev_build() && host.pom_path.is_none();
-        let source =
-            pom_remote::project_source(host, picked.config.clone(), pom_remote::Ssh::system());
+        let unconfirmed_input_limit = usize::try_from(
+            self.settings
+                .server
+                .unconfirmed_input_kib
+                .saturating_mul(1024),
+        )
+        .unwrap_or(usize::MAX);
+        let source = pom_remote::project_source(
+            host,
+            picked.config.clone(),
+            pom_remote::Ssh::system(),
+            unconfirmed_input_limit,
+        );
         let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = None;

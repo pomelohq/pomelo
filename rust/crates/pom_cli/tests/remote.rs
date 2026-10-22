@@ -1930,3 +1930,105 @@ fn updating_pom_installs_the_checked_release_tarball_and_moves_to_its_server() {
     );
     assert!(source.workspaces().is_ok());
 }
+
+fn doctor_finding(report: &Value, id: &str) -> Option<Value> {
+    report["findings"]
+        .as_array()?
+        .iter()
+        .find(|finding| finding["id"] == id)
+        .cloned()
+}
+
+#[test]
+fn doctor_reports_how_the_server_stands() {
+    let fixture = Fixture::new();
+    let quiet = fixture.pom(&["doctor", "--json"]);
+    let report: Value = serde_json::from_slice(&quiet.stdout).expect("doctor json");
+    assert!(
+        doctor_finding(&report, "server.stopped").is_none(),
+        "no server section before a server ever ran: {report}"
+    );
+
+    let started = fixture.pom(&["server", "run"]);
+    assert!(started.status.success(), "{}", text(&started));
+    let report: Value =
+        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    let running = doctor_finding(&report, "server.running").expect("server.running");
+    assert_eq!(running["severity"], "ok");
+    let detail = running["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("0 connection(s)"), "{detail}");
+    assert!(detail.contains("0 stream(s)"), "{detail}");
+    assert!(detail.contains("0 kept for apps that dropped"), "{detail}");
+
+    let dir = fixture.temp.path().join("run/pom-server");
+    let old = std::fs::File::create(dir.join("0.0.1.lock")).expect("old lock");
+    old.lock().expect("hold the old version's lock");
+    std::fs::write(dir.join("0.0.1.pid"), "4242\n").expect("old pid");
+    let report: Value =
+        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    let stale = doctor_finding(&report, "server.old_version:0.0.1").expect("old version");
+    assert_eq!(stale["severity"], "warn");
+    assert!(stale["fix"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("kill 4242"));
+    drop(old);
+
+    let stopped = fixture.pom(&["server", "stop"]);
+    assert!(stopped.status.success(), "{}", text(&stopped));
+    let report: Value =
+        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    assert!(
+        doctor_finding(&report, "server.stopped").is_some(),
+        "{report}"
+    );
+    assert!(doctor_finding(&report, "server.old_version:0.0.1").is_none());
+}
+
+const FAKE_SYSTEMCTL: &str = r#"#!/bin/sh
+echo "$*" >> "$FAKE_SYSTEMCTL_LOG"
+"#;
+
+#[test]
+fn install_unit_writes_a_user_unit_on_linux_only() {
+    let fixture = Fixture::new();
+    executable(&fixture.temp.path().join("bin/systemctl"), FAKE_SYSTEMCTL);
+    let config = fixture.temp.path().join("xdg");
+    let calls = fixture.temp.path().join("systemctl.log");
+    let run = |args: &[&str]| {
+        fixture
+            .command(args)
+            .env("XDG_CONFIG_HOME", &config)
+            .env("FAKE_SYSTEMCTL_LOG", &calls)
+            .output()
+            .expect("pom")
+    };
+    let unit = config.join("systemd/user/pom-server.service");
+    let installed = run(&["server", "install-unit", "--json"]);
+    if !cfg!(target_os = "linux") {
+        assert_eq!(installed.status.code(), Some(1));
+        assert!(
+            text(&installed).contains("Linux only"),
+            "{}",
+            text(&installed)
+        );
+        assert!(!unit.exists());
+        assert!(!calls.exists(), "systemctl is never run off Linux");
+        return;
+    }
+    assert!(installed.status.success(), "{}", text(&installed));
+    let report = json(&installed);
+    assert_eq!(report["schema"], "pom.server/v1");
+    assert_eq!(report["enabled"], true);
+    assert_eq!(report["unit"], unit.to_string_lossy().as_ref());
+    let written = std::fs::read_to_string(&unit).expect("unit");
+    assert!(written.contains(" server run --foreground\n"), "{written}");
+    assert!(written.contains("Restart=on-failure\n"), "{written}");
+    let removed = run(&["server", "uninstall-unit"]);
+    assert!(removed.status.success(), "{}", text(&removed));
+    assert!(!unit.exists());
+    assert_eq!(
+        std::fs::read_to_string(&calls).expect("calls"),
+        "--user daemon-reload\n--user enable pom-server.service\n--user disable pom-server.service\n--user daemon-reload\n"
+    );
+}

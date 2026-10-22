@@ -248,7 +248,13 @@ pub trait PtyProvider: Send + Sync {
     }
     /// Tries to reconnect now rather than at the next scheduled attempt.
     fn reconnect_now(&self) {}
+    /// Bytes of typed input kept until the server has surely written them, to send again after a drop.
+    fn unconfirmed_input_limit(&self) -> usize {
+        UNCONFIRMED_INPUT_LIMIT
+    }
 }
+
+pub const UNCONFIRMED_INPUT_LIMIT: usize = 64 * 1024;
 
 type Routes = Arc<Mutex<HashMap<u32, Sender<Exit>>>>;
 

@@ -37,7 +37,17 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("ws", &["create", "delete", "rename", "list", "ls", "gc"]),
     ("workspace", &["create", "delete", "rename", "list", "ls"]),
     ("host", &["add", "ls", "rm", "test"]),
-    ("server", &["run", "status", "stop", "proxy"]),
+    (
+        "server",
+        &[
+            "run",
+            "status",
+            "stop",
+            "proxy",
+            "install-unit",
+            "uninstall-unit",
+        ],
+    ),
     ("project", &["ls"]),
     ("get", &["workspaces"]),
     ("describe", &["workspace"]),

@@ -70,3 +70,28 @@ pub fn ensure_private_dir(dir: &Path, uid: u32) -> io::Result<()> {
     }
     Ok(())
 }
+
+/// The versions whose server holds its lock in `dir`, each with the pid its pid file names.
+pub fn running_versions(dir: &Path) -> Vec<(String, Option<u32>)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut running: Vec<(String, Option<u32>)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let version = name.strip_suffix(".lock")?.to_string();
+            let lock = std::fs::File::open(entry.path()).ok()?;
+            match lock.try_lock_shared() {
+                Err(std::fs::TryLockError::WouldBlock) => {}
+                Ok(()) | Err(std::fs::TryLockError::Error(_)) => return None,
+            }
+            let pid = std::fs::read_to_string(dir.join(format!("{version}.pid")))
+                .ok()
+                .and_then(|text| text.trim().parse().ok());
+            Some((version, pid))
+        })
+        .collect();
+    running.sort();
+    running
+}

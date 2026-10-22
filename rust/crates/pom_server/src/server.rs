@@ -56,17 +56,6 @@ impl ServerOptions {
     }
 }
 
-/// `server.idle_exit_minutes` of settings.json: 30 when unset, `None` for 0 (never).
-pub fn idle_exit_from_settings() -> Option<Duration> {
-    let minutes = pom_paths::config_dir()
-        .map(|dir| dir.join("settings.json"))
-        .and_then(|path| std::fs::read(path).ok())
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| value["server"]["idle_exit_minutes"].as_u64())
-        .unwrap_or(DEFAULT_IDLE_EXIT_MINUTES);
-    (minutes > 0).then(|| Duration::from_secs(minutes * 60))
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum StartError {
     /// Another server of this version holds the lock; carries its pid when the pid file says.
