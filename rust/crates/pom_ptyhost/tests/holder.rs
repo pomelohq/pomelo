@@ -230,9 +230,10 @@ fn while_a_lease_is_set_only_the_client_that_claimed_it_can_type() {
 fn a_reader_far_behind_loses_its_output_not_chunks_and_resumes_by_offset() {
     let holders = Holders::new();
     let lines = 1_500_000;
-    let script = format!("stty -opost; seq 1 {lines}; cat");
+    let script = format!("stty -opost; sleep 1; seq 1 {lines}; cat");
     holders.spawn("appsh-behind", &["sh", "-c", &script]);
     let mut slow = holders.attach("appsh-behind", 0);
+    assert_eq!(slow.end, 0, "attached before any output");
     let mut expected = String::new();
     for line in 1..=lines {
         expected.push_str(&line.to_string());

@@ -164,13 +164,8 @@ fn read_yes(terminal: &pty::Terminal, total: u64, stall: Duration) -> Checked {
 }
 
 fn yes_holder(remote: &Remote, name: &str, bytes: u64) {
-    let script = format!("stty -opost -echo; read go; yes | head -c {bytes}; sleep 60");
+    let script = format!("stty -opost; sleep 1; yes | head -c {bytes}; sleep 60");
     remote.spawn_holder(name, &["/bin/sh", "-c", &script]);
-}
-
-fn start_flood(terminal: &pty::Terminal) {
-    std::thread::sleep(Duration::from_millis(200));
-    terminal.control.input(b"\n").expect("start the flood");
 }
 
 #[test]
@@ -199,7 +194,6 @@ fn a_flood_arrives_whole_and_in_order_while_another_terminal_stays_quick() {
     yes_holder(&remote, "term-demo-feat-yes-1", FLOOD);
     let started = Instant::now();
     let flood = remote.attach(&remote.connection, "term-demo-feat-yes-1");
-    start_flood(&flood);
     let checked = read_yes(&flood, FLOOD, Duration::ZERO);
     let elapsed = started.elapsed();
     flooding.store(false, Ordering::Release);
@@ -234,7 +228,6 @@ fn a_client_that_stops_acknowledging_is_reset_and_replayed() {
     let total = 16 * MEBIBYTE;
     yes_holder(&remote, "term-demo-feat-yes-2", total);
     let flood = remote.attach(&remote.connection, "term-demo-feat-yes-2");
-    start_flood(&flood);
     let checked = read_yes(&flood, total, Duration::from_secs(3));
     eprintln!(
         "stalled 3s: received {} of {} MiB, resets at {:?}",
