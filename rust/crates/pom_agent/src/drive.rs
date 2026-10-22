@@ -107,7 +107,8 @@ impl From<Refusal> for DriveError {
 }
 
 /// One agent session as `ls` reports it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct SessionView {
     pub handle: String,
     pub workspace: String,

@@ -21,6 +21,7 @@ pub(crate) fn registered_routes(state: &StateDir) -> Vec<ProjectRoute> {
         pom_sessions::Sessions::load(state)
             .sessions
             .into_iter()
+            .filter(|session| !session.is_remote())
             .map(|session| PathBuf::from(session.path)),
     );
     roots.sort();

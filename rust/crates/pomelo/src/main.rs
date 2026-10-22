@@ -16,6 +16,7 @@ mod notifications;
 mod onboarding;
 mod platform;
 mod recovery;
+mod remote;
 mod updates;
 mod usage;
 mod window_bounds;
@@ -188,6 +189,7 @@ fn project_info(
         name: project.session.clone(),
         branch: project.branch().to_string(),
         config_path: project.config_path.clone(),
+        host: None,
         workspaces: project
             .workspaces
             .iter()
@@ -297,9 +299,13 @@ fn config_problem(project: &pom_core::Project) -> Option<(String, Option<u32>)> 
         .map(|problem| (problem.message.clone(), problem.line))
 }
 
+/// A session's name and, for a remote one, its host.
+type SessionKey = (String, Option<String>);
+
+/// The session rows, and which is the window's own: `current` is its name and, for a remote one, its host.
 fn session_rows(
     entries: &[pom_core::SessionEntry],
-    current: Option<&str>,
+    current: Option<(&str, Option<&str>)>,
 ) -> (Vec<workspace::Session>, Option<usize>) {
     let rows: Vec<workspace::Session> = entries
         .iter()
@@ -308,9 +314,13 @@ fn session_rows(
             path: entry.path.clone(),
             running: false,
             missing: entry.missing,
+            host: entry.host.clone(),
         })
         .collect();
-    let index = current.and_then(|name| rows.iter().position(|row| row.name == name));
+    let index = current.and_then(|(name, host)| {
+        rows.iter()
+            .position(|row| row.name == name && row.host.as_deref() == host)
+    });
     (rows, index)
 }
 
@@ -512,6 +522,8 @@ struct MainWindow {
     windowed: Option<(f64, f64, f64, f64)>,
     /// Refresh-main, auto-push and the port reaper, when this process holds the session's primary lock.
     background: Option<workspaces_ui::BackgroundSync>,
+    /// The project runs on another machine; `project` is then empty.
+    remote: Option<remote::RemoteWindow>,
 }
 
 struct ProjectServices {
@@ -1648,6 +1660,7 @@ impl App {
                 use_branch: None,
                 services_checked: None,
                 background: None,
+                remote: None,
                 windowed,
             },
         );
@@ -1706,6 +1719,7 @@ impl App {
                 })
             });
         if let Some(main) = self.mains.get_mut(&id) {
+            main.remote = None;
             main.background = background;
             main.tickets = tickets;
             main.pull_requests = pull_requests;
@@ -2313,6 +2327,14 @@ impl App {
     }
 
     fn activate_workspace(&mut self, id: WindowId, index: usize) {
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            self.activate_remote_workspace(id, index);
+            return;
+        }
         let state = pom_paths::StateDir::from_env();
         let Some(project) = self.mains.get_mut(&id).and_then(|m| m.project.as_mut()) else {
             return;
@@ -2372,13 +2394,25 @@ impl App {
 
     fn refresh_sessions(&mut self) {
         let entries = pom_core::session_entries(&pom_paths::StateDir::from_env());
-        let windows: Vec<(WindowId, Option<String>)> = self
+        let windows: Vec<(WindowId, Option<SessionKey>)> = self
             .mains
             .iter()
-            .map(|(id, main)| (*id, main.project.as_ref().map(|p| p.session.clone())))
+            .map(|(id, main)| {
+                let current = match (&main.project, &main.remote) {
+                    (Some(project), _) => Some((project.session.clone(), None)),
+                    (None, Some(remote)) => {
+                        Some((remote.project.clone(), Some(remote.host.clone())))
+                    }
+                    (None, None) => None,
+                };
+                (*id, current)
+            })
             .collect();
         for (id, current) in windows {
-            let (rows, index) = session_rows(&entries, current.as_deref());
+            let current = current
+                .as_ref()
+                .map(|(name, host)| (name.as_str(), host.as_deref()));
+            let (rows, index) = session_rows(&entries, current);
             self.with_workspace_view(id, |view, _| view.set_sessions(rows, index));
             if let Some(main) = self.mains.get_mut(&id) {
                 main.dirty = true;
@@ -2478,6 +2512,13 @@ impl App {
         }
     }
 
+    fn session_row(&self, id: WindowId, index: usize) -> Option<workspace::Session> {
+        let app = self.main_app.as_ref()?;
+        let main = self.mains.get(&id)?;
+        let view = main.entity.read(app.app());
+        view.layout().sessions.get(index).cloned()
+    }
+
     fn session_path(&self, id: WindowId, index: usize) -> Option<(String, std::path::PathBuf)> {
         let app = self.main_app.as_ref()?;
         let main = self.mains.get(&id)?;
@@ -2489,12 +2530,26 @@ impl App {
     fn handle_session_request(&mut self, id: WindowId, request: workspace::SessionRequest) {
         match request {
             workspace::SessionRequest::Switch(index) => {
+                if self.open_remote_session(id, index, None) {
+                    return;
+                }
                 if let Some((_, path)) = self.session_path(id, index) {
                     self.open_folder_in(id, &path);
                 }
             }
             workspace::SessionRequest::Forget(index) => {
-                if let Some((name, _)) = self.session_path(id, index) {
+                let remote = self
+                    .session_row(id, index)
+                    .and_then(|session| Some((session.name.clone(), session.host?)));
+                if let Some((name, host)) = remote {
+                    let state = pom_paths::StateDir::from_env();
+                    if let Err(error) = pom_core::forget_remote_session(&state, &name, &host) {
+                        self.with_workspace_view(id, |view, _| {
+                            view.show_toast(format!("Failed to remove {name}: {error}"), None)
+                        });
+                    }
+                    self.refresh_sessions();
+                } else if let Some((name, _)) = self.session_path(id, index) {
                     let state = pom_paths::StateDir::from_env();
                     if let Err(error) = pom_core::forget_session(&state, &name) {
                         self.with_workspace_view(id, |view, _| {
@@ -2505,7 +2560,10 @@ impl App {
                 }
             }
             workspace::SessionRequest::Reveal(index) => {
-                if let Some((_, path)) = self.session_path(id, index) {
+                let local = self
+                    .session_row(id, index)
+                    .is_some_and(|session| session.host.is_none());
+                if let Some((_, path)) = self.session_path(id, index).filter(|_| local) {
                     if let Err(error) = desktop::open(&path) {
                         self.with_workspace_view(id, |view, _| {
                             view.show_toast(
@@ -2525,6 +2583,8 @@ impl App {
             workspace::SessionRequest::ImportBundle => self.open_import_config(id),
             workspace::SessionRequest::CheckMachine => self.check_machine(true),
             workspace::SessionRequest::FixMachine(index) => self.fix_machine(index),
+            workspace::SessionRequest::ConnectHost => self.open_connect_host(id),
+            workspace::SessionRequest::NoticeAction(index) => self.remote_notice_action(id, index),
         }
     }
 
@@ -3278,7 +3338,8 @@ impl App {
             });
         }
         if let Some(index) = effects.open_new_window {
-            if let Some((_, path)) = self.session_path(id, index) {
+            if self.open_remote_session(id, index, Some(event_loop)) {
+            } else if let Some((_, path)) = self.session_path(id, index) {
                 if !self.focus_window_with_project(&path, None) {
                     let mut layout = Layout::default();
                     apply_dock_settings(&self.settings, &mut layout);

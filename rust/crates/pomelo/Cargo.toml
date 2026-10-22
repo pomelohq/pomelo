@@ -34,6 +34,8 @@ pom_services = { path = "../pom_services" }
 pom_mcp = { path = "../pom_mcp" }
 pom_agent = { path = "../pom_agent" }
 services_ui = { path = "../services_ui" }
+pom_remote = { path = "../pom_remote" }
+remote_ui = { path = "../remote_ui" }
 workspaces_ui = { path = "../workspaces_ui" }
 database_ui = { path = "../database_ui" }
 pom_workspace = { path = "../pom_workspace" }

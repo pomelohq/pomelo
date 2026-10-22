@@ -8,6 +8,10 @@ pub const WELCOME_NEW_PROJECT: u64 = 602;
 pub const WELCOME_IMPORT_BUNDLE: u64 = 603;
 pub const WELCOME_RECHECK: u64 = 604;
 pub const WELCOME_NEW_PROJECT_CARD: u64 = 605;
+pub const WELCOME_CONNECT_HOST: u64 = 606;
+/// A button of the page shown in place of the editor (a remote project's): id = base + index.
+pub const NOTICE_ACTION_BASE: u64 = 660;
+pub const NOTICE_ACTION_END: u64 = 670;
 /// A check's fix button: id = base + index into the checks.
 pub const WELCOME_FIX_BASE: u64 = 610;
 /// A recent session button: id = base + index into `Layout::sessions`.
@@ -39,6 +43,7 @@ pub fn is_welcome_id(id: u64) -> bool {
             | WELCOME_IMPORT_BUNDLE
             | WELCOME_RECHECK
             | WELCOME_NEW_PROJECT_CARD
+            | WELCOME_CONNECT_HOST
     ) || (WELCOME_RECENT_BASE..WELCOME_RECENT_END).contains(&id)
         || (WELCOME_FIX_BASE..WELCOME_FIX_END).contains(&id)
 }
@@ -180,8 +185,8 @@ pub fn welcome_page(
                     .color(colors.text_muted),
             ),
     );
-    let card_w = (width - 24.0) / 3.0;
-    let cards = div()
+    let card_w = (width - 12.0) / 2.0;
+    let first_row = div()
         .row()
         .gap(12.0)
         .child(action_card(
@@ -199,6 +204,17 @@ pub fn welcome_page(
             "A folder that already has a pom.yml, from before or from a teammate.",
             card_w,
             hovered == Some(WELCOME_OPEN_PROJECT),
+        ));
+    let second_row = div()
+        .row()
+        .gap(12.0)
+        .child(action_card(
+            WELCOME_CONNECT_HOST,
+            IconKind::Server,
+            "Connect to a host",
+            "A project on another machine you reach over SSH, such as a dev VM.",
+            card_w,
+            hovered == Some(WELCOME_CONNECT_HOST),
         ))
         .child(action_card(
             WELCOME_IMPORT_BUNDLE,
@@ -208,6 +224,7 @@ pub fn welcome_page(
             card_w,
             hovered == Some(WELCOME_IMPORT_BUNDLE),
         ));
+    let cards = div().col().gap(12.0).child(first_row).child(second_row);
     let recent: Vec<Node> = sessions
         .iter()
         .enumerate()
@@ -215,6 +232,13 @@ pub fn welcome_page(
         .take(WELCOME_RECENT_MAX)
         .map(|(index, session)| {
             let id = WELCOME_RECENT_BASE + index as u64;
+            let (kind, place) = match &session.host {
+                Some(host) => (
+                    IconKind::Server,
+                    format!("{host}: {}", session.path.display()),
+                ),
+                None => (IconKind::Folder, home_relative(&session.path)),
+            };
             let mut line = div()
                 .row()
                 .items_center()
@@ -223,7 +247,7 @@ pub fn welcome_page(
                 .px(8.0)
                 .rounded(6.0)
                 .on_click(id)
-                .child(icon(IconKind::Folder).size(16.0).color(colors.icon_muted))
+                .child(icon(kind).size(16.0).color(colors.icon_muted))
                 .child(
                     div()
                         .col()
@@ -235,7 +259,7 @@ pub fn welcome_page(
                                 .color(colors.text),
                         )
                         .child(
-                            label(home_relative(&session.path))
+                            label(place)
                                 .size(12.0)
                                 .color(colors.text_placeholder)
                                 .truncate_start(),
@@ -296,4 +320,97 @@ fn home_relative(path: &std::path::Path) -> String {
         }
         _ => text,
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NoticeTone {
+    #[default]
+    Info,
+    Good,
+    Warning,
+}
+
+/// A page in place of the editor, for a project whose files are not on this machine: a status line (such as
+/// the connection to its host), a title, a few lines and buttons.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CenterNotice {
+    pub status: String,
+    pub tone: NoticeTone,
+    pub title: String,
+    pub lines: Vec<String>,
+    /// Button labels; a click comes back as `NOTICE_ACTION_BASE + index`.
+    pub actions: Vec<String>,
+}
+
+/// The top of the page in place of the editor, `width` wide: the status line, the title, a few lines and
+/// buttons. The window draws the project's Services panel under it.
+pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    let (dot, ink) = match notice.tone {
+        NoticeTone::Info => (colors.text_accent, colors.text_muted),
+        NoticeTone::Good => (colors.success, colors.text_muted),
+        NoticeTone::Warning => (colors.warning, colors.text),
+    };
+    let banner = div()
+        .row()
+        .items_center()
+        .gap(10.0)
+        .pt(10.0)
+        .pb(10.0)
+        .pl(14.0)
+        .pr(14.0)
+        .rounded(10.0)
+        .bg(colors.element_background)
+        .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(dot))
+        .child(
+            div().row().flex(1.0).child(
+                label(notice.status.clone())
+                    .size(12.0)
+                    .color(ink)
+                    .truncate(),
+            ),
+        );
+    let mut body = div().col().gap(8.0).px(4.0).child(
+        label(notice.title.clone())
+            .size(16.0)
+            .weight(600)
+            .color(colors.text),
+    );
+    for line in &notice.lines {
+        body = body.child(
+            label(line.clone())
+                .size(12.5)
+                .color(colors.text_muted)
+                .wrap(width - 8.0),
+        );
+    }
+    let mut buttons = div().row().gap(8.0);
+    for (index, text) in notice.actions.iter().enumerate() {
+        let kind = if index == 0 {
+            crate::ButtonKind::Secondary
+        } else {
+            crate::ButtonKind::Ghost
+        };
+        buttons = buttons.child(crate::small_button(
+            NOTICE_ACTION_BASE + index as u64,
+            None,
+            text,
+            None,
+            kind,
+            true,
+            hovered,
+        ));
+    }
+    let mut column = div()
+        .col()
+        .w_px(width)
+        .pt(28.0)
+        .pb(16.0)
+        .gap(16.0)
+        .child(banner)
+        .child(body);
+    if !notice.actions.is_empty() {
+        column = column.child(buttons);
+    }
+    column.into()
 }
