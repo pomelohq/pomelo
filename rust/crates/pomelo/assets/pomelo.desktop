@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pomelo
+Comment=A runnable dev environment for every branch
+Exec=pomelo
+TryExec=pomelo
+Icon=pomelo
+Terminal=false
+Categories=Development;IDE;
+StartupWMClass=pomelo

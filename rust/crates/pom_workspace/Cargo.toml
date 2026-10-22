@@ -9,6 +9,7 @@ description = "Creating and deleting workspaces: worktrees, env, databases, depe
 path = "src/pom_workspace.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 indexmap = { version = "2", features = ["serde"] }
 module_store = { path = "../module_store" }
 pom_config = { path = "../pom_config" }

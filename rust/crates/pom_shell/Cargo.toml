@@ -1,0 +1,13 @@
+[package]
+name = "pom_shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The user's login shell, and how to run a POSIX script through it."
+
+[lib]
+path = "src/pom_shell.rs"
+
+[dependencies]
+libc = "0.2"
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

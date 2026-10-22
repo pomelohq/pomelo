@@ -10,7 +10,7 @@ use std::process::{Command, Stdio};
 /// The environment of `$SHELL -l -i` after `cd`-ing into `directory`. The shell writes `env -0` to its stdin
 /// descriptor, a pipe here, because an interactive shell's startup files may print to stdout.
 pub fn capture_login_env(directory: &Path) -> std::io::Result<HashMap<String, String>> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let shell = pom_shell::Shell::user().program().to_string();
     let (mut reader, writer) = std::io::pipe()?;
     let directory = directory.to_string_lossy().replace('\'', r"'\''");
     let mut command = Command::new(&shell);

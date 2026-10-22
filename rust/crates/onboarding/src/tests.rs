@@ -115,6 +115,7 @@ fn run(
     let machine = pom_doctor::Machine {
         has_tool: &has_tool,
         docker_running: &docker,
+        compose_installed: &|| true,
     };
     let input = VerifyInput {
         config: &project.config,

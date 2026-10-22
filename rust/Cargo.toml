@@ -27,6 +27,8 @@ members = [
     "crates/pom_config",
     "crates/pom_env",
     "crates/pom_paths",
+    "crates/desktop",
+    "crates/pom_shell",
     "crates/pom_sessions",
     "crates/pom_lock",
     "crates/pom_secrets",

@@ -23,7 +23,8 @@ impl AgentWatcher {
         let flag = changed.clone();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if event.is_ok() {
+                // inotify reports reads as access events; the app reading the state must not wake itself.
+                if event.is_ok_and(|event| !event.kind.is_access()) {
                     flag.store(true, Ordering::Release);
                     wake();
                 }
@@ -66,5 +67,12 @@ mod tests {
             assert!(Instant::now() < deadline, "no change seen");
             std::thread::sleep(Duration::from_millis(20));
         }
+        std::thread::sleep(Duration::from_millis(200));
+        watcher.take_changed();
+        for entry in std::fs::read_dir(state.path("agents")).expect("list") {
+            std::fs::read(entry.expect("entry").path()).expect("read");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!watcher.take_changed(), "reading the state is not a change");
     }
 }

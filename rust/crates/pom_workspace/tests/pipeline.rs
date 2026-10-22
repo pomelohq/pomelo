@@ -1,6 +1,5 @@
 //! Create and delete pipelines against real git repos and a stand-in `docker` that records its calls.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -151,7 +150,7 @@ exit 0
         ),
     )
     .expect("script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    seal_executable(&script);
     script
 }
 
@@ -739,4 +738,21 @@ fn switching_a_repo_refuses_uncommitted_changes_and_remembers_the_branch() {
     assert!(listed
         .iter()
         .all(|branch| !branch.author.is_empty() && !branch.relative_time.is_empty()));
+}
+
+/// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+/// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+fn seal_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let staged = path.with_extension("staged");
+    std::fs::rename(path, &staged).expect("stage");
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let copied = std::process::Command::new("cp")
+        .arg("-p")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .expect("cp");
+    assert!(copied.success(), "cp {}", path.display());
+    std::fs::remove_file(&staged).expect("unstage");
 }

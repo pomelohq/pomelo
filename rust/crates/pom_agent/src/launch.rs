@@ -325,7 +325,7 @@ pub fn claude_launch_with(context: &LaunchContext<'_>, options: &LaunchOptions) 
     AgentLaunch {
         holder,
         cwd: context.cwd.to_path_buf(),
-        argv: vec!["zsh".into(), "-c".into(), script],
+        argv: pom_shell::Shell::user().script_argv(&script),
         title: "Claude".into(),
     }
 }
@@ -385,7 +385,7 @@ pub fn fresh_launch(
         AgentLaunch {
             holder,
             cwd: context.cwd.to_path_buf(),
-            argv: vec!["zsh".into(), "-c".into(), script],
+            argv: pom_shell::Shell::user().script_argv(&script),
             title: format!("Claude ({role})"),
         },
         id,
@@ -434,7 +434,7 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
     AgentLaunch {
         holder,
         cwd: context.cwd.to_path_buf(),
-        argv: vec!["zsh".into(), "-c".into(), script],
+        argv: pom_shell::Shell::user().script_argv(&script),
         title: format!("Claude ({role})"),
     }
 }
@@ -619,10 +619,10 @@ mod tests {
         });
         let script = launch.argv[2].replacen("exec 'claude'", "printf '%s\\0'", 1);
         std::fs::create_dir_all(&cwd).expect("cwd");
-        let output = std::process::Command::new("zsh")
-            .args(["-f", "-c", &script])
+        let output = pom_shell::Shell::user()
+            .script_command(&script)
             .output()
-            .expect("zsh");
+            .expect("shell");
         assert!(
             output.status.success(),
             "{}",
@@ -682,10 +682,10 @@ mod tests {
         let (launch, _) = fresh_launch(&context, "reviewer", &options);
         assert_eq!(launch.holder, "ws-myproject-feat-login-claude-reviewer");
         let script = launch.argv[2].replacen("exec 'claude'", "printf '%s\\0'", 1);
-        let output = std::process::Command::new("zsh")
-            .args(["-f", "-c", &script])
+        let output = pom_shell::Shell::user()
+            .script_command(&script)
             .output()
-            .expect("zsh");
+            .expect("shell");
         let args: Vec<String> = String::from_utf8_lossy(&output.stdout)
             .split('\0')
             .map(str::to_string)

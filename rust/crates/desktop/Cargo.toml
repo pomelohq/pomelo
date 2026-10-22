@@ -1,0 +1,12 @@
+[package]
+name = "desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hands files, folders and links to the desktop: open with the default app, reveal in the file manager."
+
+[lib]
+path = "src/desktop.rs"
+
+[dependencies]
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

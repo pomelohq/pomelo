@@ -10,6 +10,8 @@ name = "pomelo"
 path = "src/main.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
+desktop = { path = "../desktop" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 settings = { path = "../settings" }

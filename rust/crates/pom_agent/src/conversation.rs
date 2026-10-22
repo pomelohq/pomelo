@@ -590,7 +590,7 @@ impl Drive {
             id = crate::launch::shell_quote(&view.session_id),
             settings = crate::launch::shell_quote(&merged.to_string()),
         );
-        let argv = vec!["zsh".to_string(), "-c".to_string(), script];
+        let argv = pom_shell::Shell::user().script_argv(&script);
         pom_ptyhost::spawn_holder(
             &self.holders,
             &pom_ptyhost::SpawnRequest {

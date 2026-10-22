@@ -396,8 +396,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp");
         let binary = dir.path().join("pyright-langserver");
         std::fs::write(&binary, "#!/bin/sh\n").expect("write");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        seal_executable(&binary);
         let env = HashMap::from([(
             "PATH".to_string(),
             format!("/nonexistent:{}", dir.path().display()),
@@ -419,11 +418,10 @@ mod tests {
     fn a_downloaded_copy_is_offered_before_checking_for_a_newer_one() {
         let downloads = tempfile::tempdir().expect("temp");
         let bin = tempfile::tempdir().expect("temp");
-        use std::os::unix::fs::PermissionsExt;
         for tool in ["node", "npm"] {
             let path = bin.path().join(tool);
             std::fs::write(&path, "#!/bin/sh\nexit 1\n").expect("write");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+            seal_executable(&path);
         }
         let script = downloads
             .path()
@@ -490,5 +488,22 @@ mod tests {
             "no second download"
         );
         assert!(second[2].starts_with("done Ok"));
+    }
+
+    /// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+    /// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+    fn seal_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = path.with_extension("staged");
+        std::fs::rename(path, &staged).expect("stage");
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let copied = std::process::Command::new("cp")
+            .arg("-p")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .expect("cp");
+        assert!(copied.success(), "cp {}", path.display());
+        std::fs::remove_file(&staged).expect("unstage");
     }
 }

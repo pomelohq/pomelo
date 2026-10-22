@@ -1,5 +1,5 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
-.PHONY: help build run dev prod bundle-dev bundle-prod dmg appcast test fmt fmt-check hakari-check lint check clean gc trim \
+.PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test fmt fmt-check hakari-check lint check clean gc trim \
         patch minor major version
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -40,6 +40,9 @@ bundle-prod:
 
 dmg:
 	scripts/make-dmg.sh
+
+linux-tarball:
+	scripts/bundle-linux.sh prod
 
 appcast:
 	scripts/make-appcast.sh

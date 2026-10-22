@@ -121,7 +121,7 @@ config
   env get <repo[/service]> <KEY>
   env set <repo> KEY=VALUE...
   env unset <repo> KEY...
-  doctor             what keeps the project from running, and how to fix it
+  doctor [--json]    what keeps the project from running, and how to fix it
 
 projects and machine
   init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
@@ -162,7 +162,7 @@ agents (one workspace at a time; --json for stable output)
   agent release <workspace/role>
                      a person takes a session over, and hands it back
   completion bash|zsh|fish
-  version
+  version, --version
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
 A service is `name` or `repo/name`.";
@@ -193,7 +193,7 @@ enum Command {
     Disk,
     Modules(modules::ModulesCommand),
     Completion(String),
-    Doctor,
+    Doctor { json: bool },
     Agent(agent::AgentCommand),
     Version,
     Help,
@@ -233,7 +233,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             Command::Version => writeln!(out, "pom {}", env!("CARGO_PKG_VERSION"))
                 .map_err(|error| error.to_string()),
             Command::Ports => ports(&StateDir::from_env(), out),
-            Command::Doctor => doctor(invocation.config.as_deref(), cwd, out),
+            Command::Doctor { json } => doctor(invocation.config.as_deref(), cwd, json, out),
             Command::Proxy => proxy::serve(&StateDir::from_env(), out),
             Command::Config(ref command) if !command.needs_session() => {
                 find_config(invocation.config.as_deref(), cwd)
@@ -396,6 +396,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "init"
                         | "onboard"
                         | "agent"
+                        | "doctor"
                         | "start"
                         | "status"
                         | "logs"
@@ -416,6 +417,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                 config = Some(PathBuf::from(iter.next().ok_or("-c needs a path")?));
             }
             "-h" | "--help" | "help" => words.insert(0, "help"),
+            "-V" | "--version" => words.insert(0, "version"),
             flag if flag.starts_with('-') => return Err(format!("unknown flag {flag}")),
             word => words.push(word),
         }
@@ -475,7 +477,13 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "disk" => none().map(|_| Command::Disk)?,
         "modules" => Command::Modules(modules::parse(rest)?),
         "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
-        "doctor" => none().map(|_| Command::Doctor)?,
+        "doctor" => Command::Doctor {
+            json: match rest {
+                [] | ["-o" | "--output", "table"] => false,
+                ["--json"] | ["-o" | "--output", "json"] => true,
+                _ => return Err("usage: pom doctor [--json]".into()),
+            },
+        },
         "agent" => {
             let (command, named) = agent::parse(rest)?;
             if workspace.is_none() {
@@ -497,6 +505,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
 pub(crate) fn doctor(
     explicit: Option<&Path>,
     cwd: &Path,
+    json: bool,
     out: &mut dyn Write,
 ) -> Result<(), String> {
     let config_path = find_config(explicit, cwd).unwrap_or_else(|_| cwd.join("pom.yml"));
@@ -513,6 +522,7 @@ pub(crate) fn doctor(
     let path = pom_services::tool_path();
     let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
     let docker_running = || pom_doctor::docker_answers(path);
+    let compose_installed = || pom_doctor::compose_answers(path);
     let findings = pom_doctor::diagnose(
         config.as_ref(),
         &config_path,
@@ -521,11 +531,26 @@ pub(crate) fn doctor(
         &pom_doctor::Machine {
             has_tool: &has_tool,
             docker_running: &docker_running,
+            compose_installed: &compose_installed,
         },
     );
     let write = |out: &mut dyn Write, line: String| {
         writeln!(out, "{line}").map_err(|error| error.to_string())
     };
+    let errors = findings
+        .iter()
+        .filter(|finding| finding.severity == pom_doctor::Severity::Error)
+        .count();
+    if json {
+        let report = serde_json::to_string_pretty(&pom_doctor::report(&findings))
+            .map_err(|error| error.to_string())?;
+        write(out, report)?;
+        return if errors > 0 {
+            Err(format!("{errors} blocking problem(s)"))
+        } else {
+            Ok(())
+        };
+    }
     for finding in &findings {
         let mark = match finding.severity {
             pom_doctor::Severity::Error => "error",
@@ -540,10 +565,6 @@ pub(crate) fn doctor(
             write(out, format!("       fix: {}", finding.fix))?;
         }
     }
-    let errors = findings
-        .iter()
-        .filter(|finding| finding.severity == pom_doctor::Severity::Error)
-        .count();
     if errors > 0 {
         return Err(format!("{errors} blocking problem(s)"));
     }
@@ -645,7 +666,7 @@ impl Session {
             | Command::Disk
             | Command::Modules(_)
             | Command::Completion(_)
-            | Command::Doctor
+            | Command::Doctor { .. }
             | Command::Agent(_)
             | Command::Queue(_)
             | Command::Version
@@ -704,6 +725,12 @@ impl Session {
                     say(err, &format!("could not start {repo}/{service}: {error}"))?;
                 }
             }
+        }
+        // The dev proxy routes only the projects it knows, and one run from the CLI alone was never opened in the app.
+        if let Err(error) =
+            pom_sessions::Projects::register(&self.state, &self.config.session, &self.project.root)
+        {
+            say(err, &format!("dev proxy: register the project: {error}"))?;
         }
         if let Err(error) = proxy::ensure_running(out) {
             say(err, &format!("dev proxy: {error}"))?;

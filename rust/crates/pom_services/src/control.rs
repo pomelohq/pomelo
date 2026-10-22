@@ -796,7 +796,7 @@ pub fn service_command(
 
 /// A login shell so the user's profile (tool versions, exports) applies to the command.
 pub fn login_shell(command: &str) -> Vec<String> {
-    vec!["zsh".into(), "-lc".into(), command.to_string()]
+    pom_shell::Shell::user().login_argv(command)
 }
 
 pub fn shell_quote(text: &str) -> String {

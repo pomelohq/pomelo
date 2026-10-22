@@ -131,8 +131,8 @@ impl Session {
             path = pom_services::shell_quote(pom_services::tool_path()),
             cwd = pom_services::shell_quote(&worktree.to_string_lossy()),
         );
-        let status = std::process::Command::new("zsh")
-            .args(["-lc", &script])
+        let status = pom_shell::Shell::user()
+            .login_command(&script)
             .current_dir(&worktree)
             .status()
             .map_err(|error| format!("run: {error}"))?;

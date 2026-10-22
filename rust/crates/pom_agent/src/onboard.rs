@@ -90,7 +90,7 @@ pub fn onboard_launch_with(context: &LaunchContext<'_>, cli: AgentCli) -> AgentL
             context.branch.replace('/', "_")
         ),
         cwd: context.cwd.to_path_buf(),
-        argv: vec!["zsh".into(), "-c".into(), script],
+        argv: pom_shell::Shell::user().script_argv(&script),
         title: format!("{} (onboarder)", cli.title()),
     }
 }

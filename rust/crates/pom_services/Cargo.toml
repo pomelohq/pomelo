@@ -9,6 +9,7 @@ description = "Running a workspace's services: env files, shared-service slots, 
 path = "src/pom_services.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 pom_config = { path = "../pom_config" }
 pom_env = { path = "../pom_env" }
 pom_layout = { path = "../pom_layout" }

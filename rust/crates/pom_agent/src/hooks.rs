@@ -631,11 +631,7 @@ mod tests {
         assert_eq!(run(&guard), Some(2), "pom missing: the call is blocked");
         let failing = temp.path().join("failing");
         std::fs::write(&failing, "#!/bin/sh\nexit 101\n").expect("script");
-        std::fs::set_permissions(
-            &failing,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .expect("chmod");
+        seal_executable(&failing);
         session_hooks(&state, &failing).expect("hooks");
         assert_eq!(run(&guard), Some(2), "pom crashing: the call is blocked");
         assert!(std::fs::read_to_string(state.path(SESSION_WRAPPER))
@@ -645,5 +641,22 @@ mod tests {
             !temp.path().join("home/.claude/settings.json").exists(),
             "nothing is written to the user's settings"
         );
+    }
+
+    /// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+    /// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+    fn seal_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = path.with_extension("staged");
+        std::fs::rename(path, &staged).expect("stage");
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let copied = std::process::Command::new("cp")
+            .arg("-p")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .expect("cp");
+        assert!(copied.success(), "cp {}", path.display());
+        std::fs::remove_file(&staged).expect("unstage");
     }
 }

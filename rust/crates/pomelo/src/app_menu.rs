@@ -476,7 +476,7 @@ fn replay(keys: &str) {
 }
 
 pub fn open_url(url: &str) {
-    if let Err(error) = std::process::Command::new("open").arg(url).spawn() {
+    if let Err(error) = desktop::open(url) {
         eprintln!("open {url}: {error}");
     }
 }

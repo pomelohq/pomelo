@@ -659,6 +659,8 @@ mod tests {
     use base64::Engine;
     use ed25519_dalek::Signer;
 
+    // The install step copies an app bundle with ditto, which only macOS has.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_update_moves_into_place_and_a_failure_says_why() {
         let dir = std::env::temp_dir().join(format!("pomelo-update-{}", std::process::id()));

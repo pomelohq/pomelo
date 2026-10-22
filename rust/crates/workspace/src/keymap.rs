@@ -435,7 +435,13 @@ impl Action {
             Action::TreeCopyRelativePath => "Files: Copy Relative Path",
             Action::TreeTrash => "Files: Move to Trash",
             Action::TreeDelete => "Files: Delete",
-            Action::TreeRevealInFinder => "Files: Reveal in Finder",
+            Action::TreeRevealInFinder => {
+                if cfg!(target_os = "macos") {
+                    "Files: Reveal in Finder"
+                } else {
+                    "Files: Reveal in File Manager"
+                }
+            }
             Action::TreeCollapse => "Files: Collapse",
             Action::TreeExpand => "Files: Expand",
             Action::TreeCollapseAll => "Files: Collapse All",
@@ -1168,6 +1174,15 @@ impl Keymap {
 mod tests {
     use super::*;
 
+    /// The defaults bind the platform's primary modifier: cmd on macOS, ctrl elsewhere.
+    fn primary(keys: &str) -> String {
+        if cfg!(target_os = "macos") {
+            keys.to_string()
+        } else {
+            keys.replace("cmd", "ctrl")
+        }
+    }
+
     fn stroke(text: &str) -> Keystroke {
         Keystroke::parse(text).unwrap_or_default()
     }
@@ -1192,54 +1207,69 @@ mod tests {
     fn cmd_question_mark_matches_however_macos_reports_it() {
         let keymap = Keymap::defaults();
         let agent = KeyMatch::Action(Action::ToggleAgent);
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-shift-/")), agent);
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-shift-?")), agent);
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-?")), agent);
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(&primary("cmd-shift-/"))),
+            agent
+        );
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(&primary("cmd-shift-?"))),
+            agent
+        );
+        assert_eq!(keymap.match_keys(&[], &stroke(&primary("cmd-?"))), agent);
     }
 
     #[test]
     fn defaults_resolve_and_sequences_wait_for_their_second_key() {
         let keymap = Keymap::defaults();
         assert_eq!(
-            keymap.match_keys(&[], &stroke("cmd-shift-p")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-shift-p"))),
             KeyMatch::Action(Action::CommandPalette)
         );
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-k")), KeyMatch::Pending);
         assert_eq!(
-            keymap.match_keys(&[stroke("cmd-k")], &stroke("cmd-s")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-k"))),
+            KeyMatch::Pending
+        );
+        assert_eq!(
+            keymap.match_keys(&[stroke(&primary("cmd-k"))], &stroke(&primary("cmd-s"))),
             KeyMatch::Action(Action::OpenKeymap)
         );
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-x")), KeyMatch::None);
         assert_eq!(
-            keymap.match_keys(&[], &stroke("cmd-shift-?")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-x"))),
+            KeyMatch::None
+        );
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(&primary("cmd-shift-?"))),
             KeyMatch::Action(Action::ToggleAgent),
             "a shifted symbol matches its plain spelling"
         );
         assert_eq!(
             keymap.binding_for(Action::OpenKeymap).as_deref(),
-            Some("cmd-k cmd-s")
+            Some(primary("cmd-k cmd-s").as_str())
         );
     }
 
     #[test]
     fn the_user_file_rebinds_unbinds_and_reports_mistakes() {
         let mut keymap = Keymap::defaults();
-        let problems = keymap.apply_user(
+        let problems = keymap.apply_user(&primary(
             r#"[
                 {"bindings": {"cmd-shift-g": "git_panel::ToggleFocus", "cmd-b": null,
                               "cmd-y": "nope::Nothing", "cmd-alt-3": ["pane::ActivateItem", 2],
                               "secondary-shift-x": "workspace::NewTerminal"}},
                 {"context": "Editor", "bindings": {"cmd-j": "workspace::NewTerminal"}}
             ]"#,
-        );
+        ));
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(
-            keymap.match_keys(&[], &stroke("cmd-shift-g")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-shift-g"))),
             KeyMatch::Action(Action::FocusGit)
         );
-        assert_eq!(keymap.match_keys(&[], &stroke("cmd-b")), KeyMatch::None);
         assert_eq!(
-            keymap.match_keys(&[], &stroke("cmd-alt-3")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-b"))),
+            KeyMatch::None
+        );
+        assert_eq!(
+            keymap.match_keys(&[], &stroke(&primary("cmd-alt-3"))),
             KeyMatch::Action(Action::ActivateTab(2))
         );
         let secondary = if cfg!(target_os = "macos") {
@@ -1253,7 +1283,7 @@ mod tests {
         );
         assert_eq!(keymap.binding_for(Action::ToggleLeftDock), None);
         assert_eq!(
-            keymap.match_keys(&[], &stroke("cmd-j")),
+            keymap.match_keys(&[], &stroke(&primary("cmd-j"))),
             KeyMatch::Action(Action::ToggleBottomDock),
             "other contexts are not the window's"
         );

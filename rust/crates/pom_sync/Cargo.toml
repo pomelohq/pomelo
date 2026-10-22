@@ -9,6 +9,7 @@ description = "Keeping main fresh and branches pushed: refresh-main on a schedul
 path = "src/pom_sync.rs"
 
 [dependencies]
+pom_shell = { path = "../pom_shell" }
 pom_config = { path = "../pom_config" }
 pom_layout = { path = "../pom_layout" }
 pom_lock = { path = "../pom_lock" }

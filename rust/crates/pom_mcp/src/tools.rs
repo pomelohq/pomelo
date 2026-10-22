@@ -3,7 +3,7 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -446,8 +446,8 @@ fn run_captured(
 
     let (mut reader, writer) = std::io::pipe().map_err(|error| error.to_string())?;
     let errors = writer.try_clone().map_err(|error| error.to_string())?;
-    let mut child = Command::new("zsh")
-        .args(["-lc", command])
+    let mut child = pom_shell::Shell::user()
+        .login_command(command)
         .current_dir(dir)
         .env("PATH", pom_services::tool_path())
         .envs(env)
@@ -1200,6 +1200,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             let path = pom_services::tool_path();
             let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
             let docker_running = || pom_doctor::docker_answers(path);
+            let compose_installed = || pom_doctor::compose_answers(path);
             let root = ws.config_path.parent().unwrap_or(Path::new("."));
             let findings = pom_doctor::diagnose(
                 config.as_ref(),
@@ -1209,6 +1210,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
                 &pom_doctor::Machine {
                     has_tool: &has_tool,
                     docker_running: &docker_running,
+                    compose_installed: &compose_installed,
                 },
             );
             pretty(&pom_doctor::report(&findings))
@@ -1262,7 +1264,6 @@ mod tests {
     /// Passes `pty run ...` through to `holder_entry`, with an empty zsh config dir so the user's profile
     /// never runs inside the test.
     fn wrapper_script(dir: &Path) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let zdotdir = dir.join("zdot");
         std::fs::create_dir_all(&zdotdir).expect("zdotdir");
         let test_binary = std::env::current_exe().expect("test binary");
@@ -1278,7 +1279,7 @@ mod tests {
             ),
         )
         .expect("script");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        seal_executable(&script);
         script
     }
 
@@ -1383,5 +1384,22 @@ mod tests {
         assert_eq!(tail_lines(raw, 2), ["two", "three"]);
         assert_eq!(tail_lines(raw, 10), ["one", "two", "three"]);
         assert!(tail_lines(b"", 5).is_empty());
+    }
+
+    /// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+    /// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+    fn seal_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let staged = path.with_extension("staged");
+        std::fs::rename(path, &staged).expect("stage");
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let copied = std::process::Command::new("cp")
+            .arg("-p")
+            .arg(&staged)
+            .arg(path)
+            .status()
+            .expect("cp");
+        assert!(copied.success(), "cp {}", path.display());
+        std::fs::remove_file(&staged).expect("unstage");
     }
 }

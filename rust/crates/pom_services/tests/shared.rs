@@ -1,6 +1,5 @@
 //! Shared services against a stand-in `docker` that records its arguments and answers `ps`.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use pom_config::Config;
@@ -12,6 +11,8 @@ struct Fixture {
     temp: tempfile::TempDir,
     runner: ServiceRunner,
     config: Config,
+    // Leasing a shared port probes it by binding; tests probing 5432 at once would push each other off it.
+    _one_at_a_time: std::sync::MutexGuard<'static, ()>,
 }
 
 const CONFIG: &str = r#"session: demo
@@ -56,7 +57,11 @@ impl Fixture {
             binary: PathBuf::from("/nonexistent"),
             docker,
         });
+        static PROBING_PORTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
         Fixture {
+            _one_at_a_time: PROBING_PORTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             temp,
             runner,
             config,
@@ -92,7 +97,7 @@ exit 0
         ),
     )
     .expect("script");
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    seal_executable(&script);
     script
 }
 
@@ -427,4 +432,48 @@ fn a_shared_service_is_ready_once_its_published_port_answers() {
         Err(vec!["search".to_string()])
     );
     assert!(fixture.calls().iter().all(|call| !call.contains("exec")));
+}
+
+#[test]
+fn slots_wait_instead_of_piling_up_while_docker_cannot_be_reached() {
+    let fixture = Fixture::new("abc123", "", "");
+    let mut config = fixture.config.clone();
+    if let Some(api) = config.repos.get_mut("api") {
+        api.env
+            .insert("REDIS_DB".into(), "{{shared.redis.slot}}".into());
+    }
+    let state = StateDir::new(fixture.temp.path().join("state"));
+    let runner = ServiceRunner::new(RunnerOptions {
+        project_root: fixture.temp.path().join("project"),
+        session: "demo".into(),
+        state: state.clone(),
+        holders: SocketDir::new(fixture.temp.path().join("s")),
+        binary: PathBuf::from("/nonexistent"),
+        docker: fixture.temp.path().join("no-docker"),
+    });
+    for _ in 0..3 {
+        let _ = runner.allocate_slots(&config, "ws-feat-login");
+    }
+    let slots = SlotStore::new(state, "demo");
+    let slot = slots.get("redis", "ws-feat-login").expect("slot");
+    assert_eq!((slot.instance, slot.slot), (0, 0));
+    assert_eq!(slots.pending("redis").len(), 1, "only the fresh slot waits");
+    assert_eq!(slots.instance_count("redis"), 1);
+}
+
+/// Re-creates the script through `cp`, so no descriptor this process opened to write it can sit in a child another
+/// test thread is forking: on Linux that makes running the script fail with "Text file busy".
+fn seal_executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let staged = path.with_extension("staged");
+    std::fs::rename(path, &staged).expect("stage");
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let copied = std::process::Command::new("cp")
+        .arg("-p")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .expect("cp");
+    assert!(copied.success(), "cp {}", path.display());
+    std::fs::remove_file(&staged).expect("unstage");
 }

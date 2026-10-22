@@ -1147,11 +1147,7 @@ impl Drop for Terminal {
 }
 
 fn login_shell_argv() -> Vec<String> {
-    let shell = std::env::var("SHELL")
-        .ok()
-        .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".to_string());
-    vec![shell, "-l".to_string()]
+    pom_shell::Shell::user().interactive_argv()
 }
 
 #[cfg(test)]

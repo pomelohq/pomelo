@@ -94,6 +94,7 @@ impl PtyProcessInfo {
     }
 }
 
+#[cfg(target_os = "macos")]
 fn terminal_foreground_group(pid: u32) -> i32 {
     if pid == 0 {
         return 0;
@@ -114,6 +115,24 @@ fn terminal_foreground_group(pid: u32) -> i32 {
     } else {
         0
     }
+}
+
+#[cfg(target_os = "linux")]
+fn terminal_foreground_group(pid: u32) -> i32 {
+    if pid == 0 {
+        return 0;
+    }
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| foreground_group_from_stat(&stat))
+        .unwrap_or(0)
+}
+
+/// `tpgid` is the 8th field; the command name before it is parenthesised and may itself hold spaces or `)`.
+#[cfg(any(target_os = "linux", test))]
+fn foreground_group_from_stat(stat: &str) -> Option<i32> {
+    let (_, after_name) = stat.rsplit_once(')')?;
+    after_name.split_whitespace().nth(5)?.parse().ok()
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -174,6 +193,13 @@ mod tests {
         session.kill();
         assert_eq!(terminal_foreground_group(0), 0);
         Ok(())
+    }
+
+    #[test]
+    fn the_foreground_group_comes_after_a_name_with_spaces() {
+        let stat = "4242 (my (odd) cmd) S 1 4242 4242 34816 5150 4194560 0 0";
+        assert_eq!(foreground_group_from_stat(stat), Some(5150));
+        assert_eq!(foreground_group_from_stat("garbage"), None);
     }
 
     #[test]

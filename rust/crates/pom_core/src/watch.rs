@@ -46,6 +46,10 @@ impl ConfigWatcher {
                 let Ok(event) = event else {
                     return;
                 };
+                // inotify reports reads as access events; the reload's own read of pom.yml must not loop it.
+                if event.kind.is_access() {
+                    return;
+                }
                 for change in event.paths.iter().filter_map(&classify) {
                     if let Err(error) = sender.send(change) {
                         eprintln!("config watcher stopped: {error}");
@@ -140,6 +144,12 @@ mod tests {
         std::fs::write(root.join("notes.txt"), "x")?;
         std::thread::sleep(Duration::from_millis(400));
         assert!(!watcher.take_changed());
+
+        std::fs::read_to_string(root.join("pom.yml"))?;
+        std::fs::read_dir(&root)?.for_each(drop);
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!watcher.take_changed(), "reading the config is not an edit");
+        assert!(!watcher.take_workspaces_changed());
 
         for index in 0..5 {
             std::fs::write(root.join("pom.yml"), format!("session: a{index}\n"))?;

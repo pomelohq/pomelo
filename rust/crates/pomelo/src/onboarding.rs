@@ -643,9 +643,11 @@ impl App {
             let path = pom_services::tool_path();
             let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
             let docker_running = || pom_doctor::docker_answers(path);
+            let compose_installed = || pom_doctor::compose_answers(path);
             let machine = pom_doctor::Machine {
                 has_tool: &has_tool,
                 docker_running: &docker_running,
+                compose_installed: &compose_installed,
             };
             let input = onboarding::VerifyInput {
                 config: &config,
@@ -960,6 +962,20 @@ pub(crate) struct MachineChecks {
     checked: bool,
 }
 
+/// Opens Docker Desktop or OrbStack on macOS; on Linux starts the system's Docker service, which asks for
+/// the password through the desktop's authentication dialog.
+fn start_docker() -> bool {
+    let succeeds =
+        |command: &mut std::process::Command| command.status().is_ok_and(|status| status.success());
+    if cfg!(target_os = "macos") {
+        ["Docker", "OrbStack"]
+            .iter()
+            .any(|app| succeeds(std::process::Command::new("open").args(["-a", app])))
+    } else {
+        succeeds(std::process::Command::new("systemctl").args(["start", "docker.service"]))
+    }
+}
+
 fn docker_version(path: &str) -> Option<String> {
     let output = std::process::Command::new("docker")
         .args(["version", "--format", "{{.Server.Version}}"])
@@ -968,6 +984,15 @@ fn docker_version(path: &str) -> Option<String> {
         .ok()?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (output.status.success() && !text.is_empty()).then_some(text)
+}
+
+/// Shared services run as a compose project; Linux packages of Docker often leave the plugin out.
+fn compose_installed(path: &str) -> bool {
+    std::process::Command::new("docker")
+        .args(["compose", "version"])
+        .env("PATH", path)
+        .output()
+        .is_ok_and(|output| output.status.success())
 }
 
 fn git_version(path: &str) -> Option<String> {
@@ -989,6 +1014,7 @@ fn git_version(path: &str) -> Option<String> {
 fn machine_checks() -> Vec<workspace::MachineCheck> {
     let path = pom_services::tool_path();
     let docker = pom_doctor::docker_answers(path);
+    let compose = docker && compose_installed(path);
     let git = git_version(path);
     let installed: Vec<&str> = agents()
         .into_iter()
@@ -998,11 +1024,16 @@ fn machine_checks() -> Vec<workspace::MachineCheck> {
     vec![
         workspace::MachineCheck {
             name: "Docker".into(),
-            ok: docker,
+            ok: docker && compose,
             detail: if docker {
-                match docker_version(path) {
+                let running = match docker_version(path) {
                     Some(version) => format!("Running ({version})"),
                     None => "Running".into(),
+                };
+                if compose {
+                    running
+                } else {
+                    format!("{running}, but Docker Compose is missing - install its plugin to start shared services")
                 }
             } else {
                 "Docker is not running - shared services cannot start".into()
@@ -1072,21 +1103,15 @@ impl App {
         if index != 0 {
             return;
         }
-        let started = ["Docker", "OrbStack"].iter().any(|app| {
-            std::process::Command::new("open")
-                .args(["-a", app])
-                .status()
-                .is_ok_and(|status| status.success())
-        });
-        if !started {
+        if !start_docker() {
+            let hint = if cfg!(target_os = "macos") {
+                "Install Docker Desktop or OrbStack to run shared services"
+            } else {
+                "Start Docker with `sudo systemctl start docker`, or install Docker Engine to run shared services"
+            };
             let windows: Vec<WindowId> = self.mains.keys().copied().collect();
             for id in windows {
-                self.with_workspace_view(id, |view, _| {
-                    view.show_toast(
-                        "Install Docker Desktop or OrbStack to run shared services",
-                        None,
-                    )
-                });
+                self.with_workspace_view(id, |view, _| view.show_toast(hint, None));
             }
             return;
         }
