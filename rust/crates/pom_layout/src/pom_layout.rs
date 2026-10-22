@@ -204,6 +204,47 @@ pub struct WorkspaceState {
     /// Repo -> the branch it uses when that is not the workspace branch.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub repo_branches: IndexMap<String, String>,
+    /// Whether its services run; a file without it is running.
+    #[serde(default, skip_serializing_if = "RunState::is_running")]
+    pub state: RunState,
+    /// What ran when it went to sleep, so waking starts the same again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asleep: Option<SleepRecord>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunState {
+    #[default]
+    Running,
+    Sleeping,
+    /// Waiting for a free slot under `max_running`.
+    Queued,
+}
+
+impl RunState {
+    pub fn is_running(&self) -> bool {
+        *self == RunState::Running
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            RunState::Running => "running",
+            RunState::Sleeping => "sleeping",
+            RunState::Queued => "queued",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SleepRecord {
+    pub since_ms: u64,
+    /// `repo/service`, or `/service` for a workspace-level one.
+    #[serde(default)]
+    pub services: Vec<String>,
+    /// Agent roles whose sessions were open.
+    #[serde(default)]
+    pub agents: Vec<String>,
 }
 
 impl WorkspaceState {
@@ -279,6 +320,37 @@ mod tests {
 
     fn owned(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn run_state_round_trips_and_an_old_file_reads_as_running() {
+        let temp = tempfile::tempdir().expect("temp");
+        std::fs::write(
+            temp.path().join(WORKSPACE_STATE_FILE),
+            r#"{"display_name": "Login"}"#,
+        )
+        .expect("old file");
+        let old = WorkspaceState::load(temp.path());
+        assert_eq!(
+            (old.state, old.display_name.as_str()),
+            (RunState::Running, "Login")
+        );
+        let asleep = WorkspaceState {
+            state: RunState::Sleeping,
+            asleep: Some(SleepRecord {
+                since_ms: 5,
+                services: vec!["api/web".into()],
+                agents: vec!["claude".into()],
+            }),
+            ..old
+        };
+        asleep.save(temp.path()).expect("save");
+        let text = std::fs::read_to_string(temp.path().join(WORKSPACE_STATE_FILE)).expect("read");
+        assert!(text.contains(r#""state": "sleeping""#), "{text}");
+        assert_eq!(WorkspaceState::load(temp.path()), asleep);
+        WorkspaceState::default().save(temp.path()).expect("save");
+        let text = std::fs::read_to_string(temp.path().join(WORKSPACE_STATE_FILE)).expect("read");
+        assert!(!text.contains("state"), "running is left out: {text}");
     }
 
     #[test]

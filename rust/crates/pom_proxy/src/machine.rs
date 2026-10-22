@@ -9,10 +9,15 @@ use pom_ptyhost::SocketDir;
 
 use crate::routing::{Machine, ProjectRoute};
 
+/// Wakes a sleeping workspace (`project root`, `branch`); called on its own thread.
+pub type Waker = std::sync::Arc<dyn Fn(&Path, &str) + Send + Sync>;
+
 /// The real lease files, holders and processes.
 pub struct SystemMachine {
     pub state: StateDir,
     pub holders: SocketDir,
+    /// What wakes a sleeping workspace on a request; without one the request only gets the waiting page.
+    pub waker: Option<Waker>,
 }
 
 impl Machine for SystemMachine {
@@ -48,6 +53,19 @@ impl Machine for SystemMachine {
 
     fn service_envs(&self, project_root: &Path, branch: &str) -> WorkspaceState {
         WorkspaceState::load(&pom_layout::workspace_folder(project_root, branch))
+    }
+
+    fn wake(&self, project_root: &Path, branch: &str) {
+        let Some(waker) = self.waker.clone() else {
+            return;
+        };
+        let (root, branch) = (project_root.to_path_buf(), branch.to_string());
+        let spawned = std::thread::Builder::new()
+            .name("dev-proxy-wake".into())
+            .spawn(move || waker(&root, &branch));
+        if let Err(error) = spawned {
+            eprintln!("dev proxy: wake {}: {error}", project_root.display());
+        }
     }
 }
 

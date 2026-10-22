@@ -91,7 +91,14 @@ workspaces
                      delete the workspaces whose pull requests (in every repo that has one) are
                      merged, or closed with --closed; asks for each on a terminal, else needs
                      --yes; a workspace with uncommitted or unpushed work is kept unless --force
-  ws ls [--json]     workspaces, their repos and running services (ws list works too)
+  ws ls [--json]     workspaces, their repos, running services, and whether each is sleeping or
+                     queued (ws list works too)
+  ws sleep <branch> [--force] [--json]
+                     stop its services and agent sessions, keeping its databases, worktrees and
+                     ports; refused while an agent is working or waits for an approval, unless --force
+  ws wake <branch> [--json]
+                     start what ran when it went to sleep (the dev proxy also wakes a sleeping
+                     workspace on a request)
   get workspaces [-o json]    each workspace's readiness and phase
   describe workspace <branch> [-o json]
                      its services, ports and repos missing from it

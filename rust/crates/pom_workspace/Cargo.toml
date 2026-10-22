@@ -18,10 +18,10 @@ pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_services = { path = "../pom_services" }
 pom_agent = { path = "../pom_agent" }
+pom_ptyhost = { path = "../pom_ptyhost" }
 serde.workspace = true
 serde_json.workspace = true
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
-pom_ptyhost = { path = "../pom_ptyhost" }
 tempfile = "3"

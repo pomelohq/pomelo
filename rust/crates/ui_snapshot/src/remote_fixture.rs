@@ -156,6 +156,7 @@ fn project_info(snapshot: &pom_remote::Snapshot) -> workspace::ProjectInfo {
         .unwrap_or_default();
     let count = list.len();
     workspace::ProjectInfo {
+        states: Vec::new(),
         name: "myproject".into(),
         branch: "main".into(),
         config_path: "/home/dev/pom/myproject/pom.yml".into(),

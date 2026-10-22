@@ -53,11 +53,13 @@ pub fn workspace_list(
                     .to_string(),
                     stage: failed.failed_stage + 1,
                 });
+            let workspace_state = WorkspaceState::load(&workspace.path);
             WorkspaceSummary {
                 branch: workspace.branch.clone(),
                 is_main: workspace.is_main,
                 path: workspace.path.clone(),
-                name: WorkspaceState::load(&workspace.path).display_name,
+                state: workspace_state.state.name().to_string(),
+                name: workspace_state.display_name,
                 repos: workspace
                     .repos
                     .iter()

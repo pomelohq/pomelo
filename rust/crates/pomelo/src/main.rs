@@ -203,6 +203,18 @@ fn project_info(
             .iter()
             .map(|workspace| pom_layout::WorkspaceState::load(&workspace.path).display_name)
             .collect(),
+        states: project
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                let state = pom_layout::WorkspaceState::load(&workspace.path).state;
+                if state.is_running() {
+                    String::new()
+                } else {
+                    state.name().to_string()
+                }
+            })
+            .collect(),
         running,
         tickets: project
             .workspaces
@@ -2245,9 +2257,17 @@ impl App {
             .collect();
         let serve = self.desired_serve();
         if self.dev_proxy.is_none() && !projects.is_empty() && (serve.proxy || serve.webhook) {
+            let (state, holders) = (
+                pom_paths::StateDir::from_env(),
+                pom_ptyhost::SocketDir::from_env(),
+            );
+            let waker = std::env::current_exe()
+                .ok()
+                .map(|binary| pom_workspace::waker(state.clone(), holders.clone(), binary));
             let machine = pom_proxy::SystemMachine {
-                state: pom_paths::StateDir::from_env(),
-                holders: pom_ptyhost::SocketDir::from_env(),
+                state,
+                holders,
+                waker,
             };
             match pom_proxy::DevProxy::start_on(Box::new(machine), pom_env::dev_network(), serve) {
                 Ok(proxy) => self.dev_proxy = Some(proxy),

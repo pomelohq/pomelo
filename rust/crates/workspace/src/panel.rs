@@ -434,6 +434,8 @@ pub struct WorkspaceRow {
     pub ticket_category: String,
     /// How many of its services run.
     pub running: usize,
+    /// `sleeping` or `queued`; empty while it runs.
+    pub state: String,
     pub pr: Option<crate::PrSummary>,
     /// Repos of the config main has no clone of (only main has any).
     pub missing: Vec<String>,
@@ -1277,6 +1279,11 @@ fn workspace_row(
             None if shown_pr(row).and_then(|pr| pr.trouble) == Some(crate::PrTrouble::Pending) => {
                 Some(headline("Checks running".into(), colors.warning))
             }
+            None if row.state == "sleeping" => Some(headline("Asleep".into(), colors.text_muted)),
+            None if row.state == "queued" => Some(headline(
+                "Queued - starts when a slot frees".into(),
+                colors.text_muted,
+            )),
             None => None,
         },
     };
@@ -2031,6 +2038,7 @@ mod tests {
             ticket: String::new(),
             ticket_category: String::new(),
             running: 0,
+            state: String::new(),
             pr: None,
             missing: Vec::new(),
         }

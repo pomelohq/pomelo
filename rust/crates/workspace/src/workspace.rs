@@ -231,6 +231,8 @@ pub struct ProjectInfo {
     pub labels: Vec<String>,
     /// Running services by workspace (same order as `workspaces`).
     pub running: Vec<usize>,
+    /// `sleeping` or `queued` by workspace (same order; empty while it runs).
+    pub states: Vec<String>,
     /// Jira ticket status by workspace (same order; empty when none).
     pub tickets: Vec<String>,
     /// Each ticket status's Jira category (`new`, `indeterminate`, `done`; same order).
@@ -490,6 +492,9 @@ pub enum OpAction {
 pub enum RowAction {
     Rename,
     StopServices,
+    /// Stop its services and agents, keeping its databases, worktrees and ports.
+    Sleep,
+    Wake,
     /// Confirm a delete; the app first looks up which repos have commits on no remote.
     AskDelete,
     Delete,
@@ -636,6 +641,8 @@ pub const MENU_WS_OPEN_TICKET: u64 = 945;
 pub const MENU_WS_ADD_MISSING: u64 = 946;
 pub const MENU_WS_ADD_REPOS: u64 = 947;
 pub const MENU_WS_OPEN_EDITOR: u64 = 948;
+pub const MENU_WS_SLEEP: u64 = 949;
+pub const MENU_WS_WAKE: u64 = 939;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiagnosticSummary {
     pub errors: usize,

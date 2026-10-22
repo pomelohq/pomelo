@@ -40,6 +40,13 @@ fn project_info(remote: &RemoteWindow, snapshot: &pom_remote::Snapshot) -> works
         .map(|workspace| workspace.branch.clone())
         .unwrap_or_default();
     workspace::ProjectInfo {
+        states: workspaces
+            .iter()
+            .map(|ws| match ws.state.as_str() {
+                "sleeping" | "queued" => ws.state.clone(),
+                _ => String::new(),
+            })
+            .collect(),
         name: remote.project.clone(),
         branch: main,
         config_path: std::path::PathBuf::from(&remote.config),

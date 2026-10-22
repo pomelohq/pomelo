@@ -16,10 +16,24 @@ use crate::{say, Session};
 pub(crate) enum WorkspaceCommand {
     Create(CreateRequest),
     Delete(DeleteRequest),
-    Rename { branch: String, name: String },
-    List { json: bool },
+    Rename {
+        branch: String,
+        name: String,
+    },
+    List {
+        json: bool,
+    },
     Gc(crate::gc::GcArgs),
     PrepareMain(PrepareRequest),
+    Sleep {
+        branch: String,
+        force: bool,
+        json: bool,
+    },
+    Wake {
+        branch: String,
+        json: bool,
+    },
 }
 
 /// Parses what follows `ws` (or `prepare-main` when `prepare` is set).
@@ -85,7 +99,7 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
     }
     let (action, rest) = positional
         .split_first()
-        .ok_or("ws needs create, delete, rename, list or gc")?;
+        .ok_or("ws needs create, delete, rename, list, gc, sleep or wake")?;
     match (*action, rest) {
         ("create", [branch]) => {
             allow(&["repos", "env", "no-seed", "fresh-db", "from-stage"])?;
@@ -150,6 +164,22 @@ pub(crate) fn parse(words: &[&str], prepare: bool) -> Result<WorkspaceCommand, S
                 force: has("force"),
             }))
         }
+        ("sleep", [branch]) => {
+            allow(&["force", "json"])?;
+            Ok(WorkspaceCommand::Sleep {
+                branch: branch.to_string(),
+                force: has("force"),
+                json: has("json"),
+            })
+        }
+        ("wake", [branch]) => {
+            allow(&["json"])?;
+            Ok(WorkspaceCommand::Wake {
+                branch: branch.to_string(),
+                json: has("json"),
+            })
+        }
+        ("sleep" | "wake", _) => Err(format!("ws {action} takes one branch")),
         ("gc", _) => Err("ws gc takes no arguments".into()),
         ("create" | "delete", _) => Err(format!("ws {action} takes one branch")),
         ("rename", _) => Err("ws rename takes a branch and an optional name".into()),
@@ -172,6 +202,12 @@ impl Session {
             WorkspaceCommand::List { json: true } => self.list_workspaces_json(out),
             WorkspaceCommand::Gc(args) => self.gc(args, out),
             WorkspaceCommand::PrepareMain(request) => self.prepare_main(request, out),
+            WorkspaceCommand::Sleep {
+                branch,
+                force,
+                json,
+            } => self.sleep_workspace(branch, *force, *json, out),
+            WorkspaceCommand::Wake { branch, json } => self.wake_workspace(branch, *json, out),
         }
     }
 
@@ -275,9 +311,12 @@ impl Session {
                 .map(|repo| repo.name.as_str())
                 .collect();
             let mut line = format!("{:width$}  {}", workspace.branch, repos.join(", "));
-            let name = WorkspaceState::load(&workspace.path).display_name;
-            if !name.is_empty() {
-                line.push_str(&format!("  \"{name}\""));
+            let state = WorkspaceState::load(&workspace.path);
+            if !state.display_name.is_empty() {
+                line.push_str(&format!("  \"{}\"", state.display_name));
+            }
+            if !state.state.is_running() {
+                line.push_str(&format!("  {}", state.state.name()));
             }
             let running = self.running_services(&workspace.branch, workspace.is_main);
             if running > 0 {
@@ -311,6 +350,88 @@ impl Session {
             out,
             &serde_json::to_string(&list).map_err(|error| error.to_string())?,
         )
+    }
+
+    fn find_workspace(&self, branch: &str) -> Result<&pom_layout::Workspace, String> {
+        self.project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == branch)
+            .ok_or_else(|| format!("no workspace {branch}"))
+    }
+
+    fn sleep_workspace(
+        &self,
+        branch: &str,
+        force: bool,
+        json: bool,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        let workspace = self.find_workspace(branch)?;
+        let context = self.context();
+        let agents = pom_workspace::DriveAgents::new(&context);
+        let report = pom_workspace::sleep(&context, &agents, workspace, force)
+            .map_err(|error| error.to_string())?;
+        if json {
+            let document = serde_json::json!({
+                "schema": "pom.ws_sleep/v1",
+                "workspace": branch,
+                "state": "sleeping",
+                "already": report.already,
+                "stopped_services": report.services,
+                "stopped_agents": report.agents,
+            });
+            return say(out, &document.to_string());
+        }
+        if report.already {
+            return say(out, &format!("{branch} is already asleep"));
+        }
+        say(
+            out,
+            &format!(
+                "{branch} is asleep: stopped {} service(s) and {} agent session(s); its databases, worktrees and ports are kept (`pom ws wake {branch}`)",
+                report.services.len(),
+                report.agents.len()
+            ),
+        )
+    }
+
+    fn wake_workspace(&self, branch: &str, json: bool, out: &mut dyn Write) -> Result<(), String> {
+        let workspace = self.find_workspace(branch)?;
+        let context = self.context();
+        let agents = pom_workspace::DriveAgents::new(&context);
+        let report = pom_workspace::wake(&context, &agents, workspace)?;
+        if json {
+            let document = serde_json::json!({
+                "schema": "pom.ws_wake/v1",
+                "workspace": branch,
+                "state": "running",
+                "already": report.already,
+                "started_services": report.started,
+                "started_agents": report.agents,
+                "failed": report.failed,
+            });
+            say(out, &document.to_string())?;
+        } else if report.already {
+            say(out, &format!("{branch} is not asleep"))?;
+        } else {
+            say(
+                out,
+                &format!(
+                    "{branch} is awake: started {} service(s) and {} agent session(s)",
+                    report.started.len(),
+                    report.agents.len()
+                ),
+            )?;
+            for failure in &report.failed {
+                say(out, &format!("  could not start {failure}"))?;
+            }
+        }
+        if report.failed.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("{} could not start", report.failed.len()))
+        }
     }
 
     fn running_services(&self, branch: &str, is_main: bool) -> usize {
@@ -463,6 +584,23 @@ mod tests {
             }))
         );
         assert!(parsed("gc feat").is_err());
+        assert_eq!(
+            parsed("sleep feat-x --force --json"),
+            Ok(WorkspaceCommand::Sleep {
+                branch: "feat-x".into(),
+                force: true,
+                json: true,
+            })
+        );
+        assert_eq!(
+            parsed("wake feat-x"),
+            Ok(WorkspaceCommand::Wake {
+                branch: "feat-x".into(),
+                json: false,
+            })
+        );
+        assert!(parsed("wake").is_err());
+        assert!(parsed("wake a --force").is_err());
         assert_eq!(
             parse(&["--no-seed"], true),
             Ok(WorkspaceCommand::PrepareMain(PrepareRequest {
