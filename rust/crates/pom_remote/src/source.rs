@@ -99,6 +99,15 @@ pub enum ServiceAction {
 }
 
 impl ServiceAction {
+    pub fn parse(verb: &str) -> Option<ServiceAction> {
+        match verb {
+            "start" => Some(ServiceAction::Start),
+            "stop" => Some(ServiceAction::Stop),
+            "restart" => Some(ServiceAction::Restart),
+            _ => None,
+        }
+    }
+
     pub fn verb(self) -> &'static str {
         match self {
             ServiceAction::Start => "start",
@@ -126,6 +135,30 @@ impl std::fmt::Display for SourceError {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Via {
+    Server,
+    #[default]
+    Ssh,
+}
+
+impl Via {
+    pub fn name(self) -> &'static str {
+        match self {
+            Via::Server => "server",
+            Via::Ssh => "ssh",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TransportInfo {
+    pub via: Via,
+    pub fallback_reason: Option<String>,
+    pub remote_version: Option<String>,
+    pub version_mismatch: bool,
+}
+
 /// A project's state and controls, read on whichever machine runs it.
 pub trait ProjectSource: Send + Sync {
     /// Where it runs, for the connection banner ("dev (dev@dev.example.net)").
@@ -139,6 +172,9 @@ pub trait ProjectSource: Send + Sync {
     /// Starts, stops or restarts `target` (a service, a repo or a group); returns what pom said.
     fn act(&self, branch: &str, action: ServiceAction, target: &str)
         -> Result<String, SourceError>;
+    fn transport(&self) -> Option<TransportInfo> {
+        None
+    }
 }
 
 /// The last turn out of `agent read --json`, or the JSON of the turns read locally.
@@ -170,9 +206,9 @@ pub struct RemoteSource {
     ssh: Ssh,
 }
 
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// `start` waits for nothing but can spend a while spawning holders and shared containers.
-const ACT_TIMEOUT: Duration = Duration::from_secs(180);
+pub(crate) const ACT_TIMEOUT: Duration = Duration::from_secs(180);
 
 impl RemoteSource {
     pub fn new(host: Host, config: String, ssh: Ssh) -> RemoteSource {
@@ -293,6 +329,10 @@ impl ProjectSource for RemoteSource {
         target: &str,
     ) -> Result<String, SourceError> {
         self.run(&["-w", branch, action.verb(), target], ACT_TIMEOUT)
+    }
+
+    fn transport(&self) -> Option<TransportInfo> {
+        Some(TransportInfo::default())
     }
 }
 

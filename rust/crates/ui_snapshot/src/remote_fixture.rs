@@ -183,6 +183,7 @@ fn hosts() -> Vec<Host> {
         name: name.to_string(),
         url: HostUrl::parse(url).unwrap_or_else(|error| panic!("{url}: {error}")),
         pom_path: None,
+        transport: None,
     })
     .collect()
 }

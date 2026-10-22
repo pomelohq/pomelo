@@ -214,6 +214,31 @@ jobs:
               scripts/linux-cli-smoke.sh
             '
 
+  # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
+  # lock, idle and socket-removed exits, and the app's reads through `pom server proxy` behind a fake ssh.
+  pom-server:
+    name: pom server (Linux)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+          shared-key: linux-cli
+          save-if: false
+      - run: cargo test -p pom_server -p pom_rpc
+      - run: cargo test -p pom_remote server
+      - run: cargo test -p pom_cli --test remote server
+
   # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
   postgres:
     name: Real Postgres tests (Linux)
@@ -257,16 +282,17 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust, rust-linux, cli-smoke, postgres, actionlint]
+    needs: [changes, rust, rust-linux, cli-smoke, pom-server, postgres, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} pom-server=${{ needs.pom-server.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
           case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
           case "${{ needs.rust-linux.result }}" in success|skipped) ;; *) echo "rust on Linux failed"; exit 1 ;; esac
           case "${{ needs.cli-smoke.result }}" in success|skipped) ;; *) echo "pom CLI smoke failed"; exit 1 ;; esac
+          case "${{ needs.pom-server.result }}" in success|skipped) ;; *) echo "pom server tests failed"; exit 1 ;; esac
           case "${{ needs.postgres.result }}" in success|skipped) ;; *) echo "postgres tests failed"; exit 1 ;; esac
           case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
           echo "CI gate passed"

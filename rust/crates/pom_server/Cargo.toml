@@ -1,0 +1,25 @@
+[package]
+name = "pom_server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "`pom server`: answers a remote app's requests over a private Unix socket, reached through ssh."
+
+[lib]
+path = "src/pom_server.rs"
+
+[dependencies]
+libc = "0.2"
+pom_agent = { path = "../pom_agent" }
+pom_paths = { path = "../pom_paths" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_remote = { path = "../pom_remote" }
+pom_rpc = { path = "../pom_rpc" }
+pom_workspace = { path = "../pom_workspace" }
+serde.workspace = true
+serde_json.workspace = true
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
+
+[dev-dependencies]
+pom_sessions = { path = "../pom_sessions" }
+tempfile = "3"

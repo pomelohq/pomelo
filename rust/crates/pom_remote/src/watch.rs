@@ -9,7 +9,8 @@ use std::time::{Duration, Instant, SystemTime};
 use pom_agent::SessionView;
 
 use crate::source::{
-    AgentTurn, ProjectSource, ServiceAction, SourceError, StatusReport, WorkspaceList,
+    AgentTurn, ProjectSource, ServiceAction, SourceError, StatusReport, TransportInfo,
+    WorkspaceList,
 };
 
 pub const POLL_EVERY: Duration = Duration::from_millis(2500);
@@ -32,6 +33,7 @@ pub struct Snapshot {
     pub connection: Connection,
     /// When the machine last answered.
     pub answered_at: Option<SystemTime>,
+    pub transport: Option<TransportInfo>,
     pub branch: String,
     pub workspaces: Option<WorkspaceList>,
     pub status: Option<StatusReport>,
@@ -283,7 +285,9 @@ fn run(shared: &Shared, source: &dyn ProjectSource, waker: &(dyn Fn() + Send + S
         match job {
             Job::Act(action, target, branch) => {
                 let result = source.act(&branch, action, &target);
+                let transport = source.transport();
                 shared.update(waker, |snapshot| {
+                    snapshot.transport = transport;
                     if let Some(at) = snapshot.busy.iter().position(|busy| *busy == target) {
                         snapshot.busy.remove(at);
                     }
@@ -353,7 +357,9 @@ fn look(
     {
         note(error);
     }
+    let transport = source.transport();
     shared.update(waker, |snapshot| {
+        snapshot.transport = transport;
         if snapshot.branch != branch {
             return;
         }

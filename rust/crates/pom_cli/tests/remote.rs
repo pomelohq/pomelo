@@ -128,6 +128,11 @@ repos:
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        match self.command(&["server", "stop"]).output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => eprintln!("pom server stop: {}", text(&output)),
+            Err(error) => eprintln!("pom server stop: {error}"),
+        }
         let dir = pom_ptyhost::SocketDir::new(self.temp.path().join("s"));
         let names: Vec<String> = dir.holders().into_iter().map(|(name, _)| name).collect();
         dir.kill_holders_now(&names);
@@ -430,6 +435,7 @@ impl Fixture {
                 self.log().to_string_lossy().into_owned(),
             ),
             ("XDG_STATE_HOME".into(), path("state")),
+            ("XDG_RUNTIME_DIR".into(), path("run")),
             ("POMELO_CONFIG_DIR".into(), path("config")),
             ("POM_NO_PROXY".into(), "1".into()),
             ("POM_WEB_PORT".into(), "1".into()),
@@ -542,6 +548,7 @@ fn the_connect_flow_lists_the_remote_projects_and_reports_an_unreachable_host() 
         name: "lab".into(),
         url: pom_remote::HostUrl::parse("ssh://down.example.net").expect("url"),
         pom_path: None,
+        transport: None,
     };
     match pom_remote::remote_projects(&ssh, &down) {
         Err(pom_remote::SourceError::Unreachable(reason)) => {
@@ -549,4 +556,242 @@ fn the_connect_flow_lists_the_remote_projects_and_reports_an_unreachable_host() 
         }
         other => panic!("{other:?}"),
     }
+}
+
+impl Fixture {
+    fn register_project(&self) {
+        let state = StateDir::new(self.temp.path().join("state/pom"));
+        let mut sessions = pom_sessions::Sessions::load(&state);
+        sessions.touch("demo", &self.root().to_string_lossy(), 10);
+        sessions.save(&state).expect("sessions");
+    }
+
+    fn server_source(&self, host: &str) -> pom_remote::ServerSource {
+        let ssh = pom_remote::Ssh::custom(self.temp.path().join("bin/ssh"), None, self.envs());
+        let host = pom_remote::Hosts::load(&self.temp.path().join("config/hosts.json"))
+            .and_then(|hosts| hosts.get(host))
+            .expect("host");
+        pom_remote::ServerSource::new(host, self.config(), ssh)
+    }
+}
+
+#[test]
+fn the_server_source_reads_what_the_local_one_does() {
+    use pom_remote::{ProjectSource, ServiceAction, Via};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let server = fixture.server_source("dev");
+    let local = fixture.local_source();
+    assert_eq!(server.transport(), None);
+
+    assert_eq!(
+        server.workspaces().expect("server"),
+        local.workspaces().expect("local")
+    );
+    let transport = server.transport().expect("transport");
+    assert_eq!(transport.via, Via::Server);
+    assert_eq!(
+        transport.remote_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    assert!(!transport.version_mismatch);
+    let calls = fixture.ssh_calls();
+    let call = calls.last().expect("an ssh call");
+    assert!(call.iter().any(|arg| arg == "IPQoS=lowdelay"), "{call:?}");
+    assert!(call.iter().any(|arg| arg == "-T"), "{call:?}");
+    assert!(
+        call.last()
+            .is_some_and(|line| line.ends_with(" server proxy")),
+        "{call:?}"
+    );
+
+    let started = server
+        .act("feat", ServiceAction::Start, "web")
+        .expect("start through the server");
+    assert!(started.contains("started api/web"), "{started}");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let logs = server.logs("feat", "api/web").expect("logs");
+        if logs.contains("web-banner-") {
+            assert_eq!(logs, local.logs("feat", "api/web").expect("local logs"));
+            break;
+        }
+        assert!(Instant::now() < deadline, "no banner in {logs:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let ready = Instant::now() + Duration::from_secs(15);
+    while !server.status("feat").expect("status").services[0].ready {
+        assert!(Instant::now() < ready, "web never became ready");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        server.status("feat").expect("status"),
+        local.status("feat").expect("local status")
+    );
+    assert_eq!(
+        server.agents("feat").expect("agents"),
+        local.agents("feat").expect("local agents")
+    );
+    match server.agent_turn("feat", "dev") {
+        Err(pom_remote::SourceError::Failed(message)) => {
+            assert!(message.contains("no agent feat/dev"), "{message}")
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let status = json(&fixture.pom(&["server", "status", "--json"]));
+    assert_eq!(status["schema"], "pom.server/v1");
+    assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
+    assert!(status["connections"]
+        .as_u64()
+        .is_some_and(|count| count >= 2));
+
+    server
+        .act("feat", ServiceAction::Stop, "web")
+        .expect("stop through the server");
+    assert!(!server.status("feat").expect("status").services[0].up);
+    match server.status("nope") {
+        Err(pom_remote::SourceError::Failed(message)) => {
+            assert!(message.contains("no workspace nope"), "{message}")
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        fixture.ssh_calls().len(),
+        calls.len(),
+        "one ssh session for every read"
+    );
+}
+
+#[test]
+fn a_dropped_server_session_is_reopened_from_scratch() {
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let server = fixture.server_source("dev");
+    let first = server.workspaces().expect("first");
+    let stopped = fixture.pom(&["server", "stop"]);
+    assert!(stopped.status.success(), "{}", text(&stopped));
+    assert_eq!(server.workspaces().expect("after the server went"), first);
+    assert_eq!(fixture.ssh_calls().len(), 2);
+}
+
+#[test]
+fn an_older_remote_pom_without_a_server_is_read_over_plain_ssh() {
+    use pom_remote::{ProjectSource, Via};
+    let fixture = Fixture::new();
+    fixture.register_project();
+    let old = fixture.temp.path().join("home/old-pom");
+    executable(
+        &old,
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in server) echo 'unknown command server' >&2; echo 'usage: pom ...' >&2; exit 2 ;; esac\nexec '{POM}' \"$@\"\n"
+        ),
+    );
+    let added = fixture.pom(&[
+        "host",
+        "add",
+        "old",
+        "ssh://192.0.2.10",
+        "--pom-path",
+        "~/old-pom",
+    ]);
+    assert!(added.status.success(), "{}", text(&added));
+    let server = fixture.server_source("old");
+    assert_eq!(
+        server.workspaces().expect("over ssh"),
+        fixture.local_source().workspaces().expect("local")
+    );
+    let transport = server.transport().expect("transport");
+    assert_eq!(transport.via, Via::Ssh);
+    let reason = transport.fallback_reason.expect("a reason");
+    assert!(reason.contains("update pom on the VM"), "{reason}");
+    assert!(server.status("feat").is_ok());
+}
+
+#[test]
+fn an_unreachable_host_is_unreachable_through_the_server_source_too() {
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    let added = fixture.pom(&["host", "add", "lab", "ssh://down.example.net"]);
+    assert!(added.status.success(), "{}", text(&added));
+    match fixture.server_source("lab").workspaces() {
+        Err(pom_remote::SourceError::Unreachable(reason)) => {
+            assert!(reason.contains("Connection refused"), "{reason}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn the_server_proxy_starts_a_server_and_reconnect_never_does() {
+    let fixture = Fixture::new();
+    let gone = fixture.pom(&["server", "proxy", "--reconnect"]);
+    assert_eq!(gone.status.code(), Some(70));
+    assert_eq!(
+        String::from_utf8_lossy(&gone.stderr).trim(),
+        r#"{"error":"server_gone"}"#
+    );
+    let missing = fixture.pom(&["server", "status"]);
+    assert_eq!(missing.status.code(), Some(3));
+
+    let mut child = fixture
+        .command(&["server", "proxy"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("proxy");
+    let stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let transport = pom_rpc::Transport::new(stdout, stdin);
+    let (connection, hello) = pom_rpc::Connection::builder(transport)
+        .connect(pom_rpc::Hello::new(env!("CARGO_PKG_VERSION")))
+        .expect("handshake through the proxy");
+    assert_eq!(hello.pom_version, env!("CARGO_PKG_VERSION"));
+    let info = connection
+        .request("server.info", Value::Null)
+        .expect("server.info");
+    assert_eq!(info["schema"], "pom.server/v1");
+    let pid = info["pid"].as_u64().expect("pid");
+    assert_ne!(pid, u64::from(child.id()), "the server outlives the proxy");
+    connection.close();
+    let exited = child.wait().expect("proxy exit");
+    assert!(exited.success());
+
+    let status = json(&fixture.pom(&["server", "status", "--json"]));
+    assert_eq!(status["pid"].as_u64(), Some(pid));
+    let socket = fixture
+        .temp
+        .path()
+        .join(format!("run/pom-server/{}.sock", env!("CARGO_PKG_VERSION")));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&socket)
+            .expect("socket")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let resumed = fixture
+        .command(&["server", "proxy", "--reconnect"])
+        .output()
+        .expect("reconnect");
+    assert!(resumed.status.success(), "{}", text(&resumed));
+
+    let stopped = fixture.pom(&["server", "stop"]);
+    assert!(stopped.status.success(), "{}", text(&stopped));
+    assert!(text(&stopped).contains(&format!("(pid {pid})")));
+    assert!(!socket.exists());
+    let log = std::fs::read_to_string(fixture.temp.path().join(format!(
+        "state/pom/server/{}.log",
+        env!("CARGO_PKG_VERSION")
+    )))
+    .expect("server log");
+    assert!(log.contains("method=server.info"), "{log}");
+    assert!(log.contains("exit: stopped"), "{log}");
 }

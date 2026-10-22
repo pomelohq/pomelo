@@ -16,6 +16,7 @@ pom_core = { path = "../pom_core" }
 pom_layout = { path = "../pom_layout" }
 pom_ptyhost = { path = "../pom_ptyhost" }
 pom_push = { path = "../pom_push" }
+pom_rpc = { path = "../pom_rpc" }
 pom_services = { path = "../pom_services" }
 pom_workspace = { path = "../pom_workspace" }
 serde.workspace = true

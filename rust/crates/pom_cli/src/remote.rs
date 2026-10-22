@@ -13,6 +13,7 @@ pub(crate) enum HostCommand {
         name: String,
         url: String,
         pom_path: Option<String>,
+        transport: Option<pom_remote::HostTransport>,
         json: bool,
     },
     List {
@@ -32,7 +33,7 @@ pub(crate) fn parse(words: &[&str]) -> Result<HostCommand, String> {
     let (verb, rest) = words
         .split_first()
         .ok_or("host needs add, ls, rm or test")?;
-    let args = Args::parse(rest, &["--pom-path", "-o", "--output"])?;
+    let args = Args::parse(rest, &["--pom-path", "--transport", "-o", "--output"])?;
     let json = args.has("--json") || args.json()?;
     let name = |verb: &str| -> Result<String, String> {
         match args.positional.as_slice() {
@@ -42,16 +43,20 @@ pub(crate) fn parse(words: &[&str]) -> Result<HostCommand, String> {
     };
     match *verb {
         "add" => {
-            args.allow(&["--pom-path", "--json", "-o", "--output"])?;
+            args.allow(&["--pom-path", "--transport", "--json", "-o", "--output"])?;
             let [name, url] = args.positional.as_slice() else {
                 return Err(
-                    "usage: pom host add <name> ssh://user@host[:port] [--pom-path p]".into(),
+                    "usage: pom host add <name> ssh://user@host[:port] [--pom-path p] [--transport server|ssh]".into(),
                 );
             };
             Ok(HostCommand::Add {
                 name: name.clone(),
                 url: url.clone(),
                 pom_path: args.value(&["--pom-path"]).filter(|path| !path.is_empty()),
+                transport: args
+                    .value(&["--transport"])
+                    .map(|text| pom_remote::HostTransport::parse(&text))
+                    .transpose()?,
                 json,
             })
         }
@@ -98,8 +103,9 @@ pub(crate) fn execute(command: &HostCommand, out: &mut dyn Write, err: &mut dyn 
             name,
             url,
             pom_path,
+            transport,
             json,
-        } => add(name, url, pom_path.clone(), *json, out),
+        } => add(name, url, pom_path.clone(), *transport, *json, out),
         HostCommand::List { json } => list(*json, out),
         HostCommand::Remove { name, json } => remove(name, *json, out),
     };
@@ -116,6 +122,7 @@ fn add(
     name: &str,
     url: &str,
     pom_path: Option<String>,
+    transport: Option<pom_remote::HostTransport>,
     json: bool,
     out: &mut dyn Write,
 ) -> Result<(), String> {
@@ -125,6 +132,7 @@ fn add(
         name: name.to_string(),
         url: HostUrl::parse(url)?,
         pom_path,
+        transport,
     };
     let replaced = hosts.insert(&host)?;
     hosts.save(&path)?;
@@ -432,6 +440,7 @@ mod tests {
                 name: "dev".into(),
                 url: "ssh://dev@192.0.2.10".into(),
                 pom_path: Some("/opt/pom".into()),
+                transport: None,
                 json: false,
             })
         );

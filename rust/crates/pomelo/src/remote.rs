@@ -1,6 +1,3 @@
-//! A window on a project that runs on another machine: what it reads comes from `pom` there over ssh, and the
-//! features that need the project's files here stay hidden.
-
 use std::sync::Arc;
 
 use winit::event_loop::ActiveEventLoop;
@@ -120,8 +117,8 @@ impl App {
             eprintln!("failed to record the remote project: {error}");
         }
         let source =
-            pom_remote::RemoteSource::new(host, picked.config.clone(), pom_remote::Ssh::system());
-        let watch = pom_remote::Watch::start(Arc::new(source), "", Arc::new(ui::wake));
+            pom_remote::project_source(host, picked.config.clone(), pom_remote::Ssh::system());
+        let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = None;
             main.watcher = None;

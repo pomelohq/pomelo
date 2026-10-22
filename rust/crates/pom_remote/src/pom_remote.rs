@@ -4,6 +4,9 @@
 
 mod editor;
 mod local;
+pub mod server_api;
+mod server_source;
+pub mod server_transport;
 mod source;
 mod ssh;
 mod watch;
@@ -14,11 +17,14 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use editor::{editor_argv, find_program};
-pub use local::{ordered_services, service_output, status_report, workspace_list, LocalSource};
+pub use local::{
+    local_projects, ordered_services, service_output, status_report, workspace_list, LocalSource,
+};
+pub use server_source::{project_source, ServerSource, VERSION};
 pub use source::{
     remote_projects, run_pom, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource,
-    RemoteSource, ServiceAction, SourceError, StatusReport, WorkspaceList, WorkspaceSummary,
-    PROJECT_SCHEMA, WORKSPACE_SCHEMA,
+    RemoteSource, ServiceAction, SourceError, StatusReport, TransportInfo, Via, WorkspaceList,
+    WorkspaceSummary, PROJECT_SCHEMA, WORKSPACE_SCHEMA,
 };
 pub use ssh::{
     control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,
@@ -144,11 +150,37 @@ pub fn valid_name(name: &str) -> bool {
             .all(|char| char.is_ascii_alphanumeric() || matches!(char, '.' | '_' | '-'))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HostTransport {
+    Server,
+    Ssh,
+}
+
+impl HostTransport {
+    pub fn parse(text: &str) -> Result<HostTransport, String> {
+        match text {
+            "server" => Ok(HostTransport::Server),
+            "ssh" => Ok(HostTransport::Ssh),
+            other => Err(format!("unknown transport {other:?} (server, ssh)")),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            HostTransport::Server => "server",
+            HostTransport::Ssh => "ssh",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostEntry {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pom_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<HostTransport>,
 }
 
 /// A named host, its URL already checked.
@@ -157,6 +189,7 @@ pub struct Host {
     pub name: String,
     pub url: HostUrl,
     pub pom_path: Option<String>,
+    pub transport: Option<HostTransport>,
 }
 
 impl Host {
@@ -164,6 +197,7 @@ impl Host {
         HostEntry {
             url: self.url.url(),
             pom_path: self.pom_path.clone(),
+            transport: self.transport,
         }
     }
 
@@ -174,6 +208,7 @@ impl Host {
             "destination": self.url.destination(),
             "port": self.url.port,
             "pom_path": self.pom_path,
+            "transport": self.transport.map(HostTransport::name),
         })
     }
 }
@@ -242,6 +277,7 @@ impl Hosts {
             name: name.to_string(),
             url: HostUrl::parse(&entry.url).map_err(|error| format!("host {name}: {error}"))?,
             pom_path: entry.pom_path.clone().filter(|path| !path.is_empty()),
+            transport: entry.transport,
         })
     }
 
@@ -320,6 +356,7 @@ mod tests {
             name: "dev".into(),
             url: HostUrl::parse("ssh://dev@192.0.2.10:2222")?,
             pom_path: Some("/opt/pom/bin/pom".into()),
+            transport: Some(HostTransport::Ssh),
         };
         assert!(!hosts.insert(&dev)?);
         assert!(hosts.insert(&dev)?);
@@ -327,12 +364,14 @@ mod tests {
             name: "lab".into(),
             url: HostUrl::parse("ssh://lab.example.net")?,
             pom_path: None,
+            transport: None,
         })?;
         assert!(hosts
             .insert(&Host {
                 name: "bad name".into(),
                 url: HostUrl::parse("ssh://x")?,
                 pom_path: None,
+                transport: None,
             })
             .is_err());
         hosts.save(&path)?;
@@ -344,6 +383,8 @@ mod tests {
         assert_eq!(value["hosts"]["dev"]["url"], "ssh://dev@192.0.2.10:2222");
         assert_eq!(value["hosts"]["dev"]["pom_path"], "/opt/pom/bin/pom");
         assert!(value["hosts"]["lab"].get("pom_path").is_none());
+        assert_eq!(value["hosts"]["dev"]["transport"], "ssh");
+        assert!(value["hosts"]["lab"].get("transport").is_none());
 
         let loaded = Hosts::load(&path)?;
         assert_eq!(loaded, hosts);

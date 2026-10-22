@@ -398,6 +398,23 @@ pub fn local_only_reason(host: &str) -> String {
     )
 }
 
+pub fn transport_lines(snapshot: &Snapshot, host: &str) -> Vec<String> {
+    let Some(transport) = &snapshot.transport else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    if let Some(reason) = &transport.fallback_reason {
+        lines.push(format!("Reading over ssh: {reason}."));
+    }
+    if let (true, Some(remote)) = (transport.version_mismatch, &transport.remote_version) {
+        lines.push(format!(
+            "{host} runs pom {remote} and this app {}; update one so both are on the same minor version.",
+            pom_remote::VERSION
+        ));
+    }
+    lines
+}
+
 /// The buttons of the page in place of the editor, in the order `CenterNotice::actions` lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeAction {
@@ -420,6 +437,7 @@ pub fn remote_notice(
         Connection::Disconnected { .. } => NoticeTone::Warning,
     };
     let mut lines = vec![local_only_reason(host)];
+    lines.extend(transport_lines(snapshot, host));
     if let Some(list) = &snapshot.workspaces {
         let running: usize = list.workspaces.iter().map(|ws| ws.running).sum();
         lines.push(format!(
@@ -462,6 +480,7 @@ mod tests {
                 url: pom_remote::HostUrl::parse(&format!("ssh://me@{name}.example.net"))
                     .expect("url"),
                 pom_path: None,
+                transport: None,
             })
             .collect()
     }
@@ -532,5 +551,43 @@ mod tests {
         assert!(matches!(modal.step, Step::Hosts));
         modal.key(EditKey::Escape, false);
         assert!(matches!(modal.take_result(), Some(ModalResult::Cancelled)));
+    }
+
+    #[test]
+    fn the_page_says_why_reads_go_over_ssh_and_when_versions_differ() {
+        let mut snapshot = Snapshot::default();
+        assert!(transport_lines(&snapshot, "dev").is_empty());
+        snapshot.transport = Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Server,
+            remote_version: Some("0.1.0".into()),
+            version_mismatch: true,
+            ..pom_remote::TransportInfo::default()
+        });
+        let lines = transport_lines(&snapshot, "dev");
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("dev runs pom 0.1.0 and this app "));
+        snapshot.transport = Some(pom_remote::TransportInfo {
+            fallback_reason: Some(
+                "its pom is older than pom server; update pom on the VM to get terminals".into(),
+            ),
+            ..pom_remote::TransportInfo::default()
+        });
+        assert_eq!(
+            transport_lines(&snapshot, "dev"),
+            vec!["Reading over ssh: its pom is older than pom server; update pom on the VM to get terminals.".to_string()]
+        );
+        snapshot.connection = Connection::Connected;
+        let (notice, _) = remote_notice(&snapshot, "dev (dev@dev.example.net)", "dev", "myproject");
+        assert!(
+            notice
+                .status
+                .starts_with("Connected to dev (dev@dev.example.net) via ssh"),
+            "{}",
+            notice.status
+        );
+        assert!(notice
+            .lines
+            .iter()
+            .any(|line| line.starts_with("Reading over ssh")));
     }
 }
