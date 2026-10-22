@@ -16,6 +16,8 @@ pub struct AgentSession {
     pub alive: bool,
     /// In a turn (thinking, a tool, compacting) or waiting on an approval.
     pub busy: bool,
+    /// When it last reported anything (ms since the epoch).
+    pub active_ms: u64,
 }
 
 /// The agent sessions of a workspace: listed to decide whether it may sleep, restarted when it wakes.
@@ -173,6 +175,7 @@ pub fn wake(
     }
     let record = state.asleep.take().unwrap_or_default();
     state.state = RunState::Running;
+    state.queued_ms = None;
     save(workspace, &state)?;
     let mut report = WakeReport::default();
     let targets = ordered_targets(context, workspace, &record.services);
@@ -286,6 +289,7 @@ impl Agents for DriveAgents {
             .list(branch)
             .into_iter()
             .map(|view| AgentSession {
+                active_ms: now_ms().saturating_sub(view.last_event_age_s * 1000),
                 busy: view.is_working()
                     || view.reason.as_deref() == Some(pom_agent::PENDING_APPROVAL),
                 role: view.role,
@@ -333,7 +337,7 @@ pub fn wake_at(
     holders: &pom_ptyhost::SocketDir,
     binary: &Path,
     branch: &str,
-) -> Result<WakeReport, String> {
+) -> Result<crate::schedule::WakeOutcome, String> {
     let config = pom_config::Config::load(&root.join(pom_config::CONFIG_FILE_NAME))
         .map_err(|error| error.to_string())?;
     let runner = pom_services::ServiceRunner::new(pom_services::RunnerOptions {
@@ -351,7 +355,12 @@ pub fn wake_at(
     };
     let workspace =
         find_workspace(root, &config, branch).ok_or_else(|| format!("no workspace {branch}"))?;
-    wake(&context, &DriveAgents::new(&context), &workspace)
+    crate::schedule::wake_with_room(
+        &context,
+        &DriveAgents::new(&context),
+        &workspace,
+        &crate::schedule::PowerSettings::from_settings_file(),
+    )
 }
 
 /// Wakes `branch` of the project at a root; the dev proxy's hook.
@@ -365,9 +374,14 @@ pub fn waker(
 ) -> Waker {
     std::sync::Arc::new(move |root: &Path, branch: &str| {
         match wake_at(root, &state, &holders, &binary, branch) {
-            Ok(report) if !report.failed.is_empty() => eprintln!(
-                "dev proxy: woke {branch}, but could not start {}",
-                report.failed.join("; ")
+            Ok(crate::schedule::WakeOutcome::Woke { report, .. }) if !report.failed.is_empty() => {
+                eprintln!(
+                    "dev proxy: woke {branch}, but could not start {}",
+                    report.failed.join("; ")
+                )
+            }
+            Ok(crate::schedule::WakeOutcome::Queued { running }) => eprintln!(
+                "dev proxy: {branch} is queued: {running} workspaces run, the most workspaces.max_running allows"
             ),
             Ok(_) => {}
             Err(error) => eprintln!("dev proxy: wake {branch}: {error}"),
@@ -402,6 +416,7 @@ mod tests {
             holder: format!("ws-demo-feat-claude-{role}"),
             alive,
             busy,
+            active_ms: 0,
         }
     }
 

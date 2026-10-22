@@ -2261,9 +2261,23 @@ impl App {
                 pom_paths::StateDir::from_env(),
                 pom_ptyhost::SocketDir::from_env(),
             );
-            let waker = std::env::current_exe()
-                .ok()
-                .map(|binary| pom_workspace::waker(state.clone(), holders.clone(), binary));
+            let binary = std::env::current_exe().ok();
+            static SCHEDULE: std::sync::Once = std::sync::Once::new();
+            if let Some(binary) = binary.clone().filter(|_| !SCHEDULE.is_completed()) {
+                SCHEDULE.call_once(|| {});
+                let schedule = pom_workspace::Machine {
+                    state: state.clone(),
+                    holders: holders.clone(),
+                    binary,
+                };
+                if let Err(error) = pom_workspace::run_in_background(schedule, |line| {
+                    eprintln!("workspaces: {line}")
+                }) {
+                    eprintln!("workspaces: idle sleep and max_running are off: {error}");
+                }
+            }
+            let waker =
+                binary.map(|binary| pom_workspace::waker(state.clone(), holders.clone(), binary));
             let machine = pom_proxy::SystemMachine {
                 state,
                 holders,

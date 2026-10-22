@@ -50,6 +50,16 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
     }
     let holders = pom_ptyhost::SocketDir::from_env();
     let binary = std::env::current_exe().map_err(|error| error.to_string())?;
+    let schedule = pom_workspace::Machine {
+        state: state.clone(),
+        holders: holders.clone(),
+        binary: binary.clone(),
+    };
+    if let Err(error) =
+        pom_workspace::run_in_background(schedule, |line| println!("workspaces: {line}"))
+    {
+        eprintln!("workspaces: idle sleep and max_running are off: {error}");
+    }
     let machine = SystemMachine {
         state: state.clone(),
         holders: holders.clone(),
