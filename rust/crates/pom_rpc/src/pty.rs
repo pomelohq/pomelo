@@ -15,6 +15,8 @@ use crate::connection::{
 };
 use crate::error::Error;
 
+pub use crate::resuming::{ResumingOutput, ResumingTerminal, TerminalEvent};
+
 pub mod method {
     pub const OPEN: &str = "pty.open";
     pub const ATTACH: &str = "pty.attach";
@@ -189,11 +191,63 @@ pub struct Request {
     pub claim: Option<String>,
 }
 
+/// How the connection to the machine behind a [`PtyProvider`] stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum LinkState {
+    #[default]
+    Connected,
+    /// The connection dropped; attempt `attempt` runs in `next_in`.
+    Reconnecting { attempt: u32, next_in: Duration },
+    /// Reconnecting gave up; only a retry the person asks for tries again.
+    Disconnected { reason: String },
+}
+
+/// Attaching again to a terminal whose stream dropped with its connection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resume {
+    pub holder: String,
+    /// The terminal's id in its first attach, which keys the server's record of the input it took.
+    pub terminal: String,
+    /// The output offset after the last byte the view applied.
+    pub since: u64,
+    /// Where the input still unconfirmed starts; `None` starts a fresh numbering.
+    pub input_from: Option<u64>,
+    /// The server the terminal was attached through; another one means the server restarted.
+    pub server: String,
+    pub mode: Mode,
+    pub primary: bool,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResumeError {
+    /// The machine cannot be reached right now; try again once it can.
+    Offline(String),
+    /// The terminal is gone (its command ended meanwhile) or cannot be attached again.
+    Gone(String),
+}
+
 /// Opens terminals on another machine; implemented by whatever owns the connection there.
 pub trait PtyProvider: Send + Sync {
     fn attach(&self, request: &Request) -> Result<Terminal, String>;
     /// Ends the holder and its command.
     fn close(&self, holder: &str) -> Result<(), String>;
+    /// Attaches again after the connection dropped, on whatever connection now serves.
+    fn resume(&self, _resume: &Resume) -> Result<Terminal, ResumeError> {
+        Err(ResumeError::Gone(
+            "this machine does not resume terminals".into(),
+        ))
+    }
+    fn link(&self) -> LinkState {
+        LinkState::Connected
+    }
+    /// The machine's name, for the bar that says the connection dropped.
+    fn host(&self) -> String {
+        String::new()
+    }
+    /// Tries to reconnect now rather than at the next scheduled attempt.
+    fn reconnect_now(&self) {}
 }
 
 type Routes = Arc<Mutex<HashMap<u32, Sender<Exit>>>>;
@@ -332,12 +386,18 @@ pub struct Control {
     connection: Connection,
     stream: StreamHandle,
     holder: String,
+    terminal: String,
     resizes: std::sync::Arc<AtomicU64>,
 }
 
 impl Control {
     pub fn holder(&self) -> &str {
         &self.holder
+    }
+
+    /// The id the terminal was attached with, which the server keys its input with.
+    pub fn terminal(&self) -> &str {
+        &self.terminal
     }
 
     /// The stream's channel, which `pty.detach` and friends name.
@@ -391,6 +451,8 @@ pub struct Terminal {
     pub output: Output,
     pub control: Control,
     pub attached: Attached,
+    /// The id of the server it was attached through, when the provider knows it.
+    pub server: String,
 }
 
 impl Terminal {
@@ -445,12 +507,14 @@ impl Terminal {
             connection: connection.clone(),
             stream: stream.handle(),
             holder: attached.holder.clone(),
+            terminal: params.terminal.clone(),
             resizes: std::sync::Arc::new(AtomicU64::new(0)),
         };
         Ok(Terminal {
             output: Output { stream, events },
             control,
             attached,
+            server: String::new(),
         })
     }
 }

@@ -93,7 +93,7 @@ fn answer(
 fn source(features: Vec<String>) -> (ServerSource, Arc<Served>) {
     let served = Arc::new(Served::default());
     let opened = served.clone();
-    let opener: pom_remote::Opener = Arc::new(move || {
+    let opener: pom_remote::Opener = Arc::new(move |_reconnect| {
         let (client, server) = pom_rpc::mock::pair()?;
         let (served, features) = (opened.clone(), features.clone());
         std::thread::spawn(move || {
@@ -258,4 +258,164 @@ fn a_server_without_live_logs_or_jobs_is_asked_for_the_output_every_poll() {
         ),
         Err(pom_remote::SourceError::Failed(_))
     ));
+}
+
+/// A host whose server can be cut off, made unreachable, or replaced by a new one.
+#[derive(Default)]
+struct Flaky {
+    unreachable: std::sync::atomic::AtomicBool,
+    /// The running server's id; bumped to stand for a restart.
+    generation: AtomicUsize,
+    /// The generation `--reconnect` still finds; another one means the old server is gone.
+    reachable_generation: AtomicUsize,
+    dials: Mutex<Vec<bool>>,
+}
+
+fn flaky_source() -> (ServerSource, Arc<Served>, Arc<Flaky>) {
+    let served = Arc::new(Served::default());
+    let flaky = Arc::new(Flaky::default());
+    let (opened, host_state) = (served.clone(), flaky.clone());
+    let opener: pom_remote::Opener = Arc::new(move |reconnect| {
+        if let Ok(mut dials) = host_state.dials.lock() {
+            dials.push(reconnect);
+        }
+        if host_state.unreachable.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "ssh: connect to host: Connection refused",
+            ));
+        }
+        let generation = host_state.generation.load(Ordering::SeqCst);
+        if reconnect && host_state.reachable_generation.load(Ordering::SeqCst) != generation {
+            host_state
+                .reachable_generation
+                .store(generation, Ordering::SeqCst);
+            return Err(std::io::Error::other(
+                pom_remote::server_transport::SERVER_GONE,
+            ));
+        }
+        let (client, server) = pom_rpc::mock::pair()?;
+        let served = opened.clone();
+        std::thread::spawn(move || {
+            let handler = {
+                let served = served.clone();
+                move |request: pom_rpc::Request, context: &RequestContext| {
+                    answer(&served, request, context)
+                }
+            };
+            let accepted = Connection::builder(server)
+                .handler(handler)
+                .accept(move |_| {
+                    let mut hello = Hello::new(pom_remote::VERSION);
+                    hello.server_id = Some(format!("server-{generation}"));
+                    hello.features = current_features();
+                    Ok(hello)
+                });
+            if let (Ok((connection, _)), Ok(mut connections)) =
+                (accepted, served.connections.lock())
+            {
+                connections.push(connection);
+            }
+        });
+        Ok(client)
+    });
+    let host = pom_remote::Host {
+        name: "dev".into(),
+        url: pom_remote::HostUrl::parse("ssh://dev.example.net").expect("url"),
+        pom_path: None,
+        transport: None,
+    };
+    let source = ServerSource::with_opener(host, "/srv/myproject/pom.yml".into(), opener);
+    source.set_backoff(vec![Duration::from_millis(40); 3]);
+    (source, served, flaky)
+}
+
+fn cut(served: &Served) {
+    let connections = served
+        .connections
+        .lock()
+        .map(|connections| connections.clone())
+        .unwrap_or_default();
+    for connection in connections {
+        connection.close();
+    }
+}
+
+fn wait_link(source: &ServerSource, what: &str, done: impl Fn(&pom_remote::LinkReport) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let report = source.link().expect("a session");
+        if done(&report) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no {what}: {report:?}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn a_dropped_session_comes_back_with_backoff_and_a_new_server_counts_as_a_restart() {
+    use pom_remote::LinkState;
+    let (source, served, flaky) = flaky_source();
+    assert!(source.link().is_none(), "no session before the first look");
+    source.workspaces().expect("connect");
+    assert_eq!(source.server_id(), "server-0");
+
+    cut(&served);
+    wait_link(&source, "reconnecting", |report| {
+        matches!(report.state, LinkState::Reconnecting { attempt: 1, .. })
+    });
+    wait_link(&source, "the same server again", |report| {
+        report.state == LinkState::Connected && report.restarts == 0
+    });
+    assert_eq!(source.server_id(), "server-0");
+    assert_eq!(
+        flaky
+            .dials
+            .lock()
+            .map(|dials| dials.clone())
+            .unwrap_or_default(),
+        vec![false, true],
+        "the reconnect resumes rather than starting a server"
+    );
+    assert!(source.workspaces().is_ok());
+
+    flaky.unreachable.store(true, Ordering::SeqCst);
+    cut(&served);
+    wait_link(&source, "attempt 3", |report| {
+        matches!(report.state, LinkState::Reconnecting { attempt: 3, .. })
+    });
+    wait_link(&source, "disconnected", |report| {
+        matches!(report.state, LinkState::Disconnected { .. })
+    });
+    assert!(
+        matches!(
+            source.workspaces(),
+            Err(pom_remote::SourceError::Unreachable(_))
+        ),
+        "a disconnected source answers at once"
+    );
+    let dials = flaky
+        .dials
+        .lock()
+        .map(|dials| dials.len())
+        .unwrap_or_default();
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(
+        flaky
+            .dials
+            .lock()
+            .map(|dials| dials.len())
+            .unwrap_or_default(),
+        dials,
+        "no attempts until asked"
+    );
+
+    flaky.unreachable.store(false, Ordering::SeqCst);
+    flaky.generation.store(1, Ordering::SeqCst);
+    source.reconnect_now();
+    wait_link(&source, "a restarted server", |report| {
+        report.state == LinkState::Connected && report.restarts == 1
+    });
+    assert_eq!(source.server_id(), "server-1");
+    assert!(source.workspaces().is_ok());
 }

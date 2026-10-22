@@ -1,9 +1,9 @@
-//! A project on another machine, drawn from a stand-in source: connected, disconnected, its local-only panels,
-//! and the connect dialog. Nothing reaches ssh.
+//! A project on another machine, drawn from a stand-in source: connected, reconnecting, disconnected, back from
+//! a server restart, its local-only panels, and the connect dialog. Nothing reaches ssh.
 
 use std::io::BufWriter;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pom_agent::SessionView;
@@ -13,12 +13,21 @@ use pom_remote::{
 };
 use pom_services::{ServiceHealth, SharedHealth};
 
+type SharedLink = Arc<Mutex<pom_rpc::pty::LinkState>>;
+
+fn link_of(link: &SharedLink) -> pom_rpc::pty::LinkState {
+    link.lock().map(|state| state.clone()).unwrap_or_default()
+}
+
 #[derive(Default)]
 struct Board {
     down: AtomicBool,
     shell: Option<Arc<Shell>>,
     /// Pushes who drives the agents and the approval one waits on.
     pushes: bool,
+    /// The session's state, once the scene drops it.
+    link: SharedLink,
+    restarts: u64,
 }
 
 const DEV_AGENT: &str = "ws-myproject-feat-login-claude-raw";
@@ -94,6 +103,7 @@ fn serve_shell(
 struct Shell {
     client: pom_rpc::Connection,
     _server: pom_rpc::Connection,
+    link: SharedLink,
 }
 
 impl pom_rpc::pty::PtyProvider for Shell {
@@ -114,6 +124,14 @@ impl pom_rpc::pty::PtyProvider for Shell {
 
     fn close(&self, _holder: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    fn link(&self) -> pom_rpc::pty::LinkState {
+        link_of(&self.link)
+    }
+
+    fn host(&self) -> String {
+        "dev".into()
     }
 }
 
@@ -256,6 +274,13 @@ impl ProjectSource for Board {
             pushes: self.pushes,
             agents: self.pushes,
             ..pom_remote::TransportInfo::default()
+        })
+    }
+
+    fn link(&self) -> Option<pom_remote::LinkReport> {
+        Some(pom_remote::LinkReport {
+            state: link_of(&self.link),
+            restarts: self.restarts,
         })
     }
 
@@ -405,18 +430,34 @@ pub fn render(
     renderer: &mut ui::UiRenderer,
 ) -> anyhow::Result<()> {
     let agents = mode == "agents";
-    let shell = (mode == "terminal" || agents)
+    let dropped = match mode {
+        "reconnecting" => Some(pom_rpc::pty::LinkState::Reconnecting {
+            attempt: 3,
+            next_in: Duration::from_secs(2),
+        }),
+        "terminal-disconnected" => Some(pom_rpc::pty::LinkState::Disconnected {
+            reason: "lost dev: ssh: connect to host dev.example.net port 22: Operation timed out"
+                .into(),
+        }),
+        _ => None,
+    };
+    let terminal = matches!(mode, "terminal" | "restarted") || dropped.is_some();
+    let link = SharedLink::default();
+    let shell = (terminal || agents)
         .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
         .transpose()?
         .map(|(client, server)| {
             Arc::new(Shell {
                 client,
                 _server: server,
+                link: link.clone(),
             })
         });
     let board = Arc::new(Board {
         shell,
         pushes: agents,
+        link: link.clone(),
+        restarts: u64::from(mode == "restarted"),
         ..Board::default()
     });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
@@ -426,6 +467,18 @@ pub fn render(
     });
     if agents {
         wait_until(&watch, |snapshot| !snapshot.presence.is_empty());
+    }
+    if let Some(state) = dropped {
+        if let Ok(mut current) = link.lock() {
+            *current = state;
+        }
+        board.down.store(true, Ordering::SeqCst);
+        wait_until(&watch, |snapshot| {
+            matches!(
+                snapshot.connection,
+                Connection::Reconnecting { .. } | Connection::Disconnected { .. }
+            )
+        });
     }
     if mode == "disconnected" {
         board.down.store(true, Ordering::SeqCst);
@@ -484,6 +537,9 @@ pub fn render(
         view.set_side_panels(vec![Box::new(panel)]);
         let (notice, _) = remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject");
         view.set_center_notice(Some(notice));
+        if mode == "restarted" {
+            view.show_toast(remote_ui::restart_notice("dev"), None);
+        }
         if agents {
             let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
             let dock = terminal_ui::TerminalPanel::remote_agent_dock(
@@ -517,7 +573,7 @@ pub fn render(
     if mode == "logs" {
         wait_until(&watch, |snapshot| snapshot.logs.is_some());
     }
-    let live = mode == "terminal" || agents;
+    let live = terminal || agents;
     for _ in 0..if live { 40 } else { 4 } {
         app.draw(handle).expect("frame");
         if live {

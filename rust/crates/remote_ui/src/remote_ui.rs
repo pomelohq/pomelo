@@ -421,6 +421,11 @@ pub fn transport_lines(snapshot: &Snapshot, host: &str) -> Vec<String> {
     lines
 }
 
+/// Said once each time the session comes back to a server that restarted meanwhile.
+pub fn restart_notice(host: &str) -> String {
+    format!("pom server on {host} restarted; terminals and services kept running")
+}
+
 /// The buttons of the page in place of the editor, in the order `CenterNotice::actions` lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NoticeAction {
@@ -440,7 +445,8 @@ pub fn remote_notice(
     let tone = match snapshot.connection {
         Connection::Connected => NoticeTone::Good,
         Connection::Connecting => NoticeTone::Info,
-        Connection::Disconnected { .. } => NoticeTone::Warning,
+        Connection::Reconnecting { .. } => NoticeTone::Warning,
+        Connection::Disconnected { .. } => NoticeTone::Error,
     };
     let terminals = snapshot
         .transport

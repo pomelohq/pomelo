@@ -8,6 +8,7 @@ mod frame;
 #[cfg(unix)]
 pub mod mock;
 pub mod pty;
+mod resuming;
 
 pub use connection::{
     Canceller, Config, Connection, ConnectionBuilder, ConnectionState, InputChunk, InputReceiver,

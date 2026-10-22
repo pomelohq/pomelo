@@ -5,6 +5,7 @@ mod blocks;
 mod contrast;
 mod item;
 mod lease_bar;
+mod link_bar;
 mod panel;
 mod side_bar;
 
@@ -18,6 +19,7 @@ use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
 pub use item::{ConsoleAction, ConsoleToolbar, TerminalItem};
 pub use lease_bar::{strip as lease_strip, LeaseSource, LeaseState};
+pub use link_bar::{link_text, strip as link_strip, LinkBar};
 pub use panel::{Backing, HolderPlace, HolderScope, TerminalPanel};
 pub use side_bar::SideAgentBar;
 

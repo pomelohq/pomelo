@@ -372,6 +372,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // A project on another machine from a stand-in source; REMOTEVIEW names the state.
         "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
         "remote-disconnected" => (0, &[("REMOTEVIEW", "disconnected")]),
+        "remote-reconnecting" => (0, &[("REMOTEVIEW", "reconnecting")]),
+        "remote-terminal-disconnected" => (0, &[("REMOTEVIEW", "terminal-disconnected")]),
+        "remote-restarted" => (0, &[("REMOTEVIEW", "restarted")]),
         "remote-logs" => (0, &[("REMOTEVIEW", "logs")]),
         "remote-create" => (0, &[("REMOTEVIEW", "create")]),
         "remote-terminal" => (0, &[("REMOTEVIEW", "terminal")]),

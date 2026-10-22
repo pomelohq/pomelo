@@ -1,9 +1,9 @@
 //! The terminal's grid fed from a holder on another machine, over the project's server connection. Output
-//! goes through the same VT parser into the same grid as a local holder; each keystroke goes out at once.
+//! goes through the same VT parser into the same grid as a local holder; each keystroke goes out at once. A
+//! connection that drops leaves the screen as it was, refuses typing, and carries on where it stopped once back.
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,10 +11,10 @@ use alacritty_terminal::event::{Event as BackendEvent, EventListener, WindowSize
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::vte::ansi::Processor;
-use pom_rpc::pty::{Control, Mode, Output, PtyProvider, Request, Target};
-use pom_rpc::StreamEvent;
+use pom_rpc::pty::{
+    LinkState, Mode, PtyProvider, Request, ResumingOutput, ResumingTerminal, Target, TerminalEvent,
+};
 
-const EXIT_WAIT: Duration = Duration::from_secs(1);
 const IDLE: Duration = Duration::from_millis(250);
 /// A full reset, for output that starts over after the server skipped what the ring no longer held.
 const RESET: &[u8] = b"\x1bc";
@@ -29,8 +29,7 @@ pub struct RemoteOptions {
 
 pub(crate) struct RemoteBackend {
     pub(crate) options: RemoteOptions,
-    control: Control,
-    detached: Arc<AtomicBool>,
+    terminal: ResumingTerminal,
 }
 
 impl RemoteBackend {
@@ -48,55 +47,61 @@ impl RemoteBackend {
             primary: true,
             claim: None,
         };
-        let terminal = options
-            .provider
-            .attach(&request)
+        let (terminal, output, _) = ResumingTerminal::attach(options.provider.clone(), &request)
             .map_err(anyhow::Error::msg)?;
-        let detached = Arc::new(AtomicBool::new(false));
-        let (output, control) = (terminal.output, terminal.control);
-        let reading = (control.clone(), detached.clone());
         std::thread::Builder::new()
             .name("terminal-remote".into())
-            .spawn(move || read_output(output, reading, &term, &listener))?;
+            .spawn(move || read_output(output, &term, &listener))?;
         Ok(RemoteBackend {
             options: RemoteOptions {
-                target: Target::Holder(control.holder().to_string()),
+                target: Target::Holder(terminal.holder().to_string()),
                 ..options
             },
-            control,
-            detached,
+            terminal,
         })
     }
 
     pub(crate) fn holder(&self) -> &str {
-        self.control.holder()
+        self.terminal.holder()
     }
 
+    /// Typing while the connection is down goes nowhere, so nothing lands later by surprise.
     pub(crate) fn write(&mut self, bytes: &[u8]) {
-        if let Err(error) = self.control.input(bytes) {
-            eprintln!("remote terminal input: {error}");
+        if let Err(error) = self.terminal.input(bytes) {
+            if self.terminal.link() == LinkState::Connected {
+                eprintln!("remote terminal input: {error}");
+            }
         }
     }
 
     pub(crate) fn resize(&mut self, size: WindowSize) {
-        if let Err(error) = self.control.resize(size.num_cols, size.num_lines) {
+        if let Err(error) = self.terminal.resize(size.num_cols, size.num_lines) {
             eprintln!("remote terminal resize: {error}");
         }
     }
 
     pub(crate) fn make_primary(&mut self) {
-        if let Err(error) = self.control.make_primary() {
+        if let Err(error) = self.terminal.make_primary() {
             eprintln!("remote terminal primary: {error}");
         }
     }
 
     pub(crate) fn detach(&self) {
-        if self.detached.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        if let Err(error) = self.control.detach() {
+        if let Err(error) = self.terminal.detach() {
             eprintln!("remote terminal detach: {error}");
         }
+    }
+
+    pub(crate) fn link(&self) -> LinkState {
+        self.terminal.link()
+    }
+
+    pub(crate) fn host(&self) -> String {
+        self.terminal.provider().host()
+    }
+
+    pub(crate) fn reconnect_now(&self) {
+        self.terminal.provider().reconnect_now();
     }
 
     /// Ends the holder and its command on the other machine, off this thread.
@@ -112,13 +117,12 @@ impl RemoteBackend {
 }
 
 fn read_output<L: EventListener>(
-    output: Output,
-    (control, detached): (Control, Arc<AtomicBool>),
+    mut output: ResumingOutput,
     term: &FairMutex<Term<L>>,
     listener: &L,
 ) {
     let mut processor: Processor = Processor::new();
-    let ended = loop {
+    loop {
         // A synchronized update holds frames until it ends or times out; wake up in time to end it.
         let wait = processor
             .sync_timeout()
@@ -128,35 +132,30 @@ fn read_output<L: EventListener>(
                     .saturating_duration_since(Instant::now())
                     .max(Duration::from_millis(1))
             });
-        match output.recv_timeout(wait) {
-            Ok(StreamEvent::Data { offset, bytes }) => {
+        match output.next(wait) {
+            TerminalEvent::Data { offset, bytes } => {
                 processor.advance(&mut *term.lock(), &bytes);
-                control.ack(offset + bytes.len() as u64);
+                output.ack(offset + bytes.len() as u64);
                 listener.send_event(BackendEvent::Wakeup);
             }
-            Ok(StreamEvent::Reset { .. }) => {
+            TerminalEvent::Reset { .. } => {
                 processor = Processor::new();
                 processor.advance(&mut *term.lock(), RESET);
                 listener.send_event(BackendEvent::Wakeup);
             }
-            Ok(StreamEvent::End { reason }) => break reason,
-            Err(pom_rpc::Error::Timeout) => {
+            TerminalEvent::Idle => {
                 processor.stop_sync(&mut *term.lock());
                 listener.send_event(BackendEvent::Wakeup);
             }
-            Err(error) => break error.to_string(),
+            TerminalEvent::Reconnecting(_) | TerminalEvent::Resumed { .. } => {
+                listener.send_event(BackendEvent::Wakeup);
+            }
+            TerminalEvent::Exit { crashed } => {
+                let status = ExitStatus::from_raw(if crashed { 1 << 8 } else { 0 });
+                listener.send_event(BackendEvent::ChildExit(status));
+                return;
+            }
+            TerminalEvent::Ended(_) => return,
         }
-    };
-    if detached.load(Ordering::Acquire) {
-        return;
     }
-    if ended == "exit" {
-        let crashed = output.exit(EXIT_WAIT).is_some_and(|exit| exit.crashed);
-        let status = ExitStatus::from_raw(if crashed { 1 << 8 } else { 0 });
-        listener.send_event(BackendEvent::ChildExit(status));
-        return;
-    }
-    let notice = format!("\r\n\x1b[2m[connection to the server lost: {ended}]\x1b[0m\r\n");
-    processor.advance(&mut *term.lock(), notice.as_bytes());
-    listener.send_event(BackendEvent::Wakeup);
 }

@@ -21,12 +21,13 @@ pub use local::{
     local_projects, ordered_services, service_output, status_report, workspace_list, LocalSource,
     OpenedProject, WorkspaceTerminals,
 };
+pub use pom_rpc::pty::LinkState;
 pub use server_source::{project_source, Opener, ServerSource, VERSION};
 pub use source::{
     remote_projects, run_pom, AgentTurn, FailedRun, Feed, FeedEvent, JobEvent, JobFeed, LastSync,
-    LogEvent, LogFeed, ProjectEntry, ProjectSource, RemoteSource, ServiceAction, SourceError,
-    StatusReport, TransportInfo, Update, Via, WorkspaceList, WorkspaceSummary, PROJECT_SCHEMA,
-    WORKSPACE_SCHEMA,
+    LinkReport, LogEvent, LogFeed, ProjectEntry, ProjectSource, RemoteSource, ServiceAction,
+    SourceError, StatusReport, TransportInfo, Update, Via, WorkspaceList, WorkspaceSummary,
+    PROJECT_SCHEMA, WORKSPACE_SCHEMA,
 };
 pub use ssh::{
     control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,

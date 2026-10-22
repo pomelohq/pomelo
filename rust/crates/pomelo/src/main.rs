@@ -4543,6 +4543,9 @@ impl ApplicationHandler for App {
                 self.reset_caret();
                 if let Some(m) = self.mains.get_mut(&id) {
                     m.dirty = true;
+                    if let Some(remote) = &m.remote {
+                        remote.watch.reconnect_now();
+                    }
                 }
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {

@@ -172,6 +172,13 @@ pub struct TransportInfo {
     pub jobs: bool,
 }
 
+/// The long-lived session's state, and how many times it came back to a restarted server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkReport {
+    pub state: pom_rpc::pty::LinkState,
+    pub restarts: u64,
+}
+
 /// One value a machine pushed because it changed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Update {
@@ -202,6 +209,8 @@ pub enum LogEvent {
     Data(Vec<u8>),
     /// Output was skipped: what follows does not carry on from what came before.
     Skipped,
+    /// The output starts over from an earlier point: drop what was shown.
+    StartedOver,
     Idle,
     Ended(String),
 }
@@ -246,6 +255,12 @@ pub trait ProjectSource: Send + Sync {
     fn transport(&self) -> Option<TransportInfo> {
         None
     }
+    /// How the long-lived session to the machine stands, for a source that keeps one.
+    fn link(&self) -> Option<LinkReport> {
+        None
+    }
+    /// Tries to reconnect now rather than at the next scheduled attempt.
+    fn reconnect_now(&self) {}
     fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
         None
     }

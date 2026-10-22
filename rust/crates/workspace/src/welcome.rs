@@ -328,6 +328,7 @@ pub enum NoticeTone {
     Info,
     Good,
     Warning,
+    Error,
 }
 
 /// A page in place of the editor, for a project whose files are not on this machine: a status line (such as
@@ -350,6 +351,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
         NoticeTone::Info => (colors.text_accent, colors.text_muted),
         NoticeTone::Good => (colors.success, colors.text_muted),
         NoticeTone::Warning => (colors.warning, colors.text),
+        NoticeTone::Error => (colors.error, colors.text),
     };
     let banner = div()
         .row()

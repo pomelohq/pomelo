@@ -35,11 +35,18 @@ pub struct Remote {
     pub paths: ServerPaths,
     thread: Option<JoinHandle<String>>,
     pub connection: Connection,
+    shell: Vec<String>,
+    retention: Option<Duration>,
 }
 
 impl Remote {
     /// A server whose new shells run `shell` (a plain command, never a login shell).
     pub fn start(shell: &[&str]) -> Remote {
+        Self::start_retaining(shell, None)
+    }
+
+    /// Like [`Remote::start`], keeping what vanished clients left for `retention` instead of the default.
+    pub fn start_retaining(shell: &[&str], retention: Option<Duration>) -> Remote {
         let temp = tempfile::Builder::new()
             .prefix("pomt")
             .tempdir_in("/tmp")
@@ -61,22 +68,9 @@ impl Remote {
         sessions.touch("demo", &root.to_string_lossy(), 10);
         sessions.save(&state).expect("sessions");
 
-        let dispatcher = Dispatcher::new(
-            state,
-            SocketDir::new(temp.path().join("s")),
-            holder_binary(),
-            pom_server::OP_MEMORY,
-        );
-        dispatcher.ptys().set_shell(ShellCommand {
-            argv: shell.iter().map(|part| part.to_string()).collect(),
-            env: vec![("PS1".into(), "$ ".into())],
-        });
+        let shell: Vec<String> = shell.iter().map(|part| part.to_string()).collect();
         let paths = ServerPaths::new(&temp.path().join("run"), &temp.path().join("log"), "9.9.9");
-        let mut options = ServerOptions::new(paths.clone(), "9.9.9", dispatcher);
-        options.idle_exit = None;
-        let server = pom_server::bind(options).expect("bind");
-        let handle = server.handle();
-        let thread = std::thread::spawn(move || server.run());
+        let (handle, thread) = Self::serve(temp.path(), &paths, &shell, retention);
         let connection = Self::connect_to(&paths);
         Remote {
             temp,
@@ -84,7 +78,63 @@ impl Remote {
             paths,
             thread: Some(thread),
             connection,
+            shell,
+            retention,
         }
+    }
+
+    fn serve(
+        root: &Path,
+        paths: &ServerPaths,
+        shell: &[String],
+        retention: Option<Duration>,
+    ) -> (ServerHandle, JoinHandle<String>) {
+        let dispatcher = Dispatcher::new(
+            StateDir::new(root.join("state")),
+            SocketDir::new(root.join("s")),
+            holder_binary(),
+            pom_server::OP_MEMORY,
+        );
+        dispatcher.ptys().set_shell(ShellCommand {
+            argv: shell.to_vec(),
+            env: vec![("PS1".into(), "$ ".into())],
+        });
+        if let Some(retention) = retention {
+            dispatcher.ptys().set_retention(retention);
+        }
+        let mut options = ServerOptions::new(paths.clone(), "9.9.9", dispatcher);
+        options.idle_exit = None;
+        let server = pom_server::bind(options).expect("bind");
+        let handle = server.handle();
+        (handle, std::thread::spawn(move || server.run()))
+    }
+
+    /// Stops the server and starts another on the same socket, state and holders, as a crash and restart would.
+    pub fn restart(&mut self) {
+        self.handle.stop();
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                eprintln!("the server thread panicked");
+            }
+        }
+        let (handle, thread) =
+            Self::serve(self.temp.path(), &self.paths, &self.shell, self.retention);
+        self.handle = handle;
+        self.thread = Some(thread);
+        self.connection = Self::connect_to(&self.paths);
+    }
+
+    /// A connection that says it is client `client_id`, as an app reconnecting under the same id does, and the
+    /// server's HELLO.
+    pub fn connect_as(&self, client_id: &str) -> (Connection, pom_rpc::Hello) {
+        let stream =
+            std::os::unix::net::UnixStream::connect(&self.paths.socket).expect("server socket");
+        let transport = pom_rpc::Transport::unix(stream).expect("transport");
+        let mut hello = pom_rpc::Hello::new("9.9.9");
+        hello.client_id = Some(client_id.to_string());
+        Connection::builder(transport)
+            .connect(hello)
+            .expect("handshake")
     }
 
     fn connect_to(paths: &ServerPaths) -> Connection {

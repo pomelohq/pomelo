@@ -135,6 +135,7 @@ impl Shared {
             streams: self.dispatcher.ptys().streams(),
             log_follows: self.dispatcher.ptys().log_follows(),
             jobs: self.dispatcher.jobs().running(),
+            retained: self.dispatcher.ptys().sweep(),
             socket: self.paths.socket.clone(),
             log: self.log.path().to_path_buf(),
         }

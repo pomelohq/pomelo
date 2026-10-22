@@ -618,7 +618,13 @@ impl OpQueue {
                 Err(SourceError::Failed(message)) => return Err(message),
                 Err(SourceError::Unreachable(reason)) => last_error = reason,
             }
-            lost += 1;
+            // The session coming back on its own is no lost try: the server keeps the job's events meanwhile.
+            let reconnecting = source.link().is_some_and(|report| {
+                matches!(report.state, pom_remote::LinkState::Reconnecting { .. })
+            });
+            if !reconnecting {
+                lost += 1;
+            }
             if lost > RECONNECT_TRIES {
                 return Err(format!("lost the host: {last_error}"));
             }

@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pom_ptyhost::{HolderConnection, SocketDir, SpawnRequest};
 use pom_remote::server_api::{FollowLogsParams, FollowedLogs};
@@ -28,6 +28,8 @@ const HOLDER_START: Duration = Duration::from_secs(5);
 /// How often a waiting bridge looks up from its wait to notice a detach.
 const POLL: Duration = Duration::from_millis(100);
 const MAX_CLAIM: usize = 256;
+/// How long a vanished client's input numbering and followed streams are kept for it to reconnect.
+pub const RETENTION: Duration = Duration::from_secs(10 * 60);
 const MAX_TERMINAL_ID: usize = 64;
 
 fn invalid(message: impl Into<String>) -> RemoteError {
@@ -127,32 +129,87 @@ impl ShellCommand {
     }
 }
 
-/// Input already written per (client terminal, holder), so a resent chunk is never typed twice.
+type InputKey = (String, String);
+
+struct InputRecord {
+    applied: u64,
+    /// Bridges typing under this key right now.
+    users: usize,
+    /// When the last of them ended; the record goes once that is older than the retention.
+    released: Option<Instant>,
+}
+
+/// Input already written per (client terminal, holder), so a resent chunk is never typed twice, kept a while
+/// after the client went so a reconnect resumes the numbering.
 #[derive(Default)]
 struct Inputs {
-    applied: Mutex<HashMap<(String, String), u64>>,
+    applied: Mutex<HashMap<InputKey, InputRecord>>,
 }
 
 impl Inputs {
     /// Where a terminal's numbering goes on: its own `resume` point, or what the holder already took.
-    fn start(&self, key: &(String, String), resume: Option<u64>) -> u64 {
+    fn start(&self, key: &InputKey, resume: Option<u64>) -> u64 {
         let mut applied = locked(&self.applied);
-        let known = applied.entry(key.clone()).or_insert(0);
+        let record = applied.entry(key.clone()).or_insert(InputRecord {
+            applied: 0,
+            users: 0,
+            released: None,
+        });
+        record.users += 1;
+        record.released = None;
         match resume {
             Some(offset) => offset,
-            None => *known,
+            None => record.applied,
+        }
+    }
+
+    fn release(&self, key: &InputKey) {
+        if let Some(record) = locked(&self.applied).get_mut(key) {
+            record.users = record.users.saturating_sub(1);
+            if record.users == 0 {
+                record.released = Some(Instant::now());
+            }
         }
     }
 
     /// The part of `bytes` (numbered from `offset`) not written yet.
-    fn fresh<'a>(&self, key: &(String, String), offset: u64, bytes: &'a [u8]) -> &'a [u8] {
+    fn fresh<'a>(&self, key: &InputKey, offset: u64, bytes: &'a [u8]) -> &'a [u8] {
         let mut applied = locked(&self.applied);
-        let done = applied.entry(key.clone()).or_insert(0);
+        let Some(record) = applied.get_mut(key) else {
+            return bytes;
+        };
         let end = offset.saturating_add(bytes.len() as u64);
-        let skip = done.saturating_sub(offset).min(bytes.len() as u64) as usize;
-        *done = (*done).max(end);
+        let skip = record
+            .applied
+            .saturating_sub(offset)
+            .min(bytes.len() as u64) as usize;
+        record.applied = record.applied.max(end);
         bytes.get(skip..).unwrap_or_default()
     }
+
+    fn sweep(&self, retention: Duration) -> usize {
+        let mut applied = locked(&self.applied);
+        applied.retain(|_, record| {
+            record
+                .released
+                .is_none_or(|released| released.elapsed() < retention)
+        });
+        applied
+            .values()
+            .filter(|record| record.released.is_some())
+            .count()
+    }
+}
+
+/// Where a followed service's stream stood when its client went: enough to carry the stream on at the same
+/// offsets when the client comes back.
+struct FollowRecord {
+    base: u64,
+    origin: u64,
+    identity: Option<i32>,
+    /// The stream offset after the last byte sent.
+    next: u64,
+    released: Instant,
 }
 
 /// The holder's output read so far and not yet handed to the stream.
@@ -402,8 +459,11 @@ impl Bridge {
     }
 
     /// Hands buffered output to the stream as credit allows, resuming the holder once the app caught up.
-    fn pump(self: Arc<Self>, mut sender: StreamSender) -> String {
+    /// Returns why the stream ended and the offset its next byte would have had.
+    fn pump(self: Arc<Self>, mut sender: StreamSender) -> (String, u64) {
         let half = self.window - self.window / 2;
+        // Tracked here: once the connection is gone the sender no longer knows its offset.
+        let mut next = sender.offset();
         loop {
             let mut flow = self.flow();
             while flow.closing.is_none() && flow.buffer.is_empty() && flow.reader.is_some() {
@@ -420,7 +480,7 @@ impl Bridge {
             if let Some(reason) = flow.closing.clone() {
                 drop(flow);
                 sender.finish(&reason);
-                return reason;
+                return (reason, next);
             }
             if let Some(mut bytes) = flow.buffer.pop_front() {
                 drop(flow);
@@ -437,6 +497,7 @@ impl Bridge {
                         0
                     }
                 };
+                next += written as u64;
                 let mut flow = self.flow();
                 flow.buffered -= written;
                 if written < bytes.len() {
@@ -453,7 +514,7 @@ impl Bridge {
                 }
                 self.exit();
                 sender.finish("exit");
-                return "exit".to_string();
+                return ("exit".to_string(), next);
             }
             let from = flow.end;
             drop(flow);
@@ -475,9 +536,12 @@ impl Bridge {
                 }
                 Ok(resumed) => {
                     let skipped = self.flow().stream_offset(resumed.start);
-                    if resumed.start != from && sender.reset(skipped).is_err() {
-                        self.close("client gone");
-                        continue;
+                    if resumed.start != from {
+                        if sender.reset(skipped).is_err() {
+                            self.close("client gone");
+                            continue;
+                        }
+                        next = skipped;
                     }
                     if let Err(error) = self.adopt(resumed) {
                         eprintln!("pom server: resume {}: {error}", self.holder);
@@ -581,9 +645,13 @@ pub struct Ptys {
     shell: Mutex<ShellCommand>,
     streams: Arc<Streams>,
     inputs: Arc<Inputs>,
+    follows: Arc<Follows>,
+    retention: Mutex<Duration>,
     publishers: Arc<Publishers>,
     next_shell: AtomicU64,
 }
+
+type Follows = Mutex<HashMap<(String, String), FollowRecord>>;
 
 type Publishers = Mutex<HashMap<(u64, u32), Arc<Publisher>>>;
 
@@ -614,6 +682,8 @@ impl Ptys {
             shell: Mutex::new(ShellCommand::login()),
             streams: Arc::new(Mutex::new(HashMap::new())),
             inputs: Arc::new(Inputs::default()),
+            follows: Arc::new(Mutex::new(HashMap::new())),
+            retention: Mutex::new(RETENTION),
             publishers: Arc::new(Mutex::new(HashMap::new())),
             next_shell: AtomicU64::new(1),
         }
@@ -625,6 +695,20 @@ impl Ptys {
 
     pub fn streams(&self) -> usize {
         locked(&self.streams).len()
+    }
+
+    /// How long a vanished client's terminals and followed streams can be resumed.
+    pub fn set_retention(&self, retention: Duration) {
+        *locked(&self.retention) = retention;
+    }
+
+    /// Drops what vanished clients left longer ago than the retention; returns what is still kept.
+    pub fn sweep(&self) -> usize {
+        let retention = *locked(&self.retention);
+        let inputs = self.inputs.sweep(retention);
+        let mut follows = locked(&self.follows);
+        follows.retain(|_, record| record.released.elapsed() < retention);
+        inputs + follows.len()
     }
 
     pub fn log_follows(&self) -> usize {
@@ -802,11 +886,12 @@ impl Ptys {
             format!("{}/{}", caller.client, params.terminal),
             params.holder.clone(),
         );
+        self.sweep();
         let input_from = self.inputs.start(&key, params.input_from);
         let stream_key = (caller.connection, params.channel);
         locked(&self.streams).insert(stream_key, bridge.clone());
         if let Some(input) = input {
-            let (bridge, inputs) = (bridge.clone(), self.inputs.clone());
+            let (bridge, inputs, key) = (bridge.clone(), self.inputs.clone(), key.clone());
             let mode = params.mode;
             std::thread::Builder::new()
                 .name("pom-server-pty-input".into())
@@ -814,6 +899,7 @@ impl Ptys {
                 .map_err(|error| failed(error.to_string()))?;
         }
         let (streams, publishers) = (self.streams.clone(), self.publishers.clone());
+        let inputs = self.inputs.clone();
         // A shared channel serves the connection's other terminals too, so it stays until the client goes.
         let events_key = params
             .events
@@ -825,6 +911,7 @@ impl Ptys {
             .spawn(move || {
                 pumped.clone().pump(sender);
                 pumped.shut_down();
+                inputs.release(&key);
                 locked(&streams).remove(&stream_key);
                 if let Some(events_key) = events_key {
                     locked(&publishers).remove(&events_key);
@@ -840,7 +927,8 @@ impl Ptys {
     }
 
     /// Streams a service's output as it prints it, read-only, from holder to holder across restarts; a service
-    /// that is not running starts the stream with what it left and the stream waits for it.
+    /// that is not running starts the stream with what it left and the stream waits for it. A client back
+    /// within the retention carries its stream on at the offsets it had.
     pub fn follow_logs(
         &self,
         source: &LocalSource,
@@ -864,31 +952,14 @@ impl Ptys {
             params.channel,
             Some(params.service.clone()),
         ));
-        let resumed = self
-            .holders
-            .holder_alive(&holder)
-            .then(|| bridge.open_reader(params.since, params.since > 0).ok())
-            .flatten();
-        let running = resumed.is_some();
-        let (start, end) = match &resumed {
-            Some(resumed) => (resumed.start, resumed.end),
-            None => {
-                let left = self
-                    .holders
-                    .crash_info(&holder)
-                    .map(|info| info.output)
-                    .unwrap_or_default();
-                let length = left.len() as u64;
-                *locked(&bridge.identity) = None;
-                let mut flow = bridge.flow();
-                flow.base = length;
-                flow.buffered = left.len();
-                if !left.is_empty() {
-                    flow.buffer.push_back(left);
-                }
-                flow.holder_gone = true;
-                (0, length)
-            }
+        self.sweep();
+        let follow_key = (caller.client.to_string(), holder.clone());
+        let retained = locked(&self.follows).remove(&follow_key).filter(|record| {
+            params.since > 0 && (record.base..=record.next).contains(&params.since)
+        });
+        let (start, end, running, resumed) = match retained {
+            Some(record) => self.carry_on(&bridge, &record, params.since),
+            None => self.start_follow(&bridge, &holder, params.since),
         };
         let sender = match connection.attach_stream(params.channel, start) {
             Ok(sender) => sender,
@@ -904,13 +975,27 @@ impl Ptys {
         }
         let stream_key = (caller.connection, params.channel);
         locked(&self.streams).insert(stream_key, bridge.clone());
-        let streams = self.streams.clone();
+        let (streams, follows) = (self.streams.clone(), self.follows.clone());
         std::thread::Builder::new()
             .name("pom-server-logs-pump".into())
             .spawn(move || {
-                bridge.clone().pump(sender);
+                let (reason, next) = bridge.clone().pump(sender);
                 bridge.shut_down();
                 locked(&streams).remove(&stream_key);
+                if reason == "client gone" {
+                    let (base, origin) = {
+                        let flow = bridge.flow();
+                        (flow.base, flow.origin)
+                    };
+                    let record = FollowRecord {
+                        base,
+                        origin,
+                        identity: *locked(&bridge.identity),
+                        next,
+                        released: Instant::now(),
+                    };
+                    locked(&follows).insert(follow_key, record);
+                }
             })
             .map_err(|error| failed(error.to_string()))?;
         to_value(FollowedLogs {
@@ -919,6 +1004,74 @@ impl Ptys {
             end,
             running,
         })
+    }
+
+    /// A first follow: stream offsets are the holder's own.
+    fn start_follow(
+        &self,
+        bridge: &Arc<Bridge>,
+        holder: &str,
+        since: u64,
+    ) -> (u64, u64, bool, Option<Resumed>) {
+        let resumed = self
+            .holders
+            .holder_alive(holder)
+            .then(|| bridge.open_reader(since, since > 0).ok())
+            .flatten();
+        match resumed {
+            Some(resumed) => (resumed.start, resumed.end, true, Some(resumed)),
+            None => {
+                let left = self
+                    .holders
+                    .crash_info(holder)
+                    .map(|info| info.output)
+                    .unwrap_or_default();
+                let length = left.len() as u64;
+                *locked(&bridge.identity) = None;
+                let mut flow = bridge.flow();
+                flow.base = length;
+                flow.buffered = left.len();
+                if !left.is_empty() {
+                    flow.buffer.push_back(left);
+                }
+                flow.holder_gone = true;
+                (0, length, false, None)
+            }
+        }
+    }
+
+    /// The stream a client left goes on from `since`: from the same holder when it still runs, else after a
+    /// line about the restart, as if the client had never gone.
+    fn carry_on(
+        &self,
+        bridge: &Arc<Bridge>,
+        record: &FollowRecord,
+        since: u64,
+    ) -> (u64, u64, bool, Option<Resumed>) {
+        {
+            let mut flow = bridge.flow();
+            flow.base = record.base;
+            flow.origin = record.origin;
+        }
+        *locked(&bridge.identity) = record.identity;
+        let running = self
+            .holders
+            .holder_pid(&bridge.holder)
+            .filter(|_| self.holders.holder_alive(&bridge.holder));
+        if running.is_some() && running == record.identity {
+            let holder_offset = record.origin + (since - record.base);
+            if let Ok(resumed) = bridge.open_reader(holder_offset, true) {
+                let flow = bridge.flow();
+                let (start, end) = (
+                    flow.stream_offset(resumed.start),
+                    flow.stream_offset(resumed.end),
+                );
+                drop(flow);
+                return (start, end, true, Some(resumed));
+            }
+        }
+        bridge.flow().holder_gone = true;
+        (since, since, running.is_some(), None)
     }
 
     pub fn resize(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {

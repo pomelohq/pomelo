@@ -32,7 +32,9 @@ pub use holder::HolderOptions;
 pub use hyperlinks::{HyperlinkMatch, PathWithPosition};
 pub use input::{Keystroke, Modifiers, TerminalAction};
 pub use mouse::{GridPoint, MouseButton, Side};
-pub use pom_rpc::pty::{Mode as RemoteMode, PtyProvider, Target as RemoteTarget};
+pub use pom_rpc::pty::{
+    LinkState as RemoteLink, Mode as RemoteMode, PtyProvider, Target as RemoteTarget,
+};
 pub use remote::RemoteOptions;
 
 use mouse::grid_point_and_side;
@@ -529,6 +531,21 @@ impl Terminal {
         match &self.pty {
             Backend::Remote(remote) => Some(&remote.options),
             Backend::Local(_) | Backend::Holder(_) => None,
+        }
+    }
+
+    /// How the connection of a remote terminal stands, and the machine's name; `None` for a local one.
+    pub fn remote_link(&self) -> Option<(RemoteLink, String)> {
+        match &self.pty {
+            Backend::Remote(remote) => Some((remote.link(), remote.host())),
+            Backend::Local(_) | Backend::Holder(_) => None,
+        }
+    }
+
+    /// Reopens a remote terminal's dropped connection now.
+    pub fn reconnect_remote(&self) {
+        if let Backend::Remote(remote) = &self.pty {
+            remote.reconnect_now();
         }
     }
 
