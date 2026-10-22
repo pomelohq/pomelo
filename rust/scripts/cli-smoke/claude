@@ -1,0 +1,28 @@
+#!/bin/sh
+# Stands in for the agent CLI in the smoke test: it reports its session through pom's hook, then answers each
+# submitted line by echoing it into its transcript, the way the real agent's hooks and transcript do.
+session=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --session-id | --resume) session="$2"; shift ;;
+    esac
+    shift
+done
+folder="$(pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+transcript="$HOME/.claude/projects/$folder/$session.jsonl"
+mkdir -p "$(dirname "$transcript")"
+: >>"$transcript"
+event() {
+    printf '{"session_id":"%s","hook_event_name":"%s","cwd":"%s","transcript_path":"%s"%s}' \
+        "$session" "$1" "$PWD" "$transcript" "$2" | pom claude-hook --session >/dev/null
+}
+event SessionStart ""
+stty -echo 2>/dev/null
+while IFS= read -r line; do
+    text=$(printf '%s' "$line" | tr -d '\033\r' | sed -e 's/\[200~//' -e 's/\[201~//')
+    [ -z "$text" ] && continue
+    event UserPromptSubmit ",\"prompt\":\"$text\""
+    printf '{"type":"user","uuid":"u-%s","message":{"role":"user","content":"%s"}}\n' "$text" "$text" >>"$transcript"
+    printf '{"type":"assistant","uuid":"a-%s","message":{"id":"m-%s","content":[{"type":"text","text":"echo: %s"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}}\n' "$text" "$text" "$text" >>"$transcript"
+    event Stop ""
+done

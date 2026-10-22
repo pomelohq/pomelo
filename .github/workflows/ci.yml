@@ -159,6 +159,49 @@ jobs:
           tool: cargo-hakari
       - run: make check
 
+  # pom alone on a server: it must link no display libraries and work headless in a clean Ubuntu container
+  # (workspace create with a Postgres database, start --wait, the dev proxy, an agent session).
+  cli-smoke:
+    name: pom CLI headless smoke (Linux)
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+          shared-key: linux-cli
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build -p pom_cli --bin pom
+      - name: pom links no display libraries
+        run: |
+          ldd target/debug/pom
+          if ldd target/debug/pom | grep -Ei 'libx11|libxcb|libxkb|wayland|libgl|libegl|vulkan|fontconfig|freetype'; then
+            echo "::error::pom links a display library"; exit 1
+          fi
+      - name: Headless in a clean Ubuntu 24.04 container
+        run: |
+          docker run --rm --network host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/work" -w /work \
+            ubuntu:24.04 bash -c '
+              set -e
+              apt-get update -q >/dev/null
+              apt-get install -yq --no-install-recommends git curl ca-certificates python3 procps \
+                docker.io docker-compose-v2 >/dev/null
+              install -m755 target/debug/pom /usr/local/bin/pom
+              pom --version
+              scripts/linux-cli-smoke.sh
+            '
+
   # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
   postgres:
     name: Real Postgres tests (Linux)
@@ -201,15 +244,16 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust, rust-linux, postgres, actionlint]
+    needs: [changes, rust, rust-linux, cli-smoke, postgres, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
+          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
           case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
           case "${{ needs.rust-linux.result }}" in success|skipped) ;; *) echo "rust on Linux failed"; exit 1 ;; esac
+          case "${{ needs.cli-smoke.result }}" in success|skipped) ;; *) echo "pom CLI smoke failed"; exit 1 ;; esac
           case "${{ needs.postgres.result }}" in success|skipped) ;; *) echo "postgres tests failed"; exit 1 ;; esac
           case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
           echo "CI gate passed"
