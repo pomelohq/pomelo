@@ -1,5 +1,5 @@
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -30,21 +30,15 @@ fn handler(request: Request, context: &RequestContext) -> Result<Value, RemoteEr
             Ok(Value::Null)
         }
         "flood" => {
-            let channel = request.params["channel"].as_u64().unwrap() as u32;
-            let total = request.params["bytes"].as_u64().unwrap() as usize;
+            let channel = request.params.as_u64().unwrap() as u32;
             let mut sender = context
                 .connection()
                 .attach_stream(channel, 0)
                 .map_err(|error| RemoteError::new("stream", error.to_string()))?;
+            // Floods until the receiver leaves, so the test decides how long it overlaps the flood.
             thread::spawn(move || {
                 let block = vec![b'x'; 64 * 1024];
-                let mut sent = 0;
-                while sent < total {
-                    let size = block.len().min(total - sent);
-                    sender.write(&block[..size]).unwrap();
-                    sent += size;
-                }
-                sender.finish("done");
+                while sender.write(&block).is_ok() {}
             });
             Ok(Value::Null)
         }
@@ -484,51 +478,49 @@ fn try_write_takes_only_the_available_credit() {
 fn a_flooding_stream_does_not_delay_control_frames() {
     let (client, _server) = connected(Config::default());
     let receiver = client.open_stream().unwrap();
-    let total = 50 * MEBIBYTE;
-    client
-        .request(
-            "flood",
-            json!({"channel": receiver.channel(), "bytes": total}),
-        )
-        .unwrap();
-    let consumer = thread::spawn(move || {
-        let mut received = 0u64;
-        loop {
-            match receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
-                StreamEvent::Data { offset, bytes } => {
-                    assert_eq!(offset, received);
-                    received += bytes.len() as u64;
-                    receiver.ack(received);
+    let target = 50 * MEBIBYTE as u64;
+    client.request("flood", receiver.channel()).unwrap();
+    let received = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let consumer = {
+        let received = received.clone();
+        let stop = stop.clone();
+        thread::spawn(move || {
+            let mut total = 0u64;
+            while !stop.load(Ordering::Acquire) {
+                match receiver.recv_timeout(Duration::from_secs(10)).unwrap() {
+                    StreamEvent::Data { offset, bytes } => {
+                        assert_eq!(offset, total);
+                        total += bytes.len() as u64;
+                        receiver.ack(total);
+                        received.store(total, Ordering::Release);
+                    }
+                    other => panic!("unexpected {other:?}"),
                 }
-                StreamEvent::End { .. } => return received,
-                StreamEvent::Reset { .. } => panic!("unexpected reset"),
             }
-        }
-    });
-    thread::sleep(Duration::from_millis(20));
+        })
+    };
     let mut slowest_request = Duration::ZERO;
     let mut slowest_ping = Duration::ZERO;
     let mut samples = 0;
-    while !consumer.is_finished() && samples < 40 {
+    while samples < 20 || received.load(Ordering::Acquire) < target {
         let started = Instant::now();
         assert_eq!(client.request("echo", samples).unwrap(), json!(samples));
         slowest_request = slowest_request.max(started.elapsed());
         slowest_ping = slowest_ping.max(client.ping(Duration::from_secs(1)).unwrap());
         samples += 1;
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(consumer.join().unwrap(), total as u64);
-    assert!(
-        samples >= 5,
-        "the flood ended before enough samples ({samples})"
-    );
+    stop.store(true, Ordering::Release);
+    consumer.join().unwrap();
+    assert!(received.load(Ordering::Acquire) >= target);
     assert!(
         slowest_request < Duration::from_millis(50),
-        "request took {slowest_request:?}"
+        "request took {slowest_request:?} over {samples} samples"
     );
     assert!(
         slowest_ping < Duration::from_millis(50),
-        "ping took {slowest_ping:?}"
+        "ping took {slowest_ping:?} over {samples} samples"
     );
     client.close();
 }
