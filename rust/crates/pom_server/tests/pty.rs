@@ -141,9 +141,14 @@ fn a_vanished_client_leaves_the_holder_running() {
     client.close();
     assert!(remote.wait_streams(0), "its streams end with it");
     std::thread::sleep(Duration::from_millis(200));
-    assert!(remote.holders().holder_alive(&holder));
+    let holders = remote.holders();
+    let alive = || holders.holder_alive(&holder);
+    let ended = || holders.crash_info(&holder).map(|info| info.header);
+    assert!(alive(), "{:?}", ended());
 
-    let back = remote.attach(&remote.connection, &holder);
+    let params = remote.attach_params(&holder);
+    let back = pty::Terminal::attach(&remote.connection, params, TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}: alive {}, {:?}", alive(), ended()));
     let mut replayed = Reader::new();
     assert!(replayed.until(&back, "still-42"));
 }
