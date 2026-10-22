@@ -456,6 +456,7 @@ impl ProjectSource for ServerSource {
         Ok(Some(Arc::new(ServerFeed {
             inner: self.inner.clone(),
             connection,
+            channel: subscription.channel(),
             subscription: Mutex::new(subscription),
         })))
     }
@@ -518,6 +519,8 @@ impl ProjectSource for ServerSource {
 struct ServerFeed {
     inner: Arc<Inner>,
     connection: Connection,
+    /// Kept apart from the subscription, which its reader holds while it waits.
+    channel: u32,
     subscription: Mutex<Subscription>,
 }
 
@@ -548,7 +551,7 @@ impl Feed for ServerFeed {
 
     fn follow(&self, branch: &str, turn: Option<&str>) -> Result<(), SourceError> {
         let params = WatchBranchParams {
-            channel: locked(&self.subscription).channel(),
+            channel: self.channel,
             branch: branch.to_string(),
             turn: turn.map(str::to_string),
         };
