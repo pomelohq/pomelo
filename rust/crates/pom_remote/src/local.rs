@@ -205,10 +205,11 @@ pub struct LocalSource {
     binary: PathBuf,
 }
 
-struct Opened {
-    project: Project,
-    config: Config,
-    runner: ServiceRunner,
+/// A project read from disk, with the runner of its services.
+pub struct OpenedProject {
+    pub project: Project,
+    pub config: Config,
+    pub runner: ServiceRunner,
 }
 
 impl LocalSource {
@@ -226,7 +227,7 @@ impl LocalSource {
         }
     }
 
-    fn open(&self) -> Result<Opened, SourceError> {
+    pub fn open_project(&self) -> Result<OpenedProject, SourceError> {
         let project = Project::open(&self.config_path, &self.state);
         let config = match (&project.config, &project.error) {
             (Some(config), None) => config.clone(),
@@ -241,7 +242,7 @@ impl LocalSource {
             binary: self.binary.clone(),
             docker: "docker".into(),
         });
-        Ok(Opened {
+        Ok(OpenedProject {
             project,
             config,
             runner,
@@ -273,8 +274,20 @@ impl LocalSource {
         &self.config_path
     }
 
+    pub fn state(&self) -> &StateDir {
+        &self.state
+    }
+
+    pub fn holders(&self) -> &SocketDir {
+        &self.holders
+    }
+
+    pub fn binary(&self) -> &Path {
+        &self.binary
+    }
+
     pub fn workspace_terminals(&self, branch: &str) -> Result<WorkspaceTerminals, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let worktree = opened
             .project
             .workspaces
@@ -291,7 +304,7 @@ impl LocalSource {
     }
 
     pub fn service_holder(&self, branch: &str, service: &str) -> Result<String, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
         let (repo, name) = opened
             .config
@@ -351,7 +364,7 @@ impl LocalSource {
         role: &str,
         person: bool,
     ) -> Result<SessionView, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
         let drive = self.drive(&opened.config);
         let gate = self.gate(&opened.config, branch)?;
@@ -391,7 +404,7 @@ impl LocalSource {
 
     /// Takes the lease of `role` as an orchestrator, as `pom agent send --take` does.
     pub fn claim_agent(&self, branch: &str, role: &str) -> Result<AgentClaim, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let drive = self.drive(&opened.config);
         let gate = self.gate(&opened.config, branch)?;
         let view = drive
@@ -408,7 +421,7 @@ impl LocalSource {
 
     /// The person takes `holder` over; whoever drove it gets it back on release.
     pub fn take_over_agent(&self, branch: &str, holder: &str) -> Result<(), SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let view = self.agent_view(&self.drive(&opened.config), branch, holder)?;
         let before = pom_agent::read_lease(&self.state, holder);
         if before.class == LeaseClass::Human {
@@ -437,7 +450,7 @@ impl LocalSource {
         request: &str,
         allow: bool,
     ) -> Result<(), SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         self.agent_view(&self.drive(&opened.config), branch, holder)?;
         let session = pom_agent::session_for_holder(&self.state, holder)
             .ok_or_else(|| SourceError::Failed(format!("{holder} has no session yet")))?;
@@ -457,7 +470,7 @@ impl LocalSource {
         branch: &str,
         role: &str,
     ) -> Result<serde_json::Value, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let drive = self.drive(&opened.config);
         let Some(view) = drive
             .list(branch)
@@ -485,7 +498,7 @@ impl ProjectSource for LocalSource {
     }
 
     fn workspaces(&self) -> Result<WorkspaceList, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         Ok(workspace_list(
             &opened.project,
             &opened.config,
@@ -495,7 +508,7 @@ impl ProjectSource for LocalSource {
     }
 
     fn status(&self, branch: &str) -> Result<StatusReport, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
         Ok(status_report(
             &opened.config,
@@ -506,7 +519,7 @@ impl ProjectSource for LocalSource {
     }
 
     fn logs(&self, branch: &str, service: &str) -> Result<String, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
         let (repo, name) = opened
             .config
@@ -522,7 +535,7 @@ impl ProjectSource for LocalSource {
     }
 
     fn agents(&self, branch: &str) -> Result<Vec<SessionView>, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         Ok(self.drive(&opened.config).list(branch))
     }
 
@@ -536,7 +549,7 @@ impl ProjectSource for LocalSource {
         action: ServiceAction,
         target_name: &str,
     ) -> Result<String, SourceError> {
-        let opened = self.open()?;
+        let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
         let mut said = Vec::new();
         if action != ServiceAction::Start {

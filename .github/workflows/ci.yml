@@ -216,7 +216,8 @@ jobs:
 
   # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
   # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), pushes and
-  # agent leases, and the app's reads, shells and agents through `pom server proxy` behind a fake ssh.
+  # agent leases, followed service output and workspace jobs, and the app's reads, shells, agents, output and
+  # jobs through `pom server proxy` behind a fake ssh.
   pom-server:
     name: pom server (Linux)
     needs: changes

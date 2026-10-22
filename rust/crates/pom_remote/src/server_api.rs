@@ -28,6 +28,10 @@ pub mod method {
     pub const AGENT_CLAIM: &str = "agent.claim";
     pub const AGENT_TAKE_OVER: &str = "agent.take_over";
     pub const AGENT_ANSWER: &str = "agent.answer";
+    pub const LOGS_FOLLOW: &str = "logs.follow";
+    pub const JOB_START: &str = "job.start";
+    pub const JOB_FOLLOW: &str = "job.follow";
+    pub const JOB_CANCEL: &str = "job.cancel";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -59,6 +63,10 @@ pub const METHODS: &[&str] = &[
     method::AGENT_CLAIM,
     method::AGENT_TAKE_OVER,
     method::AGENT_ANSWER,
+    method::LOGS_FOLLOW,
+    method::JOB_START,
+    method::JOB_FOLLOW,
+    method::JOB_CANCEL,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -77,6 +85,12 @@ pub const AGENTS: &[&str] = &[
     method::AGENT_TAKE_OVER,
     method::AGENT_ANSWER,
 ];
+
+/// The methods a server must list for the app to follow a service's output instead of asking for it again.
+pub const LIVE_LOGS: &[&str] = &[method::LOGS_FOLLOW];
+
+/// The methods a server must list for the app to create, sleep, wake and pull workspaces there.
+pub const JOBS: &[&str] = &[method::JOB_START, method::JOB_FOLLOW, method::JOB_CANCEL];
 
 /// What a watch pushes, each as its full value whenever it changed.
 pub mod topic {
@@ -180,6 +194,10 @@ pub struct ServerInfo {
     pub uptime_seconds: u64,
     pub connections: usize,
     pub streams: usize,
+    /// Of `streams`, those following a service's output.
+    pub log_follows: usize,
+    /// Jobs still running.
+    pub jobs: usize,
     pub socket: PathBuf,
     pub log: PathBuf,
 }
@@ -307,3 +325,192 @@ pub struct AgentAnswerParams {
     pub request: String,
     pub allow: bool,
 }
+
+/// `channel` is the stream the client opened for the output; `since` the offset to go on from (0: all of it).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FollowLogsParams {
+    pub cfg: String,
+    pub branch: String,
+    pub service: String,
+    pub since: u64,
+    pub channel: u32,
+}
+
+/// Where the followed output starts and stands: offsets of the stream, which run on across restarts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FollowedLogs {
+    pub holder: String,
+    pub start: u64,
+    pub end: u64,
+    /// The service was running; otherwise the stream starts with what it left and waits for it to start.
+    pub running: bool,
+}
+
+/// What a job runs.
+pub mod job_op {
+    pub const WS_CREATE: &str = "ws.create";
+    pub const WS_WAKE: &str = "ws.wake";
+    pub const WS_SLEEP: &str = "ws.sleep";
+    pub const START_WAIT: &str = "start_wait";
+    pub const SYNC: &str = "sync";
+    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC];
+}
+
+/// `ws.create`: an empty `repos` checks out every repo of the project.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CreateArgs {
+    pub branch: String,
+    pub repos: Vec<String>,
+    pub environment: String,
+    pub fresh_databases: bool,
+    pub display_name: String,
+    /// 0-based stage to resume a stopped run from.
+    pub from_stage: usize,
+}
+
+/// `ws.wake`, `ws.sleep` (with `force`) and `sync`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BranchArgs {
+    pub branch: String,
+    pub force: bool,
+}
+
+/// `start_wait`: starts `target` (a service, repo or group) and waits until it is ready.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StartWaitArgs {
+    pub branch: String,
+    pub target: String,
+    pub timeout_seconds: u64,
+}
+
+/// A job as the app asks for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobRequest {
+    Create(CreateArgs),
+    Wake(BranchArgs),
+    Sleep(BranchArgs),
+    StartWait(StartWaitArgs),
+    Sync(BranchArgs),
+}
+
+impl JobRequest {
+    pub fn op(&self) -> &'static str {
+        match self {
+            JobRequest::Create(_) => job_op::WS_CREATE,
+            JobRequest::Wake(_) => job_op::WS_WAKE,
+            JobRequest::Sleep(_) => job_op::WS_SLEEP,
+            JobRequest::StartWait(_) => job_op::START_WAIT,
+            JobRequest::Sync(_) => job_op::SYNC,
+        }
+    }
+
+    pub fn branch(&self) -> &str {
+        match self {
+            JobRequest::Create(args) => &args.branch,
+            JobRequest::StartWait(args) => &args.branch,
+            JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
+                &args.branch
+            }
+        }
+    }
+
+    pub fn args(&self) -> serde_json::Value {
+        let value = match self {
+            JobRequest::Create(args) => serde_json::to_value(args),
+            JobRequest::StartWait(args) => serde_json::to_value(args),
+            JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
+                serde_json::to_value(args)
+            }
+        };
+        value.unwrap_or_default()
+    }
+}
+
+/// `op_id` names the start, so asking again (after a reconnect) gets the same job instead of a second one.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobStartParams {
+    pub cfg: String,
+    pub op: String,
+    pub args: serde_json::Value,
+    pub op_id: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobStarted {
+    pub id: String,
+    /// The op id had already started this job.
+    pub existing: bool,
+}
+
+/// Pushes the job's progress from `since_seq` on, on the client's subscription `channel`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobFollowParams {
+    pub id: String,
+    pub since_seq: u64,
+    pub channel: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobFollowed {
+    pub id: String,
+    pub op: String,
+    /// The seq the next event will have.
+    pub next_seq: u64,
+    pub done: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JobParams {
+    pub id: String,
+}
+
+/// The topic a job's progress is pushed under.
+pub const PROGRESS_TOPIC: &str = "progress";
+
+/// What a progress event says.
+pub mod progress_kind {
+    /// `stages` lists the job's stages, all pending.
+    pub const STAGES: &str = "stages";
+    pub const STAGE_STARTED: &str = "stage_started";
+    pub const STAGE_DONE: &str = "stage_done";
+    pub const STAGE_SKIPPED: &str = "stage_skipped";
+    /// `line` is a step of the running stage.
+    pub const LINE: &str = "line";
+    /// `line` went wrong without stopping the job.
+    pub const WARNING: &str = "warning";
+    /// Stage `stage` failed with `line`.
+    pub const FAILED: &str = "failed";
+    /// The last event: `done` with the job's `exit`.
+    pub const DONE: &str = "done";
+}
+
+/// One event of a job, numbered from 0 so a client can follow again from the last one it saw.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Progress {
+    pub seq: u64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<usize>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub line: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
+}
+
+/// The exit of a job stopped by `job.cancel`.
+pub const EXIT_CANCELLED: i32 = 130;

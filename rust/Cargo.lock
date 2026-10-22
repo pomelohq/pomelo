@@ -3886,10 +3886,13 @@ version = "0.9.3"
 dependencies = [
  "libc",
  "pom_agent",
+ "pom_layout",
  "pom_paths",
  "pom_ptyhost",
+ "pom_push",
  "pom_remote",
  "pom_rpc",
+ "pom_services",
  "pom_sessions",
  "pom_shell",
  "pom_workspace",

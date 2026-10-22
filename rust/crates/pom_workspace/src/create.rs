@@ -21,6 +21,9 @@ pub const CREATE_STAGES: [&str; 8] = [
     "Saving the workspace's baseline snapshot",
 ];
 
+/// The error a stopped run fails its stage with.
+pub const CANCELLED: &str = "cancelled";
+
 const VALIDATE: usize = 0;
 const PROVISION: usize = 1;
 const INFRA: usize = 2;
@@ -69,6 +72,16 @@ pub fn create(
     request: &CreateRequest,
     sink: EventSink<'_>,
 ) -> Result<Outcome, PipelineError> {
+    create_until(context, request, sink, &|| false)
+}
+
+/// [`create`], stopped before the next stage once `stop` says so; the stopped run resumes like a failed one.
+pub fn create_until(
+    context: &WorkspaceContext<'_>,
+    request: &CreateRequest,
+    sink: EventSink<'_>,
+    stop: &dyn Fn() -> bool,
+) -> Result<Outcome, PipelineError> {
     let project_root = context.runner.project_root();
     let folder = pom_layout::workspace_folder(project_root, &request.branch);
     let run = Run {
@@ -83,6 +96,9 @@ pub fn create(
     };
     let creation = Creation::plan(context, request);
     run.execute(|index, scope| {
+        if stop() {
+            return Err(CANCELLED.to_string());
+        }
         let creation = creation.as_ref().map_err(Clone::clone)?;
         match index {
             VALIDATE => creation.validate(),

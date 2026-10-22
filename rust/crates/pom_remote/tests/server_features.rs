@@ -5,7 +5,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pom_remote::server_api::{method, AgentListing, FEATURES, METHODS, REQUIRED};
+use pom_remote::server_api::{
+    method, AgentListing, BranchArgs, JobRequest, FEATURES, JOBS, LIVE_LOGS, METHODS, REQUIRED,
+};
 use pom_remote::{ProjectSource, ServerSource, StatusReport, Timing, Watch, WorkspaceList};
 use pom_rpc::pty::{self, AttachParams, Attached, Mode, Request, Target};
 use pom_rpc::{Connection, Hello, Publisher, RemoteError, RequestContext, StreamSender};
@@ -13,6 +15,7 @@ use pom_rpc::{Connection, Hello, Publisher, RemoteError, RequestContext, StreamS
 #[derive(Default)]
 struct Served {
     listings: AtomicUsize,
+    logs: AtomicUsize,
     attaches: Mutex<Vec<AttachParams>>,
     streams: Mutex<Vec<StreamSender>>,
     publishers: Mutex<Vec<Publisher>>,
@@ -42,6 +45,10 @@ fn answer(
             json(serde_json::to_value(list))
         }
         method::WS_STATUS => json(serde_json::to_value(StatusReport::default())),
+        method::SVC_LOGS => {
+            let asked = served.logs.fetch_add(1, Ordering::SeqCst);
+            json(serde_json::to_value(format!("web says {asked}\n")))
+        }
         method::AGENT_LIST => json(serde_json::to_value(AgentListing::default())),
         method::PTY_ATTACH => {
             let params: AttachParams = serde_json::from_value(request.params)
@@ -211,4 +218,44 @@ fn a_current_server_shares_one_events_channel() {
     assert_eq!(attaches[0].events, attaches[1].events);
     let transport = source.transport().expect("transport");
     assert!(transport.pushes && transport.agents);
+}
+
+#[test]
+fn a_server_without_live_logs_or_jobs_is_asked_for_the_output_every_poll() {
+    let features: Vec<String> = current_features()
+        .into_iter()
+        .filter(|name| !LIVE_LOGS.contains(&name.as_str()) && !JOBS.contains(&name.as_str()))
+        .collect();
+    let (source, served) = source(features);
+    let source = Arc::new(source);
+    let timing = Timing {
+        poll: Duration::from_millis(50),
+        safety: Duration::from_secs(60),
+    };
+    let watch = Watch::start_with(source.clone(), "main", Arc::new(|| {}), timing);
+    watch.set_visible(true);
+    watch.show_logs(Some("api/web".into()));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while served.logs.load(Ordering::SeqCst) < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "the output was not asked for again"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let snapshot = watch.snapshot();
+    assert!(!snapshot.logs_live);
+    assert!(matches!(&snapshot.logs, Some((_, Ok(text))) if text.starts_with("web says")));
+    let transport = source.transport().expect("transport");
+    assert!(!transport.live_logs && !transport.jobs && transport.pushes);
+    assert!(matches!(
+        source.start_job(
+            &JobRequest::Wake(BranchArgs {
+                branch: "main".into(),
+                force: false
+            }),
+            "op-1"
+        ),
+        Err(pom_remote::SourceError::Failed(_))
+    ));
 }

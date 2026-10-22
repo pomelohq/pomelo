@@ -10,12 +10,14 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_remote::server_api::{
     method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
-    AgentStartParams, AgentStarted, LogsParams, OpParams, OpResult, ProjectParams, TurnParams,
-    WatchBranchParams, WatchChannel, WatchParams, WorkspaceParams,
+    AgentStartParams, AgentStarted, FollowLogsParams, JobFollowParams, JobParams, JobStartParams,
+    LogsParams, OpParams, OpResult, ProjectParams, TurnParams, WatchBranchParams, WatchChannel,
+    WatchParams, WorkspaceParams,
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
+use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
 use crate::watch::Watches;
 use serde::de::DeserializeOwned;
@@ -230,6 +232,7 @@ pub struct Dispatcher {
     ops: Ops,
     ptys: Ptys,
     watches: Watches,
+    jobs: Jobs,
 }
 
 impl Dispatcher {
@@ -237,6 +240,7 @@ impl Dispatcher {
         Dispatcher {
             ptys: Ptys::new(holders.clone(), binary.clone()),
             watches: Watches::new(state.clone()),
+            jobs: Jobs::new(JOB_MEMORY),
             state,
             holders,
             binary,
@@ -250,6 +254,38 @@ impl Dispatcher {
 
     pub fn watches(&self) -> &Watches {
         &self.watches
+    }
+
+    pub fn jobs(&self) -> &Jobs {
+        &self.jobs
+    }
+
+    /// Following a service's output and the jobs: both answer on the caller's connection.
+    pub fn dispatch_jobs(
+        &self,
+        request: &Request,
+        caller: &Caller<'_>,
+    ) -> Option<Result<Value, RemoteError>> {
+        let raw = &request.params;
+        Some(match request.method.as_str() {
+            method::LOGS_FOLLOW => params::<FollowLogsParams>(raw).and_then(|params| {
+                check_branch(&params.branch)?;
+                check_name("service", &params.service)?;
+                let source = self.source(&params.cfg)?;
+                self.ptys.follow_logs(&source, caller, params)
+            }),
+            method::JOB_START => params::<JobStartParams>(raw).and_then(|params| {
+                let source = self.source(&params.cfg)?;
+                to_value(self.jobs.start(source, params)?)
+            }),
+            method::JOB_FOLLOW => params::<JobFollowParams>(raw).and_then(|params| {
+                to_value(self.jobs.follow(caller.context.connection(), params)?)
+            }),
+            method::JOB_CANCEL => {
+                params::<JobParams>(raw).and_then(|params| self.jobs.cancel(params))
+            }
+            _ => return None,
+        })
     }
 
     /// A client went away: its terminals detach and its watches stop.

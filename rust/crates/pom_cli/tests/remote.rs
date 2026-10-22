@@ -725,32 +725,78 @@ fn a_shell_on_the_server_runs_what_is_typed() {
 const FAKE_AGENT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-agent.sh");
 
 impl Fixture {
-    /// A source whose server finds a stand-in for the agent CLI first on its PATH, so no real agent ever
-    /// starts: it runs the scripted agent on the conversation id pom hands it.
-    fn server_source_with_agent_cli(&self) -> pom_remote::ServerSource {
+    /// The server's environment with a stand-in for the agent CLI first on an explicit PATH. The tool path pom
+    /// builds puts some well-known folders in front of PATH unless PATH has them, and reads version-manager
+    /// folders from the environment, so those are named here too: no real agent CLI can come first.
+    fn agent_cli_envs(&self) -> Vec<(String, String)> {
         std::fs::create_dir_all(self.temp.path().join("transcripts")).expect("transcripts");
         let bin = self.temp.path().join("agent-bin");
         std::fs::create_dir_all(&bin).expect("agent bin");
         executable(
             &bin.join("claude"),
             &format!(
-                "#!/bin/sh\nsession=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in --session-id|--resume) session=\"$2\"; shift ;; esac\n  shift\ndone\nFAKE_SESSION=\"$session\" FAKE_TRANSCRIPT=\"$FAKE_TRANSCRIPTS/$session.jsonl\" POM=\"$FAKE_POM\" exec /bin/sh '{FAKE_AGENT}'\n"
+                "#!/bin/sh\necho ran >>\"$FAKE_AGENT_RUNS\"\nsession=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in --session-id|--resume) session=\"$2\"; shift ;; esac\n  shift\ndone\nFAKE_SESSION=\"$session\" FAKE_TRANSCRIPT=\"$FAKE_TRANSCRIPTS/$session.jsonl\" POM=\"$FAKE_POM\" exec /bin/sh '{FAKE_AGENT}'\n"
             ),
         );
+        let nowhere = self
+            .temp
+            .path()
+            .join("no-tools")
+            .to_string_lossy()
+            .into_owned();
         let mut envs = self.envs();
         envs.push((
             "PATH".into(),
             format!(
-                "{}:{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                "{}:{}:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
                 bin.display(),
                 self.temp.path().join("bin").display()
             ),
         ));
-        let ssh = pom_remote::Ssh::custom(self.temp.path().join("bin/ssh"), None, envs);
+        for key in [
+            "PNPM_HOME",
+            "VOLTA_HOME",
+            "XDG_DATA_HOME",
+            "ASDF_DATA_DIR",
+            "RBENV_ROOT",
+            "PYENV_ROOT",
+            "NVM_DIR",
+        ] {
+            envs.push((key.into(), nowhere.clone()));
+        }
+        envs.push((
+            "FAKE_AGENT_RUNS".into(),
+            self.agent_runs_file().to_string_lossy().into_owned(),
+        ));
+        envs
+    }
+
+    fn agent_runs_file(&self) -> PathBuf {
+        self.temp.path().join("agent-runs")
+    }
+
+    /// How many times the stand-in agent CLI started.
+    fn agent_runs(&self) -> usize {
+        std::fs::read_to_string(self.agent_runs_file())
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    fn server_source_with_agent_cli(&self) -> pom_remote::ServerSource {
+        self.server_source_for(&self.config())
+    }
+
+    fn server_source_for(&self, config: &str) -> pom_remote::ServerSource {
+        let ssh = pom_remote::Ssh::custom(
+            self.temp.path().join("bin/ssh"),
+            None,
+            self.agent_cli_envs(),
+        );
         let host = pom_remote::Hosts::load(&self.temp.path().join("config/hosts.json"))
             .and_then(|hosts| hosts.get("dev"))
             .expect("host");
-        pom_remote::ServerSource::new(host, self.config(), ssh)
+        pom_remote::ServerSource::new(host, config.to_string(), ssh)
     }
 }
 
@@ -806,6 +852,7 @@ fn the_server_starts_an_agent_pushes_its_state_and_takes_what_is_typed() {
         !String::from_utf8_lossy(&screen).contains("Welcome"),
         "the stand-in runs, not a real agent"
     );
+    assert_eq!(fixture.agent_runs(), 1, "the stand-in ran");
     let holder = started.holder.clone();
     // Whoever starts a session drives it, so it reports to an orchestrator until the server hands it over.
     wait_snapshot(
@@ -1053,4 +1100,351 @@ fn a_real_sshd_keystroke_round_trip() {
     }
     assert!(p50 < Duration::from_millis(60), "p50 {p50:?}");
     assert!(p99 < Duration::from_millis(120), "p99 {p99:?}");
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?}: {}", text(&output));
+}
+
+impl Fixture {
+    /// A second project, `jobs`, whose main checkout is a real git repo so workspaces can be created there;
+    /// its setup takes a moment, long enough to cancel a create during it.
+    fn git_project(&self) -> String {
+        let root = self.temp.path().join("jobs");
+        let api = root.join("workspace--main/api");
+        std::fs::create_dir_all(&api).expect("repo");
+        git(&api, &["init", "-q", "-b", "main"]);
+        std::fs::write(api.join("README"), "x\n").expect("readme");
+        git(&api, &["add", "."]);
+        git(&api, &["commit", "-q", "-m", "init"]);
+        std::fs::write(
+            root.join("pom.yml"),
+            "session: jobs\ndefault_branch: main\nrepos:\n  api:\n    setup: [\"sleep 2\"]\n    seed: [\"touch seeded\"]\n    services:\n      web:\n        cmd: \"exec sleep 1000\"\n",
+        )
+        .expect("pom.yml");
+        let state = StateDir::new(self.temp.path().join("state/pom"));
+        let mut sessions = pom_sessions::Sessions::load(&state);
+        sessions.touch("jobs", &root.to_string_lossy(), 20);
+        sessions.save(&state).expect("sessions");
+        root.join("pom.yml").to_string_lossy().into_owned()
+    }
+}
+
+/// Follows job `id` from `since` until it ends, or until `stop` says so.
+fn job_events(
+    source: &dyn pom_remote::ProjectSource,
+    id: &str,
+    since: u64,
+    stop: impl Fn(&pom_remote::server_api::Progress) -> bool,
+) -> Vec<pom_remote::server_api::Progress> {
+    use pom_remote::JobEvent;
+    let feed = source.follow_job(id, since).expect("follow the job");
+    let mut events = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        assert!(Instant::now() < deadline, "the job never ended: {events:?}");
+        match feed.next(Duration::from_millis(200)) {
+            JobEvent::Progress(progress) => {
+                let done = progress.done || stop(&progress);
+                events.push(progress);
+                if done {
+                    return events;
+                }
+            }
+            JobEvent::Idle => {}
+            JobEvent::Ended(reason) => panic!("pushes ended ({reason}) at {events:?}"),
+        }
+    }
+}
+
+fn started_stages(events: &[pom_remote::server_api::Progress]) -> Vec<usize> {
+    events
+        .iter()
+        .filter(|event| event.kind == pom_remote::server_api::progress_kind::STAGE_STARTED)
+        .filter_map(|event| event.stage)
+        .collect()
+}
+
+#[test]
+fn the_server_creates_a_workspace_as_a_job_and_a_cancelled_create_resumes() {
+    use pom_remote::server_api::{progress_kind, CreateArgs, JobRequest, EXIT_CANCELLED};
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    let config = fixture.git_project();
+    let source = fixture.server_source_for(&config);
+    source.workspaces().expect("connect");
+    assert!(source
+        .transport()
+        .is_some_and(|info| info.jobs && info.live_logs));
+
+    let create = |branch: &str, from_stage: usize| {
+        JobRequest::Create(CreateArgs {
+            branch: branch.into(),
+            display_name: "Login page".into(),
+            from_stage,
+            ..CreateArgs::default()
+        })
+    };
+    let id = source
+        .start_job(&create("feat-x", 0), "app-1-create-feat-x")
+        .expect("start the create");
+    let again = source
+        .start_job(&create("feat-x", 0), "app-1-create-feat-x")
+        .expect("ask again");
+    assert_eq!(again, id, "the op id starts it once");
+    let events = job_events(&source, &id, 0, |_| false);
+    assert_eq!(events[0].kind, progress_kind::STAGES);
+    assert_eq!(events[0].stages, pom_workspace::CREATE_STAGES);
+    assert_eq!(
+        started_stages(&events),
+        (0..8).collect::<Vec<_>>(),
+        "in order"
+    );
+    assert_eq!(events.last().and_then(|event| event.exit), Some(0));
+    let folder = fixture.temp.path().join("jobs/workspace--feat-x");
+    assert!(folder.join("api/seeded").exists());
+    let listed = source.workspaces().expect("list");
+    let created = listed
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.branch == "feat-x")
+        .expect("listed");
+    assert_eq!(created.name, "Login page");
+
+    let replay = job_events(&source, &id, 3, |_| false);
+    assert_eq!(
+        replay.first().map(|event| event.seq),
+        Some(3),
+        "a re-follow replays from since_seq"
+    );
+
+    let id = source
+        .start_job(&create("feat-y", 0), "app-1-create-feat-y")
+        .expect("start another");
+    let head = job_events(&source, &id, 0, |event| {
+        event.kind == progress_kind::STAGE_STARTED && event.stage == Some(5)
+    });
+    source.cancel_job(&id).expect("cancel");
+    let since = head.last().map_or(0, |event| event.seq + 1);
+    let rest = job_events(&source, &id, since, |_| false);
+    let failed = rest
+        .iter()
+        .find(|event| event.kind == progress_kind::FAILED)
+        .expect("a stopped stage");
+    assert_eq!(
+        failed.stage,
+        Some(6),
+        "the running stage finishes, the next never starts"
+    );
+    assert_eq!(failed.line, "cancelled");
+    assert_eq!(
+        rest.last().and_then(|event| event.exit),
+        Some(EXIT_CANCELLED)
+    );
+    let listed = source.workspaces().expect("list");
+    let stopped = listed
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.branch == "feat-y")
+        .expect("listed");
+    assert_eq!(
+        stopped
+            .failed
+            .as_ref()
+            .map(|failed| (failed.operation.as_str(), failed.stage)),
+        Some(("create", 7)),
+        "it resumes like a failed local create"
+    );
+    assert!(!fixture
+        .temp
+        .path()
+        .join("jobs/workspace--feat-y/api/seeded")
+        .exists());
+
+    let id = source
+        .start_job(&create("feat-y", 6), "app-1-create-feat-y-resume")
+        .expect("resume");
+    let events = job_events(&source, &id, 0, |_| false);
+    assert_eq!(events.last().and_then(|event| event.exit), Some(0));
+    assert!(fixture
+        .temp
+        .path()
+        .join("jobs/workspace--feat-y/api/seeded")
+        .exists());
+    assert_eq!(fixture.agent_runs(), 0, "no agent in a create");
+}
+
+#[test]
+fn the_server_puts_a_workspace_to_sleep_and_wakes_it_with_its_agent_as_jobs() {
+    use pom_remote::server_api::{BranchArgs, JobRequest};
+    use pom_remote::{ProjectSource, ServiceAction};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source = fixture.server_source_with_agent_cli();
+    source
+        .act("feat", ServiceAction::Start, "web")
+        .expect("start web");
+    let agent = source
+        .start_agent("feat", "claude")
+        .expect("start the agent");
+    let holders = pom_ptyhost::SocketDir::new(fixture.temp.path().join("s"));
+    assert!(holders.holder_alive(&agent.holder));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fixture.agent_runs() < 1 {
+        assert!(Instant::now() < deadline, "the stand-in never ran");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let branch = BranchArgs {
+        branch: "feat".into(),
+        force: false,
+    };
+    let id = source
+        .start_job(&JobRequest::Sleep(branch.clone()), "app-2-sleep")
+        .expect("sleep");
+    let events = job_events(&source, &id, 0, |_| false);
+    assert_eq!(
+        events.last().and_then(|event| event.exit),
+        Some(0),
+        "{events:?}"
+    );
+    let lines: Vec<&str> = events.iter().map(|event| event.line.as_str()).collect();
+    assert!(lines.contains(&"stopped api/web"), "{lines:?}");
+    assert!(lines.contains(&"stopped agent claude"), "{lines:?}");
+    assert!(!source.status("feat").expect("status").services[0].up);
+    assert!(!holders.holder_alive(&agent.holder));
+
+    let id = source
+        .start_job(&JobRequest::Wake(branch), "app-2-wake")
+        .expect("wake");
+    let events = job_events(&source, &id, 0, |_| false);
+    assert_eq!(
+        events.last().and_then(|event| event.exit),
+        Some(0),
+        "{events:?}"
+    );
+    let lines: Vec<&str> = events.iter().map(|event| event.line.as_str()).collect();
+    assert!(lines.contains(&"started api/web"), "{lines:?}");
+    assert!(lines.contains(&"started agent claude"), "{lines:?}");
+    assert!(source.status("feat").expect("status").services[0].up);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while fixture.agent_runs() < 2 {
+        assert!(Instant::now() < deadline, "the stand-in never ran again");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let woken = source
+        .agents("feat")
+        .expect("agents")
+        .into_iter()
+        .find(|view| view.role == "claude")
+        .expect("the agent is back");
+    source
+        .pty("feat")
+        .expect("terminals")
+        .close(&woken.holder)
+        .expect("stop the agent");
+    source
+        .act("feat", ServiceAction::Stop, "web")
+        .expect("stop web");
+}
+
+#[test]
+fn the_server_streams_a_service_output_and_an_older_server_is_asked_instead() {
+    use pom_remote::{LogEvent, ProjectSource, ServiceAction};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source = fixture.server_source("dev");
+    source
+        .act("feat", ServiceAction::Start, "web")
+        .expect("start web");
+    let feed = source
+        .follow_logs("feat", "api/web")
+        .expect("follow")
+        .expect("a server that streams");
+    let mut seen = String::new();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !seen.contains("web-banner-") {
+        assert!(Instant::now() < deadline, "{seen:?}");
+        match feed.next(Duration::from_millis(100)) {
+            LogEvent::Data(bytes) => seen.push_str(&String::from_utf8_lossy(&bytes)),
+            LogEvent::Idle | LogEvent::Skipped => {}
+            LogEvent::Ended(reason) => panic!("{reason}"),
+        }
+    }
+    source
+        .act("feat", ServiceAction::Restart, "web")
+        .expect("restart web");
+    while !seen.contains("--- api/web restarted ---") {
+        assert!(
+            Instant::now() < deadline + Duration::from_secs(15),
+            "{seen:?}"
+        );
+        if let LogEvent::Data(bytes) = feed.next(Duration::from_millis(100)) {
+            seen.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+    let status = json(&fixture.pom(&["server", "status", "--json"]));
+    assert_eq!(status["log_follows"], 1, "{status}");
+    drop(feed);
+    let log = std::fs::read_to_string(fixture.temp.path().join(format!(
+        "state/pom/server/{}.log",
+        env!("CARGO_PKG_VERSION")
+    )))
+    .expect("server log");
+    assert!(log.contains("method=logs.follow"), "{log}");
+    assert!(
+        !log.contains("web-banner"),
+        "the log keeps sizes, never output: {log}"
+    );
+
+    let old = fixture.temp.path().join("home/old-pom");
+    executable(
+        &old,
+        &format!(
+            "#!/bin/sh\ncase \"$1\" in server) echo 'unknown command server' >&2; echo 'usage: pom ...' >&2; exit 2 ;; esac\nexec '{POM}' \"$@\"\n"
+        ),
+    );
+    let added = fixture.pom(&[
+        "host",
+        "add",
+        "old",
+        "ssh://192.0.2.10",
+        "--pom-path",
+        "~/old-pom",
+    ]);
+    assert!(added.status.success(), "{}", text(&added));
+    let older = std::sync::Arc::new(fixture.server_source("old"));
+    assert!(older
+        .follow_logs("feat", "api/web")
+        .expect("asked")
+        .is_none());
+    let watch = pom_remote::Watch::start(older, "feat", std::sync::Arc::new(|| {}));
+    watch.set_visible(true);
+    watch.show_logs(Some("api/web".into()));
+    let snapshot = wait_snapshot(
+        &watch,
+        "the output asked for",
+        |snapshot| matches!(&snapshot.logs, Some((_, Ok(text))) if text.contains("web-banner-")),
+    );
+    assert!(!snapshot.logs_live, "an older pom is asked, not streamed");
+    source
+        .act("feat", ServiceAction::Stop, "web")
+        .expect("stop web");
 }

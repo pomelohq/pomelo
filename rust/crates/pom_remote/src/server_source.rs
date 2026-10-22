@@ -7,20 +7,25 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pom_agent::SessionView;
 use pom_rpc::pty::{self, PtyProvider, SharedEvents};
-use pom_rpc::{error_code, CloseReason, Connection, Error, Hello, PushEvent, Subscription};
+use pom_rpc::{
+    error_code, CloseReason, Connection, Error, Hello, PushEvent, StreamEvent, StreamReceiver,
+    Subscription,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
-    AgentStarted, LogsParams, ProjectParams, TurnParams, WatchBranchParams, WatchParams,
-    WorkspaceParams, AGENTS, PUSH, REQUIRED,
+    AgentStarted, FollowLogsParams, JobFollowParams, JobParams, JobRequest, JobStartParams,
+    JobStarted, LogsParams, Progress, ProjectParams, TurnParams, WatchBranchParams, WatchParams,
+    WorkspaceParams, AGENTS, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
 use crate::{
-    version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, ProjectSource, RemoteSource,
-    ServiceAction, SourceError, Ssh, StatusReport, TransportInfo, Update, Via, WorkspaceList,
+    version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, JobEvent, JobFeed, LogEvent,
+    LogFeed, ProjectSource, RemoteSource, ServiceAction, SourceError, Ssh, StatusReport,
+    TransportInfo, Update, Via, WorkspaceList,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -184,6 +189,7 @@ impl Inner {
                 let terminals = offers(pom_rpc::pty::METHODS);
                 let shares_events = offers(&[pty::SHARED_EVENTS]);
                 let (pushes, agents) = (offers(PUSH), offers(AGENTS));
+                let (live_logs, jobs) = (offers(LIVE_LOGS), offers(JOBS));
                 *locked(&self.info) = Some(TransportInfo {
                     via: Via::Server,
                     fallback_reason: None,
@@ -192,6 +198,8 @@ impl Inner {
                     terminals,
                     pushes,
                     agents,
+                    live_logs,
+                    jobs,
                 });
                 *link = LinkState::Open(Link {
                     connection: connection.clone(),
@@ -313,6 +321,31 @@ impl Inner {
                 "{what} needs pom server on {}; it is read over plain ssh",
                 self.host.name
             ))),
+        }
+    }
+
+    /// The open connection when the server offers `wanted`.
+    fn offering(
+        &self,
+        wanted: impl Fn(&TransportInfo) -> bool,
+    ) -> Result<Option<Connection>, SourceError> {
+        let Some(connection) = self.connection()? else {
+            return Ok(None);
+        };
+        Ok(self
+            .info()
+            .as_ref()
+            .is_some_and(wanted)
+            .then_some(connection))
+    }
+
+    fn stopped_answering(&self, error: Error) -> SourceError {
+        match error {
+            Error::Remote(error) => SourceError::Failed(error.message),
+            other => {
+                self.forget();
+                SourceError::Unreachable(format!("{} stopped answering: {other}", self.host.name))
+            }
         }
     }
 
@@ -461,6 +494,88 @@ impl ProjectSource for ServerSource {
         })))
     }
 
+    fn follow_logs(
+        &self,
+        branch: &str,
+        service: &str,
+    ) -> Result<Option<Box<dyn LogFeed>>, SourceError> {
+        let Some(connection) = self.inner.offering(|info| info.live_logs)? else {
+            return Ok(None);
+        };
+        let stream = connection
+            .open_stream()
+            .map_err(|error| self.inner.stopped_answering(error))?;
+        let params = FollowLogsParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            service: service.to_string(),
+            since: 0,
+            channel: stream.channel(),
+        };
+        connection
+            .start_request(method::LOGS_FOLLOW, params)
+            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))
+            .map_err(|error| self.inner.stopped_answering(error))?;
+        Ok(Some(Box::new(ServerLogs {
+            stream: Mutex::new(stream),
+        })))
+    }
+
+    fn start_job(&self, request: &JobRequest, op_id: &str) -> Result<String, SourceError> {
+        if self.inner.offering(|info| info.jobs)?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "pom on {} cannot run this; update pom there",
+                self.inner.host.name
+            )));
+        }
+        let params = JobStartParams {
+            cfg: self.inner.config.clone(),
+            op: request.op().to_string(),
+            args: request.args(),
+            op_id: op_id.to_string(),
+        };
+        let route = self
+            .inner
+            .request::<JobStarted>(method::JOB_START, params, READ_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Running a workspace job")
+            .map(|started| started.id)
+    }
+
+    fn follow_job(&self, id: &str, since_seq: u64) -> Result<Box<dyn JobFeed>, SourceError> {
+        let connection = self.inner.offering(|info| info.jobs)?.ok_or_else(|| {
+            SourceError::Failed(format!(
+                "pom on {} cannot run this; update pom there",
+                self.inner.host.name
+            ))
+        })?;
+        let subscription = connection
+            .subscribe()
+            .map_err(|error| self.inner.stopped_answering(error))?;
+        let params = JobFollowParams {
+            id: id.to_string(),
+            since_seq,
+            channel: subscription.channel(),
+        };
+        connection
+            .start_request(method::JOB_FOLLOW, params)
+            .and_then(|mut pending| pending.wait_timeout(READ_TIMEOUT))
+            .map_err(|error| self.inner.stopped_answering(error))?;
+        Ok(Box::new(ServerJob {
+            subscription: Mutex::new(subscription),
+        }))
+    }
+
+    fn cancel_job(&self, id: &str) -> Result<(), SourceError> {
+        let params = JobParams { id: id.to_string() };
+        let route =
+            self.inner
+                .request::<serde_json::Value>(method::JOB_CANCEL, params, READ_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Cancelling a workspace job")
+            .map(|_| ())
+    }
+
     fn start_agent(&self, branch: &str, role: &str) -> Result<SessionView, SourceError> {
         let params = AgentStartParams {
             cfg: self.inner.config.clone(),
@@ -512,6 +627,48 @@ impl ProjectSource for ServerSource {
         self.inner
             .server_only(route, "Answering an agent")
             .map(|_| ())
+    }
+}
+
+/// A service's output streamed by the server, acknowledged as it is read.
+struct ServerLogs {
+    stream: Mutex<StreamReceiver>,
+}
+
+impl LogFeed for ServerLogs {
+    fn next(&self, timeout: Duration) -> LogEvent {
+        let stream = locked(&self.stream);
+        match stream.recv_timeout(timeout) {
+            Ok(StreamEvent::Data { offset, bytes }) => {
+                stream.ack(offset + bytes.len() as u64);
+                LogEvent::Data(bytes)
+            }
+            Ok(StreamEvent::Reset { .. }) => LogEvent::Skipped,
+            Ok(StreamEvent::End { reason }) => LogEvent::Ended(reason),
+            Err(Error::Timeout) => LogEvent::Idle,
+            Err(error) => LogEvent::Ended(error.to_string()),
+        }
+    }
+}
+
+/// A job's progress pushed by the server.
+struct ServerJob {
+    subscription: Mutex<Subscription>,
+}
+
+impl JobFeed for ServerJob {
+    fn next(&self, timeout: Duration) -> JobEvent {
+        match locked(&self.subscription).recv_timeout(timeout) {
+            Ok(PushEvent::Value { topic, value }) if topic == PROGRESS_TOPIC => {
+                match serde_json::from_value::<Progress>(value) {
+                    Ok(progress) => JobEvent::Progress(progress),
+                    Err(error) => JobEvent::Ended(format!("unreadable progress: {error}")),
+                }
+            }
+            Ok(PushEvent::Value { .. }) | Err(Error::Timeout) => JobEvent::Idle,
+            Ok(PushEvent::End { reason }) => JobEvent::Ended(reason),
+            Err(error) => JobEvent::Ended(error.to_string()),
+        }
     }
 }
 

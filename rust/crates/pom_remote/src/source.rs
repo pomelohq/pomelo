@@ -9,7 +9,9 @@ use pom_agent::SessionView;
 use pom_services::{ServiceHealth, SharedHealth};
 use serde::{Deserialize, Serialize};
 
-use crate::server_api::{AgentsUpdate, StatusUpdate, TurnUpdate, WorkspacesUpdate};
+use crate::server_api::{
+    AgentsUpdate, JobRequest, Progress, StatusUpdate, TurnUpdate, WorkspacesUpdate,
+};
 use crate::{Host, Ssh, EXIT_UNREACHABLE};
 
 pub const WORKSPACE_SCHEMA: &str = "pom.workspace/v1";
@@ -164,6 +166,10 @@ pub struct TransportInfo {
     pub pushes: bool,
     /// The server starts agents and moves their leases.
     pub agents: bool,
+    /// The server streams a service's output as it prints it.
+    pub live_logs: bool,
+    /// The server runs workspace jobs (create, sleep, wake, pull) and reports their progress.
+    pub jobs: bool,
 }
 
 /// One value a machine pushed because it changed.
@@ -189,6 +195,33 @@ pub trait Feed: Send + Sync {
     fn next(&self, timeout: Duration) -> FeedEvent;
     /// Follows another workspace, and the last turn of agent `turn`.
     fn follow(&self, branch: &str, turn: Option<&str>) -> Result<(), SourceError>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogEvent {
+    Data(Vec<u8>),
+    /// Output was skipped: what follows does not carry on from what came before.
+    Skipped,
+    Idle,
+    Ended(String),
+}
+
+/// A service's output as the machine streams it.
+pub trait LogFeed: Send + Sync {
+    fn next(&self, timeout: Duration) -> LogEvent;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobEvent {
+    Progress(Progress),
+    Idle,
+    /// The pushes stopped: after the job's last event, or because the connection went.
+    Ended(String),
+}
+
+/// A job's progress as the machine pushes it.
+pub trait JobFeed: Send + Sync {
+    fn next(&self, timeout: Duration) -> JobEvent;
 }
 
 fn unsupported(what: &str) -> SourceError {
@@ -240,6 +273,25 @@ pub trait ProjectSource: Send + Sync {
         _allow: bool,
     ) -> Result<(), SourceError> {
         Err(unsupported("Answering an agent"))
+    }
+    /// The service's output as it prints it, when the machine streams it; `None` means ask with `logs`.
+    fn follow_logs(
+        &self,
+        _branch: &str,
+        _service: &str,
+    ) -> Result<Option<Box<dyn LogFeed>>, SourceError> {
+        Ok(None)
+    }
+    /// Starts a job once per `op_id` and returns its id.
+    fn start_job(&self, _request: &JobRequest, _op_id: &str) -> Result<String, SourceError> {
+        Err(unsupported("Running a workspace job"))
+    }
+    /// The job's progress from event `since_seq` on.
+    fn follow_job(&self, _id: &str, _since_seq: u64) -> Result<Box<dyn JobFeed>, SourceError> {
+        Err(unsupported("Following a workspace job"))
+    }
+    fn cancel_job(&self, _id: &str) -> Result<(), SourceError> {
+        Err(unsupported("Cancelling a workspace job"))
     }
 }
 

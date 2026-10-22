@@ -11,6 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pom_ptyhost::{HolderConnection, SocketDir, SpawnRequest};
+use pom_remote::server_api::{FollowLogsParams, FollowedLogs};
 use pom_remote::{LocalSource, ProjectSource, WorkspaceTerminals};
 use pom_rpc::pty::{
     AttachParams, Attached, ChannelParams, CloseParams, Exit, Kind, Mode, OpenParams, Opened,
@@ -160,12 +161,35 @@ struct Flow {
     buffered: usize,
     /// The holder offset right after the last buffered byte.
     end: u64,
+    /// The stream offset of holder offset `origin`: a followed service's stream runs on across its restarts.
+    base: u64,
+    origin: u64,
     /// The reading connection while attached; `None` while detached for lack of credit.
     reader: Option<HolderConnection>,
     /// Bumped at every detach, so a reader that outlived its connection stops.
     generation: u64,
     holder_gone: bool,
     closing: Option<String>,
+}
+
+impl Flow {
+    fn new() -> Flow {
+        Flow {
+            buffer: VecDeque::new(),
+            buffered: 0,
+            end: 0,
+            base: 0,
+            origin: 0,
+            reader: None,
+            generation: 0,
+            holder_gone: false,
+            closing: None,
+        }
+    }
+
+    fn stream_offset(&self, holder_offset: u64) -> u64 {
+        self.base + holder_offset.saturating_sub(self.origin)
+    }
 }
 
 /// One holder bridged onto one stream of one connection.
@@ -175,12 +199,17 @@ pub struct Bridge {
     window: u64,
     flow: Mutex<Flow>,
     changed: Condvar,
-    /// Input, sizes, primary and claim go through a connection of their own, kept while reading detaches.
-    writer: Mutex<HolderConnection>,
+    /// Input, sizes, primary and claim go through a connection of their own, kept while reading detaches;
+    /// a followed service's output has none.
+    writer: Mutex<Option<HolderConnection>>,
     last_resize: Mutex<u64>,
     events: Option<Arc<Publisher>>,
     /// The client's stream, which names this terminal in its `pty.exit`.
     channel: u32,
+    /// The service whose output this follows, from holder to holder as it restarts.
+    follow: Option<String>,
+    /// The pid of the holder being read, which tells a restarted holder of the same name apart.
+    identity: Mutex<Option<i32>>,
 }
 
 struct Resumed {
@@ -192,8 +221,46 @@ struct Resumed {
 }
 
 impl Bridge {
+    fn new(
+        holder: &str,
+        dir: &SocketDir,
+        window: u64,
+        writer: Option<HolderConnection>,
+        events: Option<Arc<Publisher>>,
+        channel: u32,
+        follow: Option<String>,
+    ) -> Bridge {
+        Bridge {
+            holder: holder.to_string(),
+            dir: dir.clone(),
+            window,
+            flow: Mutex::new(Flow::new()),
+            changed: Condvar::new(),
+            writer: Mutex::new(writer),
+            last_resize: Mutex::new(0),
+            events,
+            channel,
+            follow,
+            identity: Mutex::new(dir.holder_pid(holder)),
+        }
+    }
+
     fn flow(&self) -> MutexGuard<'_, Flow> {
         locked(&self.flow)
+    }
+
+    fn writer(&self) -> io::Result<MutexGuard<'_, Option<HolderConnection>>> {
+        let writer = locked(&self.writer);
+        if writer.is_none() {
+            return Err(io::Error::other("this stream only reads"));
+        }
+        Ok(writer)
+    }
+
+    /// The holder now behind the name is another than the one this read.
+    fn replaced(&self) -> bool {
+        let now = self.dir.holder_pid(&self.holder);
+        now.is_some() && now != *locked(&self.identity)
     }
 
     /// Attaches a reader from `since`. A ring that no longer holds `since` replays from its start; replayed
@@ -296,9 +363,11 @@ impl Bridge {
 
     fn shut_down(&self) {
         Self::detach_reader(&mut self.flow());
-        if let Err(error) = locked(&self.writer).shutdown() {
-            if error.kind() != io::ErrorKind::NotConnected {
-                eprintln!("pom server: close a holder writer: {error}");
+        if let Some(writer) = locked(&self.writer).as_ref() {
+            if let Err(error) = writer.shutdown() {
+                if error.kind() != io::ErrorKind::NotConnected {
+                    eprintln!("pom server: close a holder writer: {error}");
+                }
             }
         }
     }
@@ -309,7 +378,10 @@ impl Bridge {
             return Ok(());
         }
         *last = seq;
-        locked(&self.writer).resize(cols, rows)
+        match self.writer()?.as_mut() {
+            Some(writer) => writer.resize(cols, rows),
+            None => Ok(()),
+        }
     }
 
     fn exit(&self) {
@@ -339,6 +411,11 @@ impl Bridge {
                     Ok((flow, _)) => flow,
                     Err(poisoned) => poisoned.into_inner().0,
                 };
+                // A terminal learns this from its input ending; a follower has no input.
+                if sender.is_ended() {
+                    flow.closing
+                        .get_or_insert_with(|| "client gone".to_string());
+                }
             }
             if let Some(reason) = flow.closing.clone() {
                 drop(flow);
@@ -370,6 +447,10 @@ impl Bridge {
             }
             if flow.holder_gone {
                 drop(flow);
+                if let Some(service) = &self.follow {
+                    self.await_successor(&sender, service);
+                    continue;
+                }
                 self.exit();
                 sender.finish("exit");
                 return "exit".to_string();
@@ -385,15 +466,16 @@ impl Bridge {
                 }
             }
             match self.open_reader(from, true) {
-                // A restarted service runs in a new holder of the same name, behind this offset.
-                Ok(resumed) if resumed.start < from => {
+                // A restarted service runs in a new holder of the same name.
+                Ok(resumed) if resumed.start < from || self.replaced() => {
                     if let Err(error) = resumed.connection.shutdown() {
                         eprintln!("pom server: leave a replaced holder: {error}");
                     }
                     self.flow().holder_gone = true;
                 }
                 Ok(resumed) => {
-                    if resumed.start != from && sender.reset(resumed.start).is_err() {
+                    let skipped = self.flow().stream_offset(resumed.start);
+                    if resumed.start != from && sender.reset(skipped).is_err() {
                         self.close("client gone");
                         continue;
                     }
@@ -414,6 +496,55 @@ impl Bridge {
         }
     }
 
+    /// Waits for the followed service to run again, then goes on reading its new holder after a line that
+    /// says so.
+    fn await_successor(self: &Arc<Self>, sender: &StreamSender, service: &str) {
+        loop {
+            if self.flow().closing.is_some() {
+                return;
+            }
+            if sender.is_ended() {
+                self.close("client gone");
+                return;
+            }
+            let pid = self
+                .dir
+                .holder_pid(&self.holder)
+                .filter(|_| self.dir.holder_alive(&self.holder));
+            let before = *locked(&self.identity);
+            if pid.is_some() && pid != before {
+                if let Ok(resumed) = self.open_reader(0, false) {
+                    *locked(&self.identity) = pid;
+                    let verb = if before.is_some() {
+                        "restarted"
+                    } else {
+                        "started"
+                    };
+                    let separator = format!("\r\n--- {service} {verb} ---\r\n").into_bytes();
+                    {
+                        let mut flow = self.flow();
+                        flow.base = sender.offset() + separator.len() as u64;
+                        flow.origin = resumed.start;
+                        flow.holder_gone = false;
+                        flow.buffered += separator.len();
+                        flow.buffer.push_back(separator);
+                    }
+                    if let Err(error) = self.adopt(resumed) {
+                        eprintln!("pom server: follow {}: {error}", self.holder);
+                        self.close("resume failed");
+                    }
+                    return;
+                }
+            }
+            let flow = self.flow();
+            drop(
+                self.changed
+                    .wait_timeout(flow, POLL)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+        }
+    }
+
     fn forward_input(
         self: Arc<Self>,
         input: InputReceiver,
@@ -429,7 +560,11 @@ impl Bridge {
             if fresh.is_empty() {
                 continue;
             }
-            if let Err(error) = locked(&self.writer).input(fresh) {
+            let written = self.writer().and_then(|mut writer| match writer.as_mut() {
+                Some(writer) => writer.input(fresh),
+                None => Ok(()),
+            });
+            if let Err(error) = written {
                 eprintln!("pom server: input to {}: {error}", self.holder);
             }
         }
@@ -490,6 +625,13 @@ impl Ptys {
 
     pub fn streams(&self) -> usize {
         locked(&self.streams).len()
+    }
+
+    pub fn log_follows(&self) -> usize {
+        locked(&self.streams)
+            .values()
+            .filter(|bridge| bridge.follow.is_some())
+            .count()
     }
 
     fn stream(&self, connection: u64, channel: u32) -> Result<Arc<Bridge>, RemoteError> {
@@ -634,25 +776,15 @@ impl Ptys {
         if params.primary {
             writer.primary().map_err(unreachable)?;
         }
-        let bridge = Arc::new(Bridge {
-            holder: params.holder.clone(),
-            dir: self.holders.clone(),
-            window: connection.config().window,
-            flow: Mutex::new(Flow {
-                buffer: VecDeque::new(),
-                buffered: 0,
-                end: 0,
-                reader: None,
-                generation: 0,
-                holder_gone: false,
-                closing: None,
-            }),
-            changed: Condvar::new(),
-            writer: Mutex::new(writer),
-            last_resize: Mutex::new(0),
+        let bridge = Arc::new(Bridge::new(
+            &params.holder,
+            &self.holders,
+            connection.config().window,
+            Some(writer),
             events,
-            channel: params.channel,
-        });
+            params.channel,
+            None,
+        ));
         let resumed = bridge
             .open_reader(params.since, params.since > 0)
             .map_err(unreachable)?;
@@ -707,6 +839,88 @@ impl Ptys {
         })
     }
 
+    /// Streams a service's output as it prints it, read-only, from holder to holder across restarts; a service
+    /// that is not running starts the stream with what it left and the stream waits for it.
+    pub fn follow_logs(
+        &self,
+        source: &LocalSource,
+        caller: &Caller<'_>,
+        params: FollowLogsParams,
+    ) -> Result<Value, RemoteError> {
+        let workspace = source
+            .workspace_terminals(&params.branch)
+            .map_err(|error| failed(error.to_string()))?;
+        let holder = source
+            .service_holder(&params.branch, &params.service)
+            .map_err(|error| failed(error.to_string()))?;
+        check_holder(&workspace, &holder)?;
+        let connection = caller.context.connection();
+        let bridge = Arc::new(Bridge::new(
+            &holder,
+            &self.holders,
+            connection.config().window,
+            None,
+            None,
+            params.channel,
+            Some(params.service.clone()),
+        ));
+        let resumed = self
+            .holders
+            .holder_alive(&holder)
+            .then(|| bridge.open_reader(params.since, params.since > 0).ok())
+            .flatten();
+        let running = resumed.is_some();
+        let (start, end) = match &resumed {
+            Some(resumed) => (resumed.start, resumed.end),
+            None => {
+                let left = self
+                    .holders
+                    .crash_info(&holder)
+                    .map(|info| info.output)
+                    .unwrap_or_default();
+                let length = left.len() as u64;
+                *locked(&bridge.identity) = None;
+                let mut flow = bridge.flow();
+                flow.base = length;
+                flow.buffered = left.len();
+                if !left.is_empty() {
+                    flow.buffer.push_back(left);
+                }
+                flow.holder_gone = true;
+                (0, length)
+            }
+        };
+        let sender = match connection.attach_stream(params.channel, start) {
+            Ok(sender) => sender,
+            Err(error) => {
+                bridge.shut_down();
+                return Err(invalid(format!("channel {}: {error}", params.channel)));
+            }
+        };
+        if let Some(resumed) = resumed {
+            bridge
+                .adopt(resumed)
+                .map_err(|error| failed(format!("{holder}: {error}")))?;
+        }
+        let stream_key = (caller.connection, params.channel);
+        locked(&self.streams).insert(stream_key, bridge.clone());
+        let streams = self.streams.clone();
+        std::thread::Builder::new()
+            .name("pom-server-logs-pump".into())
+            .spawn(move || {
+                bridge.clone().pump(sender);
+                bridge.shut_down();
+                locked(&streams).remove(&stream_key);
+            })
+            .map_err(|error| failed(error.to_string()))?;
+        to_value(FollowedLogs {
+            holder,
+            start,
+            end,
+            running,
+        })
+    }
+
     pub fn resize(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {
         let params: ResizeParams = params(raw)?;
         check_size(params.cols, params.rows)?;
@@ -719,8 +933,12 @@ impl Ptys {
     pub fn primary(&self, caller: &Caller<'_>, raw: &Value) -> Result<Value, RemoteError> {
         let params: ChannelParams = params(raw)?;
         let bridge = self.stream(caller.connection, params.channel)?;
-        locked(&bridge.writer)
-            .primary()
+        bridge
+            .writer()
+            .and_then(|mut writer| match writer.as_mut() {
+                Some(writer) => writer.primary(),
+                None => Ok(()),
+            })
             .map_err(|error| failed(error.to_string()))?;
         Ok(Value::Null)
     }
