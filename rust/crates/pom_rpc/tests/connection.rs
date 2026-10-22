@@ -35,7 +35,6 @@ fn handler(request: Request, context: &RequestContext) -> Result<Value, RemoteEr
                 .connection()
                 .attach_stream(channel, 0)
                 .map_err(|error| RemoteError::new("stream", error.to_string()))?;
-            // Floods until the receiver leaves, so the test decides how long it overlaps the flood.
             thread::spawn(move || {
                 let block = vec![b'x'; 64 * 1024];
                 while sender.write(&block).is_ok() {}
@@ -85,9 +84,14 @@ fn raw_server(config: Config) -> (Connection, UnixStream) {
 
 /// A hand-driven client for a real server.
 fn raw_client() -> (Connection, UnixStream) {
+    raw_client_with(Config::default())
+}
+
+fn raw_client_with(config: Config) -> (Connection, UnixStream) {
     let (server_transport, mut raw) = raw_pair();
     let accepting = thread::spawn(move || {
         Connection::builder(server_transport)
+            .config(config)
             .handler(handler)
             .accept(|_| Ok(Hello::new("server")))
     });
@@ -527,14 +531,19 @@ fn a_flooding_stream_does_not_delay_control_frames() {
 
 #[test]
 fn round_robin_shares_the_pipe_between_streams() {
-    let (server, mut raw) = raw_client();
+    // Far more than any socket buffer holds, so both streams are queued while the writer is
+    // still stuck on the first one.
+    let size = 4 * MEBIBYTE;
+    let (server, mut raw) = raw_client_with(Config {
+        window: size as u64,
+        ..Config::default()
+    });
     let mut first = server.attach_stream(1, 0).unwrap();
     let mut second = server.attach_stream(3, 0).unwrap();
-    // Nobody reads yet, so the socket fills and both streams queue up behind it.
-    first.write(&vec![1; 128 * 1024]).unwrap();
-    second.write(&vec![2; 128 * 1024]).unwrap();
+    first.write(&vec![1; size]).unwrap();
+    second.write(&vec![2; size]).unwrap();
     let mut order = Vec::new();
-    let mut remaining = [128 * 1024usize, 128 * 1024];
+    let mut remaining = [size, size];
     while remaining.iter().any(|left| *left > 0) {
         let frame = read(&mut raw);
         if frame.kind != Kind::Data {
@@ -550,6 +559,11 @@ fn round_robin_shares_the_pipe_between_streams() {
     assert!(
         first_of_second < last_of_first,
         "streams were not interleaved: {order:?}"
+    );
+    let tail = &order[first_of_second..last_of_first];
+    assert!(
+        tail.windows(2).all(|pair| pair[0] != pair[1]),
+        "streams did not alternate once both were queued"
     );
     server.close();
 }
@@ -692,11 +706,11 @@ fn silent_peer_is_declared_dead_and_pending_requests_fail() {
 fn heartbeats_keep_an_idle_connection_alive() {
     let config = Config {
         heartbeat_interval: Duration::from_millis(30),
-        dead_after: Duration::from_millis(150),
+        dead_after: Duration::from_millis(400),
         ..Config::default()
     };
     let (client, server) = connected(config);
-    thread::sleep(Duration::from_millis(600));
+    thread::sleep(Duration::from_millis(1200));
     assert_eq!(client.state(), ConnectionState::Open);
     assert_eq!(server.state(), ConnectionState::Open);
     client.close();
