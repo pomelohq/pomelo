@@ -14,9 +14,11 @@ alacritty_terminal = "0.26.0"
 anyhow.workspace = true
 libc = "0.2"
 pom_ptyhost = { path = "../pom_ptyhost" }
+pom_rpc = { path = "../pom_rpc" }
 regex = "1"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"

@@ -581,6 +581,18 @@ impl WorkspaceView {
         })
     }
 
+    /// Puts in the terminal panel and agent dock alone, keeping the rest of the project's views.
+    pub fn set_terminal_views(
+        &mut self,
+        terminal_view: Option<Box<dyn crate::TerminalPanelView>>,
+        agent_view: Option<Box<dyn crate::TerminalPanelView>>,
+    ) {
+        self.layout.terminal_view = terminal_view;
+        self.layout.agent_view = agent_view;
+        self.terminal_focused = false;
+        self.agent_focused = false;
+    }
+
     /// Take this workspace's live views and dock visibility out of the window, to bring back later with
     /// `resume` exactly as they were (open tabs, running terminals, which docks showed what).
     pub fn park(&mut self) -> ParkedWorkspace {
@@ -3977,6 +3989,8 @@ impl WorkspaceView {
                 self.set_terminal_focus(false);
                 self.panes_input = true;
             }
+            crate::PanelRequest::RevealTerminal { id, open } => self.open_terminal_item(&id, open),
+            crate::PanelRequest::RevealAgent { id, open } => self.open_agent_item(&id, false, open),
             crate::PanelRequest::RevealPreview { id, open } => {
                 let Some(files) = self.layout.files_view.as_mut() else {
                     return;

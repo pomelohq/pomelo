@@ -16,6 +16,8 @@ pub(crate) struct RemoteWindow {
     pub active: String,
     seen: u64,
     notice_actions: Vec<remote_ui::NoticeAction>,
+    /// The workspace whose terminals the window shows, once the host's server opens them.
+    terminals_for: Option<String>,
 }
 
 impl RemoteWindow {
@@ -137,6 +139,7 @@ impl App {
                 active: String::new(),
                 seen: u64::MAX,
                 notice_actions: Vec::new(),
+                terminals_for: None,
             });
         }
         self.install_remote_views(id);
@@ -205,6 +208,7 @@ impl App {
             crate::platform::center_traffic_lights(&main.window);
             if let Some(remote) = main.remote.as_mut() {
                 remote.seen = u64::MAX;
+                remote.terminals_for = None;
             }
             main.dirty = true;
         }
@@ -259,6 +263,56 @@ impl App {
             view.update_project(info);
             view.set_agent_states(dots);
             view.set_center_notice(Some(notice));
+        });
+        self.install_remote_terminals(id, &snapshot);
+    }
+
+    /// Terminal tabs and the agent dock of the shown workspace, run on the host through its server; the editor,
+    /// files and Git stay there.
+    fn install_remote_terminals(&mut self, id: WindowId, snapshot: &pom_remote::Snapshot) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if remote.active.is_empty() || remote.terminals_for.as_deref() == Some(&remote.active) {
+            return;
+        }
+        let Some(provider) = remote.watch.terminals() else {
+            return;
+        };
+        let root = snapshot
+            .workspaces
+            .as_ref()
+            .and_then(|list| {
+                list.workspaces
+                    .iter()
+                    .find(|workspace| workspace.branch == remote.active)
+            })
+            .map(|workspace| workspace.path.clone())
+            .unwrap_or_default();
+        remote.terminals_for = Some(remote.active.clone());
+        let prefix = format!(
+            "term-{}-{}",
+            pom_env::branch_safe(&remote.project),
+            pom_env::branch_safe(&remote.active)
+        );
+        let waker = Arc::new(ui::wake);
+        let terminals = terminal_ui::TerminalPanel::with_holders(
+            root.clone(),
+            waker.clone(),
+            terminal_ui::HolderScope {
+                place: terminal_ui::HolderPlace::Remote(provider),
+                binary: std::path::PathBuf::new(),
+                prefix,
+                group: None,
+            },
+        );
+        let agents = terminal_ui::TerminalPanel::remote_agent_dock(root, waker);
+        self.with_workspace_view(id, |view, _| {
+            view.set_terminal_views(Some(Box::new(terminals)), Some(Box::new(agents)));
         });
     }
 

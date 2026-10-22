@@ -169,9 +169,14 @@ impl TerminalItem {
         root: PathBuf,
         cwd: Option<PathBuf>,
         waker: Waker,
-        holder: Option<terminal::HolderOptions>,
+        backing: Option<crate::Backing>,
     ) -> anyhow::Result<Self> {
         let start_dir = cwd.unwrap_or_else(|| root.clone());
+        let (holder, remote) = match backing {
+            Some(crate::Backing::Holder(holder)) => (Some(holder), None),
+            Some(crate::Backing::Remote(remote)) => (None, Some(remote)),
+            None => (None, None),
+        };
         let defaults = crate::defaults()
             .lock()
             .map(|defaults| defaults.clone())
@@ -180,6 +185,7 @@ impl TerminalItem {
         let mut options = TerminalOptions {
             working_directory: Some(start_dir.clone()),
             holder,
+            remote,
             shell: shell.next().map(|program| (program, shell.collect())),
             ..TerminalOptions::default()
         };
@@ -251,6 +257,32 @@ impl TerminalItem {
         });
         item.agent = true;
         item.lease_bar = Some(lease_bar);
+        Ok(item)
+    }
+
+    /// A service's or agent's running holder on another machine. A service's tab stays after it exits; an
+    /// agent's goes, and closing it leaves the agent running.
+    pub fn remote_console(
+        id: u64,
+        root: PathBuf,
+        item_id: String,
+        title: String,
+        remote: terminal::RemoteOptions,
+        agent: bool,
+        waker: Waker,
+    ) -> anyhow::Result<Self> {
+        let options = TerminalOptions {
+            working_directory: Some(root.clone()),
+            remote: Some(remote),
+            ..TerminalOptions::default()
+        };
+        let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
+        item.console = Some(Console {
+            item_id,
+            title,
+            keep_after_exit: !agent,
+        });
+        item.agent = agent;
         Ok(item)
     }
 
@@ -750,7 +782,7 @@ impl Item for TerminalItem {
             .terminal
             .process_info()
             .map_or_else(|| self.start_dir.clone(), |info| info.cwd.clone());
-        let holder = self.terminal.holder().map(|holder| holder.name.clone());
+        let holder = self.terminal.holder_name();
         Some(workspace::persistence::SerializedItem {
             kind: TERMINAL_KIND.into(),
             data: serde_json::json!({ "cwd": cwd, "holder": holder }),

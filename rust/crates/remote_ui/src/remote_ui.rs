@@ -391,11 +391,17 @@ impl WindowModal for ConnectHostModal {
     }
 }
 
-/// Why a remote project shows no editor, file tree, Git or terminals yet.
-pub fn local_only_reason(host: &str) -> String {
-    format!(
-        "The editor, files, Git and terminals of a project on {host} come with the Pomelo server. Until then, open its worktree in an editor that works over SSH."
-    )
+/// Why a remote project shows no editor, file tree or Git, and whether its terminals open here.
+pub fn local_only_reason(host: &str, terminals: bool) -> String {
+    if terminals {
+        format!(
+            "Terminals, service output and agents run on {host} and open here. For the editor, files and Git, open the worktree in an editor that works over SSH."
+        )
+    } else {
+        format!(
+            "The editor, files and Git of a project on {host} stay there: open its worktree in an editor that works over SSH. Terminals open here once {host} runs pom server."
+        )
+    }
 }
 
 pub fn transport_lines(snapshot: &Snapshot, host: &str) -> Vec<String> {
@@ -436,7 +442,11 @@ pub fn remote_notice(
         Connection::Connecting => NoticeTone::Info,
         Connection::Disconnected { .. } => NoticeTone::Warning,
     };
-    let mut lines = vec![local_only_reason(host)];
+    let terminals = snapshot
+        .transport
+        .as_ref()
+        .is_some_and(|transport| transport.via == pom_remote::Via::Server && transport.terminals);
+    let mut lines = vec![local_only_reason(host, terminals)];
     lines.extend(transport_lines(snapshot, host));
     if let Some(list) = &snapshot.workspaces {
         let running: usize = list.workspaces.iter().map(|ws| ws.running).sum();

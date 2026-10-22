@@ -247,6 +247,16 @@ impl Control {
             .map(|pending| pending.forget())
     }
 
+    /// Ends this stream; the holder and its command keep running.
+    pub fn detach(&self) -> Result<(), Error> {
+        let params = ChannelParams {
+            channel: self.stream.channel(),
+        };
+        self.connection
+            .start_request(method::DETACH, params)
+            .map(|pending| pending.forget())
+    }
+
     pub fn make_primary(&self) -> Result<(), Error> {
         let params = ChannelParams {
             channel: self.stream.channel(),

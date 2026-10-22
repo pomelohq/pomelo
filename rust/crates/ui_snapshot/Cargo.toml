@@ -38,6 +38,7 @@ jira_ui = { path = "../jira_ui" }
 database_ui = { path = "../database_ui" }
 services_ui = { path = "../services_ui" }
 pom_remote = { path = "../pom_remote" }
+pom_rpc = { path = "../pom_rpc" }
 remote_ui = { path = "../remote_ui" }
 onboarding_ui = { path = "../onboarding_ui" }
 agent_usage_ui = { path = "../agent_usage_ui" }

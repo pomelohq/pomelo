@@ -99,7 +99,7 @@ fn terminal_view(
             root,
             waker,
             terminal_ui::HolderScope {
-                dir: pom_ptyhost::SocketDir::from_env(),
+                place: terminal_ui::HolderPlace::Local(pom_ptyhost::SocketDir::from_env()),
                 binary,
                 prefix: format!("term-{workspace_key}"),
                 group,

@@ -18,7 +18,7 @@ use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
 pub use item::{ConsoleAction, ConsoleToolbar, TerminalItem};
 pub use lease_bar::strip as lease_strip;
-pub use panel::{HolderScope, TerminalPanel};
+pub use panel::{Backing, HolderPlace, HolderScope, TerminalPanel};
 pub use side_bar::SideAgentBar;
 
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
