@@ -287,7 +287,7 @@ pub fn record_event(
     identity: &Identity,
     event: &SessionEvent,
 ) -> std::io::Result<SessionState> {
-    record_event_unless(state, identity, event, |_| false)
+    record_event_as(state, identity, event, |_| Recording::As(event.state))
         .map(|recorded| recorded.unwrap_or_default())
 }
 
@@ -306,31 +306,56 @@ pub fn mark_submitted(
         state: Some(AgentState::Thinking),
         ..SessionEvent::default()
     };
-    let recorded = record_event_unless(state, identity, &event, |current| {
-        current.is_none_or(|current| {
+    let recorded = record_event_as(state, identity, &event, |current| {
+        let skip = current.is_none_or(|current| {
             let (status, reason) = current.status();
             current.turn != turn
                 || current.turn_state != TurnState::Running
                 || turn_running(&status, reason.as_deref())
-        })
+        });
+        if skip {
+            Recording::Skip
+        } else {
+            Recording::As(event.state)
+        }
     })?;
     Ok(recorded.is_some())
 }
 
-/// `record_event`, unless `skip` says otherwise of the current state, checked under the session's lock.
-fn record_event_unless(
+pub fn record_dialog_answer(
     state: &StateDir,
     identity: &Identity,
     event: &SessionEvent,
-    skip: impl FnOnce(Option<&SessionState>) -> bool,
+    next: AgentState,
+) -> std::io::Result<SessionState> {
+    record_event_as(state, identity, event, |current| {
+        let waiting = current.is_some_and(|current| {
+            current.state == AWAITING_INPUT && current.turn_state == TurnState::Running
+        });
+        Recording::As(waiting.then_some(next))
+    })
+    .map(|recorded| recorded.unwrap_or_default())
+}
+
+enum Recording {
+    Skip,
+    As(Option<AgentState>),
+}
+
+fn record_event_as(
+    state: &StateDir,
+    identity: &Identity,
+    event: &SessionEvent,
+    plan: impl FnOnce(Option<&SessionState>) -> Recording,
 ) -> std::io::Result<Option<SessionState>> {
     let dir = session_dir(state, &event.session_id);
     let previous = read_state(state, &event.session_id);
     let record = with_lock(&dir.join(EVENTS_FILE), |file| {
         let current = read_state(state, &event.session_id);
-        if skip(current.as_ref()) {
-            return Ok(None);
-        }
+        let event_state = match plan(current.as_ref()) {
+            Recording::Skip => return Ok(None),
+            Recording::As(event_state) => event_state,
+        };
         let lines: Vec<EventLine> = read_all(file)?
             .lines()
             .filter_map(|line| serde_json::from_str::<EventLine>(line).ok())
@@ -362,8 +387,7 @@ fn record_event_unless(
         } else if event.event == NEEDS_TRUST_EVENT {
             NEEDS_TRUST_STATE.to_string()
         } else {
-            event
-                .state
+            event_state
                 .map(AgentState::as_str)
                 .map(str::to_string)
                 .or_else(|| current.as_ref().map(|current| current.state.clone()))
@@ -371,7 +395,7 @@ fn record_event_unless(
         };
         let t_ms = now_ms();
         let late_idle_reminder = event.event == "Notification"
-            && event.state == Some(AgentState::Idle)
+            && event_state == Some(AgentState::Idle)
             && current
                 .as_ref()
                 .is_some_and(|current| current.turn_state == TurnState::Running)
@@ -403,8 +427,8 @@ fn record_event_unless(
         };
         let mut text = serde_json::to_string(&line).map_err(std::io::Error::other)?;
         text.push('\n');
-        file.write_all(text.as_bytes())?;
         if let (Some(current), true) = (&current, late_idle_reminder) {
+            file.write_all(text.as_bytes())?;
             return Ok(Some(current.clone()));
         }
         let reason = reason_for(&event.event, &agent_state).map(str::to_string);
@@ -426,6 +450,7 @@ fn record_event_unless(
         };
         let blob = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         pom_paths::write_atomic(&dir.join(STATE_FILE), &blob, 0o644)?;
+        file.write_all(text.as_bytes())?;
         Ok(Some(record))
     })?;
     if previous.is_none() && record.is_some() {
@@ -516,6 +541,53 @@ mod tests {
             transcript: "/t.jsonl".into(),
             ..SessionEvent::default()
         }
+    }
+
+    #[test]
+    fn a_dialog_answer_moves_a_waiting_turn_on_but_never_past_a_later_hook() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let main = identity("claude", "ws-myproject-feat-login-claude-raw");
+        let answer = SessionEvent {
+            session_id: "a".into(),
+            event: "permission_decision".into(),
+            ..SessionEvent::default()
+        };
+        let status = |state: &StateDir| read_state(state, "a").expect("a").status();
+        record_event(
+            &state,
+            &main,
+            &event("a", "UserPromptSubmit", AgentState::Thinking),
+        )
+        .expect("prompt");
+        record_event(
+            &state,
+            &main,
+            &event("a", "PermissionRequest", AgentState::AwaitingInput),
+        )
+        .expect("ask");
+
+        record_dialog_answer(&state, &main, &answer, AgentState::ToolUse).expect("answer");
+        assert_eq!(status(&state), ("tool_use".into(), None));
+
+        record_event(
+            &state,
+            &main,
+            &event("a", "PermissionRequest", AgentState::AwaitingInput),
+        )
+        .expect("ask again");
+        record_event(&state, &main, &event("a", "Stop", AgentState::Idle)).expect("stop");
+        record_dialog_answer(&state, &main, &answer, AgentState::ToolUse).expect("late answer");
+        assert_eq!(status(&state), ("idle".into(), None));
+        assert_eq!(
+            read_state(&state, "a").expect("a").turn_state,
+            TurnState::Ended
+        );
+        assert_eq!(
+            events(&state, "a").last().map(|line| line.event.clone()),
+            Some("permission_decision".into()),
+            "the answer is still logged"
+        );
     }
 
     #[test]

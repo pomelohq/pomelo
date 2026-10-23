@@ -472,16 +472,10 @@ mod tests {
         AgentTurn, HostUrl, ServiceAction, SourceError, StatusReport, WorkspaceList,
         WorkspaceSummary,
     };
-    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::Instant;
 
-    const FAKE_SSH: &str = r#"#!/bin/sh
-for arg in "$@"; do printf '%s ' "$arg"; done >> "$FAKE_SSH_LOG"
-printf '\n' >> "$FAKE_SSH_LOG"
-[ "$1" = -O ] && exit 0
-exit 1
-"#;
+    const FAKE_SSH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-ssh.sh");
 
     struct Host8767;
 
@@ -578,9 +572,7 @@ exit 1
             .prefix("pomp")
             .tempdir_in("/tmp")
             .expect("temp");
-        let program = temp.path().join("ssh");
-        std::fs::write(&program, FAKE_SSH).expect("fake ssh");
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let program = PathBuf::from(FAKE_SSH);
         let log = temp.path().join("ssh.log");
         let records = temp.path().join("records");
         let ssh = Ssh::custom(

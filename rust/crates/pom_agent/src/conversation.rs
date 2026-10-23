@@ -22,8 +22,8 @@ use crate::permission::{
 use crate::policy::{write_answer, Answer};
 use crate::screen::rendered_lines;
 use crate::sessions::{
-    events, mark_submitted, now_ms, read_state, record_event, session_dir, with_lock, SessionEvent,
-    TurnState,
+    events, mark_submitted, now_ms, read_state, record_dialog_answer, record_event, session_dir,
+    with_lock, SessionEvent, TurnState,
 };
 use crate::turns::{turn_meta, turn_spans, turn_was_sent, write_turn_meta, Origin, TurnMeta};
 
@@ -659,13 +659,22 @@ impl Drive {
             }
         } else {
             self.answer_dialog(view, &prompt, &lease, allow)?;
-            // The agent moves on as soon as the dialog closes, so the decision leaves its state alone.
-            self.record(
-                view,
-                crate::permission::DECISION_EVENT,
-                None,
-                json!({"request": prompt.id, "allow": allow, "decided_by": decided_by, "via": ANSWER_BY_TERMINAL}),
-            );
+            let decision = SessionEvent {
+                session_id: view.session_id.clone(),
+                event: crate::permission::DECISION_EVENT.into(),
+                detail: json!({"request": prompt.id, "allow": allow, "decided_by": decided_by, "via": ANSWER_BY_TERMINAL}),
+                ..SessionEvent::default()
+            };
+            let next = if allow {
+                crate::hooks::AgentState::ToolUse
+            } else {
+                crate::hooks::AgentState::Thinking
+            };
+            if let Err(error) =
+                record_dialog_answer(&self.state, &identity_of(self, view), &decision, next)
+            {
+                eprintln!("agent: record {}: {error}", view.handle);
+            }
             if !allow {
                 // The dialog's deny key also stops the turn, and that fires no hook.
                 self.record(
