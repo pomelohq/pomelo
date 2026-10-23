@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use winit::event_loop::ActiveEventLoop;
@@ -28,6 +29,8 @@ pub(crate) struct RemoteWindow {
     agent_tabs: Vec<services_ui::AgentTab>,
     /// The shown workspace's saved agent tabs still have to be put back, once its panes are in.
     restore_agent_tabs: bool,
+    /// Workspaces switched away from, live as they were left, by branch.
+    parked: HashMap<String, ParkedRemote>,
     /// Server restarts already told about.
     restarts_told: u64,
     /// Updating pom on the host, written by the thread that runs it.
@@ -42,6 +45,14 @@ pub(crate) struct RemoteWindow {
     pub jira: Arc<pom_remote::RemoteJira>,
     /// Each workspace's ticket status, kept here under `<project>@<host>`.
     tickets: workspaces_ui::TicketStatuses,
+}
+
+/// A remote workspace's views while another one is shown.
+struct ParkedRemote {
+    views: workspace::ParkedWorkspace,
+    files_unserved: bool,
+    services: Option<Arc<services_ui::RemoteServices>>,
+    agent_tabs: Vec<services_ui::AgentTab>,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -322,6 +333,7 @@ impl App {
                 services: None,
                 agent_tabs: Vec::new(),
                 restore_agent_tabs: false,
+                parked: HashMap::new(),
                 restarts_told: 0,
                 pom_update: Arc::new(std::sync::Mutex::new(remote_ui::PomUpdate {
                     can_install,
@@ -452,6 +464,11 @@ impl App {
                 ports.take_notices()
             })
             .unwrap_or_default();
+        if let Some(list) = snapshot.workspaces.as_ref() {
+            remote
+                .parked
+                .retain(|branch, _| list.workspaces.iter().any(|ws| ws.branch == *branch));
+        }
         if remote.active.is_empty() {
             let main_branch = snapshot.workspaces.as_ref().and_then(|list| {
                 list.workspaces
@@ -884,7 +901,27 @@ impl App {
         if branch == remote.active {
             return;
         }
+        self.switch_remote_workspace(id, branch);
+        self.poll_remote(id);
+    }
+
+    /// Shows `branch`, parking the shown workspace's views so its terminals, agents and editors come back
+    /// as they were.
+    fn switch_remote_workspace(&mut self, id: WindowId, branch: String) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        if remote.active == branch {
+            return;
+        }
+        let snapshot = remote.watch.snapshot();
+        let installed = remote.terminals_for.as_deref() == Some(remote.active.as_str());
         self.save_remote_agent_tabs(id, &snapshot);
+        let views = if installed {
+            self.with_workspace_view(id, |view, _| view.park())
+        } else {
+            None
+        };
         let Some(remote) = self
             .mains
             .get_mut(&id)
@@ -892,10 +929,35 @@ impl App {
         else {
             return;
         };
+        if let Some(views) = views {
+            let parked = ParkedRemote {
+                views,
+                files_unserved: remote.files_unserved,
+                services: remote.services.take().map(|(_, source)| source),
+                agent_tabs: std::mem::take(&mut remote.agent_tabs),
+            };
+            remote.parked.insert(remote.active.clone(), parked);
+        }
+        remote.terminals_for = None;
+        remote.files_for = None;
+        remote.services = None;
+        remote.restore_agent_tabs = false;
         remote.active = branch;
         remote.watch.set_branch(&remote.active);
         remote.seen = u64::MAX;
-        self.poll_remote(id);
+        let Some(parked) = remote.parked.remove(&remote.active) else {
+            return;
+        };
+        let active = Some(remote.active.clone());
+        remote.terminals_for = active.clone();
+        remote.files_for = active;
+        remote.files_unserved = parked.files_unserved;
+        remote.services = parked
+            .services
+            .map(|source| (remote.active.clone(), source));
+        remote.agent_tabs = parked.agent_tabs;
+        let info = project_info(remote, &remote.watch.snapshot());
+        self.with_workspace_view(id, |view, _| view.resume(info, parked.views));
     }
 
     pub(crate) fn remote_notice_action(&mut self, id: WindowId, index: usize) {
@@ -1138,25 +1200,12 @@ impl App {
         id: WindowId,
         finished: &[workspaces_ui::Finished],
     ) {
-        let created = finished.iter().rev().find(|done| done.ok && done.created);
-        if created.is_some() {
-            if let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) {
-                let snapshot = remote.watch.snapshot();
-                self.save_remote_agent_tabs(id, &snapshot);
-            }
+        if let Some(created) = finished.iter().rev().find(|done| done.ok && done.created) {
+            self.switch_remote_workspace(id, created.branch.clone());
         }
-        let Some(remote) = self
-            .mains
-            .get_mut(&id)
-            .and_then(|main| main.remote.as_mut())
-        else {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
             return;
         };
-        if let Some(created) = created {
-            remote.active = created.branch.clone();
-            remote.watch.set_branch(&remote.active);
-            remote.seen = u64::MAX;
-        }
         remote.watch.refresh_now();
     }
 
