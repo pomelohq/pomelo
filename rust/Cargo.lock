@@ -4266,6 +4266,7 @@ dependencies = [
  "markdown",
  "pom_forge",
  "pom_paths",
+ "pom_secrets",
  "serde_json",
  "tempfile",
  "terminal",
