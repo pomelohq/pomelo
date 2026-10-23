@@ -105,33 +105,20 @@ pub fn delete(
 }
 
 impl Deletion<'_> {
-    /// Holders of this workspace: its services, its agent and its terminals. A branch whose name
-    /// extends this one (`feat` vs `feat-x`) shares the terminal prefix, so its holders are excluded.
-    fn holder_matches(&self, name: &str, other_branches: &[String]) -> bool {
-        let config = self.context.config;
-        let session = pom_env::branch_safe(&config.session);
-        let branch = pom_env::branch_safe(self.branch);
-        let service_holder = config.repos.iter().any(|(repo, dir)| {
-            dir.services
-                .keys()
-                .any(|service| name == format!("svc-{session}-{branch}-{repo}-{service}"))
-        });
-        let workspace_holder = config
-            .workspace_services
-            .keys()
-            .map(String::as_str)
-            .chain(["claude-raw"])
-            .any(|service| name == format!("ws-{session}-{branch}-{service}"));
-        if service_holder || workspace_holder {
-            return true;
+    /// Holders of this workspace: its services, agents (any role, side agents included) and terminals. One
+    /// started for a workspace records it, which settles it; an older one is matched by name, where a branch
+    /// that extends this one (`feat` vs `feat-x`) shares the prefix, so its holders are excluded.
+    fn holder_matches(
+        &self,
+        name: &str,
+        group: Option<(String, String)>,
+        other_branches: &[String],
+    ) -> bool {
+        let session = &self.context.config.session;
+        if let Some((project, workspace)) = group {
+            return project == *session && workspace == self.branch;
         }
-        let terminal = |branch: &str| format!("term-{session}-{branch}-");
-        let own = terminal(&branch);
-        name.starts_with(&own)
-            && !other_branches.iter().any(|other| {
-                let other = terminal(&pom_env::branch_safe(other));
-                other != own && other.starts_with(&own) && name.starts_with(&other)
-            })
+        holder_of_branch(name, session, self.branch, other_branches)
     }
 
     fn other_branches(&self) -> Vec<String> {
@@ -158,7 +145,7 @@ impl Deletion<'_> {
             .holders()
             .into_iter()
             .map(|(name, _)| name)
-            .filter(|name| self.holder_matches(name, &others))
+            .filter(|name| self.holder_matches(name, holders.holder_group(name), &others))
             .collect();
         for name in &doomed {
             match holders.kill_holder(name) {
@@ -167,6 +154,20 @@ impl Deletion<'_> {
                 }
                 _ => scope.progress(format!("stopped {name}")),
             }
+        }
+        let surviving: Vec<&String> = doomed
+            .iter()
+            .filter(|name| holders.holder_alive(name))
+            .collect();
+        if !surviving.is_empty() {
+            return Err(format!(
+                "still running after stop: {}",
+                surviving
+                    .iter()
+                    .map(|name| name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         Ok(StageResult::Done)
     }
@@ -325,6 +326,158 @@ impl Deletion<'_> {
     }
 }
 
+/// Whether holder `name` is one of workspace `branch` of project `session` by its name alone: a service
+/// (`svc-`), an agent or workspace service (`ws-`) or a terminal (`term-`).
+pub(crate) fn holder_of_branch(
+    name: &str,
+    session: &str,
+    branch: &str,
+    other_branches: &[String],
+) -> bool {
+    let session = pom_env::branch_safe(session);
+    ["svc", "ws", "term"].iter().any(|kind| {
+        let prefix = |branch: &str| format!("{kind}-{session}-{}-", pom_env::branch_safe(branch));
+        let own = prefix(branch);
+        name.starts_with(&own)
+            && !other_branches.iter().any(|other| {
+                let other = prefix(other);
+                other != own && other.starts_with(&own) && name.starts_with(&other)
+            })
+    })
+}
+
+/// A holder still running for a workspace or project that no longer exists, so nothing in pom reaches it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrphanHolder {
+    pub name: String,
+    pub pid: i32,
+    pub project: String,
+    /// `None` when only its name ties it to the project and no workspace matches it.
+    pub workspace: Option<String>,
+    pub reason: String,
+}
+
+/// A registered project as orphan detection needs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KnownProject {
+    pub session: String,
+    /// Its folder and pom.yml are still there.
+    pub present: bool,
+    /// The main workspace's branch and every branch workspace's.
+    pub branches: Vec<String>,
+}
+
+impl KnownProject {
+    pub fn read(session: &str, root: &std::path::Path) -> KnownProject {
+        let Ok(config) = pom_config::Config::load(&root.join(pom_config::CONFIG_FILE_NAME)) else {
+            return KnownProject {
+                session: session.to_string(),
+                present: false,
+                branches: Vec::new(),
+            };
+        };
+        let mut branches = vec![config.global_default_branch().to_string()];
+        if let Ok(entries) = std::fs::read_dir(root) {
+            branches.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().is_dir())
+                    .filter_map(|entry| entry.file_name().into_string().ok())
+                    .filter_map(|name| {
+                        name.strip_prefix(pom_layout::WORKSPACE_PREFIX)
+                            .map(str::to_string)
+                    }),
+            );
+        }
+        branches.sort();
+        branches.dedup();
+        KnownProject {
+            session: session.to_string(),
+            present: true,
+            branches,
+        }
+    }
+}
+
+/// Why holder `name` (started for `group`, when it recorded one) is an orphan of one of `projects`; `None`
+/// when its workspace exists or it belongs to no registered project, which pom cannot judge.
+pub fn orphan_reason(
+    name: &str,
+    group: Option<(String, String)>,
+    projects: &[KnownProject],
+) -> Option<(String, Option<String>, String)> {
+    const PROJECT_GONE: &str = "its project's folder or pom.yml is gone";
+    if let Some((project, workspace)) = group {
+        let known = projects.iter().find(|known| known.session == project)?;
+        if !known.present {
+            return Some((project, Some(workspace), PROJECT_GONE.into()));
+        }
+        if known.branches.contains(&workspace) {
+            return None;
+        }
+        return Some((
+            project,
+            Some(workspace),
+            "its workspace no longer exists".into(),
+        ));
+    }
+    let candidates: Vec<&KnownProject> = projects
+        .iter()
+        .filter(|known| {
+            let session = pom_env::branch_safe(&known.session);
+            ["svc", "ws", "term"]
+                .iter()
+                .any(|kind| name.starts_with(&format!("{kind}-{session}-")))
+        })
+        .collect();
+    let claimed = candidates.iter().any(|known| {
+        known.present
+            && known
+                .branches
+                .iter()
+                .any(|branch| holder_of_branch(name, &known.session, branch, &known.branches))
+    });
+    if claimed {
+        return None;
+    }
+    let owner = candidates
+        .into_iter()
+        .max_by_key(|known| known.session.len())?;
+    let reason = if owner.present {
+        format!("no workspace of {} matches its name", owner.session)
+    } else {
+        PROJECT_GONE.into()
+    };
+    Some((owner.session.clone(), None, reason))
+}
+
+/// Every running holder whose workspace or project is gone, judged against the registered projects.
+pub fn orphan_holders(
+    state: &pom_paths::StateDir,
+    holders: &pom_ptyhost::SocketDir,
+) -> Vec<OrphanHolder> {
+    let projects: Vec<KnownProject> = pom_sessions::Projects::load(state)
+        .projects
+        .iter()
+        .map(|(session, root)| KnownProject::read(session, std::path::Path::new(root)))
+        .collect();
+    holders
+        .holders()
+        .into_iter()
+        .filter_map(|(name, pid)| {
+            let (project, workspace, reason) =
+                orphan_reason(&name, holders.holder_group(&name), &projects)?;
+            Some(OrphanHolder {
+                name,
+                pid,
+                project,
+                workspace,
+                reason,
+            })
+        })
+        .collect()
+}
+
 fn kept_branch_note(repo: &str, branch: &str, main: &std::path::Path, default: &str) -> String {
     match git::unpushed_commits(main, branch, default) {
         0 => format!(
@@ -336,5 +489,98 @@ fn kept_branch_note(repo: &str, branch: &str, main: &std::path::Path, default: &
         count => format!(
             "{repo} has {count} commits not on origin; its branch {branch} stays on this machine"
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_holder_named_for_the_workspace_is_its_own_and_none_of_a_longer_branch() {
+        let others = ["feat/login-x".to_string(), "main".to_string()];
+        let owned = |name: &str| holder_of_branch(name, "myproject", "feat/login", &others);
+        for name in [
+            "svc-myproject-feat_login-api-web",
+            "ws-myproject-feat_login-claude-raw",
+            "ws-myproject-feat_login-claude-raw-2",
+            "ws-myproject-feat_login-fixer-1",
+            "ws-myproject-feat_login-side-review-1",
+            "ws-myproject-feat_login-side-codex-1",
+            "ws-myproject-feat_login-claude-reviewer",
+            "ws-myproject-feat_login-agent-codex",
+            "ws-myproject-feat_login-gateway",
+            "term-myproject-feat_login-3",
+        ] {
+            assert!(owned(name), "{name}");
+        }
+        for name in [
+            "ws-myproject-feat_login-x-claude-raw",
+            "svc-myproject-feat_login-x-api-web",
+            "ws-other-feat_login-claude-raw",
+            "ws-myproject-main-claude-raw",
+            "shr-myproject-postgres",
+        ] {
+            assert!(!owned(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_holder_outliving_its_workspace_or_project_is_an_orphan() {
+        let known = |session: &str, present: bool, branches: &[&str]| KnownProject {
+            session: session.into(),
+            present,
+            branches: branches.iter().map(|branch| branch.to_string()).collect(),
+        };
+        let projects = [
+            known("myproject", true, &["feat/login", "main"]),
+            known("my", true, &["main"]),
+            known("my-project", true, &["main"]),
+            known("gone", false, &[]),
+        ];
+        let group = |project: &str, workspace: &str| Some((project.into(), workspace.into()));
+        let judged = |name: &str, group: Option<(String, String)>| {
+            orphan_reason(name, group, &projects)
+                .map(|(project, workspace, _)| (project, workspace))
+        };
+        assert_eq!(
+            judged(
+                "ws-myproject-feat_login-claude-raw",
+                group("myproject", "feat/login")
+            ),
+            None
+        );
+        assert_eq!(
+            judged(
+                "ws-myproject-feat_old-fixer",
+                group("myproject", "feat/old")
+            ),
+            Some(("myproject".into(), Some("feat/old".into())))
+        );
+        assert_eq!(
+            judged("ws-myproject-feat_old-claude-reviewer", None),
+            Some(("myproject".into(), None)),
+            "unlabelled, matched by name"
+        );
+        assert_eq!(judged("svc-myproject-main-api-web", None), None);
+        assert_eq!(
+            judged("ws-my-project-main-claude-raw", None),
+            None,
+            "a project whose name extends another's claims its own holders"
+        );
+        assert_eq!(
+            judged("ws-gone-main-claude-raw", group("gone", "main")),
+            Some(("gone".into(), Some("main".into())))
+        );
+        assert_eq!(
+            judged("ws-unknown-main-claude-raw", group("unknown", "main")),
+            None,
+            "a project this machine never registered is not judged"
+        );
+        assert_eq!(
+            judged("ws-my-project-feat-claude-raw", None),
+            Some(("my-project".into(), None))
+        );
+        assert_eq!(judged("shr-myproject-postgres", None), None);
     }
 }

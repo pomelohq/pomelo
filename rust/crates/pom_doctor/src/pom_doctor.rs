@@ -2,6 +2,7 @@ mod disk;
 mod limits;
 mod linux;
 mod server;
+mod shadow;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -17,6 +18,7 @@ pub use disk::{
 pub use limits::{limit_findings, LimitSupport};
 pub use linux::{high_load, in_lxc, linux_findings, lxc_docker, stuck_finding, stuck_processes};
 pub use server::{server_findings, OtherServer, RunningServer, ServerSurvey, SocketDirState};
+pub use shadow::{path_shadow, pom_on_path, pom_version};
 
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -101,12 +103,9 @@ pub fn on_path(path: &str, tool: &str) -> bool {
 
 /// Shared services run as a compose project; Linux packages of Docker often leave the plugin out.
 pub fn compose_answers(path: &str) -> bool {
-    Command::new("docker")
-        .args(["compose", "version"])
-        .env("PATH", path)
-        .stdin(Stdio::null())
-        .output()
-        .is_ok_and(|output| output.status.success())
+    let mut command = Command::new("docker");
+    command.args(["compose", "version"]).env("PATH", path);
+    disk::output_within(&mut command, DOCKER_TIMEOUT).is_some()
 }
 
 pub fn docker_answers(path: &str) -> bool {
@@ -339,6 +338,105 @@ pub fn add_finding(findings: &mut Vec<Finding>, finding: Finding) {
     findings.push(finding);
 }
 
+/// Holders still running for a workspace or project that is gone.
+pub fn orphan_holders_finding(count: usize, memory: &str, listed: &[String]) -> Finding {
+    Finding::new(
+        "holders.orphan",
+        Severity::Warn,
+        format!("{count} holder(s) outlive their workspace ({memory})"),
+    )
+    .detail(format!(
+        "nothing in pom reaches them any more: {}",
+        listed.join(", ")
+    ))
+    .fix("pom ps --orphans to list them, pom ps --orphans --kill to stop them")
+}
+
+/// How long one doctor check took, and whether it gave up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CheckTiming {
+    pub name: String,
+    pub duration_ms: u64,
+    pub timed_out: bool,
+}
+
+/// One independent doctor check: a name and the work that yields its findings.
+pub type Check = (&'static str, Box<dyn FnOnce() -> Vec<Finding> + Send>);
+
+/// Runs `checks` side by side and waits at most `timeout` for them; a check still running then is reported
+/// as timed out and left to finish on its own. Findings keep the checks' order.
+pub fn run_checks(checks: Vec<Check>, timeout: Duration) -> (Vec<Vec<Finding>>, Vec<CheckTiming>) {
+    let started = Instant::now();
+    let deadline = started + timeout;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let names: Vec<&'static str> = checks.iter().map(|(name, _)| *name).collect();
+    let mut results: Vec<Option<(Vec<Finding>, u64)>> = names.iter().map(|_| None).collect();
+    for (index, (name, check)) in checks.into_iter().enumerate() {
+        let sender = sender.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("doctor-{name}"))
+            .spawn(move || {
+                let findings = check();
+                let elapsed = started.elapsed().as_millis() as u64;
+                if sender.send((index, findings, elapsed)).is_err() {
+                    eprintln!("doctor: {name} finished after the report");
+                }
+            });
+        if let Err(error) = spawned {
+            results[index] = Some((
+                vec![Finding::new(
+                    format!("doctor.check:{name}"),
+                    Severity::Warn,
+                    format!("Could not run the {name} check"),
+                )
+                .detail(error.to_string())],
+                0,
+            ));
+        }
+    }
+    drop(sender);
+    while results.iter().any(Option::is_none) {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(left) {
+            Ok((index, findings, elapsed)) => {
+                if let Some(slot) = results.get_mut(index) {
+                    *slot = Some((findings, elapsed));
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let mut findings = Vec::new();
+    let mut timings = Vec::new();
+    for (name, result) in names.into_iter().zip(results) {
+        match result {
+            Some((found, elapsed)) => {
+                findings.push(found);
+                timings.push(CheckTiming {
+                    name: name.to_string(),
+                    duration_ms: elapsed,
+                    timed_out: false,
+                });
+            }
+            None => {
+                findings.push(vec![Finding::new(
+                    format!("doctor.timeout:{name}"),
+                    Severity::Warn,
+                    format!("The {name} check did not finish within {}s", timeout.as_secs()),
+                )
+                .detail("something it asks (Docker, a disk, a process) is not answering")
+                .fix(format!("run `pom doctor` again; if the {name} check keeps timing out, look at what it probes"))]);
+                timings.push(CheckTiming {
+                    name: name.to_string(),
+                    duration_ms: timeout.as_millis() as u64,
+                    timed_out: true,
+                });
+            }
+        }
+    }
+    (findings, timings)
+}
+
 /// `{findings, errors, warnings}`, the shape the previous core's doctor endpoint returned.
 pub fn report(findings: &[Finding]) -> serde_json::Value {
     let count = |severity: Severity| {
@@ -380,6 +478,46 @@ pub fn fix_prompt(findings: &[Finding]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checks_run_side_by_side_and_a_slow_one_times_out() {
+        let finding = |id: &str| Finding::new(id, Severity::Warn, id);
+        let checks: Vec<Check> = vec![
+            ("quick", Box::new(move || vec![finding("quick")])),
+            (
+                "slow",
+                Box::new(move || {
+                    std::thread::sleep(Duration::from_secs(5));
+                    vec![finding("slow")]
+                }),
+            ),
+            (
+                "medium",
+                Box::new(move || {
+                    std::thread::sleep(Duration::from_millis(300));
+                    vec![finding("medium")]
+                }),
+            ),
+        ];
+        let started = Instant::now();
+        let (findings, timings) = run_checks(checks, Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let ids: Vec<&str> = findings
+            .iter()
+            .flatten()
+            .map(|finding| finding.id.as_str())
+            .collect();
+        assert_eq!(ids, ["quick", "doctor.timeout:slow", "medium"]);
+        let timed_out: Vec<(&str, bool)> = timings
+            .iter()
+            .map(|timing| (timing.name.as_str(), timing.timed_out))
+            .collect();
+        assert_eq!(
+            timed_out,
+            [("quick", false), ("slow", true), ("medium", false)]
+        );
+        assert!(timings[2].duration_ms >= 300);
+    }
 
     #[test]
     fn only_a_non_loopback_proxy_is_reported() {

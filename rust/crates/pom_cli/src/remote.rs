@@ -199,7 +199,7 @@ fn test(name: &str, json: bool, out: &mut dyn Write, err: &mut dyn Write) -> i32
             return 1;
         }
     };
-    let local = env!("CARGO_PKG_VERSION");
+    let local = crate::VERSION;
     let output = pom_remote::ssh_command(&host, &["--version".to_string()], Tty::Batch)
         .stdin(std::process::Stdio::null())
         .output();

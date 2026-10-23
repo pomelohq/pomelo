@@ -129,7 +129,7 @@ pub(crate) fn execute(
 fn review_by_hand(config_path: &Path, cwd: &Path, out: &mut dyn Write) -> Result<(), String> {
     say(out, &format!("\nreview {}:", config_path.display()))?;
     // A drafted config usually still has gaps; list them without failing the command.
-    if let Err(problems) = crate::doctor(Some(config_path), cwd, false, out) {
+    if let Err(problems) = crate::doctor(Some(config_path), cwd, false, false, out) {
         say(out, &format!("{problems}: fix them in pom.yml"))?;
     }
     let project = config_path.parent().unwrap_or(cwd);
