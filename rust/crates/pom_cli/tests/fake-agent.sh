@@ -18,17 +18,25 @@ reply() {
 }
 tool='"tool_name":"Bash","tool_input":{"command":"make test","description":"Run the tests"}'
 # Like the agent: the PermissionRequest hook may answer; else the dialog is drawn and answered with a key.
+# FAKE_DIALOG=old draws the dialog of earlier agent versions, whose last choice was a long deny.
 ask_permission() {
     out=$(payload PermissionRequest ",$tool,\"permission_suggestions\":[]" | "$POM" claude-hook --session)
     case "$out" in
     *'"behavior":"allow"'*) answer=allow ;;
     *'"behavior":"deny"'*) answer=deny ;;
     *)
-        printf 'Bash command\r\n\r\n  make test\r\n\r\nDo you want to proceed?\r\n\342\235\257 1. Yes\r\n  2. Yes, and don'"'"'t ask again for make commands\r\n  3. No, and tell Claude what to do differently (esc)\r\n'
+        if [ "$FAKE_DIALOG" = old ]; then
+            printf 'Bash command\r\n\r\n  make test\r\n\r\nDo you want to proceed?\r\n\342\235\257 1. Yes\r\n  2. Yes, and don'"'"'t ask again for make commands\r\n  3. No, and tell Claude what to do differently (esc)\r\n'
+            drawn=8
+        else
+            printf 'Bash command\r\nTip: auto mode handles these prompts for you - choose "switch to auto mode" below\r\nRun the tests\r\n----\r\nmake test\r\n----\r\nDo you want to proceed?\r\n'
+            printf '\342\235\257 1. Yes\r\n  2. Yes, and always allow access to %s from this project\r\n  3. Yes, and switch to auto mode - auto mode handles these prompts for you\r\n  4. No\r\nEsc to cancel - Tab to amend\r\n' "$PWD"
+            drawn=12
+        fi
         stty -icanon min 1 2>/dev/null
         key=$(dd bs=1 count=1 2>/dev/null)
         stty icanon 2>/dev/null
-        printf '\033[8A\033[J'
+        printf '\033[%sA\033[J' "$drawn"
         if [ -z "$key" ]; then answer=allow; else answer=esc; fi
         ;;
     esac

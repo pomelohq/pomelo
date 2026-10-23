@@ -142,21 +142,32 @@ impl AgentDriver for ClaudeDriver {
 
     fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog> {
         let bottom = &lines[lines.len().saturating_sub(DIALOG_TAIL_LINES)..];
-        let deny_at = bottom
+        let question = bottom
             .iter()
-            .rposition(|line| line.contains(DIALOG_DENY_CHOICE))?;
-        let selected = bottom[..=deny_at]
+            .rposition(|line| line.trim() == DIALOG_QUESTION)?;
+        // The wording of the later choices changes between versions; numbered lines ending in a plain no do not.
+        let choices: Vec<(bool, &str)> = bottom[question + 1..]
             .iter()
-            .rev()
+            .take_while(|line| !line.trim().is_empty())
+            .filter_map(|line| {
+                let selected = line.contains(SELECTION_MARK);
+                let text = line.trim().trim_start_matches(SELECTION_MARK).trim_start();
+                let (number, choice) = text.split_once(". ")?;
+                number
+                    .chars()
+                    .all(|c| c.is_ascii_digit())
+                    .then_some((selected, choice))
+            })
             .take(DIALOG_CHOICES_MAX)
-            .find(|line| line.contains(SELECTION_MARK))?;
-        let choice = selected
-            .split(SELECTION_MARK)
-            .nth(1)
-            .unwrap_or_default()
-            .trim_start();
+            .collect();
+        let (_, first) = choices.first()?;
+        let (_, last) = choices.last()?;
+        if choices.len() < 2 || *first != DIALOG_PLAIN_YES || !last.starts_with("No") {
+            return None;
+        }
+        let selected_at = choices.iter().position(|(selected, _)| *selected)?;
         Some(PermissionDialog {
-            first_choice_selected: choice.starts_with("1. Yes") && !choice.contains("don't ask"),
+            first_choice_selected: selected_at == 0,
         })
     }
 
@@ -198,11 +209,11 @@ impl AgentDriver for ClaudeDriver {
     }
 }
 
-/// The last choice of every permission dialog the agent draws.
-const DIALOG_DENY_CHOICE: &str = "tell Claude what to do differently";
+const DIALOG_QUESTION: &str = "Do you want to proceed?";
+const DIALOG_PLAIN_YES: &str = "Yes";
 const SELECTION_MARK: char = '\u{276F}';
 const DIALOG_TAIL_LINES: usize = 30;
-const DIALOG_CHOICES_MAX: usize = 4;
+const DIALOG_CHOICES_MAX: usize = 9;
 
 /// How much of the end of the screen text the trust prompt check reads.
 const TRUST_TAIL: usize = 600;
@@ -304,28 +315,39 @@ mod tests {
         );
     }
 
+    fn permission_screen(head: &[&str], choices: &[&str], selected: usize) -> Vec<String> {
+        let mut lines: Vec<String> = head.iter().map(|line| line.to_string()).collect();
+        lines.extend(choices.iter().enumerate().map(|(index, choice)| {
+            if index == selected {
+                format!("\u{276F} {choice}")
+            } else {
+                format!("  {choice}")
+            }
+        }));
+        lines
+    }
+
     #[test]
     fn the_permission_dialog_is_found_with_where_its_highlight_is() {
         let claude = driver("claude").expect("claude");
-        let screen = |selected: usize| -> Vec<String> {
-            let choices = [
-                "1. Yes",
-                "2. Yes, and don't ask again for make commands in /p/workspace--feat-login",
-                "3. No, and tell Claude what to do differently (esc)",
-            ];
-            let mut lines = vec![
-                "Bash command".to_string(),
-                String::new(),
-                "  make test".into(),
-                "Do you want to proceed?".into(),
-            ];
-            lines.extend(choices.iter().enumerate().map(|(index, choice)| {
-                if index == selected {
-                    format!("\u{276F} {choice}")
-                } else {
-                    format!("  {choice}")
-                }
-            }));
+        let head = [
+            "Bash command",
+            "Tip: auto mode handles these prompts for you - choose \"switch to auto mode\" below",
+            "Create empty person.txt file",
+            "----",
+            "touch person.txt && echo ok",
+            "----",
+            "Do you want to proceed?",
+        ];
+        let choices = [
+            "1. Yes",
+            "2. Yes, and always allow access to /p/workspace--feat-login from this project",
+            "3. Yes, and switch to auto mode - auto mode handles these prompts for you",
+            "4. No",
+        ];
+        let screen = |selected: usize| {
+            let mut lines = permission_screen(&head, &choices, selected);
+            lines.push("Esc to cancel - Tab to amend".into());
             lines
         };
         assert_eq!(
@@ -334,15 +356,47 @@ mod tests {
                 first_choice_selected: true
             })
         );
+        for selected in 1..4 {
+            assert_eq!(
+                claude.permission_dialog(&screen(selected)),
+                Some(PermissionDialog {
+                    first_choice_selected: false
+                }),
+                "Enter on choice {} would allow more than this call, or decline it",
+                selected + 1
+            );
+        }
+        assert_eq!(claude.permission_dialog(&["> hello".to_string()]), None);
         assert_eq!(
-            claude.permission_dialog(&screen(1)),
+            claude.permission_dialog(&screen(0)[..head.len()]),
+            None,
+            "a question without its choices is no dialog"
+        );
+        assert_eq!(claude.answer_permission(true)[0].bytes, b"\r".to_vec());
+        assert_eq!(claude.answer_permission(false)[0].bytes, b"\x1b".to_vec());
+    }
+
+    #[test]
+    fn the_older_permission_dialog_with_its_long_deny_choice_is_found_too() {
+        let claude = driver("claude").expect("claude");
+        let head = ["Bash command", "", "  make test", "Do you want to proceed?"];
+        let choices = [
+            "1. Yes",
+            "2. Yes, and don't ask again for make commands in /p/workspace--feat-login",
+            "3. No, and tell Claude what to do differently (esc)",
+        ];
+        assert_eq!(
+            claude.permission_dialog(&permission_screen(&head, &choices, 0)),
+            Some(PermissionDialog {
+                first_choice_selected: true
+            })
+        );
+        assert_eq!(
+            claude.permission_dialog(&permission_screen(&head, &choices, 1)),
             Some(PermissionDialog {
                 first_choice_selected: false
             }),
             "Enter there would allow every later call too"
         );
-        assert_eq!(claude.permission_dialog(&["> hello".to_string()]), None);
-        assert_eq!(claude.answer_permission(true)[0].bytes, b"\r".to_vec());
-        assert_eq!(claude.answer_permission(false)[0].bytes, b"\x1b".to_vec());
     }
 }

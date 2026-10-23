@@ -19,6 +19,10 @@ struct Fixture {
 impl Fixture {
     /// A project with a `feat` workspace whose `reviewer` session is the fake agent.
     fn new() -> Fixture {
+        Fixture::with_env(&[])
+    }
+
+    fn with_env(extra: &[(&str, &str)]) -> Fixture {
         let temp = tempfile::Builder::new()
             .prefix("pomdrv")
             .tempdir_in("/tmp")
@@ -71,6 +75,11 @@ impl Fixture {
         ]
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
+        .chain(
+            extra
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string())),
+        )
         .collect();
         let argv = vec!["/bin/sh".to_string(), FAKE_AGENT.to_string()];
         pom_ptyhost::spawn_holder(
@@ -808,7 +817,15 @@ fn taking_over_lets_go_of_a_held_prompt_and_the_person_answers_its_dialog() {
 
 #[test]
 fn the_person_answers_the_agents_dialog_from_another_client() {
-    let fixture = Fixture::new();
+    person_answers_the_dialog(Fixture::new());
+}
+
+#[test]
+fn the_person_answers_the_older_dialog_with_its_long_deny_choice() {
+    person_answers_the_dialog(Fixture::with_env(&[("FAKE_DIALOG", "old")]));
+}
+
+fn person_answers_the_dialog(fixture: Fixture) {
     let sent = fixture.send("ask-permission", &["--as-person"]);
     assert_eq!(sent.status.code(), Some(0));
     fixture.until("the dialog", |fixture| {
