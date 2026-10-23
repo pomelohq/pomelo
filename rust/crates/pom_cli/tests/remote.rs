@@ -180,7 +180,11 @@ fn hosts_are_added_listed_tested_and_removed() {
     assert!(tested.status.success(), "{}", text(&tested));
     let tested = json(&tested);
     assert_eq!(tested["reachable"], true);
-    assert_eq!(tested["remote_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(tested["remote_version"], tested["local_version"]);
+    assert!(tested["remote_version"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with(env!("CARGO_PKG_VERSION")));
     assert_eq!(tested["version_mismatch"], false);
     let plain = text(&fixture.pom(&["host", "test", "dev"]));
     assert!(plain.contains("dev: connected, pom "), "{plain}");
@@ -1942,8 +1946,22 @@ fn doctor_finding(report: &Value, id: &str) -> Option<Value> {
 #[test]
 fn doctor_reports_how_the_server_stands() {
     let fixture = Fixture::new();
-    let quiet = fixture.pom(&["doctor", "--json"]);
-    let report: Value = serde_json::from_slice(&quiet.stdout).expect("doctor json");
+    // Only the fixture's tools: the doctor runs `pom --version` of whatever pom the PATH holds.
+    let doctor = || -> Value {
+        let output = fixture
+            .command(&["doctor", "--json"])
+            .env(
+                "PATH",
+                format!(
+                    "{}:/usr/bin:/bin",
+                    fixture.temp.path().join("bin").display()
+                ),
+            )
+            .output()
+            .expect("pom doctor");
+        serde_json::from_slice(&output.stdout).expect("doctor json")
+    };
+    let report = doctor();
     assert!(
         doctor_finding(&report, "server.stopped").is_none(),
         "no server section before a server ever ran: {report}"
@@ -1951,8 +1969,7 @@ fn doctor_reports_how_the_server_stands() {
 
     let started = fixture.pom(&["server", "run"]);
     assert!(started.status.success(), "{}", text(&started));
-    let report: Value =
-        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    let report = doctor();
     let running = doctor_finding(&report, "server.running").expect("server.running");
     assert_eq!(running["severity"], "ok");
     let detail = running["detail"].as_str().unwrap_or_default();
@@ -1964,8 +1981,7 @@ fn doctor_reports_how_the_server_stands() {
     let old = std::fs::File::create(dir.join("0.0.1.lock")).expect("old lock");
     old.lock().expect("hold the old version's lock");
     std::fs::write(dir.join("0.0.1.pid"), "4242\n").expect("old pid");
-    let report: Value =
-        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    let report = doctor();
     let stale = doctor_finding(&report, "server.old_version:0.0.1").expect("old version");
     assert_eq!(stale["severity"], "warn");
     assert!(stale["fix"]
@@ -1976,8 +1992,7 @@ fn doctor_reports_how_the_server_stands() {
 
     let stopped = fixture.pom(&["server", "stop"]);
     assert!(stopped.status.success(), "{}", text(&stopped));
-    let report: Value =
-        serde_json::from_slice(&fixture.pom(&["doctor", "--json"]).stdout).expect("doctor json");
+    let report = doctor();
     assert!(
         doctor_finding(&report, "server.stopped").is_some(),
         "{report}"

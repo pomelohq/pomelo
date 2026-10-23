@@ -1464,6 +1464,9 @@ impl App {
                 {
                     pom_doctor::add_finding(&mut findings, finding);
                 }
+                if let Some(finding) = bundled_pom_shadowed(path) {
+                    pom_doctor::add_finding(&mut findings, finding);
+                }
                 if sender.send(findings).is_ok() {
                     ui::wake();
                 }
@@ -4932,4 +4935,14 @@ fn ago(seconds: u64) -> String {
         3600..=86_399 => format!("{}h ago", seconds / 3600),
         _ => format!("{}d ago", seconds / 86_400),
     }
+}
+
+/// Whether the `pom` a terminal finds first is another build than the one this app ships next to itself.
+fn bundled_pom_shadowed(path_env: &str) -> Option<pom_doctor::Finding> {
+    let bundled = std::env::current_exe().ok()?.parent()?.join("pom");
+    if !bundled.is_file() {
+        return None;
+    }
+    let version = pom_doctor::pom_version(&bundled)?;
+    pom_doctor::path_shadow(path_env, &bundled, &version, &pom_doctor::pom_version)
 }

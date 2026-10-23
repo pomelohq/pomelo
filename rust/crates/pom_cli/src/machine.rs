@@ -74,7 +74,11 @@ fn tree_total(processes: &HashMap<i32, Process>, children: &Children, root: i32)
 }
 
 /// A holder with the CPU and memory of its whole process tree, and its children one level down.
-fn holder_rows(holders: &[(String, i32)], processes: &HashMap<i32, Process>) -> Vec<Vec<String>> {
+fn holder_rows(
+    holders: &[(String, i32)],
+    processes: &HashMap<i32, Process>,
+    orphaned: &HashMap<String, String>,
+) -> Vec<Vec<String>> {
     let children = children_of(processes);
     let mut rows = vec![vec![
         "HOLDER".to_string(),
@@ -87,8 +91,13 @@ fn holder_rows(holders: &[(String, i32)], processes: &HashMap<i32, Process>) -> 
         let (cpu, rss) = tree_total(processes, &children, *pid);
         all_cpu += cpu;
         all_rss += rss;
+        let label = if orphaned.contains_key(name) {
+            format!("{name} (orphan)")
+        } else {
+            name.clone()
+        };
         rows.push(vec![
-            name.clone(),
+            label,
             pid.to_string(),
             format!("{cpu:.1}"),
             megabytes(rss),
@@ -315,13 +324,160 @@ fn megabytes(kilobytes: u64) -> String {
     format!("{:.0}M", kilobytes as f64 / 1024.0)
 }
 
-pub(crate) fn ps(watch: bool, json: bool, out: &mut dyn Write) -> Result<(), String> {
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct PsArgs {
+    pub watch: bool,
+    pub json: bool,
+    /// Only the holders whose workspace or project is gone.
+    pub orphans: bool,
+    pub kill: bool,
+}
+
+const PS_USAGE: &str = "usage: pom ps [--watch | --json] [--orphans [--kill]]";
+
+pub(crate) fn parse_ps(words: &[&str]) -> Result<PsArgs, String> {
+    let args = crate::args::Args::parse(words, &["-o", "--output"])?;
+    args.allow(&[
+        "-w",
+        "--watch",
+        "--json",
+        "-o",
+        "--output",
+        "--orphans",
+        "--kill",
+    ])
+    .map_err(|error| format!("{error}\n{PS_USAGE}"))?;
+    args.at_most(0, "ps")?;
+    let request = PsArgs {
+        watch: args.has("-w") || args.has("--watch"),
+        json: args.has("--json") || args.json()?,
+        orphans: args.has("--orphans"),
+        kill: args.has("--kill"),
+    };
+    if request.watch && (request.json || request.orphans) {
+        return Err(PS_USAGE.into());
+    }
+    if request.kill && !request.orphans {
+        return Err("--kill goes with --orphans".into());
+    }
+    Ok(request)
+}
+
+pub(crate) const ORPHANS_SCHEMA: &str = "pom.orphans/v1";
+
+/// `pom ps --orphans [--kill]`: the holders nothing in pom reaches any more, and stopping them.
+fn orphans(request: &PsArgs, holders: &SocketDir, out: &mut dyn Write) -> Result<(), String> {
+    let processes = process_table();
+    let children = children_of(&processes);
+    let found = pom_workspace::orphan_holders(&StateDir::from_env(), holders);
+    let mut rows = Vec::new();
+    let mut failed = Vec::new();
+    for orphan in &found {
+        let (_, rss) = tree_total(&processes, &children, orphan.pid);
+        let killed = if request.kill {
+            match holders.kill_holder(&orphan.name) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    failed.push(format!("{}: {error}", orphan.name));
+                    false
+                }
+                _ if holders.holder_alive(&orphan.name) => {
+                    failed.push(format!("{}: still running", orphan.name));
+                    false
+                }
+                _ => true,
+            }
+        } else {
+            false
+        };
+        rows.push((orphan, rss * 1024, killed));
+    }
+    if request.json {
+        let document = serde_json::json!({
+            "schema": ORPHANS_SCHEMA,
+            "orphans": rows.iter().map(|(orphan, memory_bytes, killed)| serde_json::json!({
+                "name": orphan.name,
+                "pid": orphan.pid,
+                "project": orphan.project,
+                "workspace": orphan.workspace,
+                "reason": orphan.reason,
+                "memory_bytes": memory_bytes,
+                "killed": killed,
+            })).collect::<Vec<_>>(),
+            "errors": failed,
+        });
+        say(out, &document.to_string())?;
+    } else if rows.is_empty() {
+        say(out, "no orphan holders")?;
+    } else {
+        let mut table_rows = vec![vec![
+            "HOLDER".to_string(),
+            "PID".to_string(),
+            "MEM".to_string(),
+            "WHY".to_string(),
+        ]];
+        for (orphan, memory_bytes, killed) in &rows {
+            let why = if *killed {
+                format!("{} - stopped", orphan.reason)
+            } else {
+                orphan.reason.clone()
+            };
+            table_rows.push(vec![
+                orphan.name.clone(),
+                orphan.pid.to_string(),
+                megabytes(memory_bytes / 1024),
+                why,
+            ]);
+        }
+        table(out, "", &table_rows)?;
+        if !request.kill {
+            say(out, "\nstop them with: pom ps --orphans --kill")?;
+        }
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("could not stop: {}", failed.join("; ")))
+    }
+}
+
+/// What `pom doctor` says about orphan holders.
+pub(crate) fn orphan_finding(state: &StateDir, holders: &SocketDir) -> Option<pom_doctor::Finding> {
+    let found = pom_workspace::orphan_holders(state, holders);
+    if found.is_empty() {
+        return None;
+    }
+    let processes = process_table();
+    let children = children_of(&processes);
+    let memory_kb: u64 = found
+        .iter()
+        .map(|orphan| tree_total(&processes, &children, orphan.pid).1)
+        .sum();
+    let listed: Vec<String> = found
+        .iter()
+        .map(|orphan| format!("{} ({})", orphan.name, orphan.reason))
+        .collect();
+    Some(pom_doctor::orphan_holders_finding(
+        found.len(),
+        &megabytes(memory_kb),
+        &listed,
+    ))
+}
+
+pub(crate) fn ps(request: &PsArgs, out: &mut dyn Write) -> Result<(), String> {
     let holders = SocketDir::from_env();
+    if request.orphans {
+        return orphans(request, &holders, out);
+    }
     loop {
         let processes = process_table();
         let seen = seen_holders(&holders, &processes);
         let usage = measure(&seen);
-        if json {
+        let orphaned: HashMap<String, String> =
+            pom_workspace::orphan_holders(&StateDir::from_env(), &holders)
+                .into_iter()
+                .map(|orphan| (orphan.name, orphan.reason))
+                .collect();
+        if request.json {
             let document = serde_json::json!({
                 "schema": "pom.ps/v1",
                 "workspaces": usage,
@@ -332,11 +488,13 @@ pub(crate) fn ps(watch: bool, json: bool, out: &mut dyn Write) -> Result<(), Str
                     "workspace": holder.workspace.as_ref().map(|(_, workspace)| workspace),
                     "cpu_percent": holder.cpu,
                     "memory_bytes": holder.memory_bytes,
+                    "orphan": orphaned.contains_key(&holder.name),
+                    "orphan_reason": orphaned.get(&holder.name),
                 })).collect::<Vec<_>>(),
             });
             return say(out, &document.to_string());
         }
-        if watch {
+        if request.watch {
             write!(out, "\x1b[H\x1b[2J").map_err(|error| error.to_string())?;
         }
         let pairs: Vec<(String, i32)> = seen
@@ -350,9 +508,18 @@ pub(crate) fn ps(watch: bool, json: bool, out: &mut dyn Write) -> Result<(), Str
                 table(out, "", &workspace_rows(&usage))?;
                 say(out, "")?;
             }
-            table(out, "", &holder_rows(&pairs, &processes))?;
+            table(out, "", &holder_rows(&pairs, &processes, &orphaned))?;
+            if !orphaned.is_empty() {
+                say(
+                    out,
+                    &format!(
+                        "\n{} orphan holder(s): their workspace or project is gone; stop them with: pom ps --orphans --kill",
+                        orphaned.len()
+                    ),
+                )?;
+            }
         }
-        if !watch {
+        if !request.watch {
             return Ok(());
         }
         out.flush().map_err(|error| error.to_string())?;

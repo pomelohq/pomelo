@@ -25,7 +25,9 @@ pub use baseline::{migrate, rebaseline, reseed, BaselineReport, MigrationOutcome
 pub use create::{
     create, create_until, validate_branch_name, CreateRequest, CANCELLED, CREATE_STAGES,
 };
-pub use delete::{delete, DeleteRequest, DELETE_STAGES};
+pub use delete::{
+    delete, orphan_holders, orphan_reason, DeleteRequest, KnownProject, OrphanHolder, DELETE_STAGES,
+};
 pub use git::{branch_is_safe_to_delete, unpushed_commits};
 pub use import::{import, ImportRequest, RepoImport, IMPORT_STAGES};
 pub use prepare::{prepare_main, PrepareRequest};

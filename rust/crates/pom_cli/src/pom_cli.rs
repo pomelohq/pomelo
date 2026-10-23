@@ -88,8 +88,9 @@ workspaces
                      new workspace: worktrees, databases, env files, setup and seed;
                      --fresh-db starts every database empty instead of copying main's
   ws delete <branch> [--from-stage n]
-                     stop it and remove its worktrees, databases and folder; the local
-                     branch goes too only when it is pushed or merged
+                     stop every service, agent and terminal of it, then remove its worktrees,
+                     databases and folder; the local branch goes too only when it is pushed
+                     or merged
   ws rename <branch> [name]   set or clear the workspace's display name
   ws export <branch> [-o file.pomws | --to <host>] [--no-db] [--json]
                      the workspace as one archive another machine can open as it was: commits
@@ -155,8 +156,12 @@ config
   env get <repo[/service]> <KEY>
   env set <repo> KEY=VALUE...
   env unset <repo> KEY...
-  doctor [--json]    what keeps the project from running, and how to fix it; on a machine that
-                     runs `pom server`, how the server stands
+  doctor [--quick] [--json]
+                     what keeps the project from running, and how to fix it; on a machine that
+                     runs `pom server`, how the server stands; checks run side by side, each with
+                     a timeout, and --json reports how long each took; --quick runs only the
+                     cheap local ones (config, tools on the PATH, the pom on the PATH, orphan
+                     holders) in under 2 s
   github webhook setup [--rotate] [--json]
                      the payload URL for a GitHub webhook on the relay's /_pom/github, and the
                      project's webhook secret (made once and shown once; --rotate replaces it)
@@ -175,9 +180,11 @@ projects and machine
   init [name] [--ai]          a new project from the git repo you are in (--ai: Claude finishes pom.yml)
   onboard [session] [--new name --repo path... [--branch b]] [--no-ai]
                      Claude writes a runnable pom.yml with you, in this terminal
-  ps [--watch | --json]
+  ps [--watch | --json] [--orphans [--kill]]
                      CPU and memory of every holder Pomelo started, and of each workspace together
-                     (from its cgroup when it has limits on Linux, with its caps)
+                     (from its cgroup when it has limits on Linux, with its caps); a holder whose
+                     workspace or project is gone is marked orphan; --orphans lists only those,
+                     --kill stops them
   disk [--json]      free space where Pomelo writes (home, its state, Docker's data, LVM thin
                      pools; warns past 80% with what to run) and the projects' node_modules
   modules [list|prune|clear]
@@ -275,11 +282,11 @@ enum Command {
     Commands { json: bool },
     Lifecycle(LifecycleCommand),
     Onboard(OnboardCommand),
-    Ps { watch: bool, json: bool },
+    Ps(machine::PsArgs),
     Disk { json: bool },
     Modules(modules::ModulesCommand),
     Completion(String),
-    Doctor { json: bool },
+    Doctor { json: bool, quick: bool },
     Agent(agent::AgentCommand),
     Host(remote::HostCommand),
     Server(server::ServerCommand),
@@ -326,61 +333,62 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             return 2;
         }
     };
-    let result =
-        match invocation.command {
-            Command::Help => writeln!(out, "{USAGE}").map_err(|error| error.to_string()),
-            Command::Version => writeln!(out, "pom {}", env!("CARGO_PKG_VERSION"))
-                .map_err(|error| error.to_string()),
-            Command::Ports => ports(&StateDir::from_env(), out),
-            Command::Doctor { json } => doctor(invocation.config.as_deref(), cwd, json, out),
-            Command::Proxy => proxy::serve(&StateDir::from_env(), out),
-            Command::ProxyConfig(ref command) => {
-                proxy::config_command(command, &StateDir::from_env(), out)
-            }
-            Command::Config(ref command) if !command.needs_session() => {
-                find_config(invocation.config.as_deref(), cwd)
-                    .and_then(|path| config::execute(command, &path, out))
-            }
-            Command::Env(ref command) if !command.needs_session() => {
-                find_config(invocation.config.as_deref(), cwd)
-                    .and_then(|path| env::edit(command, &path, out))
-            }
-            Command::Onboard(ref command) => onboard::execute(command, cwd, out),
-            Command::Ps { watch, json } => machine::ps(watch, json, out),
-            Command::Disk { json } => machine::disk(&StateDir::from_env(), json, out),
-            Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
-            Command::Completion(ref shell) => completion::print(shell, out),
-            Command::Agent(ref command) => {
-                return agent::execute(command, &invocation, cwd, out, err);
-            }
-            Command::Host(ref command) => return remote::execute(command, out, err),
-            Command::Server(ref command) => return server::execute(command, out, err),
-            Command::Transfer(ref command) => {
-                return transfer::execute(command, &invocation, cwd, out, err);
-            }
-            Command::Projects { json } => projects(&StateDir::from_env(), json, out),
-            Command::SyncStatus(ref request) => push::status(&StateDir::from_env(), request, out),
-            Command::Queue(ref queue) => {
-                return match Session::open(&invocation, cwd) {
-                    Ok(session) => session.queue_command(queue, out, err),
-                    Err(message) => {
-                        report(err, &format!("error: {message}"));
-                        1
-                    }
-                };
-            }
-            Command::Start(ref start) if start.wait => {
-                return match Session::open(&invocation, cwd) {
-                    Ok(session) => session.start_and_wait(start, out, err),
-                    Err(message) => {
-                        report(err, &format!("error: {message}"));
-                        1
-                    }
-                };
-            }
-            ref command => Session::open(&invocation, cwd)
-                .and_then(|session| session.execute(command, out, err)),
-        };
+    let result = match invocation.command {
+        Command::Help => writeln!(out, "{USAGE}").map_err(|error| error.to_string()),
+        Command::Version => writeln!(out, "pom {VERSION}").map_err(|error| error.to_string()),
+        Command::Ports => ports(&StateDir::from_env(), out),
+        Command::Doctor { json, quick } => {
+            doctor(invocation.config.as_deref(), cwd, json, quick, out)
+        }
+        Command::Proxy => proxy::serve(&StateDir::from_env(), out),
+        Command::ProxyConfig(ref command) => {
+            proxy::config_command(command, &StateDir::from_env(), out)
+        }
+        Command::Config(ref command) if !command.needs_session() => {
+            find_config(invocation.config.as_deref(), cwd)
+                .and_then(|path| config::execute(command, &path, out))
+        }
+        Command::Env(ref command) if !command.needs_session() => {
+            find_config(invocation.config.as_deref(), cwd)
+                .and_then(|path| env::edit(command, &path, out))
+        }
+        Command::Onboard(ref command) => onboard::execute(command, cwd, out),
+        Command::Ps(ref request) => machine::ps(request, out),
+        Command::Disk { json } => machine::disk(&StateDir::from_env(), json, out),
+        Command::Modules(command) => modules::execute(command, &StateDir::from_env(), out),
+        Command::Completion(ref shell) => completion::print(shell, out),
+        Command::Agent(ref command) => {
+            return agent::execute(command, &invocation, cwd, out, err);
+        }
+        Command::Host(ref command) => return remote::execute(command, out, err),
+        Command::Server(ref command) => return server::execute(command, out, err),
+        Command::Transfer(ref command) => {
+            return transfer::execute(command, &invocation, cwd, out, err);
+        }
+        Command::Projects { json } => projects(&StateDir::from_env(), json, out),
+        Command::SyncStatus(ref request) => push::status(&StateDir::from_env(), request, out),
+        Command::Queue(ref queue) => {
+            return match Session::open(&invocation, cwd) {
+                Ok(session) => session.queue_command(queue, out, err),
+                Err(message) => {
+                    report(err, &format!("error: {message}"));
+                    1
+                }
+            };
+        }
+        Command::Start(ref start) if start.wait => {
+            return match Session::open(&invocation, cwd) {
+                Ok(session) => session.start_and_wait(start, out, err),
+                Err(message) => {
+                    report(err, &format!("error: {message}"));
+                    1
+                }
+            };
+        }
+        ref command => {
+            Session::open(&invocation, cwd).and_then(|session| session.execute(command, out, err))
+        }
+    };
     match result {
         Ok(()) => 0,
         Err(message) => {
@@ -594,21 +602,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Lifecycle(lifecycle::parse(name, rest)?)
         }
         "init" | "onboard" => Command::Onboard(onboard::parse(name, rest)?),
-        "ps" => match rest {
-            [] => Command::Ps {
-                watch: false,
-                json: false,
-            },
-            ["-w" | "--watch"] => Command::Ps {
-                watch: true,
-                json: false,
-            },
-            ["--json"] | ["-o" | "--output", "json"] => Command::Ps {
-                watch: false,
-                json: true,
-            },
-            _ => return Err("usage: pom ps [--watch | --json]".into()),
-        },
+        "ps" => Command::Ps(machine::parse_ps(rest)?),
         "disk" => Command::Disk {
             json: match rest {
                 [] | ["-o" | "--output", "table"] => false,
@@ -618,13 +612,16 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         },
         "modules" => Command::Modules(modules::parse(rest)?),
         "completion" => Command::Completion(one("a shell (bash, zsh or fish)")?),
-        "doctor" => Command::Doctor {
-            json: match rest {
-                [] | ["-o" | "--output", "table"] => false,
-                ["--json"] | ["-o" | "--output", "json"] => true,
-                _ => return Err("usage: pom doctor [--json]".into()),
-            },
-        },
+        "doctor" => {
+            let args = args::Args::parse(rest, &["-o", "--output"])?;
+            args.allow(&["--json", "-o", "--output", "--quick"])
+                .map_err(|error| format!("{error}\nusage: pom doctor [--quick] [--json]"))?;
+            args.at_most(0, "doctor")?;
+            Command::Doctor {
+                json: args.has("--json") || args.json()?,
+                quick: args.has("--quick"),
+            }
+        }
         "agent" => {
             let (command, named) = agent::parse(rest)?;
             if workspace.is_none() {
@@ -664,43 +661,24 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
     })
 }
 
+/// What `pom --version` reports: the workspace version for a release build, with `-dev+<commit>` otherwise.
+pub const VERSION: &str = env!("POM_VERSION");
+
+const DOCTOR_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const QUICK_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
 pub(crate) fn doctor(
     explicit: Option<&Path>,
     cwd: &Path,
     json: bool,
+    quick: bool,
     out: &mut dyn Write,
 ) -> Result<(), String> {
+    let started = std::time::Instant::now();
     let config_path = find_config(explicit, cwd).unwrap_or_else(|_| cwd.join("pom.yml"));
     let config = Config::load(&config_path).ok();
-    let root = config_path.parent().unwrap_or(cwd);
-    let names = config
-        .as_ref()
-        .map(|config| {
-            pom_secrets::SecretStore::new(StateDir::from_env(), &config.session)
-                .names()
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    let root = config_path.parent().unwrap_or(cwd).to_path_buf();
     let path = pom_services::tool_path();
-    let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
-    let docker_running = || pom_doctor::docker_answers(path);
-    let compose_installed = || pom_doctor::compose_answers(path);
-    let mut findings = pom_doctor::diagnose(
-        config.as_ref(),
-        &config_path,
-        root,
-        &names,
-        &pom_doctor::Machine {
-            has_tool: &has_tool,
-            docker_running: &docker_running,
-            compose_installed: &compose_installed,
-        },
-    );
-    let network = pom_env::dev_network();
-    if let Some(finding) = pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len()) {
-        pom_doctor::add_finding(&mut findings, finding);
-    }
-    let linux = pom_doctor::linux_findings(path, has_tool("docker"));
     let backend = pom_ptyhost::limits::Backend::from_env();
     let support = pom_doctor::LimitSupport {
         linux: cfg!(target_os = "linux"),
@@ -708,24 +686,96 @@ pub(crate) fn doctor(
         controllers: pom_ptyhost::limits::available_controllers(&backend),
         linger: pom_ptyhost::limits::lingering(),
     };
+    let linger = support.linger;
     let configured = config
         .as_ref()
         .is_some_and(|config| !config.limits.is_empty());
-    let limits = pom_doctor::limit_findings(configured, &support);
-    let limits_linger = limits.iter().any(|finding| finding.id == "limits.linger");
-    let linux = linux.into_iter().chain(limits);
-    for finding in machine::disk_check(&StateDir::from_env())
-        .findings
-        .into_iter()
-        .chain(linux)
+    let mut checks: Vec<pom_doctor::Check> = Vec::new();
     {
-        pom_doctor::add_finding(&mut findings, finding);
+        let config = config.clone();
+        let config_path = config_path.clone();
+        checks.push((
+            "config",
+            Box::new(move || {
+                let names = config
+                    .as_ref()
+                    .map(|config| {
+                        pom_secrets::SecretStore::new(StateDir::from_env(), &config.session)
+                            .names()
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                let has_tool = |tool: &str| pom_doctor::on_path(path, tool);
+                // Quick mode never waits on Docker: it trusts a docker found on the PATH.
+                let docker_running = || quick || pom_doctor::docker_answers(path);
+                let compose_installed = || quick || pom_doctor::compose_answers(path);
+                pom_doctor::diagnose(
+                    config.as_ref(),
+                    &config_path,
+                    &root,
+                    &names,
+                    &pom_doctor::Machine {
+                        has_tool: &has_tool,
+                        docker_running: &docker_running,
+                        compose_installed: &compose_installed,
+                    },
+                )
+            }),
+        ));
     }
-    let (status, problems): (Vec<_>, Vec<_>) =
-        pom_doctor::server_findings(&server::survey(support.linger))
-            .into_iter()
-            .filter(|finding| !(limits_linger && finding.id == "server.linger"))
-            .partition(|finding| finding.severity == pom_doctor::Severity::Ok);
+    checks.push((
+        "proxy",
+        Box::new(|| {
+            let network = pom_env::dev_network();
+            pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len())
+                .into_iter()
+                .collect()
+        }),
+    ));
+    checks.push((
+        "limits",
+        Box::new(move || pom_doctor::limit_findings(configured, &support)),
+    ));
+    checks.push((
+        "path",
+        Box::new(move || path_shadow_finding(path).into_iter().collect()),
+    ));
+    checks.push((
+        "holders",
+        Box::new(|| {
+            machine::orphan_finding(&StateDir::from_env(), &SocketDir::from_env())
+                .into_iter()
+                .collect()
+        }),
+    ));
+    if !quick {
+        checks.push((
+            "linux",
+            Box::new(move || pom_doctor::linux_findings(path, pom_doctor::on_path(path, "docker"))),
+        ));
+        checks.push((
+            "disk",
+            Box::new(|| machine::disk_check(&StateDir::from_env()).findings),
+        ));
+        checks.push((
+            "server",
+            Box::new(move || pom_doctor::server_findings(&server::survey(linger))),
+        ));
+    }
+    let timeout = if quick {
+        QUICK_CHECK_TIMEOUT
+    } else {
+        DOCTOR_CHECK_TIMEOUT
+    };
+    let (results, timings) = pom_doctor::run_checks(checks, timeout);
+    let mut results = results.into_iter();
+    let mut findings = results.next().unwrap_or_default();
+    let mut gathered: Vec<pom_doctor::Finding> = results.flatten().collect();
+    let limits_linger = gathered.iter().any(|finding| finding.id == "limits.linger");
+    gathered.retain(|finding| !(limits_linger && finding.id == "server.linger"));
+    let (status, problems): (Vec<_>, Vec<_>) = gathered.into_iter().partition(|finding| {
+        finding.id.starts_with("server.") && finding.severity == pom_doctor::Severity::Ok
+    });
     for finding in problems {
         pom_doctor::add_finding(&mut findings, finding);
     }
@@ -738,8 +788,12 @@ pub(crate) fn doctor(
         .filter(|finding| finding.severity == pom_doctor::Severity::Error)
         .count();
     if json {
-        let report = serde_json::to_string_pretty(&pom_doctor::report(&findings))
-            .map_err(|error| error.to_string())?;
+        let mut report = pom_doctor::report(&findings);
+        report["quick"] = quick.into();
+        report["version"] = VERSION.into();
+        report["duration_ms"] = (started.elapsed().as_millis() as u64).into();
+        report["checks"] = serde_json::to_value(&timings).map_err(|error| error.to_string())?;
+        let report = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
         write(out, report)?;
         return if errors > 0 {
             Err(format!("{errors} blocking problem(s)"))
@@ -765,6 +819,16 @@ pub(crate) fn doctor(
         return Err(format!("{errors} blocking problem(s)"));
     }
     Ok(())
+}
+
+/// Whether the `pom` a terminal runs is another build than this one.
+fn path_shadow_finding(tool_path: &str) -> Option<pom_doctor::Finding> {
+    let own = std::env::current_exe().ok()?;
+    let path_env = std::env::var("PATH")
+        .ok()
+        .filter(|path| !path.is_empty())
+        .unwrap_or_else(|| tool_path.to_string());
+    pom_doctor::path_shadow(&path_env, &own, VERSION, &pom_doctor::pom_version)
 }
 
 /// The project `cwd` is in (its `pom.yml` is here or in a parent), or the explicit one.
@@ -862,7 +926,7 @@ impl Session {
             | Command::Proxy
             | Command::ProxyConfig(_)
             | Command::Onboard(_)
-            | Command::Ps { .. }
+            | Command::Ps(_)
             | Command::Disk { .. }
             | Command::Modules(_)
             | Command::Completion(_)
@@ -1386,6 +1450,20 @@ fn ports(state: &StateDir, out: &mut dyn Write) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_reports_the_workspace_version_or_a_dev_version_of_it() {
+        let release = env!("CARGO_PKG_VERSION");
+        let dev = VERSION
+            .strip_prefix(release)
+            .ok_or(VERSION)
+            .map(|rest| rest.is_empty() || rest.starts_with("-dev"));
+        assert_eq!(dev, Ok(true), "{VERSION} vs {release}");
+        assert!(
+            !pom_remote::version_mismatch(VERSION, release),
+            "a dev build speaks the same version as its release"
+        );
+    }
 
     #[test]
     fn another_thread_can_warn_while_the_command_holds_its_output() {
