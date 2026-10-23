@@ -384,7 +384,9 @@ impl App {
         let info = project_info(remote, &snapshot);
         let panels = vec![remote_services_panel(remote, &snapshot).0];
         let title = remote_title(remote);
+        let upload = image_upload(remote.watch.source());
         self.with_workspace_view(id, |view, _| {
+            view.set_image_upload(Some(upload));
             view.set_project(Some(info), None, None, None);
             view.set_side_panels(panels);
             view.set_ai_available(false);
@@ -1175,6 +1177,21 @@ fn remote_services_panel(
     )
     .with_tab_buttons(buttons);
     (Box::new(panel), source)
+}
+
+/// A screenshot pasted in a terminal here goes to the host, where the agent reading that terminal runs.
+fn image_upload(source: Arc<dyn pom_remote::ProjectSource>) -> workspace::image_paste::ImageUpload {
+    Arc::new(move |png: &[u8]| {
+        source
+            .paste_file(png, "png")
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(|error| match error {
+                pom_remote::SourceError::Failed(message) if message.starts_with("Pasting") => {
+                    message
+                }
+                other => format!("Cannot paste the image: {other}"),
+            })
+    })
 }
 
 fn runs_jobs(snapshot: &pom_remote::Snapshot) -> bool {

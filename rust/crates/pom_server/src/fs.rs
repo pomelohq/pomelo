@@ -54,6 +54,20 @@ impl WriteScope {
     }
 }
 
+/// What an upload is for: the most it may be, and how a refusal names it.
+#[derive(Clone, Copy)]
+pub(crate) struct Upload {
+    pub limit: u64,
+    pub what: &'static str,
+}
+
+impl Upload {
+    const SAVE: Upload = Upload {
+        limit: WRITE_LIMIT,
+        what: "a save",
+    };
+}
+
 type Outcome = Result<Value, RemoteError>;
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -330,39 +344,45 @@ impl FsService {
         self.ops.run_keeping(&op_id, || {
             let bytes = match params.text.clone() {
                 Some(text) => text.into_bytes(),
-                None => match self.receive_upload(connection, &params) {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        let keep = error.code != fs_error::INCOMPLETE;
-                        return (Err(error), keep);
+                None => {
+                    match self.receive_upload(connection, params.channel, params.size, Upload::SAVE)
+                    {
+                        Ok(bytes) => bytes,
+                        Err(error) => {
+                            let keep = error.code != fs_error::INCOMPLETE;
+                            return (Err(error), keep);
+                        }
                     }
-                },
+                }
             };
             (save(scope, &params, &bytes), true)
         })
     }
 
-    /// The save's text as INPUT on its channel, after telling the client it may send; how much has arrived
-    /// goes back now and then as an 8-byte count.
-    fn receive_upload(
+    /// `size` bytes as INPUT on `channel`, after telling the client it may send; how much has arrived goes
+    /// back now and then as an 8-byte count.
+    pub(crate) fn receive_upload(
         &self,
         connection: &Connection,
-        params: &FsWriteParams,
+        channel: u32,
+        size: u64,
+        upload: Upload,
     ) -> Result<Vec<u8>, RemoteError> {
-        if params.size > WRITE_LIMIT {
+        if size > upload.limit {
             return Err(RemoteError::new(
                 fs_error::TOO_LARGE,
                 format!(
-                    "{} MiB is past the {} MiB a save can be",
-                    params.size / (1024 * 1024),
-                    WRITE_LIMIT / (1024 * 1024)
+                    "{} MiB is past the {} MiB {} can be",
+                    size / (1024 * 1024),
+                    upload.limit / (1024 * 1024),
+                    upload.what
                 ),
             ));
         }
-        let Some(mut sender) = attach(connection, params.channel)? else {
+        let Some(mut sender) = attach(connection, channel)? else {
             return Err(RemoteError::new(
                 error_code::INVALID_PARAMS,
-                "a save without its text needs a stream channel",
+                format!("{} needs a stream channel", upload.what),
             ));
         };
         let _slot = self.take_stream()?;
@@ -376,7 +396,8 @@ impl FsService {
         sender
             .write(WRITE_READY)
             .map_err(|error| incomplete(error.to_string()))?;
-        let size = usize::try_from(params.size).unwrap_or(usize::MAX);
+        let expected = size;
+        let size = usize::try_from(size).unwrap_or(usize::MAX);
         let mut bytes = Vec::with_capacity(size);
         let mut reported = 0u64;
         while bytes.len() < size {
@@ -388,7 +409,7 @@ impl FsService {
             }
             bytes.extend_from_slice(&chunk.bytes);
             let received = bytes.len() as u64;
-            if received - reported >= UPLOAD_REPORT || received == params.size {
+            if received - reported >= UPLOAD_REPORT || received == expected {
                 reported = received;
                 sender
                     .write(&received.to_be_bytes())

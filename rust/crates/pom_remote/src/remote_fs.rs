@@ -22,9 +22,9 @@ use serde::Serialize;
 
 use crate::server_api::{
     fs_error, method, FsChangeParams, FsFilesParams, FsPathParams, FsRead, FsReadParams,
-    FsWatchParams, FsWriteParams, FsWritten, SearchCancelParams, SearchDone, SearchFound,
-    SearchStartParams, TreeChunk, FS_TREE_TOPIC, SEARCH_DONE_TOPIC, SEARCH_FOUND_TOPIC,
-    WRITE_READY,
+    FsWatchParams, FsWriteParams, FsWritten, PasteParams, Pasted, SearchCancelParams, SearchDone,
+    SearchFound, SearchStartParams, TreeChunk, FS_TREE_TOPIC, SEARCH_DONE_TOPIC,
+    SEARCH_FOUND_TOPIC, WRITE_READY,
 };
 use crate::server_source::Inner;
 use crate::source::READ_TIMEOUT;
@@ -241,6 +241,45 @@ impl RemoteFs {
                 .map(|_| ())
                 .map_err(|error| self.attempt_error(error))
         })
+    }
+}
+
+/// How long a paste may take in all; a screenshot is a few MiB at most.
+const PASTE_PATIENCE: Duration = Duration::from_secs(2 * 60);
+
+/// Sends `bytes` to the server's `paste.put` and says where it kept them.
+pub(crate) fn paste(
+    connection: &Connection,
+    bytes: &[u8],
+    extension: &str,
+) -> Result<std::path::PathBuf, Error> {
+    let stream = connection.open_stream()?;
+    let params = PasteParams {
+        extension: extension.to_string(),
+        channel: stream.channel(),
+        size: bytes.len() as u64,
+    };
+    let mut pending = connection.start_request(method::PASTE_PUT, &params)?;
+    let read = |answer: serde_json::Value| {
+        serde_json::from_value::<Pasted>(answer)
+            .map(|pasted| pasted.path)
+            .map_err(|error| Error::Protocol(error.to_string()))
+    };
+    let deadline = Instant::now() + PASTE_PATIENCE;
+    let mut upload = Upload::new(&stream);
+    loop {
+        match pending.wait_timeout(Duration::ZERO) {
+            Ok(answer) => return read(answer),
+            Err(Error::Timeout) => {}
+            Err(error) => return Err(error),
+        }
+        if upload.done(bytes.len()) {
+            return read(pending.wait_timeout(WRITE_ANSWER)?);
+        }
+        if Instant::now() > deadline {
+            return Err(Error::Timeout);
+        }
+        upload.step(bytes).map_err(Error::Io)?;
     }
 }
 

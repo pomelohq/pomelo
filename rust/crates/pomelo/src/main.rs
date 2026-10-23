@@ -1793,6 +1793,7 @@ impl App {
             main.parked.clear();
             main.services = services;
         }
+        self.with_workspace_view(id, |view, _| view.set_image_upload(None));
         self.install_project_views(id);
         self.refresh_sessions();
         self.sync_dev_proxy();
