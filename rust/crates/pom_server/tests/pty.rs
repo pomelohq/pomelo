@@ -85,6 +85,56 @@ fn a_shell_opens_types_resizes_detaches_reattaches_and_closes() {
 }
 
 #[test]
+fn a_new_shell_runs_the_hosts_terminal_shell_setting_as_it_is_then() {
+    let config = tempfile::Builder::new()
+        .prefix("pomc")
+        .tempdir_in("/tmp")
+        .expect("config");
+    let script = |name: &str, marker: &str| {
+        let path = config.path().join(name);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\necho {marker}-$((6 * 7))\nexec sleep 30\n"),
+        )
+        .expect("script");
+        std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .expect("chmod");
+        path
+    };
+    let first = script("first.sh", "first-shell");
+    let second = script("second.sh", "second-shell");
+    let set_shell = |shell: &std::path::Path| {
+        std::fs::write(
+            config.path().join("settings.json"),
+            json!({ "theme": "One Dark", "terminal_shell": format!("{} ", shell.display()) })
+                .to_string(),
+        )
+        .expect("settings.json");
+    };
+    std::env::set_var("POMELO_CONFIG_DIR", config.path());
+    set_shell(&first);
+    let remote = Remote::start(&[]);
+    let holder = remote.open(&remote.connection);
+    let terminal = remote.attach(&remote.connection, &holder);
+    let mut reader = Reader::new();
+    assert!(
+        reader.until(&terminal, "first-shell-42"),
+        "{:?}",
+        reader.text
+    );
+
+    set_shell(&second);
+    let holder = remote.open(&remote.connection);
+    let terminal = remote.attach(&remote.connection, &holder);
+    let mut reader = Reader::new();
+    assert!(
+        reader.until(&terminal, "second-shell-42"),
+        "{:?}",
+        reader.text
+    );
+}
+
+#[test]
 fn an_exit_is_pushed_and_ends_the_stream() {
     let remote = Remote::start(&["/bin/sh"]);
     let holder = remote.open(&remote.connection);

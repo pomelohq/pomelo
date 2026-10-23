@@ -229,6 +229,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 isolated: true,
                 trust: args.has("--trust"),
                 for_person: false,
+                extra_args: Vec::new(),
             };
             Ok((
                 AgentCommand::Start(StartRequest {

@@ -28,8 +28,9 @@ pub use forward::{
     ForwardState, Forwarder, LocalPort, PortForward, PortsRecord, PORTS_SCHEMA,
 };
 pub use local::{
-    local_projects, ordered_services, panel_targets, service_output, status_report, workspace_list,
-    LocalSource, OpenedProject, SharedModes, WorkspaceTerminals, SHARED_LOG_LINES, WORKSPACE_REPO,
+    host_setting, local_projects, ordered_services, panel_targets, service_output, status_report,
+    workspace_list, LocalSource, OpenedProject, SharedModes, WorkspaceTerminals, SHARED_LOG_LINES,
+    WORKSPACE_REPO,
 };
 pub use pom_rpc::pty::LinkState;
 pub use remote_fs::RemoteFs;

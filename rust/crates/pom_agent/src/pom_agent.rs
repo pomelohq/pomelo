@@ -43,9 +43,9 @@ pub use identity::{
     Identity, CLAUDE_DRIVER, NO_DRIVER,
 };
 pub use launch::{
-    claude_launch, claude_launch_with, claude_task_launch, fresh_launch, is_agent_holder,
-    main_session_id, onboard_launch, onboard_system_prompt, resolve_claude, session_id,
-    system_prompt, AgentLaunch, LaunchContext, LaunchOptions,
+    claude_launch, claude_launch_with, claude_task_launch, cli_launch, fresh_launch,
+    is_agent_holder, main_session_id, onboard_launch, onboard_system_prompt, resolve_claude,
+    session_id, system_prompt, AgentCommand, AgentLaunch, LaunchContext, LaunchOptions,
 };
 pub use lease::{log as log_workspace, log_lines, read_lease, set_lease, Lease, LeaseClass};
 pub use live::{live_deltas, live_turn, LiveDelta, LiveMessage, LiveTurn};

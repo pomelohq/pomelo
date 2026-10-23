@@ -253,6 +253,8 @@ pub struct LaunchOptions {
     /// Opened by a person from the app, so it runs as their own agent does here: with their MCP servers and
     /// plugins, not isolated.
     pub for_person: bool,
+    /// Words of the `agent_command` setting after `claude`, given to it as typed.
+    pub extra_args: Vec<String>,
 }
 
 impl LaunchOptions {
@@ -313,7 +315,7 @@ pub fn claude_launch_with(context: &LaunchContext<'_>, options: &LaunchOptions) 
     );
     let identity = Identity::for_holder(&holder, context.session, context.branch);
     let script = format!(
-        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings}{flags} --add-dir {images} --append-system-prompt {prompt}{first}",
+        "export PATH={path}; export TERM=xterm-256color COLORTERM=truecolor {identity}; unsetopt monitor 2>/dev/null; cd {cwd} && exec {claude} {session_flag} {id} --mcp-config {mcp}{settings}{flags} --add-dir {images} --append-system-prompt {prompt}{first}{extra}",
         path = shell_quote(context.tool_path),
         identity = identity.exports(),
         cwd = shell_quote(&context.cwd.to_string_lossy()),
@@ -324,12 +326,60 @@ pub fn claude_launch_with(context: &LaunchContext<'_>, options: &LaunchOptions) 
         images = shell_quote(&image_cache.to_string_lossy()),
         prompt = shell_quote(&with_extra_system(&system_prompt(), options)),
         first = options.prompt.as_deref().map(|prompt| format!(" {}", shell_quote(prompt))).unwrap_or_default(),
+        extra = options.extra_args.iter().map(|word| format!(" {word}")).collect::<String>(),
     );
     AgentLaunch {
         holder,
         cwd: context.cwd.to_path_buf(),
         argv: pom_shell::Shell::user().script_argv(&script),
         title: "Claude".into(),
+    }
+}
+
+/// What the Agent button runs, read from the `agent_command` setting.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentCommand {
+    /// Claude, with pom's MCP server and prompt, and these words after it.
+    Claude { extra_args: Vec<String> },
+    /// Another CLI, run as typed in a login shell; `name` is its program's file name.
+    Cli { name: String, command: String },
+}
+
+impl AgentCommand {
+    pub fn parse(setting: &str) -> AgentCommand {
+        let command = setting.trim();
+        let mut words = command.split_whitespace();
+        let program = words.next().unwrap_or("claude");
+        let name = Path::new(program).file_name().map_or_else(
+            || "agent".to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        if name == "claude" {
+            AgentCommand::Claude {
+                extra_args: words.map(str::to_string).collect(),
+            }
+        } else {
+            AgentCommand::Cli {
+                name,
+                command: command.to_string(),
+            }
+        }
+    }
+}
+
+/// Another CLI as the workspace's agent: `command` in a login shell, in a holder the agent listing knows.
+pub fn cli_launch(context: &LaunchContext<'_>, name: &str, command: &str) -> AgentLaunch {
+    AgentLaunch {
+        holder: format!(
+            "{}agent-{name}",
+            crate::identity::workspace_prefix(context.session, context.branch)
+        ),
+        cwd: context.cwd.to_path_buf(),
+        argv: pom_shell::Shell::user().login_argv(&format!(
+            "export PATH='{}'; exec {command}",
+            context.tool_path.replace('\'', r"'\''")
+        )),
+        title: name.to_string(),
     }
 }
 
@@ -445,6 +495,56 @@ fn task_launch(context: &LaunchContext<'_>, role: &str, prompt: &str, system: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_agent_command_setting_picks_claude_with_its_words_or_another_cli() {
+        assert_eq!(
+            AgentCommand::parse(" /opt/bin/claude --model opus "),
+            AgentCommand::Claude {
+                extra_args: vec!["--model".into(), "opus".into()]
+            }
+        );
+        assert_eq!(
+            AgentCommand::parse(""),
+            AgentCommand::Claude {
+                extra_args: Vec::new()
+            }
+        );
+        assert_eq!(
+            AgentCommand::parse("codex --full-auto"),
+            AgentCommand::Cli {
+                name: "codex".into(),
+                command: "codex --full-auto".into()
+            }
+        );
+        let home = tempfile::tempdir().expect("home");
+        let state = StateDir::new(home.path().join("state"));
+        let context = LaunchContext {
+            state: &state,
+            home: home.path(),
+            binary: Path::new("/app/pom"),
+            tool_path: "/usr/bin",
+            session: "demo",
+            branch: "feat/login",
+            is_main: false,
+            cwd: Path::new("/work/demo"),
+        };
+        let claude = claude_launch_with(
+            &context,
+            &LaunchOptions {
+                extra_args: vec!["--model".into(), "opus".into()],
+                ..LaunchOptions::default()
+            },
+        );
+        let script = claude.argv.last().cloned().unwrap_or_default();
+        assert!(script.ends_with(" --model opus"), "{script}");
+        let cli = cli_launch(&context, "codex", "codex --full-auto");
+        assert_eq!(cli.holder, "ws-demo-feat_login-agent-codex");
+        let role =
+            crate::identity::holder_role(&cli.holder, "demo", "feat/login").expect("an agent");
+        assert_eq!(role.role, "codex");
+        assert!(cli.argv.join(" ").contains("exec codex --full-auto"));
+    }
 
     #[test]
     fn agents_may_read_the_users_skills_so_their_scripts_run() {
