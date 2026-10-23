@@ -4,6 +4,31 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-10-23
+
+### Added
+- Work on a project that runs on another machine: `pom host add` and `pom -H <host> <command>` drive pom over ssh with the JSON and exit code passed through, and the app's Connect to host... opens a project on that host. (#267, #268, #269)
+- On a remote project the app opens terminals, service output and the agent dock (with leases and New agent), creates, sleeps, wakes and pulls workspaces with live progress, and shows live state, all through `pom server` over one ssh session. (#279-#286)
+- A dropped connection reconnects by itself and terminals, logs and jobs carry on without losing or repeating output; a host with an older pom shows Update pom on <host>, which installs the matching release after checking its checksum. (#287, #288)
+- `pom server install-unit` (Linux, opt-in) runs the server under systemd; `pom doctor` reports the server, its socket folder and lingering. (#289)
+- The dev proxy can be reached from another machine behind a reverse proxy: `proxy.bind`, `proxy.domain`, public scheme and port, and trusted proxies, with forwarded headers and Secure cookies kept on https. (#266)
+- Workspace limits on Linux: `limits: { cpu, memory }` in pom.yml caps each workspace, and `pom ps` sums CPU and memory per workspace. (#272)
+- `pom ws sleep` and `pom ws wake` stop a workspace's services and agents and bring back what ran, and a request through the dev proxy wakes a sleeping workspace; `idle_sleep_minutes` and `max_running` put idle workspaces to sleep and queue the rest. (#273, #274)
+- `pom ws export` / `pom ws import` (and `--to <host>`) move a workspace with its unpushed commits, uncommitted and untracked files, database data and the secrets it uses; `pom project export/import` moves a project. (#275, #276)
+- `pom ws gc` cleans up workspaces whose pull requests merged, and `workspaces.auto_cleanup` can ask or do it in the app. (#270)
+- Sync on push: a signed GitHub webhook to `/_pom/github` fast-forwards a clean workspace and restarts only the services it touched, or notifies; `pom github webhook setup` and `pom sync status`. (#277, #278)
+
+### Changed
+- `pom disk` and `pom doctor` warn when a disk or LVM thin pool is over 80% full, with the commands to free space. (#270)
+- `pom doctor` on Linux warns about Docker nested in LXC, high load and processes stuck in disk wait. (#271)
+- Deleting a workspace also removes its agent session files and the Docker volumes labelled for it. (#270)
+- `pom modules prune` runs at most once a day on its own. (#270)
+
+### Fixed
+- A terminal that falls behind no longer silently loses output: it resumes where it stopped. (#281)
+- A terminal could briefly look stopped right after it started. (#290)
+- A GitHub delivery that arrived as the relay started was refused. (#290)
+
 ## [0.9.3] - 2026-10-22
 
 ### Added
