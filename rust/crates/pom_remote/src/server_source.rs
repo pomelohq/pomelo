@@ -21,8 +21,7 @@ use crate::server_api::{
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
     WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, LIVE_LOGS,
-    PROGRESS_TOPIC, PUSH,
-    REQUIRED,
+    PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
