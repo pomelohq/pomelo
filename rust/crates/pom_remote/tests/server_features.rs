@@ -302,6 +302,21 @@ fn jira_goes_through_a_server_that_keeps_its_settings() {
 }
 
 #[test]
+fn an_older_server_is_asked_to_update_before_an_image_is_pasted() {
+    let (older, _) = source(older_features());
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").paste);
+    let refused = older.paste_file(b"\x89PNG", "png");
+    let Err(pom_remote::SourceError::Failed(message)) = refused else {
+        panic!("not refused: {refused:?}");
+    };
+    assert!(message.contains("needs a newer pom on"), "{message}");
+    let (current, _) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").paste);
+}
+
+#[test]
 fn only_a_server_that_lists_the_store_runs_its_requests() {
     let before_store: Vec<String> = current_features()
         .into_iter()
