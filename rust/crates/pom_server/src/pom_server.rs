@@ -16,11 +16,11 @@ pub use dispatch::{
 };
 pub use jobs::{Jobs, JOB_MEMORY};
 pub use log::{RequestRecord, ServerLog, ROTATE_AT};
-pub use paths::{ensure_private_dir, ServerPaths};
+pub use paths::{ensure_private_dir, running_versions, ServerPaths};
 pub use peer::{current_uid, peer_uid};
-pub use pty::{check_cwd, check_holder, check_size, Caller, Ptys, ShellCommand};
+pub use pty::{check_cwd, check_holder, check_size, Caller, Ptys, ShellCommand, RETENTION};
 pub use server::{
-    bind, idle_exit_from_settings, PeerCheck, Server, ServerHandle, ServerOptions, StartError,
-    DEAD_AFTER, DEFAULT_IDLE_EXIT_MINUTES, SOCKET_CHECK_EVERY,
+    bind, PeerCheck, Server, ServerHandle, ServerOptions, StartError, DEAD_AFTER,
+    DEFAULT_IDLE_EXIT_MINUTES, SOCKET_CHECK_EVERY,
 };
 pub use watch::{Watches, READ_EVERY};

@@ -1,6 +1,7 @@
 mod disk;
 mod limits;
 mod linux;
+mod server;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -15,6 +16,7 @@ pub use disk::{
 };
 pub use limits::{limit_findings, LimitSupport};
 pub use linux::{high_load, in_lxc, linux_findings, lxc_docker, stuck_finding, stuck_processes};
+pub use server::{server_findings, OtherServer, RunningServer, ServerSurvey, SocketDirState};
 
 const DOCKER_TIMEOUT: Duration = Duration::from_secs(8);
 

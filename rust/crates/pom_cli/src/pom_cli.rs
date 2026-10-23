@@ -154,7 +154,8 @@ config
   env get <repo[/service]> <KEY>
   env set <repo> KEY=VALUE...
   env unset <repo> KEY...
-  doctor [--json]    what keeps the project from running, and how to fix it
+  doctor [--json]    what keeps the project from running, and how to fix it; on a machine that
+                     runs `pom server`, how the server stands
   github webhook setup [--rotate] [--json]
                      the payload URL for a GitHub webhook on the relay's /_pom/github, and the
                      project's webhook secret (made once and shown once; --rotate replaces it)
@@ -237,6 +238,11 @@ remote machines
                      what the app runs over ssh: pass bytes between stdin/stdout and the server,
                      starting it when it is not running; --reconnect never starts one and exits
                      70 when it is gone
+  server install-unit [--json]
+                     Linux: write ~/.config/systemd/user/pom-server.service (restarted on failure)
+                     and enable it, so the server starts with your user manager
+  server uninstall-unit [--json]
+                     disable and remove that unit
 
 The workspace is the one the current directory is in, else the main one; -w picks another.
 A service is `name` or `repo/name`.";
@@ -697,9 +703,9 @@ pub(crate) fn doctor(
     let configured = config
         .as_ref()
         .is_some_and(|config| !config.limits.is_empty());
-    let linux = linux
-        .into_iter()
-        .chain(pom_doctor::limit_findings(configured, &support));
+    let limits = pom_doctor::limit_findings(configured, &support);
+    let limits_linger = limits.iter().any(|finding| finding.id == "limits.linger");
+    let linux = linux.into_iter().chain(limits);
     for finding in machine::disk_check(&StateDir::from_env())
         .findings
         .into_iter()
@@ -707,6 +713,15 @@ pub(crate) fn doctor(
     {
         pom_doctor::add_finding(&mut findings, finding);
     }
+    let (status, problems): (Vec<_>, Vec<_>) =
+        pom_doctor::server_findings(&server::survey(support.linger))
+            .into_iter()
+            .filter(|finding| !(limits_linger && finding.id == "server.linger"))
+            .partition(|finding| finding.severity == pom_doctor::Severity::Ok);
+    for finding in problems {
+        pom_doctor::add_finding(&mut findings, finding);
+    }
+    findings.extend(status);
     let write = |out: &mut dyn Write, line: String| {
         writeln!(out, "{line}").map_err(|error| error.to_string())
     };

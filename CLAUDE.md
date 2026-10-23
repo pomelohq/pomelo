@@ -7,7 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A native macOS app that spins up a full, isolated, runnable dev environment for **every branch** of a
 multi-repo project: services, databases, shared infra, each branch a real git worktree with its own ports and
 databases. It is one Rust workspace under `rust/`: the app (`crates/pomelo`) and the `pom` CLI
-(`crates/pom_cli`) over the same feature crates. There is no daemon and no localhost server between UI and core.
+(`crates/pom_cli`) over the same feature crates. Locally there is no daemon and no localhost server between UI
+and core. A project on a remote host is reached over ssh: the app runs `pom server proxy` there, which starts
+`pom server` on demand (a per-user, per-version process on a private Unix socket, never a network port) and
+leaves it to exit after `server.idle_exit_minutes` without a client; a systemd unit is opt-in only
+(`pom server install-unit`).
 
 **Read `rust/CLAUDE.md` before touching code**: crate-per-feature layout, Rust rules, the `make check` gate,
 build/run, smooth resize.

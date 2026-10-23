@@ -12,8 +12,6 @@ use crate::pty::{
     Attached, Control, LinkState, Mode, Output, PtyProvider, Request, Resume, ResumeError,
 };
 
-/// Input kept after it went out, in case the connection drops before the server writes it.
-const UNCONFIRMED_LIMIT: usize = 64 * 1024;
 const EXIT_WAIT: Duration = Duration::from_secs(1);
 /// How long `next` waits before it asks again while the connection is down.
 const OFFLINE_WAIT: Duration = Duration::from_millis(250);
@@ -63,6 +61,7 @@ struct Shared {
     holder: String,
     terminal: String,
     mode: Mode,
+    unconfirmed_limit: usize,
     state: Mutex<State>,
 }
 
@@ -94,11 +93,13 @@ impl ResumingTerminal {
     ) -> Result<(ResumingTerminal, ResumingOutput, Attached), String> {
         let terminal = provider.attach(request)?;
         let attached = terminal.attached.clone();
+        let unconfirmed_limit = provider.unconfirmed_input_limit();
         let shared = Arc::new(Shared {
             provider,
             holder: attached.holder.clone(),
             terminal: terminal.control.terminal().to_string(),
             mode: request.mode,
+            unconfirmed_limit,
             state: Mutex::new(State {
                 control: Some(terminal.control),
                 server: terminal.server,
@@ -138,7 +139,10 @@ impl ResumingTerminal {
         control.input(bytes).map_err(|error| error.to_string())?;
         state.input_next += bytes.len() as u64;
         state.unconfirmed.extend(bytes);
-        let excess = state.unconfirmed.len().saturating_sub(UNCONFIRMED_LIMIT);
+        let excess = state
+            .unconfirmed
+            .len()
+            .saturating_sub(self.shared.unconfirmed_limit);
         state.unconfirmed.drain(..excess);
         Ok(())
     }

@@ -31,6 +31,10 @@ touching anything here. These override defaults.
   window — `ui.render` draws all rects then all text, so an in-window overlay lets the base layer's text bleed
   through. Settings is a separate window (Cmd+,).
 - Do not attribute designs to any external editor in code, comments, PRs, or chat.
+- **No daemon locally.** The app and `pom` call the feature crates in-process. Only a remote host runs a
+  long-lived process: `pom server` (`pom_server`, wire in `pom_rpc`), started on demand by `pom server proxy`
+  over ssh and gone after `server.idle_exit_minutes` idle. Never make local mode depend on it, and never install
+  its systemd unit automatically.
 
 ## The gate — run before calling anything done
 

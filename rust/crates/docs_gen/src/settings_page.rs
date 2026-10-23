@@ -91,6 +91,9 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("workspaces.max_running", "Integrations", "How many workspaces may run at once on this machine; 0 any number. Starting or waking one more first puts the least recently used idle one to sleep; when none is idle it waits as `queued` and starts once one sleeps."),
     ("jira_only_mine", "Integrations", "The new-workspace ticket picker lists only Jira tickets assigned to you."),
     ("group_workspaces", "Integrations", "The WORKSPACES list is grouped under its tickets' statuses."),
+    ("server.idle_exit_minutes", "Remote hosts", "Minutes `pom server` keeps running on a remote host with no app connected before it exits; 0 never. Read from the host's own settings.json when the server starts."),
+    ("server.reconnect_retention_minutes", "Remote hosts", "Minutes `pom server` remembers the terminals of an app whose connection dropped, so a reconnect carries them on where they stopped. Read on the host when the server starts."),
+    ("server.unconfirmed_input_kib", "Remote hosts", "KiB of typed input the app keeps until the server has surely written it, and sends again after a dropped connection (the server drops what it already wrote). Read on this Mac when a remote project opens."),
     ("onboard_with_ai", "Kept by the app", "New projects are finished by the coding agent; off, you review the drafted pom.yml yourself."),
     ("jira_board", "Kept by the app", "The Jira board the ticket picker opened on last (0: none yet)."),
     ("sidebar_side", "Kept by the app", "The dock the sidebar lives in: `\"left\"`, `\"right\"` or `\"bottom\"`."),
@@ -117,6 +120,9 @@ survives.
 
 Nested keys are written with dots here: `completions.lsp` is
 `{\"completions\": {\"lsp\": true}}` in the file.
+
+The keys under [Remote hosts](#remote-hosts) are on no page: set them in
+settings.json, on the machine each one says.
 
 The keys under [Kept by the app](#kept-by-the-app) record how you left the
 window; they change as you use it and rarely need editing by hand.
