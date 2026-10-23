@@ -1,6 +1,13 @@
 //! A project on another machine in the app: the dialog that picks a host and one of its projects, and the page
 //! that stands in for the editor, whose files are not on this machine.
 
+mod ports;
+
+pub use ports::{
+    board_page as ports_board_page, board_ports, parse_port, BoardPorts, PortsAccess, PortsPage,
+    PORTS_TAB_ID,
+};
+
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 

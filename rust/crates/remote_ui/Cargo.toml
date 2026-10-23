@@ -11,6 +11,7 @@ path = "src/remote_ui.rs"
 [dependencies]
 pom_remote = { path = "../pom_remote" }
 services_ui = { path = "../services_ui" }
+terminal = { path = "../terminal" }
 ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }

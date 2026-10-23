@@ -2279,8 +2279,12 @@ impl App {
                 })
             })
             .collect();
+        let gateways = self.remote_gateways();
         let serve = self.desired_serve();
-        if self.dev_proxy.is_none() && !projects.is_empty() && (serve.proxy || serve.webhook) {
+        if self.dev_proxy.is_none()
+            && (!projects.is_empty() || !gateways.is_empty())
+            && (serve.proxy || serve.webhook)
+        {
             let (state, holders) = (
                 pom_paths::StateDir::from_env(),
                 pom_ptyhost::SocketDir::from_env(),
@@ -2331,6 +2335,7 @@ impl App {
         }
         if let Some(proxy) = &self.dev_proxy {
             proxy.set_projects(projects);
+            proxy.set_remote_gateways(gateways);
         }
     }
 
@@ -2934,6 +2939,7 @@ impl App {
             Action::CloneMissingRepos => self.clone_missing_repos(id),
             Action::OpenAgentUsage => self.open_agent_usage(id),
             Action::OpenDevRequests => self.open_dev_requests(id),
+            Action::OpenPorts => self.open_remote_ports(id),
             Action::OpenModuleStore => self.open_module_store(id),
             Action::SetUpProjectWithAi => {
                 if claude_installed() {
@@ -3613,6 +3619,7 @@ impl ApplicationHandler for App {
             self.with_workspace_view(id, |v, _| v.persist_panes(true));
             self.save_window_bounds(id);
         }
+        self.close_remote_ports();
         files_ui::flush_unsaved_writes(Duration::from_secs(5));
         auto_update::install_on_quit();
     }
