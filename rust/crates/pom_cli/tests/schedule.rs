@@ -222,3 +222,58 @@ fn an_idle_workspace_sleeps_once_the_clock_passes_its_minutes() {
     assert_eq!(fixture.state_of("a"), "sleeping");
     assert!(!fixture.running("a") && fixture.running("b"));
 }
+
+#[test]
+fn ws_ls_reports_when_each_workspace_was_last_used_and_by_what() {
+    let fixture = Fixture::new(0);
+    let listed: serde_json::Value =
+        serde_json::from_str(&fixture.ok(&["ws", "ls", "--json"])).expect("json");
+    let root = listed["root"].as_str().expect("root").to_string();
+    let proxy = fixture.state().path("proxy");
+    std::fs::create_dir_all(&proxy).expect("proxy dir");
+    std::fs::write(
+        proxy.join("activity.json"),
+        serde_json::json!({
+            "schema": "pom.proxy_activity/v1",
+            "workspaces": [{"root": root, "branch": "a", "last_request_ms": 1_792_660_504_000_u64}],
+        })
+        .to_string(),
+    )
+    .expect("activity");
+    std::fs::write(
+        fixture.root().join("workspace--main/api/.git/HEAD"),
+        "ref: refs/heads/main\n",
+    )
+    .expect("HEAD");
+    fixture.agent(AgentState::Idle);
+    let listed: serde_json::Value =
+        serde_json::from_str(&fixture.ok(&["ws", "ls", "--json"])).expect("json");
+    let activity = |branch: &str| {
+        let workspace = listed["workspaces"]
+            .as_array()
+            .and_then(|list| list.iter().find(|workspace| workspace["branch"] == branch))
+            .cloned()
+            .unwrap_or_default();
+        (
+            workspace["last_activity_at"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            workspace["last_activity_source"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    };
+    assert_eq!(
+        activity("a"),
+        ("2026-10-22T09:15:04Z".to_string(), "proxy".to_string())
+    );
+    let (agent_at, agent_source) = activity("b");
+    assert_eq!(agent_source, "agent");
+    assert!(
+        agent_at.len() == 20 && agent_at.ends_with('Z'),
+        "{agent_at}"
+    );
+    assert_eq!(activity("main").1, "git", "{listed}");
+}

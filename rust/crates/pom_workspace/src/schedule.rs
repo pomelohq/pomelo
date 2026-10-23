@@ -17,6 +17,108 @@ use crate::WorkspaceContext;
 /// Where the dev proxy keeps each workspace's last request (`pom.proxy_activity/v1`).
 pub const ACTIVITY_FILE: &str = "proxy/activity.json";
 
+/// When a workspace was last used, and by what: `agent`, `proxy`, `service` or `git`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastActivity {
+    pub at_ms: u64,
+    pub source: &'static str,
+}
+
+/// Each workspace's last dev proxy request, by (project root, branch).
+pub fn proxy_requests(state: &StateDir) -> HashMap<(PathBuf, String), u64> {
+    let Ok(bytes) = std::fs::read(state.path(ACTIVITY_FILE)) else {
+        return HashMap::new();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return HashMap::new();
+    };
+    value["workspaces"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            Some((
+                (
+                    PathBuf::from(entry["root"].as_str()?),
+                    entry["branch"].as_str()?.to_string(),
+                ),
+                entry["last_request_ms"].as_u64()?,
+            ))
+        })
+        .collect()
+}
+
+/// The newest of the repos' HEAD, index and HEAD log: a checkout, a commit or staging, read from file times only.
+pub fn git_activity_ms(workspace: &Workspace) -> u64 {
+    workspace
+        .repos
+        .iter()
+        .filter_map(|repo| pom_layout::git_dir(&repo.path))
+        .flat_map(|git_dir| {
+            ["HEAD", "index", "logs/HEAD"]
+                .into_iter()
+                .map(move |name| modified_ms(&git_dir.join(name)))
+        })
+        .max()
+        .unwrap_or_default()
+}
+
+/// The last event any agent session of the workspace recorded, from the sessions' state files.
+pub fn agent_event_ms(state: &StateDir, project: &str, branch: &str) -> u64 {
+    pom_agent::workspace_sessions(state, project, branch)
+        .iter()
+        .filter_map(|entry| pom_agent::read_state(state, &entry.session_id))
+        .map(|session| session.event_ms)
+        .max()
+        .unwrap_or_default()
+}
+
+/// The latest of a workspace's agent events, its running services' starts, its last dev proxy request and its
+/// last git change; `None` when nothing has happened in it.
+pub fn last_activity(
+    runner: &ServiceRunner,
+    running: &[ServiceTarget],
+    agent_event_ms: u64,
+    proxy_request_ms: u64,
+    workspace: &Workspace,
+) -> Option<LastActivity> {
+    let service = running
+        .iter()
+        .map(|target| modified_ms(&runner.holders().pidfile(&runner.holder_name(target))))
+        .max()
+        .unwrap_or_default();
+    [
+        (agent_event_ms, "agent"),
+        (proxy_request_ms, "proxy"),
+        (service, "service"),
+        (git_activity_ms(workspace), "git"),
+    ]
+    .into_iter()
+    .filter(|(at_ms, _)| *at_ms > 0)
+    .max_by_key(|(at_ms, _)| *at_ms)
+    .map(|(at_ms, source)| LastActivity { at_ms, source })
+}
+
+/// What one workspace's [`last_activity`] is, from its project's runner and agents.
+pub fn workspace_activity(
+    context: &WorkspaceContext<'_>,
+    workspace: &Workspace,
+    proxy_request_ms: u64,
+) -> Option<LastActivity> {
+    let running: Vec<ServiceTarget> =
+        ServiceRunner::service_targets(context.config, &workspace.branch, workspace.is_main)
+            .into_iter()
+            .filter(|target| context.runner.is_running(target))
+            .collect();
+    last_activity(
+        context.runner,
+        &running,
+        agent_event_ms(context.state, &context.config.session, &workspace.branch),
+        proxy_request_ms,
+        workspace,
+    )
+}
+
 /// The `workspaces` choices of settings.json that keep running workspaces few.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PowerSettings {
@@ -61,7 +163,7 @@ pub struct Seen {
     pub up: bool,
     /// An agent of it is in a turn or waits for an approval.
     pub busy: bool,
-    /// Its last dev proxy request, agent event or service start.
+    /// Its last dev proxy request, agent event, service start or git change.
     pub last_used_ms: u64,
 }
 
@@ -186,32 +288,9 @@ impl Machine {
             .collect()
     }
 
-    fn activity(&self) -> HashMap<(PathBuf, String), u64> {
-        let Ok(bytes) = std::fs::read(self.state.path(ACTIVITY_FILE)) else {
-            return HashMap::new();
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            return HashMap::new();
-        };
-        value["workspaces"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| {
-                Some((
-                    (
-                        PathBuf::from(entry["root"].as_str()?),
-                        entry["branch"].as_str()?.to_string(),
-                    ),
-                    entry["last_request_ms"].as_u64()?,
-                ))
-            })
-            .collect()
-    }
-
     /// Every workspace of every project, with where it lives so a step can act on it.
     fn survey(&self, opened: &[Opened]) -> Vec<(Seen, usize, Workspace)> {
-        let activity = self.activity();
+        let activity = proxy_requests(&self.state);
         let mut out = Vec::new();
         for (project, open) in opened.iter().enumerate() {
             let context = self.context(open);
@@ -233,28 +312,14 @@ impl Machine {
                 .into_iter()
                 .filter(|target| open.runner.is_running(target))
                 .collect();
-                let started = running
-                    .iter()
-                    .map(|target| {
-                        modified_ms(
-                            &open
-                                .runner
-                                .holders()
-                                .pidfile(&open.runner.holder_name(target)),
-                        )
-                    })
-                    .max()
-                    .unwrap_or_default();
-                let agent_active = sessions
-                    .iter()
-                    .filter(|session| session.alive)
-                    .map(|session| session.active_ms)
-                    .max()
-                    .unwrap_or_default();
                 let request = activity
                     .get(&(open.root.clone(), workspace.branch.clone()))
                     .copied()
                     .unwrap_or_default();
+                let agent = agent_event_ms(&self.state, &open.config.session, &workspace.branch);
+                let last_used_ms =
+                    last_activity(&open.runner, &running, agent, request, &workspace)
+                        .map_or(0, |activity| activity.at_ms);
                 let seen = Seen {
                     root: open.root.clone(),
                     branch: workspace.branch.clone(),
@@ -262,7 +327,7 @@ impl Machine {
                     queued_ms: state.queued_ms,
                     up: !running.is_empty() || sessions.iter().any(|session| session.alive),
                     busy: sessions.iter().any(|session| session.alive && session.busy),
-                    last_used_ms: started.max(agent_active).max(request),
+                    last_used_ms,
                 };
                 out.push((seen, project, workspace));
             }

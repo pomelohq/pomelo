@@ -58,6 +58,7 @@ impl Session {
         request: &RunCommand,
         out: &mut dyn Write,
     ) -> Result<(), String> {
+        let looks_named = !request.command.contains(char::is_whitespace);
         let repo = match &request.repo {
             Some(name) => self
                 .config
@@ -66,6 +67,7 @@ impl Session {
                 .find(|(repo, dir)| repo.as_str() == name || dir.alias == *name)
                 .map(|(repo, _)| repo.clone())
                 .ok_or_else(|| format!("no repo {name}"))?,
+            None if looks_named => self.repo_defining(&request.command)?,
             None => self
                 .config
                 .repos
@@ -91,16 +93,12 @@ impl Session {
             .as_ref()
             .map(|test| test.command.clone())
             .filter(|command| runs_tests && !command.is_empty());
-        let named = (!request.command.contains(char::is_whitespace))
-            .then(|| {
-                dir.effective_shortcuts()
-                    .into_iter()
-                    .find(|shortcut| shortcut.key.eq_ignore_ascii_case(&request.command))
-            })
+        let named = looks_named
+            .then(|| dir.named_command(&request.command))
             .flatten();
         let command = match (test_command, named) {
             (Some(command), _) => command,
-            (None, Some(shortcut)) => shortcut.cmd,
+            (None, Some(named)) => named.command,
             (None, None) if runs_tests && request.command.eq_ignore_ascii_case("test") => {
                 return Err(format!(
                     "{repo} has no test command: set test.command or commands.test"
@@ -108,6 +106,7 @@ impl Session {
             }
             (None, None) => request.command.clone(),
         };
+        let unknown_name = looks_named && command == request.command;
         let env = self.runner.workspace_env(&self.config, &self.branch);
         let run_env = env.run_env(&repo, profile, &worktree);
         if request.explain_env {
@@ -138,50 +137,119 @@ impl Session {
             .map_err(|error| format!("run: {error}"))?;
         match status.code() {
             Some(0) => Ok(()),
+            Some(127) if unknown_name => Err(format!(
+                "{} is not a command of {repo} (pom commands lists them) and the shell found no program by that name",
+                request.command
+            )),
             Some(code) => Err(format!("the command exited with status {code}")),
             None => Err("the command was killed by a signal".into()),
         }
     }
 
-    pub(crate) fn list_commands(&self, out: &mut dyn Write) -> Result<(), String> {
-        let mut any = false;
+    /// The repo that declares command `name`; the first repo when none does, so a bare program still runs.
+    fn repo_defining(&self, name: &str) -> Result<String, String> {
+        let defining: Vec<&String> = self
+            .config
+            .repos
+            .iter()
+            .filter(|(_, dir)| dir.named_command(name).is_some())
+            .map(|(repo, _)| repo)
+            .collect();
+        match defining.as_slice() {
+            [only] => Ok((*only).clone()),
+            [] => self
+                .config
+                .repos
+                .keys()
+                .next()
+                .cloned()
+                .ok_or_else(|| "the config has no repos".to_string()),
+            several => Err(format!(
+                "{name} is a command of {}: name the repo (pom run {name} <repo>)",
+                several
+                    .iter()
+                    .map(|repo| repo.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+
+    pub(crate) fn list_commands(&self, json: bool, out: &mut dyn Write) -> Result<(), String> {
+        let listed = command_list(&self.config);
+        if json {
+            let commands: Vec<serde_json::Value> = listed
+                .iter()
+                .map(|(repo, named)| {
+                    serde_json::json!({
+                        "name": named.name,
+                        "repo": repo,
+                        "command": named.command,
+                        "description": named.description,
+                        "source": named.source,
+                    })
+                })
+                .collect();
+            let document = serde_json::json!({
+                "schema": COMMANDS_SCHEMA,
+                "commands": commands,
+            });
+            return say(out, &document.to_string());
+        }
+        if listed.is_empty() {
+            say(
+                out,
+                "no commands in the config (add them under lifecycle.commands)",
+            )?;
+        }
         for (repo, dir) in &self.config.repos {
-            let shortcuts = dir.effective_shortcuts();
-            if shortcuts.is_empty() {
+            let rows: Vec<Vec<String>> = listed
+                .iter()
+                .filter(|(owner, _)| owner == repo)
+                .map(|(_, named)| {
+                    vec![
+                        named.name.clone(),
+                        named.command.clone(),
+                        named.description.clone(),
+                    ]
+                })
+                .collect();
+            if rows.is_empty() {
                 continue;
             }
-            any = true;
             let alias = if dir.alias.is_empty() {
                 repo
             } else {
                 &dir.alias
             };
             say(out, &format!("{repo} ({alias})"))?;
-            let rows: Vec<Vec<String>> = shortcuts
-                .iter()
-                .map(|shortcut| {
-                    let name = if shortcut.key.is_empty() {
-                        "-"
-                    } else {
-                        &shortcut.key
-                    };
-                    vec![
-                        name.to_string(),
-                        shortcut.cmd.clone(),
-                        shortcut.desc.clone(),
-                    ]
-                })
-                .collect();
             table(out, "  ", &rows)?;
-        }
-        if !any {
-            say(
-                out,
-                "no commands in the config (add them under lifecycle.commands)",
-            )?;
         }
         say(out, "\nrun one with: pom run <name> [repo]")
     }
+}
+
+pub(crate) const COMMANDS_SCHEMA: &str = "pom.commands/v1";
+
+/// Every repo's named commands, in config order.
+pub(crate) fn command_list(config: &pom_config::Config) -> Vec<(String, pom_config::NamedCommand)> {
+    config
+        .repos
+        .iter()
+        .flat_map(|(repo, dir)| {
+            dir.named_commands()
+                .into_iter()
+                .map(move |named| (repo.clone(), named))
+        })
+        .collect()
+}
+
+/// `pom commands [-o json | --json]`.
+pub(crate) fn parse_commands(words: &[&str]) -> Result<bool, String> {
+    let args = Args::parse(words, &["-o", "--output"])?;
+    args.allow(&["--json", "-o", "--output"])?;
+    args.at_most(0, "commands")?;
+    Ok(args.has("--json") || args.json()?)
 }
 
 /// Each variable's value (secrets masked) and where it came from, without running anything.

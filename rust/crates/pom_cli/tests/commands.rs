@@ -39,6 +39,7 @@ repos:
     lifecycle:
       commands:
         hello: "printf ran-$GREETING > ran.txt"
+        again: "printf ran-$GREETING > ran.txt"
     services:
       web:
         cmd: "exec nc -lk 127.0.0.1 $PORT"
@@ -46,6 +47,9 @@ repos:
   web:
     env:
       MODE: dev
+    lifecycle:
+      commands:
+        test-db: "printf web-$MODE > db.txt"
     services:
       app:
         cmd: "sleep 100"
@@ -177,6 +181,69 @@ fn run_uses_named_commands_and_the_workspace_env() {
     assert!(
         listed.contains("api (be)") && listed.contains("hello"),
         "{listed}"
+    );
+}
+
+#[test]
+fn every_declared_command_is_listed_and_runs_without_naming_its_repo() {
+    let fixture = Fixture::new();
+    let main = fixture.root().join("workspace--main");
+    let listed: serde_json::Value =
+        serde_json::from_str(&fixture.ok(&fixture.root(), &["commands", "-o", "json"]))
+            .expect("json");
+    assert_eq!(listed["schema"], "pom.commands/v1");
+    let rows: Vec<(String, String, String, String)> = listed["commands"]
+        .as_array()
+        .expect("commands")
+        .iter()
+        .map(|row| {
+            let field = |name: &str| row[name].as_str().unwrap_or_default().to_string();
+            (
+                field("name"),
+                field("repo"),
+                field("command"),
+                field("source"),
+            )
+        })
+        .collect();
+    let row = |name: &str, repo: &str, command: &str| {
+        (
+            name.to_string(),
+            repo.to_string(),
+            command.to_string(),
+            "commands".to_string(),
+        )
+    };
+    assert_eq!(
+        rows,
+        [
+            row("again", "api", "printf ran-$GREETING > ran.txt"),
+            row("hello", "api", "printf ran-$GREETING > ran.txt"),
+            row("test-db", "web", "printf web-$MODE > db.txt"),
+        ],
+        "a second name for the same command is listed too"
+    );
+    let table = fixture.ok(&fixture.root(), &["commands"]);
+    assert!(
+        table.contains("test-db") && table.contains("again"),
+        "{table}"
+    );
+    fixture.ok(&fixture.root(), &["run", "test-db"]);
+    assert_eq!(
+        std::fs::read_to_string(main.join("web/db.txt")).expect("db.txt"),
+        "web-dev",
+        "a name only web declares runs in web"
+    );
+    fixture.ok(&fixture.root(), &["run", "again", "be"]);
+    assert_eq!(
+        std::fs::read_to_string(main.join("api/ran.txt")).expect("ran.txt"),
+        "ran-hello"
+    );
+    let unknown = fixture.pom(&fixture.root(), &["run", "no-such-command", "web"]);
+    assert!(
+        text(&unknown).contains("is not a command of web"),
+        "{}",
+        text(&unknown)
     );
 }
 

@@ -10,6 +10,16 @@ const SHORTCUT_COMMAND_ORDER: [&str; 7] = [
 ];
 const PREPARE_MAIN_PHASES: [&str; 3] = ["reset", "migrate", "seed"];
 
+/// A command `pom run <name>` can run in a repo, and where the config declares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamedCommand {
+    pub name: String,
+    pub command: String,
+    pub description: String,
+    /// `tasks`, `commands`, `test` or `services.<service>.tasks`.
+    pub source: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedService {
     pub cmd: String,
@@ -249,6 +259,73 @@ impl Dir {
             });
         }
         out
+    }
+
+    /// Every command of the repo that has a name: keyed tasks, then `commands` (lifecycle names first, custom
+    /// names sorted), then the test block and keyed service tasks. A name declared twice keeps its first entry;
+    /// unlike [`Dir::effective_shortcuts`], two names running the same command both stay.
+    pub fn named_commands(&self) -> Vec<NamedCommand> {
+        let mut out: Vec<NamedCommand> = Vec::new();
+        let mut add = |name: &str, command: &str, description: String, source: String| {
+            if name.is_empty()
+                || command.trim().is_empty()
+                || out
+                    .iter()
+                    .any(|named| named.name.eq_ignore_ascii_case(name))
+            {
+                return;
+            }
+            out.push(NamedCommand {
+                name: name.to_string(),
+                command: command.to_string(),
+                description,
+                source,
+            });
+        };
+        for task in &self.shortcuts {
+            add(&task.key, &task.cmd, task.desc.clone(), "tasks".into());
+        }
+        let mut custom: Vec<&String> = self
+            .commands
+            .keys()
+            .filter(|key| !SHORTCUT_COMMAND_ORDER.contains(&key.as_str()))
+            .collect();
+        custom.sort();
+        let order = SHORTCUT_COMMAND_ORDER
+            .iter()
+            .copied()
+            .chain(custom.into_iter().map(String::as_str));
+        for key in order {
+            if let Some(command) = self.commands.get(key) {
+                add(key, command, lifecycle_description(key), "commands".into());
+            }
+        }
+        if let Some(test) = &self.test {
+            add(
+                "test",
+                &test.command,
+                lifecycle_description("test"),
+                "test".into(),
+            );
+        }
+        for (service_name, service) in &self.services {
+            for task in &service.shortcuts {
+                add(
+                    &task.key,
+                    &task.cmd,
+                    task.desc.clone(),
+                    format!("services.{service_name}.tasks"),
+                );
+            }
+        }
+        out
+    }
+
+    /// The named command `name`, matched without regard to case.
+    pub fn named_command(&self, name: &str) -> Option<NamedCommand> {
+        self.named_commands()
+            .into_iter()
+            .find(|named| named.name.eq_ignore_ascii_case(name))
     }
 
     /// Environment profiles a service may switch between; `local` is always first.

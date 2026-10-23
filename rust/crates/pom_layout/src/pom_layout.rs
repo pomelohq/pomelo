@@ -36,15 +36,18 @@ impl Head {
 /// Reads HEAD straight from disk, without running git: `.git/HEAD` for a clone, `<gitdir>/HEAD` for a
 /// worktree whose `.git` file says `gitdir: <path>`.
 pub fn read_head(checkout: &Path) -> Option<Head> {
+    parse_head(&std::fs::read_to_string(git_dir(checkout)?.join("HEAD")).ok()?)
+}
+
+/// A checkout's git directory: its `.git` folder, or where a worktree's `.git` file points.
+pub fn git_dir(checkout: &Path) -> Option<PathBuf> {
     let dot_git = checkout.join(".git");
-    let git_dir = if dot_git.is_dir() {
-        dot_git
-    } else {
-        let text = std::fs::read_to_string(&dot_git).ok()?;
-        let pointer = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
-        checkout.join(pointer.trim())
-    };
-    parse_head(&std::fs::read_to_string(git_dir.join("HEAD")).ok()?)
+    if dot_git.is_dir() {
+        return Some(dot_git);
+    }
+    let text = std::fs::read_to_string(&dot_git).ok()?;
+    let pointer = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
+    Some(checkout.join(pointer.trim()))
 }
 
 fn parse_head(text: &str) -> Option<Head> {
