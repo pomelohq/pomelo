@@ -1023,4 +1023,31 @@ impl ProjectSource for LocalSource {
     fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {
         self.shared_output(name, lines)
     }
+
+    fn host_settings(&self) -> Result<crate::server_api::HostSettings, SourceError> {
+        let path = settings_file()?;
+        settings::read_host_settings(&path)
+            .map(crate::server_api::HostSettings::new)
+            .map_err(|error| SourceError::Failed(error.to_string()))
+    }
+
+    fn set_host_settings(
+        &self,
+        values: serde_json::Value,
+    ) -> Result<crate::server_api::HostSettings, SourceError> {
+        if pom_agent::Caller::current(&self.holders).is_agent() {
+            return Err(SourceError::Failed(
+                "only a person can change this machine's settings".into(),
+            ));
+        }
+        let path = settings_file()?;
+        settings::write_host_settings(&path, &values)
+            .map(crate::server_api::HostSettings::new)
+            .map_err(|error| SourceError::Failed(error.to_string()))
+    }
+}
+
+fn settings_file() -> Result<PathBuf, SourceError> {
+    settings::Settings::path()
+        .ok_or_else(|| SourceError::Failed("no home folder to keep settings.json in".into()))
 }

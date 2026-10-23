@@ -69,6 +69,8 @@ pub mod method {
     pub const GIT_READ: &str = "git.read";
     pub const GIT_BRANCHES: &str = "git.branches";
     pub const GIT_BRANCH: &str = "git.branch";
+    pub const SETTINGS_GET: &str = "settings.get";
+    pub const SETTINGS_SET: &str = "settings.set";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -134,6 +136,8 @@ pub const METHODS: &[&str] = &[
     method::JIRA_BOARDS,
     method::JIRA_LIST,
     method::PASTE_PUT,
+    method::SETTINGS_GET,
+    method::SETTINGS_SET,
     method::GIT_REPOS,
     method::GIT_SCAN,
     method::GIT_WATCH,
@@ -1167,4 +1171,33 @@ pub struct GitBranchParams {
     pub action: String,
     pub target: String,
     pub op_id: String,
+}
+
+/// `settings.set`: a partial settings object over the host's settings.json, nested as the file nests it
+/// (`{"proxy": {"bind": "0.0.0.0"}}`); only keys of [`HostSettings::keys`] are taken.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SettingsSetParams {
+    pub values: serde_json::Value,
+}
+
+/// The answer of `settings.get` and `settings.set`: the host-scoped settings of the host, defaults filled,
+/// and the dotted keys it takes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HostSettings {
+    pub values: serde_json::Value,
+    pub keys: Vec<String>,
+}
+
+impl HostSettings {
+    pub fn new(values: serde_json::Value) -> HostSettings {
+        HostSettings {
+            values,
+            keys: settings::HOST_KEYS
+                .iter()
+                .map(|key| key.to_string())
+                .collect(),
+        }
+    }
 }

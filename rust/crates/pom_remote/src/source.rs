@@ -193,6 +193,8 @@ pub struct TransportInfo {
     pub paste: bool,
     /// The server reads and changes the workspace's repos for the Git panel, and runs their fetch, pull and push.
     pub git: bool,
+    /// The server reads and changes the host-scoped settings of its settings.json.
+    pub host_settings: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
@@ -484,6 +486,20 @@ pub trait ProjectSource: Send + Sync {
         _extension: &str,
     ) -> Result<std::path::PathBuf, SourceError> {
         Err(unsupported("Pasting an image"))
+    }
+
+    /// The machine's host-scoped settings ([`settings::HOST_KEYS`]), defaults filled.
+    fn host_settings(&self) -> Result<crate::server_api::HostSettings, SourceError> {
+        Err(unsupported("The host's settings"))
+    }
+
+    /// Lays the partial settings object `values` over the machine's settings.json and returns them as they now
+    /// are; a key outside the host's list, or a value its Settings window would not keep, changes nothing.
+    fn set_host_settings(
+        &self,
+        _values: serde_json::Value,
+    ) -> Result<crate::server_api::HostSettings, SourceError> {
+        Err(unsupported("Changing the host's settings"))
     }
 }
 

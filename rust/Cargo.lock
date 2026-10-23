@@ -3881,6 +3881,7 @@ dependencies = [
  "pom_workspace",
  "serde",
  "serde_json",
+ "settings",
  "sha2 0.10.9",
  "tempfile",
  "workspace_hack",
@@ -3931,6 +3932,7 @@ dependencies = [
  "pom_workspace",
  "serde",
  "serde_json",
+ "settings",
  "tempfile",
  "workspace_hack",
 ]

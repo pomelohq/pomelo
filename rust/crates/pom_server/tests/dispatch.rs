@@ -292,6 +292,7 @@ fn fs_connection(project: &Project) -> (pom_rpc::Connection, pom_rpc::Connection
             connection: 1,
             client: "test",
             context,
+            peer_pid: None,
         };
         dispatcher
             .dispatch_fs(&request, &caller)

@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pom_remote::server_api::{
-    method, AgentListing, BranchArgs, JobRequest, UsageParams, UsageReport, FEATURES, FILES_SEARCH,
-    JOBS, LIVE_LOGS, METHODS, MODULE_STORE, REQUIRED,
+    method, AgentListing, BranchArgs, HostSettings, JobRequest, SettingsSetParams, UsageParams,
+    UsageReport, FEATURES, FILES_SEARCH, JOBS, LIVE_LOGS, METHODS, MODULE_STORE, REQUIRED,
 };
 use pom_remote::{ProjectSource, ServerSource, StatusReport, Timing, Watch, WorkspaceList};
 use pom_rpc::pty::{self, AttachParams, Attached, Mode, Request, Target};
@@ -22,6 +22,7 @@ struct Served {
     streams: Mutex<Vec<StreamSender>>,
     publishers: Mutex<Vec<Publisher>>,
     connections: Mutex<Vec<Connection>>,
+    settings_file: Mutex<Option<std::path::PathBuf>>,
 }
 
 fn answer(
@@ -72,6 +73,23 @@ fn answer(
                 limits_at: Some(params.since),
                 ..UsageReport::default()
             }))
+        }
+        method::SETTINGS_GET | method::SETTINGS_SET => {
+            let path = served
+                .settings_file
+                .lock()
+                .ok()
+                .and_then(|path| path.clone())
+                .ok_or_else(|| RemoteError::new("failed", "no settings.json"))?;
+            let values = if request.method == method::SETTINGS_GET {
+                settings::read_host_settings(&path)
+            } else {
+                let params: SettingsSetParams = serde_json::from_value(request.params)
+                    .map_err(|error| RemoteError::new("invalid_params", error.to_string()))?;
+                settings::write_host_settings(&path, &params.values)
+            }
+            .map_err(|error| RemoteError::new("invalid_params", error.to_string()))?;
+            json(serde_json::to_value(HostSettings::new(values)))
         }
         method::PTY_ATTACH => {
             let params: AttachParams = serde_json::from_value(request.params)
@@ -571,4 +589,47 @@ fn the_git_panel_runs_on_the_host_only_through_a_server_that_lists_git() {
     current.workspaces().expect("connect");
     assert!(current.transport().expect("transport").git);
     assert!(current.git("feat").is_some());
+}
+
+#[test]
+fn the_host_settings_go_through_a_server_that_offers_them() {
+    let temp = tempfile::tempdir().expect("temp");
+    let path = temp.path().join("settings.json");
+    std::fs::write(&path, r#"{"theme": "One Dark"}"#).expect("settings.json");
+    let (current, served) = source(current_features());
+    *served.settings_file.lock().expect("settings file") = Some(path.clone());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").host_settings);
+    let got = current.host_settings().expect("get");
+    assert_eq!(got.values["terminal_shell"], serde_json::json!(""));
+    let set = current
+        .set_host_settings(
+            serde_json::json!({"terminal_shell": "/bin/bash", "workspaces": {"max_running": 2}}),
+        )
+        .expect("set");
+    assert_eq!(set.values["terminal_shell"], serde_json::json!("/bin/bash"));
+    assert_eq!(
+        set.values["workspaces"]["max_running"],
+        serde_json::json!(2)
+    );
+    assert_eq!(current.host_settings().expect("again"), set);
+    let refused = current.set_host_settings(serde_json::json!({"theme": "x"}));
+    let Err(pom_remote::SourceError::Failed(message)) = refused else {
+        panic!("not refused: {refused:?}");
+    };
+    assert!(
+        message.contains("not a setting of this machine"),
+        "{message}"
+    );
+    let file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
+    assert_eq!(file["theme"], serde_json::json!("One Dark"));
+
+    let (older, _) = source(older_features());
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").host_settings);
+    let Err(pom_remote::SourceError::Failed(message)) = older.host_settings() else {
+        panic!("an older server answered");
+    };
+    assert!(message.contains("needs a newer pom on dev"), "{message}");
 }
