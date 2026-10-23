@@ -11,8 +11,8 @@ use git::access::{self, RepoSource};
 use git::scan::RepoScan;
 use git::working_copy::CommandError;
 use pom_remote::server_api::{
-    GitActParams, GitActed, GitReadParams, GitRepoParams, GitScanned, GitWatchParams,
-    GIT_SCAN_TOPIC,
+    branch_action, GitActParams, GitActed, GitBranchParams, GitBranches, GitReadParams,
+    GitRepoParams, GitScanned, GitWatchParams, GIT_SCAN_TOPIC,
 };
 use pom_remote::LocalSource;
 use pom_rpc::{error_code, Publisher, RemoteError};
@@ -85,6 +85,7 @@ fn read_all(repos: &[RepoSource]) -> Vec<RepoScan> {
 
 pub struct GitService {
     ops: Ops<Result<(), CommandError>>,
+    branch_ops: Ops,
     /// The stop flag of each watch, by connection.
     watches: Mutex<HashMap<u64, Vec<Arc<AtomicBool>>>>,
     every: Mutex<Duration>,
@@ -100,6 +101,7 @@ impl GitService {
     pub fn new() -> GitService {
         GitService {
             ops: Ops::new(OP_MEMORY),
+            branch_ops: Ops::new(OP_MEMORY),
             watches: Mutex::new(HashMap::new()),
             every: Mutex::new(WATCH_EVERY),
         }
@@ -142,6 +144,80 @@ impl GitService {
         let answer = access::answer(&repo.root, &params.read)
             .map_err(|error| RemoteError::new(FAILED, error))?;
         to_value(answer)
+    }
+
+    /// The branch picker's list for repo `repo` of workspace `branch`.
+    pub fn branches(
+        &self,
+        source: &LocalSource,
+        params: &GitRepoParams,
+    ) -> Result<Value, RemoteError> {
+        check_branch(&params.branch)?;
+        check_name("repo", &params.repo)?;
+        let checkout = source
+            .branch_checkout(&params.branch, &params.repo)
+            .map_err(|error| RemoteError::new(FAILED, error.to_string()))?;
+        let base = match pom_layout::read_head(&checkout) {
+            Some(pom_layout::Head::Branch(branch)) => branch,
+            _ => String::new(),
+        };
+        let branches = pom_workspace::list_branches(&checkout)
+            .map_err(|error| RemoteError::new(FAILED, error))?;
+        to_value(GitBranches { base, branches })
+    }
+
+    /// Keeps, switches or picks the branch a repo of the workspace uses, as the Git panel's branch menu does.
+    pub fn change_branch(
+        &self,
+        source: &LocalSource,
+        params: GitBranchParams,
+    ) -> Result<Value, RemoteError> {
+        check_branch(&params.branch)?;
+        check_name("repo", &params.repo)?;
+        check_op_id(&params.op_id)?;
+        if !branch_action::ALL.contains(&params.action.as_str()) {
+            return Err(invalid(format!(
+                "action must be one of {}",
+                branch_action::ALL.join(", ")
+            )));
+        }
+        let moves = matches!(
+            params.action.as_str(),
+            branch_action::SWITCH | branch_action::USE
+        );
+        if moves {
+            check_branch(&params.target)?;
+        }
+        let (folder, _) = source
+            .workspace_folder(&params.branch)
+            .map_err(|error| RemoteError::new(FAILED, error.to_string()))?;
+        let result = self.branch_ops.run(&params.op_id, || {
+            let (workspace, repo, target) = (&params.branch, &params.repo, &params.target);
+            match params.action.as_str() {
+                branch_action::KEEP => pom_workspace::keep_repo_branch(&folder, workspace, repo)
+                    .map(|kept| format!("{repo} stays on {kept} in this workspace")),
+                branch_action::SWITCH => {
+                    pom_workspace::switch_repo_branch(&folder, workspace, repo, target)
+                        .map(|()| format!("Switched {repo} to {target}"))
+                }
+                branch_action::USE => {
+                    let used = if target == workspace {
+                        pom_workspace::switch_repo_branch(&folder, workspace, repo, target)
+                    } else {
+                        pom_workspace::use_another_branch(&folder, workspace, repo, target)
+                    };
+                    used.map(|()| format!("{repo} now uses {target}"))
+                }
+                _ => source
+                    .branch_checkout(workspace, repo)
+                    .map_err(|error| error.to_string())
+                    .and_then(|checkout| pom_workspace::fetch_origin(&checkout))
+                    .map(|()| format!("Fetched {repo}")),
+            }
+        });
+        result
+            .map_err(|error| RemoteError::new(FAILED, error))
+            .and_then(to_value)
     }
 
     /// Pushes each repo's scan now and whenever it reads differently, until the subscriber leaves.

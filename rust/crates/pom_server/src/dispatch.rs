@@ -659,6 +659,16 @@ impl Dispatcher {
                 let source = self.source(&params.cfg)?;
                 self.git.scan(&source, &params)
             }
+            method::GIT_BRANCHES => {
+                let params: GitRepoParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                self.git.branches(&source, &params)
+            }
+            method::GIT_BRANCH => {
+                let params: pom_remote::server_api::GitBranchParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                self.git.change_branch(&source, params)
+            }
             method::GIT_ACT => {
                 let params: GitActParams = serde_json::from_value(raw.clone())
                     .map_err(|error| invalid(format!("bad params: {error}")))?;

@@ -352,6 +352,25 @@ pub trait ProjectSource: Send + Sync {
     fn git_repos(&self, _branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
         Err(unsupported("The Git panel"))
     }
+    /// Repo `repo`'s branches as the branch picker lists them.
+    fn git_branches(
+        &self,
+        _branch: &str,
+        _repo: &str,
+    ) -> Result<crate::server_api::GitBranches, SourceError> {
+        Err(unsupported("Listing a repo's branches"))
+    }
+    /// Keeps, switches to or picks (`server_api::branch_action`) the branch repo `repo` of `branch` uses, or
+    /// fetches its origin; returns what it did.
+    fn change_git_branch(
+        &self,
+        _branch: &str,
+        _repo: &str,
+        _action: &str,
+        _target: &str,
+    ) -> Result<String, SourceError> {
+        Err(unsupported("Changing a repo's branch"))
+    }
     /// The dev proxy port on the machine, when it says; its workspace addresses are forwarded there.
     fn dev_proxy_port(&self) -> Option<u16> {
         None

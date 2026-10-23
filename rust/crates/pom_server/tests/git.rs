@@ -319,3 +319,44 @@ fn a_push_runs_as_a_job_and_tells_its_progress() -> Result<(), String> {
     assert!(missing.is_err_and(|error| !error.output.log().is_empty()));
     Ok(())
 }
+
+#[test]
+fn the_branch_menu_lists_keeps_and_switches_on_the_host() -> Result<(), String> {
+    let remote = Remote::start(&["/bin/sh"]);
+    let root = real_repo(&remote);
+    let (source, _) = remote_git(&remote);
+    let listed = source
+        .git_branches("feat", "api")
+        .map_err(|error| error.to_string())?;
+    let names: Vec<&str> = listed
+        .branches
+        .iter()
+        .map(|branch| branch.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"main") && names.contains(&"feat"),
+        "{names:?}"
+    );
+    assert_eq!(listed.base, "feat");
+    let said = source
+        .change_git_branch("feat", "api", "switch", "main")
+        .map_err(|error| error.to_string())?;
+    assert_eq!(said, "Switched api to main");
+    let head =
+        std::fs::read_to_string(root.join(".git/HEAD")).map_err(|error| error.to_string())?;
+    assert!(head.contains("refs/heads/main"), "{head}");
+    let kept = source
+        .change_git_branch("feat", "api", "keep", "")
+        .map_err(|error| error.to_string())?;
+    assert_eq!(kept, "api stays on main in this workspace");
+    assert!(source
+        .change_git_branch("feat", "api", "switch", "-x")
+        .is_err());
+    assert!(source
+        .change_git_branch("feat", "api", "delete", "main")
+        .is_err());
+    assert!(source
+        .change_git_branch("feat", "../api", "keep", "")
+        .is_err());
+    Ok(())
+}

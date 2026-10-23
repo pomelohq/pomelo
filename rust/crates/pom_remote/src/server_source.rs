@@ -628,6 +628,16 @@ impl ServerSource {
     pub(crate) fn from_inner(inner: Arc<Inner>) -> ServerSource {
         ServerSource { inner }
     }
+
+    fn git_repos_offered(&self) -> Result<(), SourceError> {
+        if self.inner.offering(|info| info.git)?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "The Git panel needs a newer pom on {}; update it there",
+                self.inner.host.name
+            )));
+        }
+        Ok(())
+    }
 }
 
 impl Inner {
@@ -977,13 +987,51 @@ impl ProjectSource for ServerSource {
     }
 
     fn git_repos(&self, branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
-        if self.inner.offering(|info| info.git)?.is_none() {
-            return Err(SourceError::Failed(format!(
-                "The Git panel needs a newer pom on {}; update it there",
-                self.inner.host.name
-            )));
-        }
+        self.git_repos_offered()?;
         crate::remote_git::RemoteGit::new(self.inner.clone(), branch).repos()
+    }
+
+    fn git_branches(
+        &self,
+        branch: &str,
+        repo: &str,
+    ) -> Result<crate::server_api::GitBranches, SourceError> {
+        self.git_repos_offered()?;
+        let params = crate::server_api::GitRepoParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+        };
+        self.inner.ask_server(
+            method::GIT_BRANCHES,
+            params,
+            READ_TIMEOUT,
+            "Listing a repo's branches",
+        )
+    }
+
+    fn change_git_branch(
+        &self,
+        branch: &str,
+        repo: &str,
+        action: &str,
+        target: &str,
+    ) -> Result<String, SourceError> {
+        self.git_repos_offered()?;
+        let params = crate::server_api::GitBranchParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+            action: action.to_string(),
+            target: target.to_string(),
+            op_id: self.inner.next_op_id(),
+        };
+        self.inner.ask_server(
+            method::GIT_BRANCH,
+            params,
+            ACT_TIMEOUT,
+            "Changing a repo's branch",
+        )
     }
 
     fn files(&self, branch: &str) -> Option<Arc<dyn files::ProjectFs>> {

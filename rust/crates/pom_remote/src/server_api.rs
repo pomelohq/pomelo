@@ -66,6 +66,8 @@ pub mod method {
     pub const GIT_WATCH: &str = "git.watch";
     pub const GIT_ACT: &str = "git.act";
     pub const GIT_READ: &str = "git.read";
+    pub const GIT_BRANCHES: &str = "git.branches";
+    pub const GIT_BRANCH: &str = "git.branch";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -135,6 +137,8 @@ pub const METHODS: &[&str] = &[
     method::GIT_WATCH,
     method::GIT_ACT,
     method::GIT_READ,
+    method::GIT_BRANCHES,
+    method::GIT_BRANCH,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -203,6 +207,8 @@ pub const GIT: &[&str] = &[
     method::GIT_WATCH,
     method::GIT_ACT,
     method::GIT_READ,
+    method::GIT_BRANCHES,
+    method::GIT_BRANCH,
 ];
 
 /// What a watch pushes, each as its full value whenever it changed.
@@ -1105,4 +1111,38 @@ pub struct GitScanned {
 pub struct GitActed {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<git::working_copy::CommandError>,
+}
+
+/// A repo's branches as the branch picker lists them, read from its checkout in the workspace (else in main).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitBranches {
+    /// The branch the main checkout is on, which a new branch starts from.
+    pub base: String,
+    pub branches: Vec<pom_workspace::BranchInfo>,
+}
+
+/// What `git.branch` does to a repo of a workspace.
+pub mod branch_action {
+    /// Keeps the branch the repo is on now as the one it uses.
+    pub const KEEP: &str = "keep";
+    /// Checks out `target`.
+    pub const SWITCH: &str = "switch";
+    /// Fetches origin, then checks out `target`.
+    pub const USE: &str = "use";
+    /// Fetches origin in the checkout the branches are listed from.
+    pub const FETCH: &str = "fetch";
+    pub const ALL: &[&str] = &[KEEP, SWITCH, USE, FETCH];
+}
+
+/// A change to which branch repo `repo` of workspace `branch` uses; answers what it did, as a sentence.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitBranchParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repo: String,
+    pub action: String,
+    pub target: String,
+    pub op_id: String,
 }
