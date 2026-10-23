@@ -40,7 +40,8 @@ pub struct Remote {
 }
 
 impl Remote {
-    /// A server whose new shells run `shell` (a plain command, never a login shell).
+    /// A server whose new shells run `shell` (a plain command, never a login shell); empty follows the
+    /// `terminal_shell` setting.
     pub fn start(shell: &[&str]) -> Remote {
         Self::start_retaining(shell, None)
     }
@@ -95,10 +96,12 @@ impl Remote {
             holder_binary(),
             pom_server::OP_MEMORY,
         );
-        dispatcher.ptys().set_shell(ShellCommand {
-            argv: shell.to_vec(),
-            env: vec![("PS1".into(), "$ ".into())],
-        });
+        if !shell.is_empty() {
+            dispatcher.ptys().set_shell(ShellCommand {
+                argv: shell.to_vec(),
+                env: vec![("PS1".into(), "$ ".into())],
+            });
+        }
         if let Some(retention) = retention {
             dispatcher.ptys().set_retention(retention);
         }

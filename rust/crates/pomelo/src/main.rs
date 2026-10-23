@@ -964,46 +964,26 @@ impl App {
         let is_main = project
             .active_workspace()
             .is_none_or(|workspace| workspace.is_main);
-        let command = self.settings.agent_command.trim().to_string();
-        let mut words = command.split_whitespace();
-        let program = words.next().unwrap_or("claude");
-        let is_claude = std::path::Path::new(program)
-            .file_name()
-            .is_some_and(|name| name == "claude");
-        let launch = if is_claude {
-            let mut launch = pom_agent::claude_launch(&pom_agent::LaunchContext {
-                state: &state,
-                home: &home,
-                binary: &binary,
-                tool_path: pom_services::tool_path(),
-                session: &project.session,
-                branch: &branch,
-                is_main,
-                cwd: &cwd,
-            });
-            let extra: Vec<&str> = words.collect();
-            if let (false, Some(script)) = (extra.is_empty(), launch.argv.last_mut()) {
-                script.push(' ');
-                script.push_str(&extra.join(" "));
-            }
-            launch
-        } else {
-            let name = std::path::Path::new(program).file_name().map_or_else(
-                || "agent".to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            );
-            pom_agent::AgentLaunch {
-                holder: format!(
-                    "ws-{}-{}-agent-{name}",
-                    pom_env::branch_safe(&project.session),
-                    pom_env::branch_safe(&branch)
-                ),
-                cwd: cwd.clone(),
-                argv: pom_shell::Shell::user().login_argv(&format!(
-                    "export PATH='{}'; exec {command}",
-                    pom_services::tool_path().replace('\'', r"'\''")
-                )),
-                title: name,
+        let context = pom_agent::LaunchContext {
+            state: &state,
+            home: &home,
+            binary: &binary,
+            tool_path: pom_services::tool_path(),
+            session: &project.session,
+            branch: &branch,
+            is_main,
+            cwd: &cwd,
+        };
+        let launch = match pom_agent::AgentCommand::parse(&self.settings.agent_command) {
+            pom_agent::AgentCommand::Claude { extra_args } => pom_agent::claude_launch_with(
+                &context,
+                &pom_agent::LaunchOptions {
+                    extra_args,
+                    ..pom_agent::LaunchOptions::default()
+                },
+            ),
+            pom_agent::AgentCommand::Cli { name, command } => {
+                pom_agent::cli_launch(&context, &name, &command)
             }
         };
         let mut launch = launch;

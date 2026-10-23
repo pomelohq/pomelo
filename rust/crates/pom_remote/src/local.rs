@@ -487,6 +487,17 @@ impl LocalSource {
         let gate = self.gate(&opened.config, branch)?;
         let cwd = pom_layout::workspace_root(&opened.project.root, branch, is_main);
         let fresh = role != pom_agent::CLAUDE_DRIVER;
+        let mut extra_args = Vec::new();
+        if person && !fresh {
+            match pom_agent::AgentCommand::parse(&host_setting("agent_command")) {
+                pom_agent::AgentCommand::Claude { extra_args: words } => extra_args = words,
+                pom_agent::AgentCommand::Cli { name, command } => {
+                    return drive
+                        .start_cli(&gate, &cwd, is_main, &name, &command)
+                        .map_err(|error| SourceError::Failed(error.to_string()));
+                }
+            }
+        }
         let started = drive.start(
             &gate,
             &cwd,
@@ -495,6 +506,7 @@ impl LocalSource {
             fresh,
             &pom_agent::LaunchOptions {
                 for_person: person,
+                extra_args,
                 ..pom_agent::LaunchOptions::default()
             },
         );
@@ -1045,6 +1057,18 @@ impl ProjectSource for LocalSource {
             .map(crate::server_api::HostSettings::new)
             .map_err(|error| SourceError::Failed(error.to_string()))
     }
+}
+
+/// A host-scoped setting of this machine's settings.json as text, its default when unset or unreadable.
+pub fn host_setting(key: &str) -> String {
+    let values = settings::Settings::path()
+        .and_then(|path| settings::read_host_settings(&path).ok())
+        .unwrap_or_else(|| settings::host_values(&serde_json::Value::Null));
+    key.split('.')
+        .try_fold(&values, |value, part| value.get(part))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn settings_file() -> Result<PathBuf, SourceError> {

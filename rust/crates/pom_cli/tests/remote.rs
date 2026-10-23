@@ -1054,6 +1054,77 @@ fn the_server_starts_an_agent_pushes_its_state_and_takes_what_is_typed() {
 }
 
 #[test]
+fn a_person_s_agent_on_the_host_runs_the_host_s_agent_command() {
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let bin = fixture.temp.path().join("cli-bin");
+    std::fs::create_dir_all(&bin).expect("cli bin");
+    let cli = bin.join("myagent");
+    executable(&cli, "#!/bin/sh\necho \"myagent-ran $*\"\nexec sleep 30\n");
+    std::fs::write(
+        fixture.temp.path().join("config/settings.json"),
+        serde_json::json!({ "agent_command": format!("{} --fast", cli.display()) }).to_string(),
+    )
+    .expect("settings.json");
+    let source = std::sync::Arc::new(fixture.server_source_with_agent_cli());
+    let watch = pom_remote::Watch::start(source.clone(), "feat", std::sync::Arc::new(|| {}));
+    watch.set_visible(true);
+    wait_snapshot(&watch, "pushes", |snapshot| snapshot.pushing);
+
+    watch.start_agent("claude");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let started = loop {
+        if let Some(view) = watch.take_started().pop() {
+            break view;
+        }
+        let message = watch.snapshot().message.unwrap_or_default();
+        assert!(!message.starts_with("could not"), "{message}");
+        assert!(Instant::now() < deadline, "the agent did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(started.role, "myagent");
+    assert!(
+        started.holder.ends_with("-agent-myagent"),
+        "{}",
+        started.holder
+    );
+    assert_eq!(fixture.agent_runs(), 0, "not claude");
+    let holders = pom_ptyhost::SocketDir::new(fixture.temp.path().join("s"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = pom_ptyhost::snapshot(&holders, &started.holder, Duration::from_secs(5))
+            .unwrap_or_default();
+        if String::from_utf8_lossy(&screen).contains("myagent-ran --fast") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{:?}",
+            String::from_utf8_lossy(&screen)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    watch.start_agent("claude");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let again = loop {
+        if let Some(view) = watch.take_started().pop() {
+            break view;
+        }
+        assert!(Instant::now() < deadline, "no answer the second time");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(again.holder, started.holder, "a running one is reopened");
+    source
+        .pty("feat")
+        .expect("terminals")
+        .close(&started.holder)
+        .expect("stop the agent");
+}
+
+#[test]
 fn a_stopped_server_is_reconnected_to_from_scratch_and_counted_as_restarted() {
     use pom_remote::ProjectSource;
     let fixture = Fixture::new();

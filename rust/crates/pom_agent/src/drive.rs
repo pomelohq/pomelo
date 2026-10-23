@@ -13,7 +13,7 @@ use crate::driver::{driver, Keystrokes, TrustDialog};
 use crate::fallback;
 use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
-use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
+use crate::launch::{claude_launch_with, cli_launch, fresh_launch, LaunchContext, LaunchOptions};
 use crate::screen::rendered_lines;
 use crate::sessions::{
     events, now_ms, phase, read_state, record_event, turn_running, workspace_sessions, EventLine,
@@ -312,6 +312,61 @@ impl Drive {
         }
         views.sort_by(|a, b| a.role.cmp(&b.role));
         views
+    }
+
+    /// Starts another CLI as the workspace's agent for the person (the `agent_command` setting), or finds it
+    /// running; it reports through no hooks, so the listing knows it by its holder alone.
+    pub fn start_cli(
+        &self,
+        gate: &Gate<'_>,
+        cwd: &Path,
+        is_main: bool,
+        name: &str,
+        command: &str,
+    ) -> Result<SessionView, DriveError> {
+        if gate.caller().is_agent() {
+            return Err(DriveError::Invalid(
+                "only a person can start an agent as their own".into(),
+            ));
+        }
+        let workspace = gate.workspace().clone();
+        let context = LaunchContext {
+            state: &self.state,
+            home: &self.home,
+            binary: &self.binary,
+            tool_path: &self.tool_path,
+            session: &self.project,
+            branch: &workspace.branch,
+            is_main,
+            cwd,
+        };
+        let launch = cli_launch(&context, name, command);
+        gate.target(&launch.holder)?;
+        if !self.alive(&launch.holder) {
+            let group = self.holder_group(&workspace.branch);
+            pom_ptyhost::spawn_holder(
+                &self.holders,
+                &SpawnRequest {
+                    group: Some(&group),
+                    binary: &self.binary,
+                    name: &launch.holder,
+                    cwd: &launch.cwd,
+                    cols: HOLDER_COLS,
+                    rows: HOLDER_ROWS,
+                    argv: &launch.argv,
+                    env: &[],
+                },
+            )
+            .map_err(|error| DriveError::Failed(format!("could not start {name}: {error}")))?;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !self.alive(&launch.holder) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        self.list(&workspace.branch)
+            .into_iter()
+            .find(|view| view.holder == launch.holder)
+            .ok_or_else(|| DriveError::Failed(format!("{name} did not start")))
     }
 
     /// The session a handle names, inside the gate's workspace.

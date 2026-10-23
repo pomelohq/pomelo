@@ -114,6 +114,16 @@ pub struct ShellCommand {
 }
 
 impl ShellCommand {
+    /// The `terminal_shell` setting: its program and arguments as typed, or the login shell when empty.
+    pub fn from_setting(setting: &str) -> ShellCommand {
+        let mut shell = ShellCommand::login();
+        let words: Vec<String> = setting.split_whitespace().map(str::to_string).collect();
+        if !words.is_empty() {
+            shell.argv = words;
+        }
+        shell
+    }
+
     pub fn login() -> ShellCommand {
         let mut env = vec![
             ("TERM_PROGRAM".to_string(), "pomelo".to_string()),
@@ -654,7 +664,8 @@ type Streams = Mutex<HashMap<(u64, u32), Arc<Bridge>>>;
 pub struct Ptys {
     holders: SocketDir,
     binary: PathBuf,
-    shell: Mutex<ShellCommand>,
+    /// Set by tests; otherwise each new shell follows this machine's `terminal_shell` as it is then.
+    shell: Mutex<Option<ShellCommand>>,
     streams: Arc<Streams>,
     inputs: Arc<Inputs>,
     follows: Arc<Follows>,
@@ -693,7 +704,7 @@ impl Ptys {
         Ptys {
             holders,
             binary,
-            shell: Mutex::new(ShellCommand::login()),
+            shell: Mutex::new(None),
             streams: Arc::new(Mutex::new(HashMap::new())),
             inputs: Arc::new(Inputs::default()),
             follows: Arc::new(Mutex::new(HashMap::new())),
@@ -704,7 +715,7 @@ impl Ptys {
     }
 
     pub fn set_shell(&self, shell: ShellCommand) {
-        *locked(&self.shell) = shell;
+        *locked(&self.shell) = Some(shell);
     }
 
     pub fn streams(&self) -> usize {
@@ -803,7 +814,9 @@ impl Ptys {
             workspace.shell_prefix(),
             self.next_shell.fetch_add(1, Ordering::AcqRel)
         );
-        let shell = locked(&self.shell).clone();
+        let shell = locked(&self.shell).clone().unwrap_or_else(|| {
+            ShellCommand::from_setting(&pom_remote::host_setting("terminal_shell"))
+        });
         let request = SpawnRequest {
             binary: &self.binary,
             name: &holder,
