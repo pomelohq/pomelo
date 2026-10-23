@@ -3813,6 +3813,7 @@ dependencies = [
  "pom_paths",
  "pom_ports",
  "pom_ptyhost",
+ "pom_secrets",
  "regex",
  "serde",
  "serde_json",

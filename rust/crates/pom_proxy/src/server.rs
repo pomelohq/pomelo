@@ -105,13 +105,19 @@ pub(crate) struct Shared {
     pub router: Arc<Router>,
     pub log: Arc<ProxyLog>,
     network: pom_env::DevNetwork,
+    token: Option<String>,
     github: std::sync::RwLock<Option<GithubHook>>,
     local: Client<HttpConnector, Body>,
     external: Client<hyper_tls::HttpsConnector<HttpConnector>, Body>,
 }
 
 impl Shared {
-    pub fn new(router: Arc<Router>, log: Arc<ProxyLog>, network: pom_env::DevNetwork) -> Shared {
+    pub fn new(
+        router: Arc<Router>,
+        log: Arc<ProxyLog>,
+        network: pom_env::DevNetwork,
+        token: Option<String>,
+    ) -> Shared {
         let mut local = HttpConnector::new();
         local.set_connect_timeout(Some(LOCAL_CONNECT_TIMEOUT));
         let mut external = HttpConnector::new();
@@ -121,6 +127,7 @@ impl Shared {
             router,
             log,
             network,
+            token,
             github: std::sync::RwLock::new(None),
             local: Client::builder(TokioExecutor::new())
                 .pool_idle_timeout(Duration::from_secs(30))
@@ -152,6 +159,18 @@ pub(crate) enum Kind {
     Webhook,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Peer {
+    address: SocketAddr,
+    /// Connected from this machine: loopback, or one of its own addresses (a service calling a public URL).
+    local: bool,
+}
+
+fn same_machine(client: SocketAddr, local: Option<SocketAddr>) -> bool {
+    let client = client.ip().to_canonical();
+    client.is_loopback() || local.is_some_and(|local| local.ip().to_canonical() == client)
+}
+
 pub(crate) async fn accept(listener: TcpListener, shared: Arc<Shared>, kind: Kind) {
     loop {
         let (stream, client) = match listener.accept().await {
@@ -162,14 +181,18 @@ pub(crate) async fn accept(listener: TcpListener, shared: Arc<Shared>, kind: Kin
                 continue;
             }
         };
+        let peer = Peer {
+            address: client,
+            local: same_machine(client, stream.local_addr().ok()),
+        };
         let shared = shared.clone();
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |request| {
                 let shared = shared.clone();
                 async move {
                     Ok::<_, Infallible>(match kind {
-                        Kind::Proxy => handle_proxy(&shared, client, request).await,
-                        Kind::Webhook => handle_webhook(&shared, request).await,
+                        Kind::Proxy => handle_proxy(&shared, peer, request).await,
+                        Kind::Webhook => handle_webhook(&shared, peer, request).await,
                     })
                 }
             });
@@ -349,38 +372,132 @@ enum Upstream {
     External { scheme: String, authority: String },
 }
 
-async fn handle_proxy(
-    shared: &Shared,
-    client: SocketAddr,
-    request: Request<Incoming>,
-) -> Response<Body> {
-    if is_fault_reload(&request, client) {
-        let loaded = shared.router.reload_faults();
-        return match serde_json::to_string(&loaded) {
-            Ok(body) => json_response(200, body),
-            Err(error) => text_response(500, &format!("dev-proxy: {error}")),
-        };
-    }
-    if !shared.router.has_projects() {
-        return text_response(503, "dev proxy not configured");
-    }
-    let started = Instant::now();
-    let host = request
+fn request_host<B>(request: &Request<B>) -> String {
+    request
         .headers()
         .get(HOST)
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
         .or_else(|| request.uri().host().map(str::to_string))
-        .unwrap_or_default();
-    let path = request.uri().path().to_string();
+        .unwrap_or_default()
+}
+
+/// `/_pom/` on the proxy is pom's own, never a service's: a page elsewhere must not reach it.
+fn handle_control(
+    shared: &Shared,
+    peer: Peer,
+    request: &Request<Incoming>,
+    host: &str,
+) -> Response<Body> {
+    if crate::access::cross_site(request.headers(), host) {
+        return text_response(
+            403,
+            "dev-proxy: pom's own endpoints do not take requests from web pages",
+        );
+    }
+    if request.uri().path() != crate::faults::RELOAD_PATH {
+        return text_response(404, "dev-proxy: no such pom endpoint");
+    }
+    if !is_fault_reload(request, peer.address) {
+        return text_response(
+            405,
+            "dev-proxy: `pom proxy fault` reloads the rules here (POST from this machine)",
+        );
+    }
+    let loaded = shared.router.reload_faults();
+    match serde_json::to_string(&loaded) {
+        Ok(body) => json_response(200, body),
+        Err(error) => text_response(500, &format!("dev-proxy: {error}")),
+    }
+}
+
+/// What a request from another machine must show: the token by header or cookie, or once in the query, which
+/// trades it for a cookie so the links a reviewer opens keep working.
+fn check_token<B>(
+    token: Option<&str>,
+    network: &pom_env::DevNetwork,
+    local: bool,
+    request: &mut Request<B>,
+    host: &str,
+) -> Result<Option<String>, Box<Response<Body>>> {
     let query = request.uri().query().map(str::to_string);
+    let Some(token) = token else {
+        return Ok(query);
+    };
+    let presented = crate::access::presented(request.headers());
+    crate::access::strip_token(request.headers_mut());
+    let (rest, from_query) = crate::access::split_query(query.as_deref());
+    if local {
+        return Ok(rest);
+    }
+    if presented.is_some_and(|candidate| crate::access::token_matches(&candidate, token)) {
+        return Ok(rest);
+    }
+    if from_query.is_some_and(|candidate| crate::access::token_matches(&candidate, token))
+        && request.method() == hyper::Method::GET
+    {
+        let location = match &rest {
+            Some(rest) => format!("{}?{rest}", request.uri().path()),
+            None => request.uri().path().to_string(),
+        };
+        let mut response = text_response(303, "dev-proxy: signed in");
+        let cookie = crate::access::token_cookie(token, host, network);
+        for (name, value) in [(hyper::header::LOCATION, location), (SET_COOKIE, cookie)] {
+            if let Ok(value) = HeaderValue::from_str(&value) {
+                response.headers_mut().insert(name, value);
+            }
+        }
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        return Err(Box::new(response));
+    }
+    let message = "dev-proxy: this address needs the proxy token. Open the link once with ?pom_token=<token> added (`pom proxy token` shows it), or send it in the X-Pom-Token header";
+    let mut response = text_response(401, message);
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Err(Box::new(response))
+}
+
+async fn handle_proxy(
+    shared: &Shared,
+    peer: Peer,
+    mut request: Request<Incoming>,
+) -> Response<Body> {
+    let host = request_host(&request);
+    if !crate::access::host_allowed(&host, &shared.network) {
+        return text_response(
+            421,
+            &format!("dev-proxy: {host:?} is not a name this proxy serves (use <service>.<repo>.<workspace>.{} or localhost)", shared.network.domain),
+        );
+    }
+    let query = match check_token(
+        shared.token.as_deref(),
+        &shared.network,
+        peer.local,
+        &mut request,
+        &host,
+    ) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
+    if request.uri().path().starts_with(CONTROL_PREFIX) {
+        return handle_control(shared, peer, &request, &host);
+    }
+    if !shared.router.has_projects() {
+        return text_response(503, "dev proxy not configured");
+    }
+    let client = peer.address;
+    let page = wants_page(request.headers());
+    let started = Instant::now();
+    let path = request.uri().path().to_string();
     let method = request.method().to_string();
     let request_headers = header_list(request.headers());
     let navigation = request
         .headers()
         .get("sec-fetch-mode")
         .is_some_and(|mode| mode.as_bytes() == b"navigate");
-    let page = wants_page(request.headers());
     let forwarding = Forwarding::of(request.headers(), &host, client, &shared.network);
     let workspace_label = crate::routing::host_labels(&host, shared.router.domain())
         .and_then(|labels| labels.last().cloned())
@@ -723,10 +840,25 @@ async fn listening(port: u16) -> Option<SocketAddr> {
     None
 }
 
-async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+async fn handle_webhook(
+    shared: &Shared,
+    peer: Peer,
+    mut request: Request<Incoming>,
+) -> Response<Body> {
+    let host = request_host(&request);
+    if crate::access::cross_site(request.headers(), &host) {
+        return text_response(
+            403,
+            "relay: webhooks come from servers, not from another web page",
+        );
+    }
     if request.uri().path().trim_end_matches('/') == GITHUB_PATH {
         return handle_github(shared, request).await;
     }
+    let query = match relay_token(shared.token.as_deref(), peer.local, &mut request) {
+        Ok(query) => query,
+        Err(response) => return *response,
+    };
     if !shared.router.has_projects() {
         return text_response(503, "relay not configured");
     }
@@ -747,7 +879,6 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
     else {
         return no_webhook_route(&path);
     };
-    let query = request.uri().query().map(str::to_string);
     let method = request.method().clone();
     let (parts, body) = request.into_parts();
     let body = match Limited::new(body, WEBHOOK_BODY_CAP).collect().await {
@@ -848,12 +979,44 @@ async fn handle_webhook(shared: &Shared, request: Request<Incoming>) -> Response
     response
 }
 
+/// A provider cannot sign in, so from another machine the relay takes the token in the URL it is given (or the
+/// header); `/_pom/github` checks GitHub's own signature instead.
+fn relay_token<B>(
+    token: Option<&str>,
+    local: bool,
+    request: &mut Request<B>,
+) -> Result<Option<String>, Box<Response<Body>>> {
+    let query = request.uri().query().map(str::to_string);
+    let Some(token) = token else {
+        return Ok(query);
+    };
+    let presented = request
+        .headers()
+        .get(crate::access::TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string());
+    request.headers_mut().remove(crate::access::TOKEN_HEADER);
+    let (rest, from_query) = crate::access::split_query(query.as_deref());
+    let shown = presented
+        .or(from_query)
+        .is_some_and(|candidate| crate::access::token_matches(&candidate, token));
+    if local || shown {
+        return Ok(rest);
+    }
+    Err(Box::new(text_response(
+        401,
+        "relay: from another machine, add ?pom_token=<token> to the webhook URL (`pom proxy token` shows it) or send the X-Pom-Token header",
+    )))
+}
+
 fn no_webhook_route(path: &str) -> Response<Body> {
     text_response(
         404,
         &format!("no webhook route for {path} (use /<repo>/<service>)"),
     )
 }
+
+const CONTROL_PREFIX: &str = "/_pom/";
 
 fn is_fault_reload(request: &Request<Incoming>, client: SocketAddr) -> bool {
     request.method() == hyper::Method::POST
@@ -938,4 +1101,149 @@ async fn handle_github(shared: &Shared, request: Request<Incoming>) -> Response<
         capture_of(reply.body.as_bytes()),
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOKEN: &str = "0123456789abcdef0123";
+
+    fn network() -> pom_env::DevNetwork {
+        pom_env::DevNetwork::new(
+            pom_env::DevPorts::default(),
+            &pom_env::ProxySettings {
+                bind: "100.64.0.10".into(),
+                domain: "dev.example.net".into(),
+                public_scheme: "https".into(),
+                ..pom_env::ProxySettings::default()
+            },
+        )
+    }
+
+    fn get(uri: &str, headers: &[(&'static str, &'static str)]) -> Request<()> {
+        let mut request = Request::builder().uri(uri);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        request.body(()).unwrap_or_default()
+    }
+
+    fn header(response: &Response<Body>, name: hyper::header::HeaderName) -> String {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    const HOST: &str = "web.web.main.dev.example.net";
+
+    #[test]
+    fn another_machine_signs_in_once_by_link_then_by_cookie() {
+        let network = network();
+        let check =
+            |request: &mut Request<()>| check_token(Some(TOKEN), &network, false, request, HOST);
+
+        let mut bare = get("/orders?page=2", &[]);
+        let refused = check(&mut bare).err().map(|response| *response);
+        assert_eq!(refused.as_ref().map(|r| r.status().as_u16()), Some(401));
+
+        let mut wrong = get("/orders", &[("x-pom-token", "nope")]);
+        assert!(check(&mut wrong).is_err());
+
+        let mut link = get(&format!("/orders?page=2&pom_token={TOKEN}"), &[]);
+        let Err(redirect) = check(&mut link) else {
+            panic!("a link with the token signs in");
+        };
+        assert_eq!(redirect.status().as_u16(), 303);
+        assert_eq!(header(&redirect, hyper::header::LOCATION), "/orders?page=2");
+        let cookie = header(&redirect, SET_COOKIE);
+        assert!(
+            cookie.starts_with(&format!("pom_token={TOKEN}; Path=/; HttpOnly")),
+            "{cookie}"
+        );
+        assert!(cookie.contains("Domain=dev.example.net") && cookie.ends_with("Secure"));
+
+        let cookie_header = format!("sid=1; pom_token={TOKEN}");
+        let mut with_cookie = get("/orders?page=2", &[]);
+        with_cookie.headers_mut().insert(
+            hyper::header::COOKIE,
+            HeaderValue::from_str(&cookie_header).unwrap_or(HeaderValue::from_static("")),
+        );
+        assert_eq!(check(&mut with_cookie).ok(), Some(Some("page=2".into())));
+        assert_eq!(header_of(&with_cookie, "cookie"), "sid=1");
+
+        let mut script = get("/orders", &[]);
+        script
+            .headers_mut()
+            .insert(crate::access::TOKEN_HEADER, HeaderValue::from_static(TOKEN));
+        assert_eq!(check(&mut script).ok(), Some(None));
+        assert!(script.headers().get(crate::access::TOKEN_HEADER).is_none());
+
+        let mut post_link = get(&format!("/orders?pom_token={TOKEN}"), &[]);
+        *post_link.method_mut() = hyper::Method::POST;
+        assert!(check(&mut post_link).is_err_and(|response| response.status() == 401));
+    }
+
+    fn header_of(request: &Request<()>, name: &str) -> String {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn this_machine_needs_no_token_but_never_passes_it_on() {
+        let network = network();
+        let mut request = get(
+            &format!("/x?a=1&pom_token={TOKEN}"),
+            &[("x-pom-token", "nope")],
+        );
+        assert_eq!(
+            check_token(Some(TOKEN), &network, true, &mut request, HOST).ok(),
+            Some(Some("a=1".into()))
+        );
+        assert!(request.headers().get(crate::access::TOKEN_HEADER).is_none());
+        let mut open = get("/x?a=1", &[]);
+        assert_eq!(
+            check_token(None, &network, false, &mut open, HOST).ok(),
+            Some(Some("a=1".into()))
+        );
+    }
+
+    #[test]
+    fn the_relay_takes_the_token_in_its_url_from_another_machine() {
+        let mut bare = get("/api/server/hook", &[]);
+        assert!(relay_token(Some(TOKEN), false, &mut bare).is_err_and(|r| r.status() == 401));
+        let mut in_url = get(&format!("/api/server/hook?pom_token={TOKEN}&x=1"), &[]);
+        assert_eq!(
+            relay_token(Some(TOKEN), false, &mut in_url).ok(),
+            Some(Some("x=1".into()))
+        );
+        let mut local = get("/api/server/hook?x=1", &[]);
+        assert_eq!(
+            relay_token(Some(TOKEN), true, &mut local).ok(),
+            Some(Some("x=1".into()))
+        );
+    }
+
+    #[test]
+    fn a_connection_to_one_of_our_own_addresses_is_this_machine() {
+        let address = |text: &str| text.parse::<SocketAddr>().ok();
+        let peer = |text: &str| address(text).unwrap_or(SocketAddr::from(([0, 0, 0, 0], 0)));
+        assert!(same_machine(peer("127.0.0.1:5000"), None));
+        assert!(same_machine(peer("[::ffff:127.0.0.1]:5000"), None));
+        assert!(same_machine(
+            peer("100.64.0.10:5000"),
+            address("100.64.0.10:8767")
+        ));
+        assert!(!same_machine(
+            peer("100.64.0.11:5000"),
+            address("100.64.0.10:8767")
+        ));
+    }
 }

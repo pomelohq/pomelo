@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 mod proxy;
 pub use proxy::{
-    parse_bind, parse_domain, parse_scheme, Cidr, ProxySettings, DEFAULT_PROXY_BIND, LOCAL_DOMAIN,
+    parse_bind, parse_domain, parse_env_name, parse_scheme, Cidr, ProxySettings,
+    DEFAULT_PROXY_BIND, DEFAULT_PROXY_TOKEN_ENV, LOCAL_DOMAIN,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PROXY_BIND: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 pub const LOCAL_DOMAIN: &str = "localhost";
+pub const DEFAULT_PROXY_TOKEN_ENV: &str = "POM_PROXY_TOKEN";
 
 /// How other machines reach the dev proxy: where it listens, the names services go by, and the scheme and
 /// port a reverse proxy in front of it serves them on. The defaults keep it to this machine.
@@ -16,6 +17,10 @@ pub struct ProxySettings {
     /// 0 means the proxy's own port.
     pub public_port: u16,
     pub trusted_proxies: Vec<String>,
+    /// The environment variable holding the token other machines must present; the token itself is never stored here.
+    pub token_env: String,
+    /// Serve a non-loopback bind with no token: anyone who reaches it opens every workspace.
+    pub allow_unauthenticated: bool,
 }
 
 impl Default for ProxySettings {
@@ -26,6 +31,8 @@ impl Default for ProxySettings {
             public_scheme: "http".into(),
             public_port: 0,
             trusted_proxies: Vec::new(),
+            token_env: DEFAULT_PROXY_TOKEN_ENV.into(),
+            allow_unauthenticated: false,
         }
     }
 }
@@ -42,6 +49,15 @@ impl ProxySettings {
 
     pub fn https(&self) -> bool {
         self.public_scheme.trim().eq_ignore_ascii_case("https")
+    }
+
+    pub fn token_env_name(&self) -> String {
+        let name = self.token_env.trim();
+        if name.is_empty() {
+            DEFAULT_PROXY_TOKEN_ENV.into()
+        } else {
+            name.into()
+        }
     }
 
     /// The trusted ranges that parse; a bad entry trusts nothing rather than everything.
@@ -85,6 +101,25 @@ pub fn parse_domain(text: &str) -> Result<String, String> {
         ));
     }
     Ok(domain)
+}
+
+/// A shell-style variable name, so `token_env` can only point at an environment variable.
+pub fn parse_env_name(text: &str) -> Result<String, String> {
+    let name = text.trim();
+    let valid = name
+        .bytes()
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if valid {
+        Ok(name.to_string())
+    } else {
+        Err(format!(
+            "{text} is not an environment variable name (like POM_PROXY_TOKEN)"
+        ))
+    }
 }
 
 pub fn parse_scheme(text: &str) -> Result<&'static str, String> {

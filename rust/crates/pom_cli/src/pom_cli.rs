@@ -70,8 +70,13 @@ services
                      one in the background when neither the app nor another proxy does)
   proxy config [-o json] | set <key> <value> | reset <key>
                      how other machines reach the proxy: bind, domain, public_scheme,
-                     public_port, trusted_proxies (settings.json `proxy`); a new domain,
-                     scheme or port rewrites every workspace's env files
+                     public_port, trusted_proxies, token_env, allow_unauthenticated
+                     (settings.json `proxy`); a new domain, scheme or port rewrites every
+                     workspace's env files
+  proxy token [new | rm]
+                     the token other machines present when proxy.bind is not loopback
+                     ($POM_PROXY_TOKEN, or one pom keeps encrypted); without one such a
+                     bind refuses to start
   run [--profile test|dev] <name|\"cmd\"> [repo]
                      a command from the config (or any shell command) in the repo's worktree,
                      with the workspace's env; the test profile layers the repo's .env.test on
@@ -287,6 +292,7 @@ enum Command {
     Queue(QueueArgs),
     ProxyFault(proxy::FaultCommand),
     ProxyConfig(proxy::ProxyConfigCommand),
+    ProxyToken(proxy::TokenCommand),
     Attach(String),
     Ports,
     Url(String),
@@ -374,6 +380,9 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
         Command::Proxy => proxy::serve(&StateDir::from_env(), out),
         Command::ProxyConfig(ref command) => {
             proxy::config_command(command, &StateDir::from_env(), out)
+        }
+        Command::ProxyToken(ref command) => {
+            proxy::token_command(command, &StateDir::from_env(), out)
         }
         Command::Config(ref command) if !command.needs_session() => {
             find_config(invocation.config.as_deref(), cwd)
@@ -619,6 +628,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "proxy" if rest.first() == Some(&"config") => {
             Command::ProxyConfig(proxy::parse_config(&rest[1..])?)
         }
+        "proxy" if rest.first() == Some(&"token") => {
+            Command::ProxyToken(proxy::parse_token(&rest[1..])?)
+        }
         "proxy" => Command::ProxyFault(proxy::parse_fault(rest)?),
         "ws" | "workspace" if matches!(rest.first(), Some(&("export" | "import"))) => {
             Command::Transfer(transfer::parse(rest, false)?)
@@ -761,9 +773,15 @@ pub(crate) fn doctor(
         "proxy",
         Box::new(|| {
             let network = pom_env::dev_network();
-            pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len())
-                .into_iter()
-                .collect()
+            let token = pom_proxy::proxy_token(&network, &StateDir::from_env());
+            pom_doctor::proxy_exposure(
+                network.bind,
+                network.trusted_proxies.len(),
+                token.is_some(),
+                pom_proxy::refusal(&network, token.as_ref()),
+            )
+            .into_iter()
+            .collect()
         }),
     ));
     checks.push((
@@ -978,6 +996,7 @@ impl Session {
             Command::Ports
             | Command::Proxy
             | Command::ProxyConfig(_)
+            | Command::ProxyToken(_)
             | Command::Onboard(_)
             | Command::Ps(_)
             | Command::Disk { .. }

@@ -45,6 +45,8 @@ pub struct DevNetwork {
     /// The port in public URLs: the proxy's own unless a reverse proxy in front serves another.
     pub public_port: u16,
     pub trusted_proxies: Vec<Cidr>,
+    pub token_env: String,
+    pub allow_unauthenticated: bool,
 }
 
 impl DevNetwork {
@@ -65,6 +67,8 @@ impl DevNetwork {
                 proxy.public_port
             },
             trusted_proxies: proxy.trusted(),
+            token_env: proxy.token_env_name(),
+            allow_unauthenticated: proxy.allow_unauthenticated,
         }
     }
 
@@ -76,7 +80,7 @@ impl DevNetwork {
         }
     }
 
-    /// Other machines can connect: the proxy has no authentication, so this deserves a warning.
+    /// Other machines can connect, so they must present the proxy token unless the user accepted the risk.
     pub fn exposed(&self) -> bool {
         !self.bind.is_loopback()
     }
