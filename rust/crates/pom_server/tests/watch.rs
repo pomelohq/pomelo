@@ -69,7 +69,15 @@ fn a_server_watch_pushes_each_topic_once_and_again_only_when_it_changes() {
     let subscription = subscribe(&remote, &remote.connection, "feat");
     let first = pushes(&subscription, Duration::from_millis(1500));
     let topics: Vec<&str> = first.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(topics, [topic::WORKSPACES, topic::STATUS, topic::AGENTS]);
+    assert_eq!(
+        topics,
+        [
+            topic::WORKSPACES,
+            topic::STATUS,
+            topic::SERVICES,
+            topic::AGENTS
+        ]
+    );
     let workspaces: WorkspacesUpdate =
         serde_json::from_value(first[0].1.clone()).expect("workspaces");
     assert_eq!(workspaces.list.map(|list| list.workspaces.len()), Some(2));
@@ -103,7 +111,7 @@ fn a_server_watch_pushes_each_topic_once_and_again_only_when_it_changes() {
     let topics: Vec<&str> = moved.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(
         topics,
-        [topic::STATUS, topic::AGENTS],
+        [topic::STATUS, topic::SERVICES, topic::AGENTS],
         "the new workspace in full"
     );
 }

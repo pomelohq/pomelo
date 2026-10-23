@@ -1,697 +1,749 @@
-//! The Services panel of a project on another machine: what its last look over ssh found (services, shared
-//! services, agents), start/stop/restart, a service's recent output and an agent's last turn. It reads a
-//! [`pom_remote::Watch`], which keeps asking while the window is seen.
+//! The Services panel's source for a project on another machine: the facts its pom server pushes (read
+//! through a [`pom_remote::Watch`]), actions sent there and waited for in the order they were asked, consoles
+//! attached to the service's holder there, and its output streamed in.
 
-use pom_remote::{Connection, ServiceAction, Snapshot, Watch};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
-use workspace::{MenuItem, PaneKind, PanelRequest, SidePanelView};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::view::{self, State};
+use pom_config::{Config, Service, SharedServiceDef};
+use pom_remote::server_api::{
+    service_status, JobRequest, ServiceFact, ServicesFacts, SharedFact, TaskArgs,
+};
+use pom_remote::{
+    LogEvent, ProjectSource, ServiceAction, ServiceOffers, ServiceVerb, SourceError, Watch,
+};
+use pom_services::ServiceTarget;
+use terminal::Waker;
+use workspace::PanelRequest;
 
-const ROW_H: f32 = 26.0;
-const HEADER_H: f32 = 34.0;
-const BUTTON: f32 = 20.0;
-const LOG_LINE_H: f32 = 15.0;
+use crate::access::{
+    Console, ConsoleRequest, LogLines, RepoCommand, ServiceControl, ServicesAccess,
+};
+use crate::model::{Action, Crash, Status, ALL_SHARED};
 
-const CLOSE_DETAIL: u64 = 1;
-const ROW_BASE: u64 = 1_000;
-const ROW_STRIDE: u64 = 8;
-const AGENT_BASE: u64 = 500_000;
+/// How often a shared service's output, or a service's on a server that does not stream it, is read again.
+const READ_AGAIN: Duration = Duration::from_millis(2500);
+/// How long a stream reader waits for output before it looks whether it should stop.
+const STREAM_WAIT: Duration = Duration::from_millis(250);
+/// The most lines a tab keeps of a streamed output.
+const KEPT_LINES: usize = 10_000;
+const SHARED_LINES: usize = 200;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Control {
-    Row,
-    Start,
-    Stop,
-    Restart,
-    Logs,
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-impl Control {
-    const ALL: [Control; 5] = [
-        Control::Row,
-        Control::Start,
-        Control::Stop,
-        Control::Restart,
-        Control::Logs,
-    ];
+fn verb(action: Action) -> ServiceVerb {
+    match action {
+        Action::Start => ServiceVerb::Start,
+        Action::Stop => ServiceVerb::Stop,
+        Action::Restart => ServiceVerb::Restart,
+        Action::Relocate => ServiceVerb::Relocate,
+    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Detail {
-    Logs(String),
-    Turn(String),
+fn epoch(seconds: u64) -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(seconds)
 }
 
-pub struct RemoteServicesPanel {
+type Work = Box<dyn FnOnce() + Send>;
+
+/// One workspace of a project on another machine.
+pub struct RemoteServices {
     watch: Watch,
-    base: u64,
-    hover: Option<u64>,
-    scroll: f32,
-    content_h: f32,
-    viewport_h: f32,
-    detail: Option<Detail>,
-    /// `repo/service` of each service row as last drawn, by row index, and whether it runs.
-    targets: Vec<(String, bool)>,
-    roles: Vec<String>,
-    requests: Vec<PanelRequest>,
-    next_item: u64,
+    source: Arc<dyn ProjectSource>,
+    branch: String,
+    /// The machine's name, for what is said about it.
+    host: String,
+    parsed: Mutex<Option<(String, Arc<Config>)>>,
+    /// Actions run one at a time in the order asked, so a mode picked lands before the restart that follows.
+    queue: Mutex<Option<Sender<Work>>>,
+    notes: Arc<Mutex<Vec<String>>>,
+    tasks: Arc<Mutex<Vec<(JobRequest, String)>>>,
+    ports: Option<Arc<pom_remote::RemotePorts>>,
 }
 
-/// Item ids of the terminals this panel opens, clear of the terminal panel's own.
-const ITEM_BASE: u64 = 1 << 40;
-
-impl RemoteServicesPanel {
-    pub fn new(watch: Watch) -> RemoteServicesPanel {
-        RemoteServicesPanel {
+impl RemoteServices {
+    pub fn new(watch: Watch, branch: &str, host: &str) -> RemoteServices {
+        RemoteServices {
+            source: watch.source(),
             watch,
-            base: workspace::side_panel_base(PaneKind::Services),
-            hover: None,
-            scroll: 0.0,
-            content_h: 0.0,
-            viewport_h: 0.0,
-            detail: None,
-            targets: Vec::new(),
-            roles: Vec::new(),
-            requests: Vec::new(),
-            next_item: ITEM_BASE,
+            branch: branch.to_string(),
+            host: host.to_string(),
+            parsed: Mutex::new(None),
+            queue: Mutex::new(None),
+            notes: Arc::default(),
+            tasks: Arc::default(),
+            ports: None,
         }
     }
 
-    /// The live terminal of a running service, or of an agent, when the host serves terminals.
-    fn open_terminal(&mut self, target: terminal::RemoteTarget, title: String) -> bool {
-        let Some(provider) = self.watch.terminals() else {
-            return false;
-        };
-        let snapshot = self.watch.snapshot();
-        let number = self.next_item;
-        self.next_item += 1;
-        let service = match target {
-            terminal::RemoteTarget::Agent(role) => {
-                let watch = self.watch.clone();
-                let id = crate::agent_item_id(&snapshot.branch, &role);
-                let open = Box::new(move || crate::remote_agent_item(&watch, &role, number));
-                self.requests.push(PanelRequest::RevealAgent { id, open });
-                return true;
-            }
-            terminal::RemoteTarget::Service(service) => service,
-            terminal::RemoteTarget::Shell { .. } | terminal::RemoteTarget::Holder(_) => {
-                return false
-            }
-        };
-        let root = snapshot
-            .workspaces
+    /// Opens services and shows shared addresses through what `ports` forwards here.
+    pub fn with_ports(mut self, ports: Arc<pom_remote::RemotePorts>) -> RemoteServices {
+        self.ports = Some(ports);
+        self
+    }
+
+    /// The port here a port of the machine is forwarded to, else the machine's own.
+    fn port_here(&self, remote: u16) -> u16 {
+        self.ports
             .as_ref()
-            .and_then(|list| {
-                list.workspaces
-                    .iter()
-                    .find(|workspace| workspace.branch == snapshot.branch)
-            })
-            .map(|workspace| workspace.path.clone())
-            .unwrap_or_default();
-        let id = format!("service:{}/{service}", snapshot.branch);
-        let item_id = id.clone();
-        let open = Box::new(move || {
-            let remote = terminal::RemoteOptions {
-                provider,
-                target: terminal::RemoteTarget::Service(service),
-                mode: terminal::RemoteMode::ReadWrite,
-            };
-            match terminal_ui::TerminalItem::remote_console(
-                number,
-                root,
-                item_id,
-                title,
-                remote,
-                false,
-                std::sync::Arc::new(ui::wake),
-            ) {
-                Ok(item) => Some(Box::new(item) as Box<dyn workspace::Item>),
-                Err(error) => {
-                    eprintln!("remote terminal: {error}");
-                    None
-                }
-            }
-        });
-        self.requests
-            .push(PanelRequest::RevealTerminal { id, open });
-        true
+            .and_then(|ports| ports.local_port(remote))
+            .unwrap_or(remote)
     }
 
-    /// Shows `service`'s recent output in place of the list.
-    pub fn show_logs(&mut self, service: &str) {
-        self.open_detail(Some(Detail::Logs(service.to_string())));
+    /// Repo commands asked to run, as jobs for the window to start, with their titles.
+    pub fn take_tasks(&self) -> Vec<(JobRequest, String)> {
+        std::mem::take(&mut *locked(&self.tasks))
     }
 
-    fn ours(&self, id: u64) -> bool {
-        id >= self.base && id < self.base + 10_000_000
+    fn facts(&self) -> Option<Arc<ServicesFacts>> {
+        self.watch
+            .services()
+            .0
+            .filter(|facts| facts.branch == self.branch)
     }
 
-    fn hot(&self, id: u64) -> bool {
-        self.hover == Some(id)
+    fn offers(&self) -> ServiceOffers {
+        self.source
+            .transport()
+            .map(|transport| transport.services)
+            .unwrap_or_default()
     }
 
-    fn row_id(&self, index: usize, control: Control) -> u64 {
-        let offset = Control::ALL
+    fn service(&self, target: &ServiceTarget) -> Option<ServiceFact> {
+        self.facts()?
+            .services
             .iter()
-            .position(|known| *known == control)
-            .unwrap_or_default() as u64;
-        self.base + ROW_BASE + index as u64 * ROW_STRIDE + offset
+            .find(|fact| fact.repo == target.repo && fact.service == target.service)
+            .cloned()
     }
 
-    fn decode_row(&self, id: u64) -> Option<(usize, Control)> {
-        let offset = id.checked_sub(self.base + ROW_BASE)?;
-        if offset >= AGENT_BASE - ROW_BASE {
-            return None;
+    fn by_holder<T>(&self, holder: &str, read: impl Fn(&ServiceFact) -> T) -> Option<T> {
+        self.facts()?
+            .services
+            .iter()
+            .find(|fact| fact.holder == holder)
+            .map(read)
+    }
+
+    fn shared(&self, name: &str) -> Option<SharedFact> {
+        self.facts()?
+            .shared
+            .iter()
+            .find(|fact| fact.name == name)
+            .cloned()
+    }
+
+    fn shared_by_holder<T>(&self, holder: &str, read: impl Fn(&SharedFact) -> T) -> Option<T> {
+        self.facts()?
+            .shared
+            .iter()
+            .find(|fact| fact.holder == holder)
+            .map(read)
+    }
+
+    /// Reads the facts again now, so what an action changed shows before the next push.
+    fn refresh(source: &dyn ProjectSource, watch: &Watch, branch: &str) {
+        match source.services_facts(branch) {
+            Ok(facts) => watch.put_services(facts),
+            Err(error) => eprintln!("services: reading the facts again: {error}"),
         }
-        let control = *Control::ALL.get((offset % ROW_STRIDE) as usize)?;
-        Some(((offset / ROW_STRIDE) as usize, control))
     }
 
-    fn button(&self, id: u64, kind: IconKind) -> Node {
-        let hot = self.hot(id);
-        div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .bg(if hot {
-                theme().element_hover
-            } else {
-                Rgba::TRANSPARENT
-            })
-            .child(icon(kind).size(12.0).color(if hot {
-                theme().icon
-            } else {
-                theme().icon_muted
-            }))
-            .into()
+    /// Runs `work` after every action asked before it.
+    fn enqueue(&self, work: Work) {
+        let mut queue = locked(&self.queue);
+        if queue.is_none() {
+            let (sender, receiver) = mpsc::channel::<Work>();
+            let spawned = std::thread::Builder::new()
+                .name("services-remote".into())
+                .spawn(move || {
+                    for work in receiver {
+                        work();
+                    }
+                });
+            match spawned {
+                Ok(_) => *queue = Some(sender),
+                Err(error) => {
+                    locked(&self.notes).push(format!("Could not run the action: {error}"));
+                    return;
+                }
+            }
+        }
+        let sent = queue.as_ref().map(|sender| sender.send(work));
+        if !matches!(sent, Some(Ok(()))) {
+            *queue = None;
+            locked(&self.notes).push("Could not run the action".to_string());
+        }
     }
 
-    fn header(&self, snapshot: &Snapshot) -> Node {
-        let colors = theme();
-        div()
-            .row()
-            .h_px(HEADER_H)
-            .pl(12.0)
-            .pr(6.0)
-            .gap(6.0)
-            .items_center()
-            .child(label("Services").size(13.0).medium().color(colors.text))
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(snapshot.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            )
-            .into()
-    }
-
-    fn service_state(
+    /// Runs `work` in turn and waits for what it says.
+    fn in_turn(
         &self,
-        snapshot: &Snapshot,
-        label_text: &str,
-        up: bool,
-        crashed: bool,
-    ) -> State {
-        if snapshot.busy.iter().any(|busy| busy == label_text) {
-            State::Busy("working")
-        } else if up {
-            State::Running
-        } else if crashed {
-            State::Crashed
-        } else {
-            State::Stopped
-        }
+        work: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) -> Result<(), String> {
+        let (done, result) = mpsc::channel();
+        self.enqueue(Box::new(move || {
+            if done.send(work()).is_err() {
+                eprintln!("services: an action finished after its caller left");
+            }
+        }));
+        result
+            .recv()
+            .unwrap_or_else(|_| Err("the action did not run".to_string()))
     }
 
-    fn rows(&mut self, snapshot: &Snapshot) -> Vec<Node> {
-        let colors = theme();
-        let mut nodes: Vec<Node> = Vec::new();
-        self.targets.clear();
-        self.roles.clear();
-        let Some(status) = &snapshot.status else {
-            let text = match (&snapshot.connection, &snapshot.problem) {
-                (_, Some(problem)) => problem.clone(),
-                (Connection::Disconnected { .. }, None) => "Nothing read yet.".to_string(),
-                _ => format!("Asking {}...", self.watch.location()),
-            };
-            nodes.push(
-                div()
-                    .row()
-                    .px(12.0)
-                    .py(10.0)
-                    .child(
-                        label(text)
-                            .size(12.0)
-                            .color(colors.text_placeholder)
-                            .truncate(),
-                    )
-                    .into(),
-            );
-            return nodes;
-        };
-        let mut repo = String::new();
-        for service in &status.services {
-            if service.repo != repo {
-                repo = service.repo.clone();
-                nodes.push(view::section(&repo, None));
+    /// Sends a choice in turn, without waiting: a failure is said as a note.
+    fn choose(
+        &self,
+        what: &'static str,
+        set: impl FnOnce(&dyn ProjectSource) -> Result<(), SourceError> + Send + 'static,
+    ) {
+        let (source, watch, branch, notes) = (
+            self.source.clone(),
+            self.watch.clone(),
+            self.branch.clone(),
+            self.notes.clone(),
+        );
+        self.enqueue(Box::new(move || {
+            match set(source.as_ref()) {
+                Ok(()) => Self::refresh(source.as_ref(), &watch, &branch),
+                Err(error) => locked(&notes).push(format!("Could not change the {what}: {error}")),
             }
-            let name = format!("{}/{}", service.repo, service.service);
-            let index = self.targets.len();
-            self.targets.push((name.clone(), service.up));
-            let state = self.service_state(snapshot, &name, service.up, service.crashed);
-            let hovered = Control::ALL
-                .iter()
-                .any(|control| self.hot(self.row_id(index, *control)));
-            let trailing: Node = match (&state, hovered) {
-                (State::Busy(text), _) => label(*text).size(11.0).color(colors.text_muted).into(),
-                (State::Running, true) => div()
-                    .row()
-                    .gap(2.0)
-                    .child(self.button(self.row_id(index, Control::Restart), IconKind::RotateCw))
-                    .child(self.button(self.row_id(index, Control::Logs), IconKind::Terminal))
-                    .child(self.button(self.row_id(index, Control::Stop), IconKind::Stop))
-                    .into(),
-                (_, true) => div()
-                    .row()
-                    .gap(2.0)
-                    .child(self.button(self.row_id(index, Control::Start), IconKind::Play))
-                    .child(self.button(self.row_id(index, Control::Logs), IconKind::Terminal))
-                    .into(),
-                (State::Crashed, false) => label("crashed").size(11.0).color(colors.error).into(),
-                (_, false) => match service.port {
-                    Some(port) => label(format!(":{port}"))
-                        .size(11.0)
-                        .mono()
-                        .color(colors.text_placeholder)
-                        .into(),
-                    None => div().into(),
-                },
-            };
-            let mut name_cell = div()
-                .row()
-                .flex(1.0)
-                .gap(6.0)
-                .items_center()
-                .child(label(service.service.clone()).color(colors.text).truncate());
-            if !service.mode.is_empty() {
-                name_cell = name_cell.child(view::tag(&service.mode));
-            }
-            if service.up && !service.ready {
-                name_cell =
-                    name_cell.child(label("starting").size(11.0).color(colors.text_placeholder));
-            }
-            let mut row = div()
-                .row()
-                .h_px(ROW_H)
-                .pl(12.0)
-                .pr(6.0)
-                .gap(6.0)
-                .items_center()
-                .on_click(self.row_id(index, Control::Row))
-                .child(view::status_icon(&state))
-                .child(name_cell)
-                .child(trailing);
-            if hovered {
-                row = row.bg(colors.ghost_element_hover);
-            }
-            nodes.push(row.into());
-        }
-        if !status.shared.is_empty() {
-            nodes.push(view::section("Shared", Some(status.shared.len())));
-            for shared in &status.shared {
-                let state = match (shared.up, shared.ready) {
-                    (true, true) => State::Running,
-                    (true, false) => State::Busy("starting"),
-                    _ => State::Stopped,
-                };
-                nodes.push(
-                    div()
-                        .row()
-                        .h_px(ROW_H)
-                        .pl(12.0)
-                        .pr(10.0)
-                        .gap(6.0)
-                        .items_center()
-                        .child(view::status_icon(&state))
-                        .child(
-                            div()
-                                .row()
-                                .flex(1.0)
-                                .child(label(shared.name.clone()).color(colors.text).truncate()),
-                        )
-                        .child(
-                            label(format!(":{}", shared.port))
-                                .size(11.0)
-                                .mono()
-                                .color(colors.text_placeholder),
-                        )
-                        .into(),
-                );
-            }
-        }
-        nodes.push(view::section("Agents", Some(snapshot.agents.len())));
-        if snapshot.agents.is_empty() {
-            nodes.push(
-                div()
-                    .row()
-                    .px(12.0)
-                    .h_px(ROW_H)
-                    .items_center()
-                    .child(
-                        label("No agent sessions in this workspace")
-                            .size(12.0)
-                            .color(colors.text_placeholder),
-                    )
-                    .into(),
-            );
-        }
-        for (index, agent) in snapshot.agents.iter().enumerate() {
-            self.roles.push(agent.role.clone());
-            let id = self.base + AGENT_BASE + index as u64;
-            let state_text = match &agent.reason {
-                Some(reason) => format!("{} ({reason})", agent.state.replace('_', " ")),
-                None => agent.state.replace('_', " "),
-            };
-            let tint = match agent.state.as_str() {
-                "thinking" | "tool_use" | "compacting" => colors.text_accent,
-                "awaiting_input" => colors.warning,
-                "died" => colors.error,
-                _ => colors.border,
-            };
-            let mut row = div()
-                .row()
-                .h_px(ROW_H)
-                .pl(12.0)
-                .pr(10.0)
-                .gap(6.0)
-                .items_center()
-                .on_click(id)
-                .child(
-                    div()
-                        .row()
-                        .w_px(14.0)
-                        .justify_center()
-                        .child(view::dot(tint, 8.0)),
-                )
-                .child(
-                    div()
-                        .row()
-                        .flex(1.0)
-                        .gap(6.0)
-                        .items_center()
-                        .child(label(agent.role.clone()).color(colors.text).truncate())
-                        .child(
-                            label(state_text)
-                                .size(11.0)
-                                .color(colors.text_muted)
-                                .truncate(),
-                        ),
-                )
-                .child(
-                    label(format!("turn {}", agent.turn))
-                        .size(11.0)
-                        .color(colors.text_placeholder),
-                );
-            if self.hot(id) {
-                row = row.bg(colors.ghost_element_hover);
-            }
-            nodes.push(row.into());
-        }
-        nodes
+            ui::wake();
+        }));
     }
 
-    fn detail_view(&self, detail: &Detail, snapshot: &Snapshot, width: f32, height: f32) -> Node {
-        let colors = theme();
-        let (title, name) = match detail {
-            Detail::Logs(service) => ("Output", service.clone()),
-            Detail::Turn(role) => ("Last turn", role.clone()),
-        };
-        let bar = div()
-            .row()
-            .h_px(ROW_H)
-            .pl(12.0)
-            .pr(6.0)
-            .gap(6.0)
-            .items_center()
-            .child(label(title).size(12.0).medium().color(colors.text))
-            .child(
-                div().row().flex(1.0).child(
-                    label(name)
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            )
-            .child(self.button(self.base + CLOSE_DETAIL, IconKind::Close));
-        let body_h = (height - ROW_H).max(0.0);
-        let body: Node = match detail {
-            Detail::Logs(service) => {
-                let text = match &snapshot.logs {
-                    Some((shown, Ok(text))) if shown == service => text.clone(),
-                    Some((shown, Err(error))) if shown == service => error.clone(),
-                    _ => "Reading...".to_string(),
-                };
-                let fit = (body_h / LOG_LINE_H).floor().max(1.0) as usize;
-                let lines: Vec<&str> = text.lines().collect();
-                let shown = &lines[lines.len().saturating_sub(fit)..];
-                let mut column = div().col().px(12.0).h_px(body_h);
-                for line in shown {
-                    column = column.child(
-                        div().row().h_px(LOG_LINE_H).child(
-                            label(strip_escapes(line))
-                                .size(11.0)
-                                .mono()
-                                .color(colors.text_muted)
-                                .truncate(),
-                        ),
-                    );
-                }
-                column.into()
-            }
-            Detail::Turn(role) => {
-                let wrap = (width - 24.0).max(40.0);
-                let mut column = div().col().px(12.0).gap(8.0).h_px(body_h);
-                match &snapshot.turn {
-                    Some((shown, Ok(Some(turn)))) if shown == role => {
-                        column = column
-                            .child(
-                                label(format!("> {}", turn.prompt))
-                                    .size(12.0)
-                                    .color(colors.text)
-                                    .wrap(wrap),
-                            )
-                            .child(
-                                label(if turn.text.is_empty() {
-                                    format!("({})", turn.stop_reason)
-                                } else {
-                                    turn.text.clone()
-                                })
-                                .size(12.0)
-                                .color(colors.text_muted)
-                                .wrap(wrap),
-                            );
-                    }
-                    Some((shown, Ok(None))) if shown == role => {
-                        column = column.child(
-                            label("No turn yet")
-                                .size(12.0)
-                                .color(colors.text_placeholder),
-                        );
-                    }
-                    Some((shown, Err(error))) if shown == role => {
-                        column = column.child(
-                            label(error.clone())
-                                .size(12.0)
-                                .color(colors.error)
-                                .wrap(wrap),
-                        );
-                    }
-                    _ => {
-                        column = column.child(
-                            label("Reading...")
-                                .size(12.0)
-                                .color(colors.text_placeholder),
-                        );
-                    }
-                }
-                column.into()
-            }
-        };
-        div().col().child(bar).child(body).into()
-    }
-
-    fn open_detail(&mut self, detail: Option<Detail>) {
-        match &detail {
-            Some(Detail::Logs(service)) => {
-                self.watch.show_turn(None);
-                self.watch.show_logs(Some(service.clone()));
-            }
-            Some(Detail::Turn(role)) => {
-                self.watch.show_logs(None);
-                self.watch.show_turn(Some(role.clone()));
-            }
-            None => {
-                self.watch.show_logs(None);
-                self.watch.show_turn(None);
-            }
-        }
-        self.detail = detail;
+    fn missing_newer(&self, what: &str) -> String {
+        format!("{what} needs a newer pom on {}", self.host)
     }
 }
 
-/// Terminal colors and cursor moves a service printed, which a plain label would show as junk.
-fn strip_escapes(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(char) = chars.next() {
-        if char == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for next in chars.by_ref() {
-                    if next.is_ascii_alphabetic() || next == '~' {
-                        break;
-                    }
-                }
+impl ServicesAccess for RemoteServices {
+    fn config(&self) -> Option<Arc<Config>> {
+        let facts = self.facts()?;
+        let mut parsed = locked(&self.parsed);
+        if let Some((text, config)) = parsed.as_ref() {
+            if *text == facts.config {
+                return Some(config.clone());
             }
-            continue;
         }
-        if char == '\r' || (char.is_control() && char != '\t') {
-            continue;
+        let path = facts.root.join(pom_config::CONFIG_FILE_NAME);
+        match Config::from_text(&facts.config, &path) {
+            Ok(config) => {
+                let config = Arc::new(config);
+                *parsed = Some((facts.config.clone(), config.clone()));
+                Some(config)
+            }
+            Err(error) => {
+                eprintln!("services: {error}");
+                parsed.as_ref().map(|(_, config)| config.clone())
+            }
         }
-        out.push(char);
-    }
-    out
-}
-
-impl SidePanelView for RemoteServicesPanel {
-    fn kind(&self) -> PaneKind {
-        PaneKind::Services
     }
 
-    fn render(&mut self, width: f32, height: f32) -> Node {
-        let snapshot = self.watch.snapshot();
-        let colors = theme();
-        let mut panel = div()
-            .col()
-            .w_px(width)
-            .h_px(height)
-            .child(self.header(&snapshot));
-        let mut used = HEADER_H;
-        if let Some(message) = &snapshot.message {
-            panel = panel.child(
-                div().row().px(12.0).h_px(ROW_H).items_center().child(
-                    label(message.lines().last().unwrap_or_default().to_string())
-                        .size(11.5)
-                        .color(colors.text_muted)
-                        .truncate(),
-                ),
-            );
-            used += ROW_H;
+    fn holder_name(&self, target: &ServiceTarget) -> String {
+        if let Some(fact) = self.service(target) {
+            return fact.holder;
         }
-        let body_h = (height - used).max(0.0);
-        if let Some(detail) = self.detail.clone() {
-            self.viewport_h = 0.0;
-            return panel
-                .child(self.detail_view(&detail, &snapshot, width, body_h))
-                .into();
-        }
-        let rows = self.rows(&snapshot);
-        let row_heights: Vec<f32> = rows.iter().map(|node| ui::measure(node).1).collect();
-        self.content_h = row_heights.iter().sum::<f32>() + 8.0;
-        self.viewport_h = body_h;
-        self.scroll = self.scroll.clamp(0.0, (self.content_h - body_h).max(0.0));
-        let mut list = div().col().h_px(body_h);
-        let (mut top, mut shown_h) = (0.0, 0.0);
-        for (node, row_h) in rows.into_iter().zip(row_heights) {
-            let bottom = top + row_h;
-            top = bottom;
-            if bottom <= self.scroll {
-                continue;
-            }
-            if shown_h + row_h > body_h {
-                break;
-            }
-            shown_h += row_h;
-            list = list.child(node);
-        }
-        panel.child(list).into()
+        let session = self
+            .config()
+            .map(|config| config.session.clone())
+            .unwrap_or_default();
+        pom_services::service_holder_name(&session, target)
     }
 
-    fn click(&mut self, id: u64) {
-        let Some(offset) = id.checked_sub(self.base) else {
-            return;
+    fn status_of(&self, target: &ServiceTarget) -> Status {
+        match self.service(target).map(|fact| fact.status) {
+            Some(status) if status == service_status::RUNNING => Status::Running,
+            Some(status) if status == service_status::CRASHED => Status::Crashed,
+            _ => Status::Stopped,
+        }
+    }
+
+    fn crash(&self, holder: &str) -> Option<Crash> {
+        self.by_holder(holder, |fact| fact.crash.clone())
+            .flatten()
+            .map(|crash| Crash {
+                line: crash.line,
+                exit: crash.exit,
+                at: crash.at.map(epoch),
+            })
+    }
+
+    fn crash_log(&self, _holder: &str) -> Option<PathBuf> {
+        None
+    }
+
+    fn shared_running(&self) -> HashSet<String> {
+        self.facts()
+            .map(|facts| {
+                facts
+                    .shared
+                    .iter()
+                    .filter(|fact| fact.running)
+                    .map(|fact| fact.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn others_running(&self, _own: &HashSet<String>) -> usize {
+        self.facts().map_or(0, |facts| facts.others_running)
+    }
+
+    fn port(&self, _config: &Config, target: &ServiceTarget) -> Option<u16> {
+        self.service(target)?.port
+    }
+
+    fn url(&self, _config: &Config, target: &ServiceTarget) -> Option<String> {
+        self.service(target)?.url
+    }
+
+    fn browser_url(&self, config: &Config, target: &ServiceTarget) -> Result<String, String> {
+        let url = self
+            .url(config, target)
+            .ok_or_else(|| "the service has no address".to_string())?;
+        let alias = config
+            .repos
+            .get(&target.repo)
+            .map(|dir| dir.alias.clone())
+            .filter(|alias| !alias.is_empty())
+            .unwrap_or_else(|| target.repo.clone());
+        let forwarded = self
+            .ports
+            .as_ref()
+            .and_then(|ports| ports.url_for(&alias, &target.service, &self.branch));
+        if let Some(forwarded) = forwarded {
+            return Ok(forwarded);
+        }
+        if self.facts().is_some_and(|facts| facts.public_urls) {
+            return Ok(url);
+        }
+        Err(format!(
+            "{url} answers on {} only; forward its dev proxy in Ports to open it here",
+            self.host
+        ))
+    }
+
+    fn mode(&self, target: &ServiceTarget, service: &Service) -> String {
+        self.service(target)
+            .map(|fact| fact.mode)
+            .filter(|mode| !mode.is_empty())
+            .unwrap_or_else(|| service.mode.clone())
+    }
+
+    fn set_mode(&self, _config: &Config, target: &ServiceTarget, mode: &str) -> Result<(), String> {
+        if let Some(reason) = self.missing(ServiceControl::Mode) {
+            return Err(reason);
+        }
+        let (branch, repo, service, mode) = (
+            self.branch.clone(),
+            target.repo.clone(),
+            target.service.clone(),
+            mode.to_string(),
+        );
+        self.choose("mode", move |source| {
+            source.set_service_mode(&branch, &repo, &service, &mode)
+        });
+        Ok(())
+    }
+
+    fn env_profile(&self, _config: &Config, target: &ServiceTarget) -> String {
+        self.service(target)
+            .map(|fact| fact.env_profile)
+            .unwrap_or_default()
+    }
+
+    fn set_env_profile(
+        &self,
+        _config: &Config,
+        target: &ServiceTarget,
+        profile: &str,
+    ) -> Result<(), String> {
+        if let Some(reason) = self.missing(ServiceControl::EnvProfile) {
+            return Err(reason);
+        }
+        let (branch, repo, service, profile) = (
+            self.branch.clone(),
+            target.repo.clone(),
+            target.service.clone(),
+            profile.to_string(),
+        );
+        self.choose("env profile", move |source| {
+            source.set_env_profile(&branch, &repo, &service, &profile)
+        });
+        Ok(())
+    }
+
+    fn uptime(&self, holder: &str) -> Option<String> {
+        let started = self
+            .by_holder(holder, |fact| fact.started_at)
+            .or_else(|| self.shared_by_holder(holder, |fact| fact.started_at))
+            .flatten()?;
+        crate::view::uptime_since(epoch(started))
+    }
+
+    fn pid(&self, holder: &str) -> Option<i32> {
+        self.by_holder(holder, |fact| fact.pid)
+            .or_else(|| self.shared_by_holder(holder, |fact| fact.pid))
+            .flatten()
+    }
+
+    fn shared_host_port(&self, name: &str) -> u16 {
+        self.shared(name)
+            .map_or(0, |fact| self.port_here(fact.host_port))
+    }
+
+    fn shared_holder(&self, name: &str) -> String {
+        self.shared(name)
+            .map(|fact| fact.holder)
+            .unwrap_or_default()
+    }
+
+    fn shared_connection(&self, _config: &Config, _branch: &str, name: &str) -> Option<String> {
+        let fact = self.shared(name)?;
+        let connection = fact.connection?;
+        let here = self
+            .ports
+            .as_ref()
+            .and_then(|ports| ports.shared_address(name));
+        Some(match here {
+            Some(address) => here_address(&connection, fact.host_port, &address),
+            None => connection,
+        })
+    }
+
+    fn shared_folder(&self, config: &Config, def: &SharedServiceDef) -> String {
+        config
+            .shared_services
+            .iter()
+            .find(|(_, known)| *known == def)
+            .and_then(|(name, _)| self.shared(name))
+            .map(|fact| fact.folder)
+            .filter(|folder| !folder.is_empty())
+            .unwrap_or_else(|| "project folder".to_string())
+    }
+
+    fn run(&self, _config: &Config, action: Action, target: &ServiceTarget) -> Result<(), String> {
+        let offers = self.offers();
+        let (source, watch, branch) =
+            (self.source.clone(), self.watch.clone(), self.branch.clone());
+        let (repo, service) = (target.repo.clone(), target.service.clone());
+        if offers.run {
+            return self.in_turn(move || {
+                let result = source
+                    .run_service(&branch, &repo, &service, verb(action))
+                    .map_err(|error| error.to_string());
+                Self::refresh(source.as_ref(), &watch, &branch);
+                result
+            });
+        }
+        let older = match action {
+            Action::Start => ServiceAction::Start,
+            Action::Stop => ServiceAction::Stop,
+            Action::Restart => ServiceAction::Restart,
+            Action::Relocate => return Err(self.missing_newer("Moving a service to a new port")),
         };
-        if offset == CLOSE_DETAIL {
-            return self.open_detail(None);
+        if target.is_workspace_level() {
+            return Err(self.missing_newer("A workspace service"));
         }
-        if let Some(index) = offset.checked_sub(AGENT_BASE) {
-            if let Some(role) = self.roles.get(index as usize).cloned() {
-                let target = terminal::RemoteTarget::Agent(role.clone());
-                if !self.open_terminal(target, role.clone()) {
-                    self.open_detail(Some(Detail::Turn(role)));
-                }
-            }
-            return;
-        }
-        let Some((index, control)) = self.decode_row(id) else {
-            return;
-        };
-        let Some((target, running)) = self.targets.get(index).cloned() else {
-            return;
-        };
-        match control {
-            Control::Logs if running => {
-                let service = terminal::RemoteTarget::Service(target.clone());
-                if !self.open_terminal(service, target.clone()) {
-                    self.open_detail(Some(Detail::Logs(target)));
-                }
-            }
-            Control::Row | Control::Logs => self.open_detail(Some(Detail::Logs(target))),
-            Control::Start => self.watch.act(ServiceAction::Start, &target),
-            Control::Stop => self.watch.act(ServiceAction::Stop, &target),
-            Control::Restart => self.watch.act(ServiceAction::Restart, &target),
-        }
+        self.in_turn(move || {
+            source
+                .act(&branch, older, &format!("{repo}/{service}"))
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
     }
 
-    fn set_hover(&mut self, id: Option<u64>) -> bool {
-        let id = id.filter(|id| self.ours(*id));
-        if self.hover == id {
-            return false;
+    fn run_shared(&self, _config: &Config, name: &str, action: Action) -> Result<(), String> {
+        if let Some(reason) = self.missing(ServiceControl::Shared) {
+            return Err(reason);
         }
-        self.hover = id;
-        true
+        let (source, watch, branch) =
+            (self.source.clone(), self.watch.clone(), self.branch.clone());
+        let name = if name == ALL_SHARED { "*" } else { name }.to_string();
+        self.in_turn(move || {
+            let result = source
+                .run_shared(&name, verb(action))
+                .map_err(|error| error.to_string());
+            Self::refresh(source.as_ref(), &watch, &branch);
+            result
+        })
     }
 
-    fn scroll(&mut self, dy: f32) -> bool {
-        let max_scroll = (self.content_h - self.viewport_h).max(0.0);
-        let next = (self.scroll - dy).clamp(0.0, max_scroll);
-        if (next - self.scroll).abs() < 0.01 {
-            return false;
+    fn checked_out(&self, _root: &Path, repo: &str) -> bool {
+        self.facts()
+            .is_some_and(|facts| facts.repos.iter().any(|known| known == repo))
+    }
+
+    fn run_command(
+        &self,
+        _config: &Config,
+        branch: &str,
+        _root: &Path,
+        command: &RepoCommand,
+    ) -> Vec<PanelRequest> {
+        if let Some(reason) = self.missing(ServiceControl::Tasks) {
+            return vec![PanelRequest::Toast(reason)];
         }
-        self.scroll = next;
-        true
-    }
-
-    fn open_menu(&mut self, _id: u64) -> bool {
-        false
-    }
-
-    fn menu_items(&self) -> Vec<MenuItem> {
+        let request = JobRequest::Task(TaskArgs {
+            branch: branch.to_string(),
+            repo: command.repo.clone(),
+            label: command.label.clone(),
+        });
+        locked(&self.tasks).push((request, format!("{}: {}", command.repo, command.label)));
+        ui::wake();
         Vec::new()
     }
 
-    fn menu_action(&mut self, _item: u64) {}
+    fn console(&self, request: ConsoleRequest<'_>) -> Console {
+        let waker = request.waker.clone();
+        if request.target.repo.is_empty() {
+            let (source, name) = (self.source.clone(), request.target.service.clone());
+            let lines = LineStream::reread(waker, move || {
+                source
+                    .shared_logs(&name, SHARED_LINES)
+                    .map_err(|error| error.to_string())
+            });
+            return Console {
+                lines: Some(LogLines::Stream(lines)),
+                shell: None,
+            };
+        }
+        let service = format!("{}/{}", request.target.repo, request.target.service);
+        let shell = request
+            .live
+            .then(|| self.watch.terminals())
+            .flatten()
+            .and_then(|provider| {
+                let remote = terminal::RemoteOptions {
+                    provider,
+                    target: terminal::RemoteTarget::Service(service.clone()),
+                    mode: terminal::RemoteMode::ReadWrite,
+                };
+                terminal_ui::TerminalItem::remote_console(
+                    request.console_id,
+                    request.root.to_path_buf(),
+                    request.item_id.to_string(),
+                    request.target.service.clone(),
+                    remote,
+                    false,
+                    waker.clone(),
+                )
+                .map_err(|error| eprintln!("services: console: {error}"))
+                .ok()
+            });
+        let lines = match self.source.follow_logs(&self.branch, &service) {
+            Ok(Some(feed)) => LineStream::follow(waker, feed),
+            _ => {
+                let (source, branch) = (self.source.clone(), self.branch.clone());
+                LineStream::reread(waker, move || {
+                    source
+                        .logs(&branch, &service)
+                        .map_err(|error| error.to_string())
+                })
+            }
+        };
+        Console {
+            lines: Some(LogLines::Stream(lines)),
+            shell,
+        }
+    }
 
-    fn take_requests(&mut self) -> Vec<PanelRequest> {
-        std::mem::take(&mut self.requests)
+    fn missing(&self, control: ServiceControl) -> Option<String> {
+        let offers = self.offers();
+        let (offered, what) = match control {
+            ServiceControl::Relocate => (offers.run, "Moving a service to a new port"),
+            ServiceControl::Shared => (offers.shared, "Starting and stopping shared services"),
+            ServiceControl::Mode => (offers.mode, "Changing a service's mode"),
+            ServiceControl::EnvProfile => (offers.env_profile, "Changing a service's env profile"),
+            ServiceControl::Tasks => (offers.tasks, "Running a repo's commands"),
+            ServiceControl::SideAgents => {
+                return Some(format!(
+                    "Agents run on {}: start one in the agent dock",
+                    self.host
+                ))
+            }
+        };
+        (!offered).then(|| self.missing_newer(what))
+    }
+
+    fn unavailable(&self) -> Option<String> {
+        if self.facts().is_some() {
+            return None;
+        }
+        if self.source.transport().is_some_and(|transport| {
+            transport.via == pom_remote::Via::Ssh || !transport.services.facts
+        }) {
+            return Some(format!(
+                "Services need a newer pom on {}; update it there",
+                self.host
+            ));
+        }
+        let (_, problem) = self.watch.services();
+        Some(problem.unwrap_or_else(|| format!("Asking {}...", self.host)))
+    }
+
+    fn take_notes(&self) -> Vec<String> {
+        std::mem::take(&mut *locked(&self.notes))
+    }
+}
+
+/// `connection` with the machine's `127.0.0.1:<port>` (or `localhost:<port>`) as `address` here.
+fn here_address(connection: &str, port: u16, address: &str) -> String {
+    [format!("127.0.0.1:{port}"), format!("localhost:{port}")]
+        .iter()
+        .fold(connection.to_string(), |text, there| {
+            text.replace(there, address)
+        })
+}
+
+#[derive(Default)]
+struct StreamState {
+    lines: Vec<String>,
+    /// The bytes of the line still being printed.
+    partial: Vec<u8>,
+    changed: bool,
+}
+
+impl StreamState {
+    fn push(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            if *byte == b'\n' {
+                let line = std::mem::take(&mut self.partial);
+                self.lines.push(clean(&line));
+            } else {
+                self.partial.push(*byte);
+            }
+        }
+        let extra = self.lines.len().saturating_sub(KEPT_LINES);
+        self.lines.drain(..extra);
+        self.changed = true;
+    }
+
+    fn replace(&mut self, text: &str) {
+        let lines: Vec<String> = text.lines().map(|line| clean(line.as_bytes())).collect();
+        if lines != self.lines || !self.partial.is_empty() {
+            self.lines = lines;
+            self.partial.clear();
+            self.changed = true;
+        }
+    }
+}
+
+fn clean(line: &[u8]) -> String {
+    pom_services::strip_terminal_codes(&String::from_utf8_lossy(line))
+}
+
+/// Output that arrives from elsewhere, as lines: streamed as it prints, or read again every few seconds.
+pub struct LineStream {
+    state: Arc<Mutex<StreamState>>,
+    stop: Arc<AtomicBool>,
+}
+
+impl LineStream {
+    fn spawn(
+        waker: Waker,
+        read: impl FnOnce(&Mutex<StreamState>, &AtomicBool) + Send + 'static,
+    ) -> LineStream {
+        let state = Arc::new(Mutex::new(StreamState::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_state, thread_stop) = (state.clone(), stop.clone());
+        let spawned = std::thread::Builder::new()
+            .name("services-output".into())
+            .spawn(move || {
+                read(&thread_state, &thread_stop);
+                waker();
+            });
+        if let Err(error) = spawned {
+            locked(&state).replace(&format!("Could not read the output: {error}"));
+        }
+        LineStream { state, stop }
+    }
+
+    /// The output `feed` streams, from what the service left or printed so far.
+    pub fn follow(waker: Waker, feed: Box<dyn pom_remote::LogFeed>) -> LineStream {
+        let wake = waker.clone();
+        Self::spawn(waker, move |state, stop| {
+            while !stop.load(Ordering::Acquire) {
+                match feed.next(STREAM_WAIT) {
+                    LogEvent::Data(bytes) => {
+                        locked(state).push(&bytes);
+                        wake();
+                    }
+                    LogEvent::StartedOver => {
+                        locked(state).replace("");
+                        wake();
+                    }
+                    LogEvent::Skipped | LogEvent::Idle => {}
+                    LogEvent::Ended(reason) => {
+                        locked(state).push(format!("\n[{reason}]\n").as_bytes());
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
+    /// What `read` answers, read again every few seconds.
+    pub fn reread(
+        waker: Waker,
+        read: impl Fn() -> Result<String, String> + Send + 'static,
+    ) -> LineStream {
+        let wake = waker.clone();
+        Self::spawn(waker, move |state, stop| {
+            while !stop.load(Ordering::Acquire) {
+                let text = read().unwrap_or_else(|error| error);
+                let changed = {
+                    let mut state = locked(state);
+                    state.replace(&text);
+                    state.changed
+                };
+                if changed {
+                    wake();
+                }
+                let mut waited = Duration::ZERO;
+                while waited < READ_AGAIN && !stop.load(Ordering::Acquire) {
+                    std::thread::sleep(STREAM_WAIT);
+                    waited += STREAM_WAIT;
+                }
+            }
+        })
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let state = locked(&self.state);
+        let mut lines = state.lines.clone();
+        if !state.partial.is_empty() {
+            lines.push(clean(&state.partial));
+        }
+        lines
+    }
+
+    pub fn clear(&mut self) {
+        let mut state = locked(&self.state);
+        state.lines.clear();
+        state.partial.clear();
+        state.changed = true;
+    }
+
+    /// Whether anything arrived since the last call.
+    pub fn take_changed(&mut self) -> bool {
+        std::mem::take(&mut locked(&self.state).changed)
+    }
+}
+
+impl Drop for LineStream {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
     }
 }
 
@@ -700,62 +752,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escapes_and_carriage_returns_leave_the_text() {
-        assert_eq!(strip_escapes("\u{1b}[32mGET /\u{1b}[0m 200\r"), "GET / 200");
-        assert_eq!(strip_escapes("plain\ttab"), "plain\ttab");
+    fn a_shared_connection_names_the_port_here() {
+        assert_eq!(
+            here_address(
+                "postgres://pom:pom@127.0.0.1:5432/app",
+                5432,
+                "127.0.0.1:15432"
+            ),
+            "postgres://pom:pom@127.0.0.1:15432/app"
+        );
+        assert_eq!(
+            here_address("redis://localhost:6379/2", 6379, "127.0.0.1:16379"),
+            "redis://127.0.0.1:16379/2"
+        );
     }
 
     #[test]
-    fn row_ids_round_trip() {
-        let watch = Watch::start(
-            std::sync::Arc::new(Never),
-            "main",
-            std::sync::Arc::new(|| {}),
-        );
-        let panel = RemoteServicesPanel::new(watch);
-        for index in [0, 3, 117] {
-            for control in Control::ALL {
-                assert_eq!(
-                    panel.decode_row(panel.row_id(index, control)),
-                    Some((index, control))
-                );
-            }
-        }
-        assert_eq!(panel.decode_row(panel.base + AGENT_BASE), None);
-    }
-
-    struct Never;
-
-    impl pom_remote::ProjectSource for Never {
-        fn location(&self) -> String {
-            "dev".into()
-        }
-        fn workspaces(&self) -> Result<pom_remote::WorkspaceList, pom_remote::SourceError> {
-            Err(pom_remote::SourceError::Unreachable("test".into()))
-        }
-        fn status(&self, _: &str) -> Result<pom_remote::StatusReport, pom_remote::SourceError> {
-            Err(pom_remote::SourceError::Unreachable("test".into()))
-        }
-        fn logs(&self, _: &str, _: &str) -> Result<String, pom_remote::SourceError> {
-            Err(pom_remote::SourceError::Unreachable("test".into()))
-        }
-        fn agents(&self, _: &str) -> Result<Vec<pom_agent::SessionView>, pom_remote::SourceError> {
-            Ok(Vec::new())
-        }
-        fn agent_turn(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<pom_remote::AgentTurn>, pom_remote::SourceError> {
-            Ok(None)
-        }
-        fn act(
-            &self,
-            _: &str,
-            _: ServiceAction,
-            _: &str,
-        ) -> Result<String, pom_remote::SourceError> {
-            Ok(String::new())
-        }
+    fn streamed_output_reads_as_lines_without_terminal_codes() {
+        let mut state = StreamState::default();
+        state.push(b"\x1b[32mGET /\x1b[0m 200\r\nhal");
+        state.push(b"f a line\n");
+        assert_eq!(state.lines, ["GET / 200", "half a line"]);
+        state.replace("one\ntwo\n");
+        assert_eq!(state.lines, ["one", "two"]);
+        assert!(state.changed);
     }
 }

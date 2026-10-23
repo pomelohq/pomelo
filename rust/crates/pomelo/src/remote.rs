@@ -20,6 +20,10 @@ pub(crate) struct RemoteWindow {
     terminals_for: Option<String>,
     /// The workspace whose files the window shows, once the host's server reads them.
     files_for: Option<String>,
+    /// The files shown are a stand-in, for a host whose pom does not read them.
+    files_unserved: bool,
+    /// The Services panel's source, and the workspace it shows.
+    services: Option<(String, Arc<services_ui::RemoteServices>)>,
     /// The agent roles whose tabs were open when last saved, for the shown workspace.
     agent_tabs: Vec<String>,
     /// Server restarts already told about.
@@ -217,6 +221,8 @@ impl App {
                 notice_actions: Vec::new(),
                 terminals_for: None,
                 files_for: None,
+                files_unserved: false,
+                services: None,
                 agent_tabs: Vec::new(),
                 restarts_told: 0,
                 pom_update: Arc::new(std::sync::Mutex::new(remote_ui::PomUpdate {
@@ -278,9 +284,7 @@ impl App {
         };
         let snapshot = remote.watch.snapshot();
         let info = project_info(remote, &snapshot);
-        let panels: Vec<Box<dyn workspace::SidePanelView>> = vec![Box::new(
-            services_ui::RemoteServicesPanel::new(remote.watch.clone()),
-        )];
+        let panels = vec![remote_services_panel(remote, &snapshot).0];
         let title = remote_title(remote);
         self.with_workspace_view(id, |view, _| {
             view.set_project(Some(info), None, None, None);
@@ -296,6 +300,7 @@ impl App {
                 remote.seen = u64::MAX;
                 remote.terminals_for = None;
                 remote.files_for = None;
+                remote.services = None;
             }
             main.dirty = true;
         }
@@ -304,6 +309,7 @@ impl App {
 
     /// Picks up what the last look found: the workspace list, the page in place of the editor, the title.
     pub(crate) fn poll_remote(&mut self, id: WindowId) {
+        self.start_remote_tasks(id);
         let Some(main) = self.mains.get_mut(&id) else {
             return;
         };
@@ -384,6 +390,7 @@ impl App {
         }
         self.install_remote_terminals(id, &snapshot);
         self.install_remote_files(id, &snapshot);
+        self.install_remote_services(id, &snapshot);
         self.open_started_agents(id);
         self.save_remote_agent_tabs(id, &snapshot);
     }
@@ -606,11 +613,21 @@ impl App {
         else {
             return;
         };
-        if remote.active.is_empty() || remote.files_for.as_deref() == Some(&remote.active) {
+        let shown = remote.files_for.as_deref() == Some(&remote.active);
+        if remote.active.is_empty() || (shown && !remote.files_unserved) {
             return;
         }
-        let Some(fs) = remote.watch.files() else {
-            return;
+        // A host whose pom does not read files still gets the panes, so the window works as a local one.
+        let (fs, unserved): (Arc<dyn files::ProjectFs>, bool) = match remote.watch.files() {
+            Some(fs) => (fs, false),
+            None if shown || snapshot.transport.is_none() => return,
+            None => (
+                Arc::new(files::UnservedFs::new(format!(
+                    "Files need a newer pom on {}; update it there",
+                    remote.host
+                ))),
+                true,
+            ),
         };
         let root = snapshot
             .workspaces
@@ -623,10 +640,46 @@ impl App {
             .map(|workspace| workspace.path.clone())
             .unwrap_or_default();
         remote.files_for = Some(remote.active.clone());
+        remote.files_unserved = unserved;
         let files = files_ui::FilesView::new(fs, root).read_only(true);
         self.with_workspace_view(id, |view, _| {
             view.set_files_view(Some(Box::new(files)));
         });
+    }
+
+    /// The Services panel of the shown workspace, the same as a local one's, over the host's server.
+    fn install_remote_services(&mut self, id: WindowId, snapshot: &pom_remote::Snapshot) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        let shown = remote
+            .services
+            .as_ref()
+            .is_some_and(|(branch, _)| *branch == remote.active);
+        if remote.active.is_empty() || shown {
+            return;
+        }
+        let (panel, source) = remote_services_panel(remote, snapshot);
+        remote.services = Some((remote.active.clone(), source));
+        self.with_workspace_view(id, |view, _| view.set_side_panels(vec![panel]));
+    }
+
+    /// Repo commands the Services panel asked for, run on the host as jobs.
+    fn start_remote_tasks(&mut self, id: WindowId) {
+        let tasks = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.remote.as_ref())
+            .and_then(|remote| remote.services.as_ref())
+            .map(|(_, source)| source.take_tasks())
+            .unwrap_or_default();
+        for (request, title) in tasks {
+            self.queue_remote_job(id, request, title);
+        }
     }
 
     pub(crate) fn activate_remote_workspace(&mut self, id: WindowId, index: usize) {
@@ -878,6 +931,55 @@ impl App {
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
         true
     }
+}
+
+/// The Services panel over the host's server for the shown workspace, and its source; its Ports button opens
+/// what of the host is forwarded here.
+fn remote_services_panel(
+    remote: &RemoteWindow,
+    snapshot: &pom_remote::Snapshot,
+) -> (
+    Box<dyn workspace::SidePanelView>,
+    Arc<services_ui::RemoteServices>,
+) {
+    let workspace = snapshot.workspaces.as_ref().and_then(|list| {
+        list.workspaces
+            .iter()
+            .find(|workspace| workspace.branch == remote.active)
+    });
+    let mut source =
+        services_ui::RemoteServices::new(remote.watch.clone(), &remote.active, &remote.host);
+    let mut buttons = Vec::new();
+    if let Some(ports) = remote.ports.clone() {
+        source = source.with_ports(ports.clone());
+        buttons.push(services_ui::TabButton {
+            icon: ui::IconKind::ArrowUpRight,
+            id: remote_ui::PORTS_TAB_ID.to_string(),
+            open: Arc::new(move || {
+                let open_url: Arc<dyn Fn(&str)> = Arc::new(|url: &str| {
+                    if let Err(error) = desktop::open(url) {
+                        eprintln!("open {url}: {error}");
+                    }
+                });
+                Box::new(remote_ui::PortsPage::new(ports.clone(), open_url))
+            }),
+        });
+    }
+    let source = Arc::new(source);
+    let panel = services_ui::ServicesPanel::with_access(
+        source.clone(),
+        services_ui::WorkspaceInfo {
+            branch: remote.active.clone(),
+            ticket: pom_jira::key_for_branch(&remote.active).unwrap_or_default(),
+            is_main: workspace.is_none_or(|workspace| workspace.is_main),
+        },
+        Arc::new(ui::wake),
+        workspace
+            .map(|workspace| workspace.path.clone())
+            .unwrap_or_default(),
+    )
+    .with_tab_buttons(buttons);
+    (Box::new(panel), source)
 }
 
 fn runs_jobs(snapshot: &pom_remote::Snapshot) -> bool {

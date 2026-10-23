@@ -773,6 +773,52 @@ fn the_server_shows_a_workspace_tree_and_reads_its_files() {
     assert!(fs.read("../pom.yml").is_err());
 }
 
+/// The facts without what reads this machine's dev proxy settings, which the test and the server see apart.
+fn comparable(
+    mut facts: pom_remote::server_api::ServicesFacts,
+) -> pom_remote::server_api::ServicesFacts {
+    facts.public_urls = false;
+    for service in &mut facts.services {
+        service.url = None;
+    }
+    facts
+}
+
+#[test]
+fn the_server_answers_the_services_panel_as_this_machine_does() {
+    use pom_remote::server_api::service_status;
+    use pom_remote::{ProjectSource, ServiceVerb};
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let server = fixture.server_source("dev");
+    let local = fixture.local_source();
+    let facts = server.services_facts("feat").expect("facts over ssh");
+    assert_eq!(
+        comparable(facts.clone()),
+        comparable(local.services_facts("feat").expect("local facts"))
+    );
+    assert_eq!(facts.services[0].status, service_status::STOPPED);
+    assert!(server.transport().expect("transport").services.facts);
+
+    server
+        .run_service("feat", "api", "web", ServiceVerb::Start)
+        .expect("start through the server");
+    let running = local.services_facts("feat").expect("local facts");
+    assert_eq!(running.services[0].status, service_status::RUNNING);
+    assert_eq!(
+        comparable(server.services_facts("feat").expect("facts")).services[0].pid,
+        running.services[0].pid
+    );
+    server
+        .run_service("feat", "api", "web", ServiceVerb::Stop)
+        .expect("stop through the server");
+    assert_eq!(
+        local.services_facts("feat").expect("local facts").services[0].status,
+        service_status::STOPPED
+    );
+}
+
 #[test]
 fn a_shell_on_the_server_runs_what_is_typed() {
     use pom_remote::ProjectSource;

@@ -20,8 +20,11 @@ use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
-    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, LIVE_LOGS,
+    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, JOB_TASK, LIVE_LOGS,
     PROGRESS_TOPIC, PUSH, REQUIRED,
+};
+use crate::server_api::{
+    ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams, SharedRunParams,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -363,6 +366,15 @@ impl Inner {
             live_logs: offers(LIVE_LOGS),
             jobs: offers(JOBS),
             files: offers(&[FILES_READ]),
+            services: crate::ServiceOffers {
+                facts: offers(&[method::SVC_FACTS]),
+                run: offers(&[method::SVC_RUN]),
+                shared: offers(&[method::SVC_SHARED]),
+                mode: offers(&[method::SVC_MODE]),
+                env_profile: offers(&[method::SVC_ENV_PROFILE]),
+                shared_logs: offers(&[method::SVC_SHARED_LOGS]),
+                tasks: offers(&[JOB_TASK]),
+            },
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -702,6 +714,54 @@ impl Inner {
         }
     }
 
+    fn op_id(&self) -> String {
+        format!(
+            "{}-{}",
+            self.client_id,
+            self.next_op.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    /// Fails with what needs a newer pom when the server does not offer it.
+    fn offered(
+        self: &Arc<Self>,
+        wanted: impl Fn(&crate::ServiceOffers) -> bool,
+        what: &str,
+    ) -> Result<(), SourceError> {
+        if self.connection()?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "{what} needs pom server on {}; it is read over plain ssh",
+                self.host.name
+            )));
+        }
+        if self.info().is_some_and(|info| wanted(&info.services)) {
+            return Ok(());
+        }
+        Err(SourceError::Failed(format!(
+            "{what} needs a newer pom on {}; update it there",
+            self.host.name
+        )))
+    }
+
+    fn choose(
+        self: &Arc<Self>,
+        name: &str,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        value: &str,
+    ) -> Result<(), SourceError> {
+        let params = ServiceChoiceParams {
+            cfg: self.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+            service: service.to_string(),
+            value: value.to_string(),
+        };
+        let route = self.request::<serde_json::Value>(name, params, READ_TIMEOUT)?;
+        self.server_only(route, "Changing a service").map(|_| ())
+    }
+
     fn workspace(&self, branch: &str) -> WorkspaceParams {
         WorkspaceParams {
             cfg: self.config.clone(),
@@ -809,11 +869,7 @@ impl ProjectSource for ServerSource {
             branch: branch.to_string(),
             action: action.verb().to_string(),
             target: target.to_string(),
-            op_id: format!(
-                "{}-{}",
-                self.inner.client_id,
-                self.inner.next_op.fetch_add(1, Ordering::Relaxed)
-            ),
+            op_id: self.inner.op_id(),
         };
         match self.inner.request(method::SVC_ACT, params, ACT_TIMEOUT)? {
             Route::Server(said) => Ok(said),
@@ -921,11 +977,16 @@ impl ProjectSource for ServerSource {
                 self.inner.host.name
             ))
         };
+        let topics = if self.inner.info().is_some_and(|info| info.services.facts) {
+            topic::ALL
+        } else {
+            topic::BEFORE_SERVICES
+        };
         let subscription = connection.subscribe().map_err(unreachable)?;
         let params = WatchParams {
             cfg: self.inner.config.clone(),
             branch: branch.to_string(),
-            topics: topic::ALL.iter().map(|name| name.to_string()).collect(),
+            topics: topics.iter().map(|name| name.to_string()).collect(),
             channel: subscription.channel(),
             turn: turn.map(str::to_string),
         };
@@ -1018,6 +1079,102 @@ impl ProjectSource for ServerSource {
         self.inner
             .server_only(route, "Cancelling a workspace job")
             .map(|_| ())
+    }
+
+    fn services_facts(&self, branch: &str) -> Result<ServicesFacts, SourceError> {
+        self.inner
+            .offered(|offers| offers.facts, "The Services panel")?;
+        let route = self.inner.request::<ServicesFacts>(
+            method::SVC_FACTS,
+            self.inner.workspace(branch),
+            READ_TIMEOUT,
+        )?;
+        self.inner.server_only(route, "The Services panel")
+    }
+
+    /// Asking again with the same op id after a reconnect gets the first run's answer, never a second run.
+    fn run_service(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        verb: crate::ServiceVerb,
+    ) -> Result<(), SourceError> {
+        self.inner
+            .offered(|offers| offers.run, "Running a service")?;
+        let params = ServiceRunParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+            service: service.to_string(),
+            action: verb.verb().to_string(),
+            op_id: self.inner.op_id(),
+        };
+        let route =
+            self.inner
+                .request::<serde_json::Value>(method::SVC_RUN, params, ACT_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Running a service")
+            .map(|_| ())
+    }
+
+    fn run_shared(&self, name: &str, verb: crate::ServiceVerb) -> Result<(), SourceError> {
+        self.inner
+            .offered(|offers| offers.shared, "Running a shared service")?;
+        let params = SharedRunParams {
+            cfg: self.inner.config.clone(),
+            name: name.to_string(),
+            action: verb.verb().to_string(),
+            op_id: self.inner.op_id(),
+        };
+        let route =
+            self.inner
+                .request::<serde_json::Value>(method::SVC_SHARED, params, ACT_TIMEOUT)?;
+        self.inner
+            .server_only(route, "Running a shared service")
+            .map(|_| ())
+    }
+
+    fn set_service_mode(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        mode: &str,
+    ) -> Result<(), SourceError> {
+        self.inner
+            .offered(|offers| offers.mode, "Changing a service's mode")?;
+        self.inner
+            .choose(method::SVC_MODE, branch, repo, service, mode)
+    }
+
+    fn set_env_profile(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        profile: &str,
+    ) -> Result<(), SourceError> {
+        self.inner.offered(
+            |offers| offers.env_profile,
+            "Changing a service's env profile",
+        )?;
+        self.inner
+            .choose(method::SVC_ENV_PROFILE, branch, repo, service, profile)
+    }
+
+    fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {
+        self.inner
+            .offered(|offers| offers.shared_logs, "A shared service's output")?;
+        let params = SharedLogsParams {
+            cfg: self.inner.config.clone(),
+            name: name.to_string(),
+            lines,
+        };
+        let route = self
+            .inner
+            .request::<String>(method::SVC_SHARED_LOGS, params, READ_TIMEOUT)?;
+        self.inner.server_only(route, "A shared service's output")
     }
 
     fn start_agent(&self, branch: &str, role: &str) -> Result<SessionView, SourceError> {
@@ -1180,6 +1337,7 @@ impl ServerFeed {
             topic::STATUS => serde_json::from_value(value).ok().map(Update::Status),
             topic::AGENTS => serde_json::from_value(value).ok().map(Update::Agents),
             topic::TURN => serde_json::from_value(value).ok().map(Update::Turn),
+            topic::SERVICES => serde_json::from_value(value).ok().map(Update::Services),
             _ => None,
         }
     }

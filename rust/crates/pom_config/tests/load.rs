@@ -641,3 +641,15 @@ fn every_named_command_is_runnable_even_when_two_share_a_command() {
     );
     assert_eq!(api.named_command("missing"), None);
 }
+
+#[test]
+fn a_config_read_elsewhere_parses_as_the_file_does() {
+    let text = "session: demo\nrepos:\n  api:\n    services:\n      web:\n        type: backend\n        port: true\n";
+    let temp = tempfile::tempdir().expect("temp");
+    let path = temp.path().join("pom.yml");
+    std::fs::write(&path, text).expect("pom.yml");
+    let loaded = pom_config::Config::load(&path).expect("load");
+    let parsed = pom_config::Config::from_text(text, &path).expect("from text");
+    assert_eq!(parsed, loaded);
+    assert!(pom_config::Config::from_text("repos: [", &path).is_err());
+}

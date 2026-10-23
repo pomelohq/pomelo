@@ -11,11 +11,22 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_services::{RunnerOptions, ServiceRunner, ServiceTarget};
 
-use crate::server_api::{AgentClaim, AgentPresence};
+use crate::server_api::{
+    service_status, AgentClaim, AgentPresence, CrashFact, ServiceFact, ServicesFacts, SharedFact,
+};
 use crate::source::{
     last_turn, AgentTurn, FailedRun, LastSync, ProjectEntry, ProjectSource, ServiceAction,
-    SourceError, StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
+    ServiceVerb, SourceError, StatusReport, WorkspaceList, WorkspaceSummary, WORKSPACE_SCHEMA,
 };
+
+/// The repo of a workspace-level service, as the Services panel names it.
+pub const WORKSPACE_REPO: &str = "_ws";
+/// How many lines of a shared service's output are read when none is asked.
+pub const SHARED_LOG_LINES: usize = 200;
+
+/// Modes picked for services (`repo~service` to mode), kept for as long as whoever holds them runs: the app
+/// for this machine, the server for its clients.
+pub type SharedModes = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
 
 fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
     ServiceTarget {
@@ -216,6 +227,7 @@ pub struct LocalSource {
     state: StateDir,
     holders: SocketDir,
     binary: PathBuf,
+    modes: SharedModes,
 }
 
 /// A project read from disk, with the runner of its services.
@@ -237,7 +249,14 @@ impl LocalSource {
             state,
             holders,
             binary,
+            modes: SharedModes::default(),
         }
+    }
+
+    /// Runs services in the modes `modes` holds, and keeps the ones picked through it there.
+    pub fn with_modes(mut self, modes: SharedModes) -> LocalSource {
+        self.modes = modes;
+        self
     }
 
     pub fn open_project(&self) -> Result<OpenedProject, SourceError> {
@@ -255,6 +274,18 @@ impl LocalSource {
             binary: self.binary.clone(),
             docker: "docker".into(),
         });
+        let modes = self
+            .modes
+            .lock()
+            .map(|modes| modes.clone())
+            .unwrap_or_default();
+        for (key, mode) in modes {
+            if let Some((repo, service)) = key.split_once('~') {
+                if let Err(error) = runner.set_mode(&config, repo, service, &mode) {
+                    eprintln!("mode {key}: {error}");
+                }
+            }
+        }
         Ok(OpenedProject {
             project,
             config,
@@ -316,16 +347,28 @@ impl LocalSource {
         })
     }
 
+    /// The holder of `service` (`repo/name`, `name`, or `_ws/name` for a workspace-level one).
     pub fn service_holder(&self, branch: &str, service: &str) -> Result<String, SourceError> {
         let opened = self.open_project()?;
         let is_main = Self::is_main(&opened.project, branch)?;
-        let (repo, name) = opened
-            .config
-            .find_service_entry(service)
-            .map_err(SourceError::Failed)?;
+        let (repo, name) = Self::service_entry(&opened.config, service)?;
         Ok(opened
             .runner
             .holder_name(&target(branch, is_main, &repo, &name)))
+    }
+
+    fn service_entry(config: &Config, service: &str) -> Result<(String, String), SourceError> {
+        if let Some(name) = service.strip_prefix("_ws/") {
+            return config
+                .workspace_services
+                .get(name)
+                .filter(|def| !def.cmd.is_empty())
+                .map(|_| (WORKSPACE_REPO.to_string(), name.to_string()))
+                .ok_or_else(|| SourceError::Failed(format!("service '{service}' not found")));
+        }
+        config
+            .find_service_entry(service)
+            .map_err(SourceError::Failed)
     }
 
     /// The machine's own processes act as an orchestrator; a remote person says so with `person`.
@@ -505,6 +548,285 @@ impl LocalSource {
     }
 }
 
+/// A file's modification time in seconds since the epoch.
+fn modified_secs(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_secs())
+}
+
+/// Every service of a workspace as the Services panel lists them: workspace-level ones first, then each
+/// repo's in config order.
+pub fn panel_targets(config: &Config, branch: &str, is_main: bool) -> Vec<ServiceTarget> {
+    let workspace = config
+        .workspace_services
+        .iter()
+        .filter(|(_, service)| !service.cmd.is_empty())
+        .map(|(name, _)| target(branch, is_main, WORKSPACE_REPO, name));
+    let repos = config.repos.iter().flat_map(|(repo, dir)| {
+        dir.services
+            .keys()
+            .map(move |service| target(branch, is_main, repo, service))
+    });
+    workspace.chain(repos).collect()
+}
+
+/// The service's definition, workspace-level or a repo's.
+fn service_def<'a>(config: &'a Config, target: &ServiceTarget) -> Option<&'a pom_config::Service> {
+    if target.is_workspace_level() {
+        return config.workspace_services.get(&target.service);
+    }
+    config
+        .repos
+        .get(&target.repo)?
+        .services
+        .get(&target.service)
+}
+
+impl LocalSource {
+    fn workspace(
+        &self,
+        opened: &OpenedProject,
+        branch: &str,
+    ) -> Result<pom_layout::Workspace, SourceError> {
+        opened
+            .project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == branch)
+            .cloned()
+            .ok_or_else(|| SourceError::Failed(format!("no workspace {branch}")))
+    }
+
+    /// The service `repo`/`service` of `branch`, checked against the config.
+    fn service_target(
+        &self,
+        opened: &OpenedProject,
+        branch: &str,
+        repo: &str,
+        service: &str,
+    ) -> Result<ServiceTarget, SourceError> {
+        let is_main = Self::is_main(&opened.project, branch)?;
+        let wanted = target(branch, is_main, repo, service);
+        if service_def(&opened.config, &wanted).is_none() {
+            return Err(SourceError::Failed(format!(
+                "service '{repo}/{service}' not found"
+            )));
+        }
+        Ok(wanted)
+    }
+
+    /// What the Services panel shows of workspace `branch`, read as the panel reads it here.
+    pub fn services_facts(&self, branch: &str) -> Result<ServicesFacts, SourceError> {
+        let opened = self.open_project()?;
+        let workspace = self.workspace(&opened, branch)?;
+        let config = &opened.config;
+        let runner = &opened.runner;
+        let holders = runner.holders();
+        let text = std::fs::read_to_string(&self.config_path)
+            .map_err(|error| SourceError::Failed(format!("reading pom.yml: {error}")))?;
+        let targets = panel_targets(config, branch, workspace.is_main);
+        let mut own = std::collections::HashSet::new();
+        let services = targets
+            .iter()
+            .map(|target| {
+                let holder = runner.holder_name(target);
+                own.insert(holder.clone());
+                let alive = holders.holder_alive(&holder);
+                let crash = (!alive)
+                    .then(|| holders.crash_info(&holder))
+                    .flatten()
+                    .filter(|info| info.crashed)
+                    .map(|info| CrashFact {
+                        line: pom_services::crash_line(&info.output),
+                        exit: pom_services::crash_exit(&info.header),
+                        at: modified_secs(&holders.crash_log(&holder)),
+                    });
+                let status = match (alive, &crash) {
+                    (true, _) => service_status::RUNNING,
+                    (false, Some(_)) => service_status::CRASHED,
+                    (false, None) => service_status::STOPPED,
+                };
+                let mode = service_def(config, target)
+                    .map(|service| runner.mode(&target.repo, &target.service, service))
+                    .unwrap_or_default();
+                ServiceFact {
+                    repo: target.repo.clone(),
+                    service: target.service.clone(),
+                    status: status.to_string(),
+                    port: runner.port(config, target),
+                    mode,
+                    env_profile: runner.env_profile(config, target),
+                    url: runner.proxy_url(config, target),
+                    pid: alive.then(|| holders.holder_pid(&holder)).flatten(),
+                    started_at: alive
+                        .then(|| modified_secs(&holders.pidfile(&holder)))
+                        .flatten(),
+                    crash,
+                    holder,
+                }
+            })
+            .collect();
+        let running = runner.shared_running();
+        let env = runner.workspace_env(config, branch);
+        let shared = config
+            .shared_services
+            .iter()
+            .map(|(name, def)| {
+                let holder = runner.shared_holder(name);
+                let alive = def.is_command() && holders.holder_alive(&holder);
+                let folder = if def.is_command() {
+                    runner
+                        .shared_command_dir(config, def)
+                        .strip_prefix(runner.project_root())
+                        .ok()
+                        .map(|relative| relative.to_string_lossy().into_owned())
+                        .filter(|relative| !relative.is_empty())
+                        .unwrap_or_else(|| "project folder".to_string())
+                } else {
+                    String::new()
+                };
+                SharedFact {
+                    name: name.clone(),
+                    running: running.contains(name),
+                    host_port: runner.shared_host_port(name),
+                    pid: alive.then(|| holders.holder_pid(&holder)).flatten(),
+                    started_at: alive
+                        .then(|| modified_secs(&holders.pidfile(&holder)))
+                        .flatten(),
+                    holder,
+                    connection: env.shared_url(name),
+                    folder,
+                }
+            })
+            .collect();
+        let others_running = runner
+            .running_holders()
+            .into_iter()
+            .filter(|holder| !own.contains(holder))
+            .count();
+        Ok(ServicesFacts {
+            branch: branch.to_string(),
+            root: workspace.path.clone(),
+            config: text,
+            services,
+            shared,
+            repos: workspace
+                .repos
+                .iter()
+                .map(|repo| repo.name.clone())
+                .collect(),
+            others_running,
+            public_urls: !pom_env::dev_network().public().is_local(),
+        })
+    }
+
+    /// Runs `verb` on one service and waits for it, as the Services panel does here.
+    pub fn run_one(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        verb: ServiceVerb,
+    ) -> Result<(), SourceError> {
+        let opened = self.open_project()?;
+        let target = self.service_target(&opened, branch, repo, service)?;
+        let runner = &opened.runner;
+        let result = match verb {
+            ServiceVerb::Start => runner.start(&opened.config, &target).map(|_| ()),
+            ServiceVerb::Restart => runner.restart(&opened.config, &target).map(|_| ()),
+            ServiceVerb::Relocate => runner.relocate(&opened.config, &target).map(|_| ()),
+            ServiceVerb::Stop => runner.stop(&target).map_err(Into::into),
+        };
+        result.map_err(|error| SourceError::Failed(error.to_string()))
+    }
+
+    /// Runs `verb` on shared service `name`, or on all of them for `*`.
+    pub fn run_shared_service(&self, name: &str, verb: ServiceVerb) -> Result<(), SourceError> {
+        use pom_services::SharedAction;
+        let opened = self.open_project()?;
+        let config = &opened.config;
+        let runner = &opened.runner;
+        if name != "*" && !config.shared_services.contains_key(name) {
+            return Err(SourceError::Failed(format!("no shared service {name}")));
+        }
+        let result = match (name, verb) {
+            ("*", ServiceVerb::Stop) => runner.stop_shared(),
+            ("*", _) => runner.ensure_shared(config),
+            (name, ServiceVerb::Stop) => runner.shared_action(config, name, SharedAction::Stop),
+            (name, ServiceVerb::Start) => runner.shared_action(config, name, SharedAction::Start),
+            (name, _) => runner.shared_action(config, name, SharedAction::Restart),
+        };
+        result.map_err(|error| SourceError::Failed(error.to_string()))
+    }
+
+    /// Picks `mode` for the service: it applies from its next start.
+    pub fn pick_mode(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        mode: &str,
+    ) -> Result<(), SourceError> {
+        let opened = self.open_project()?;
+        let target = self.service_target(&opened, branch, repo, service)?;
+        let known = service_def(&opened.config, &target)
+            .is_some_and(|def| def.mode_names().iter().any(|name| name == mode));
+        if !known {
+            return Err(SourceError::Failed(format!(
+                "{repo}/{service} has no mode {mode}"
+            )));
+        }
+        opened
+            .runner
+            .set_mode(&opened.config, repo, service, mode)
+            .map_err(|error| SourceError::Failed(error.to_string()))?;
+        if let Ok(mut modes) = self.modes.lock() {
+            modes.insert(format!("{repo}~{service}"), mode.to_string());
+        }
+        Ok(())
+    }
+
+    /// Picks env profile `profile` for the service: it applies from its next start.
+    pub fn pick_env_profile(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        profile: &str,
+    ) -> Result<(), SourceError> {
+        let opened = self.open_project()?;
+        let target = self.service_target(&opened, branch, repo, service)?;
+        let known = opened.config.repos.get(repo).is_some_and(|dir| {
+            dir.env_profiles(service_def(&opened.config, &target))
+                .iter()
+                .any(|name| name == profile)
+        });
+        if !known {
+            return Err(SourceError::Failed(format!(
+                "{repo}/{service} has no env profile {profile}"
+            )));
+        }
+        opened
+            .runner
+            .set_env_profile(&opened.config, &target, profile)
+            .map_err(|error| SourceError::Failed(error.to_string()))
+    }
+
+    pub fn shared_output(&self, name: &str, lines: usize) -> Result<String, SourceError> {
+        let opened = self.open_project()?;
+        let lines = if lines == 0 { SHARED_LOG_LINES } else { lines };
+        opened
+            .runner
+            .shared_logs(&opened.config, name, lines)
+            .map_err(SourceError::Failed)
+    }
+}
+
 impl ProjectSource for LocalSource {
     fn location(&self) -> String {
         "this machine".to_string()
@@ -594,5 +916,47 @@ impl ProjectSource for LocalSource {
             }
         }
         Ok(said.join("\n"))
+    }
+
+    fn services_facts(&self, branch: &str) -> Result<ServicesFacts, SourceError> {
+        LocalSource::services_facts(self, branch)
+    }
+
+    fn run_service(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        verb: ServiceVerb,
+    ) -> Result<(), SourceError> {
+        self.run_one(branch, repo, service, verb)
+    }
+
+    fn run_shared(&self, name: &str, verb: ServiceVerb) -> Result<(), SourceError> {
+        self.run_shared_service(name, verb)
+    }
+
+    fn set_service_mode(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        mode: &str,
+    ) -> Result<(), SourceError> {
+        self.pick_mode(branch, repo, service, mode)
+    }
+
+    fn set_env_profile(
+        &self,
+        branch: &str,
+        repo: &str,
+        service: &str,
+        profile: &str,
+    ) -> Result<(), SourceError> {
+        self.pick_env_profile(branch, repo, service, profile)
+    }
+
+    fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {
+        self.shared_output(name, lines)
     }
 }

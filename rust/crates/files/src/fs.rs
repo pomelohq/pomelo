@@ -409,6 +409,66 @@ fn under_any(tops: &[&str], path: &str) -> bool {
     }
 }
 
+/// Files that cannot be read where they are, such as on a host whose pom does not serve them: an empty tree, and
+/// `reason` for every read.
+pub struct UnservedFs {
+    reason: String,
+}
+
+impl UnservedFs {
+    pub fn new(reason: impl Into<String>) -> UnservedFs {
+        UnservedFs {
+            reason: reason.into(),
+        }
+    }
+
+    fn refused(&self) -> io::Error {
+        io::Error::new(io::ErrorKind::Unsupported, self.reason.clone())
+    }
+}
+
+struct EmptyTree {
+    sent: bool,
+}
+
+impl TreeFeed for EmptyTree {
+    fn poll(&mut self) -> Vec<TreeEvent> {
+        if std::mem::replace(&mut self.sent, true) {
+            return Vec::new();
+        }
+        vec![TreeEvent::Snapshot {
+            entries: Vec::new(),
+            complete: true,
+        }]
+    }
+}
+
+impl ProjectFs for UnservedFs {
+    fn local_root(&self) -> Option<&Path> {
+        None
+    }
+
+    fn watch(&self, _wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn TreeFeed> {
+        Box::new(EmptyTree { sent: false })
+    }
+
+    fn stat(&self, _path: &str) -> io::Result<FileStat> {
+        Err(self.refused())
+    }
+
+    fn read(&self, _path: &str) -> io::Result<FileResult> {
+        Err(self.refused())
+    }
+
+    fn read_bytes(&self, _path: &str, _limit: u64) -> io::Result<Vec<u8>> {
+        Err(self.refused())
+    }
+
+    fn project_files(&self, _include_ignored: bool) -> io::Result<Vec<String>> {
+        Err(self.refused())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

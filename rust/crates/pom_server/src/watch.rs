@@ -10,8 +10,8 @@ use std::time::Duration;
 use pom_agent::{AgentWatcher, SessionView};
 use pom_paths::StateDir;
 use pom_remote::server_api::{
-    topic, AgentsUpdate, StatusUpdate, TurnUpdate, WatchBranchParams, WatchChannel, WatchParams,
-    WorkspacesUpdate,
+    topic, AgentsUpdate, ServicesUpdate, StatusUpdate, TurnUpdate, WatchBranchParams, WatchChannel,
+    WatchParams, WorkspacesUpdate,
 };
 use pom_remote::{LocalSource, ProjectSource};
 use pom_rpc::{error_code, Publisher, RemoteError};
@@ -342,6 +342,17 @@ fn read_once(
             Err(error) => update.error = Some(error.to_string()),
         }
         sent.publish(publisher, topic::STATUS, &update, &update)?;
+    }
+    if wants(topic::SERVICES) {
+        let mut update = ServicesUpdate {
+            branch: branch.to_string(),
+            ..ServicesUpdate::default()
+        };
+        match source.services_facts(branch) {
+            Ok(facts) => update.facts = Some(facts),
+            Err(error) => update.error = Some(error.to_string()),
+        }
+        sent.publish(publisher, topic::SERVICES, &update, &update)?;
     }
     if !wants(topic::AGENTS) && !wants(topic::TURN) {
         return Ok(());

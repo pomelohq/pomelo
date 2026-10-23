@@ -183,6 +183,17 @@ pub struct Shortcut {
     pub key: String,
 }
 
+impl Shortcut {
+    /// What it is called: its description, else its key, else its command.
+    pub fn label(&self) -> String {
+        [&self.desc, &self.key, &self.cmd]
+            .into_iter()
+            .find(|text| !text.trim().is_empty())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvFileEntry {
     pub file: String,

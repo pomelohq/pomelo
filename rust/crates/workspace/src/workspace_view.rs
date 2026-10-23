@@ -144,7 +144,6 @@ pub struct WorkspaceRequests {
 
 const CENTER_PAGE_PAD: f32 = 40.0;
 const CENTER_PAGE_MAX_W: f32 = 760.0;
-const CENTER_PAGE_BOTTOM: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRequest {
@@ -323,11 +322,9 @@ pub struct WorkspaceView {
     modal_rect: Option<Rect>,
     /// A form over the whole window; it takes the keyboard while open.
     window_modal: Option<Box<dyn crate::WindowModal>>,
-    /// Shown in place of the editor while the project has no files view here (a remote project), with the
-    /// Services panel under it.
+    /// A remote project's host and connection: in place of the editor without a files view, else while no tab is
+    /// open.
     center_notice: Option<crate::CenterNotice>,
-    /// Where that Services panel was drawn, for the scroll wheel.
-    center_body: Option<Rect>,
     /// How the last window modal ended, until the app takes it.
     modal_result: Option<crate::ModalResult>,
     workspace_ops: Vec<crate::WorkspaceOp>,
@@ -471,7 +468,6 @@ impl WorkspaceView {
             modal_rect: None,
             window_modal: None,
             center_notice: None,
-            center_body: None,
             modal_result: None,
             workspace_ops: Vec::new(),
             expanded_ops: Vec::new(),
@@ -884,6 +880,26 @@ impl WorkspaceView {
             _ => return false,
         }
         true
+    }
+
+    /// The remote notice over the center `area`: the host, its connection and what needs doing there.
+    fn notice_painted(&self, notice: &crate::CenterNotice, area: Rect) -> Painted {
+        let scale = ui::ui_text_scale();
+        let width = (area.w / scale - 2.0 * CENTER_PAGE_PAD).clamp(200.0, CENTER_PAGE_MAX_W);
+        let left = area.x + ((area.w / scale - width) / 2.0).max(0.0) * scale;
+        let mut painted = ui::render(&ui::div().bg(ui::theme().editor_background).into(), area);
+        let strip = crate::notice_page(notice, width, self.session_menu_hover);
+        let strip_h = ui::measure(&strip).1 * scale;
+        let page = ui::render(
+            &strip,
+            Rect::new(left, area.y, width * scale, strip_h, Rgba::TRANSPARENT),
+        );
+        painted.rects.extend(page.rects);
+        painted.tris.extend(page.tris);
+        painted.texts.extend(page.texts);
+        painted.icons.extend(page.icons);
+        painted.hits.extend(page.hits);
+        painted
     }
 
     /// Show a form over the window (replacing any open one).
@@ -2063,6 +2079,25 @@ impl WorkspaceView {
                     }
                     _ => push_pane_group(&mut editor, cr, &mut center_overlays, &mut panel_hits),
                 }
+                // A remote window's notice is its empty center: no tab open says where the host stands.
+                let empty = self
+                    .layout
+                    .files_view
+                    .as_ref()
+                    .and_then(|files| files.pane_group())
+                    .is_some_and(|group| group.is_empty());
+                if let Some(notice) = self
+                    .center_notice
+                    .clone()
+                    .filter(|_| empty && self.zoom.is_none())
+                {
+                    let p = self.notice_painted(&notice, cr);
+                    panel_hits.extend(p.hits.iter().copied());
+                    center_overlays.push(Overlay {
+                        painted: p,
+                        clip: Some(cr),
+                    });
+                }
                 if let Some(hl) = self
                     .layout
                     .files_view
@@ -2162,39 +2197,9 @@ impl WorkspaceView {
             .clone()
             .filter(|_| self.layout.files_view.is_none())
         {
-            let scale = ui::ui_text_scale();
-            let width = (cr.w / scale - 2.0 * CENTER_PAGE_PAD).clamp(200.0, CENTER_PAGE_MAX_W);
-            let left = cr.x + ((cr.w / scale - width) / 2.0).max(0.0) * scale;
-            blit(ui::render(
-                &ui::div().bg(ui::theme().editor_background).into(),
-                cr,
-            ));
-            let strip = crate::notice_page(&notice, width, self.session_menu_hover);
-            let strip_h = ui::measure(&strip).1 * scale;
-            let p = ui::render(
-                &strip,
-                Rect::new(left, cr.y, width * scale, strip_h, Rgba::TRANSPARENT),
-            );
+            let p = self.notice_painted(&notice, cr);
             panel_hits.extend(p.hits.iter().copied());
             blit(p);
-            let body = Rect::new(
-                left,
-                cr.y + strip_h,
-                width * scale,
-                (cr.h - strip_h - CENTER_PAGE_BOTTOM * scale).max(0.0),
-                Rgba::TRANSPARENT,
-            );
-            self.center_body = Some(body);
-            if let Some(panel) = self.layout.side_panel_mut(PaneKind::Services) {
-                let card = ui::div()
-                    .col()
-                    .rounded(10.0)
-                    .bg(ui::theme().panel_background)
-                    .child(panel.render(body.w / scale, body.h / scale));
-                let p = ui::render(&card.into(), body);
-                panel_hits.extend(p.hits.iter().copied());
-                blit(p);
-            }
         } else {
             match self.layout.shown_on(DockPosition::Left) {
                 Some(Shown::Terminal) => {
@@ -7734,16 +7739,6 @@ impl WorkspaceView {
                 input.item_pointer_scroll(x, y, (dx, dy), modifiers)
                     || input.editor_scroll(x, y, dx, dy)
             });
-        }
-        let over_center_panel = self
-            .center_body
-            .filter(|_| self.center_notice.is_some() && self.layout.files_view.is_none())
-            .is_some_and(|r| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
-        if over_center_panel && !self.layout.session_menu {
-            return self
-                .layout
-                .side_panel_mut(PaneKind::Services)
-                .is_some_and(|panel| panel.scroll(dy));
         }
         if !self.layout.session_menu {
             let (w, h) = self.viewport;

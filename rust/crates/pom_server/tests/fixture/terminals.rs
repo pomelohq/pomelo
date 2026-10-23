@@ -102,6 +102,9 @@ impl Remote {
         if let Some(retention) = retention {
             dispatcher.ptys().set_retention(retention);
         }
+        dispatcher
+            .jobs()
+            .set_task_shell(vec!["/bin/sh".into(), "-c".into()]);
         let mut options = ServerOptions::new(paths.clone(), "9.9.9", dispatcher);
         options.idle_exit = None;
         let server = pom_server::bind(options).expect("bind");

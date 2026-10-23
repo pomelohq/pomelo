@@ -32,6 +32,8 @@ struct Board {
     older_pom: Option<String>,
     /// Its server opens terminals, whether or not the scene opens one.
     serves_terminals: bool,
+    /// What its server tells the Services panel.
+    services: Option<pom_remote::server_api::ServicesFacts>,
     /// Its server reads the workspace's files.
     serves_files: bool,
 }
@@ -106,6 +108,11 @@ impl files::ProjectFs for HostFiles {
 
 /// The file tree and editor of the host's workspace, with the controller open when the tree is whole.
 fn host_files(partial: bool) -> anyhow::Result<files_ui::FilesView> {
+    host_files_opening(partial, !partial)
+}
+
+/// The host's files, `open` with the controller open, else with no tab.
+fn host_files_opening(partial: bool, open: bool) -> anyhow::Result<files_ui::FilesView> {
     let root = crate::fixture_dir().join("remote");
     crate::editor_fixture::create(&root)?;
     let fs = Arc::new(HostFiles {
@@ -114,7 +121,7 @@ fn host_files(partial: bool) -> anyhow::Result<files_ui::FilesView> {
     });
     let mut files = files_ui::FilesView::new(fs, WORKTREE.into()).read_only(true);
     let file = std::path::Path::new(WORKTREE).join(CONTROLLER);
-    if !partial {
+    if open {
         workspace::FunctionView::open_file_at(&mut files, &file, None, None);
     }
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -123,7 +130,8 @@ fn host_files(partial: bool) -> anyhow::Result<files_ui::FilesView> {
         let ready = if partial {
             files.scanning()
         } else {
-            !files.scanning() && workspace::FunctionView::active_file_path(&files).is_some()
+            !files.scanning()
+                && (!open || workspace::FunctionView::active_file_path(&files).is_some())
         };
         if ready {
             break;
@@ -381,6 +389,19 @@ impl ProjectSource for Board {
             via: pom_remote::Via::Server,
             terminals: self.serves_terminals,
             files: self.serves_files,
+            services: if self.services.is_some() {
+                pom_remote::ServiceOffers {
+                    facts: true,
+                    run: true,
+                    shared: true,
+                    mode: true,
+                    env_profile: true,
+                    shared_logs: true,
+                    tasks: true,
+                }
+            } else {
+                pom_remote::ServiceOffers::default()
+            },
             pushes: self.pushes,
             agents: self.pushes,
             version_mismatch: self
@@ -390,6 +411,16 @@ impl ProjectSource for Board {
             remote_version: self.older_pom.clone(),
             ..pom_remote::TransportInfo::default()
         })
+    }
+
+    fn services_facts(
+        &self,
+        _branch: &str,
+    ) -> Result<pom_remote::server_api::ServicesFacts, SourceError> {
+        self.check()?;
+        self.services
+            .clone()
+            .ok_or_else(|| SourceError::Failed("no services".into()))
     }
 
     fn link(&self) -> Option<pom_remote::LinkReport> {
@@ -596,12 +627,15 @@ pub fn render(
             .or_else(|| (mode == "files-old-server").then(|| pom_remote::VERSION.to_string())),
         serves_files: mode != "files-old-server",
         serves_terminals: mode != "disconnected",
+        services: Some(window_facts()),
         ..Board::default()
     });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
     watch.set_visible(true);
     wait_until(&watch, |snapshot| {
-        snapshot.connection == Connection::Connected && snapshot.status.is_some()
+        snapshot.connection == Connection::Connected
+            && snapshot.status.is_some()
+            && snapshot.services.is_some()
     });
     if agents {
         wait_until(&watch, |snapshot| !snapshot.presence.is_empty());
@@ -629,6 +663,7 @@ pub fn render(
     let mut files_view = match mode {
         "files-scanning" => Some(host_files(true)?),
         "files-open" => Some(host_files(false)?),
+        "connected" => Some(host_files_opening(false, false)?),
         _ => None,
     };
     let sessions = vec![
@@ -660,6 +695,10 @@ pub fn render(
                 ..Default::default()
             };
             layout.left.width = 256.0;
+            if mode == "connected" {
+                layout.active_panels[workspace::DockPosition::Left.index()] =
+                    Some(workspace::Shown::Func(workspace::PaneKind::Services));
+            }
             layout.right.width = 380.0;
             layout.bottom.collapsed = true;
             layout.bottom.width = 360.0;
@@ -673,11 +712,7 @@ pub fn render(
         if mode == "create" {
             view.set_workspace_ops(vec![creating_on_host()]);
         }
-        let mut panel = services_ui::RemoteServicesPanel::new(watch.clone());
-        if mode == "logs" {
-            panel.show_logs("api/server");
-        }
-        view.set_side_panels(vec![Box::new(panel)]);
+        view.set_side_panels(vec![Box::new(remote_panel(&watch))]);
         let update = remote_ui::PomUpdate {
             can_install: mode != "version-commands",
             running: (mode == "version-updating")
@@ -723,9 +758,6 @@ pub fn render(
             view.open_terminal_in(root);
         }
     });
-    if mode == "logs" {
-        wait_until(&watch, |snapshot| snapshot.logs.is_some());
-    }
     let live = terminal || agents || mode.starts_with("files");
     for _ in 0..if live { 40 } else { 4 } {
         app.draw(handle).expect("frame");
@@ -765,4 +797,228 @@ pub fn render(
     encoder.write_header()?.write_image_data(&rgba)?;
     println!("wrote {out} ({w}x{h})");
     Ok(())
+}
+
+const ROOT: &str = "/home/dev/pom/myproject/workspace--feat-login";
+
+/// One service as the host's server reports it to the Services panel.
+struct Row<'a> {
+    repo: &'a str,
+    service: &'a str,
+    status: &'a str,
+    port: Option<u16>,
+    mode: &'a str,
+    pid: Option<i32>,
+    up_for: Option<u64>,
+    crash: Option<(&'a str, u64)>,
+}
+
+impl Row<'_> {
+    fn new<'a>(repo: &'a str, service: &'a str, status: &'a str) -> Row<'a> {
+        Row {
+            repo,
+            service,
+            status,
+            port: None,
+            mode: "",
+            pid: None,
+            up_for: None,
+            crash: None,
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The facts a server sends for workspace feat-login of `config`, with `rows` its services' state.
+fn facts(config: &str, rows: &[Row<'_>], shared: &[&str]) -> pom_remote::server_api::ServicesFacts {
+    use pom_remote::server_api::{CrashFact, ServiceFact, ServicesFacts, SharedFact};
+    let parsed =
+        pom_config::Config::from_text(config, std::path::Path::new("pom.yml")).unwrap_or_default();
+    let now = now_secs();
+    let services = rows
+        .iter()
+        .map(|row| {
+            let target = pom_services::ServiceTarget {
+                branch: "feat-login".into(),
+                is_main: false,
+                repo: row.repo.into(),
+                service: row.service.into(),
+            };
+            let url = row.port.and_then(|_| {
+                let alias = parsed.repos.get(row.repo).map(|dir| {
+                    if dir.alias.is_empty() {
+                        row.repo.to_string()
+                    } else {
+                        dir.alias.clone()
+                    }
+                })?;
+                Some(format!(
+                    "http://{}.{alias}.feat-login.localhost:8767",
+                    row.service
+                ))
+            });
+            ServiceFact {
+                repo: row.repo.into(),
+                service: row.service.into(),
+                holder: pom_services::service_holder_name("myproject", &target),
+                status: row.status.into(),
+                port: row.port,
+                mode: row.mode.into(),
+                env_profile: if target.is_workspace_level() {
+                    String::new()
+                } else {
+                    "local".into()
+                },
+                url,
+                pid: row.pid,
+                started_at: row.up_for.map(|seconds| now - seconds),
+                crash: row.crash.map(|(line, ago)| CrashFact {
+                    line: Some(line.into()),
+                    exit: "exit 1".into(),
+                    at: Some(now - ago),
+                }),
+            }
+        })
+        .collect();
+    let shared = parsed
+        .shared_services
+        .iter()
+        .map(|(name, def)| SharedFact {
+            name: name.clone(),
+            running: shared.contains(&name.as_str()),
+            host_port: match name.as_str() {
+                "postgres" => 5432,
+                "redis" => 6379,
+                _ => def.port.unwrap_or_default(),
+            },
+            holder: format!("shared-myproject-{name}"),
+            folder: if def.is_command() {
+                def.repo.clone()
+            } else {
+                String::new()
+            },
+            ..SharedFact::default()
+        })
+        .collect();
+    ServicesFacts {
+        branch: "feat-login".into(),
+        root: ROOT.into(),
+        config: config.to_string(),
+        services,
+        shared,
+        repos: parsed.repos.keys().cloned().collect(),
+        others_running: 0,
+        public_urls: false,
+    }
+}
+
+const WINDOW_YML: &str = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\nrepos:\n  api:\n    shared_services: [postgres, redis]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails server -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n  web:\n    services:\n      app:\n        type: frontend\n        port: true\n        mode: hmr\n        modes:\n          hmr: npm run dev -- --port $PORT\n      storybook:\n        cmd: npm run storybook -- -p $PORT\n";
+
+/// The host's services as the remote window's boards show them.
+fn window_facts() -> pom_remote::server_api::ServicesFacts {
+    facts(
+        WINDOW_YML,
+        &[
+            Row {
+                port: Some(3104),
+                mode: "dev",
+                pid: Some(48213),
+                up_for: Some(14 * 60),
+                ..Row::new("api", "server", "running")
+            },
+            Row {
+                mode: "dev",
+                pid: Some(48214),
+                up_for: Some(14 * 60),
+                ..Row::new("api", "jobs", "running")
+            },
+            Row {
+                port: Some(5276),
+                mode: "hmr",
+                pid: Some(48230),
+                up_for: Some(11 * 60),
+                ..Row::new("web", "app", "running")
+            },
+            Row {
+                crash: Some((
+                    "Error: listen EADDRINUSE: address already in use :::6006",
+                    130,
+                )),
+                ..Row::new("web", "storybook", "crashed")
+            },
+        ],
+        &["postgres", "redis"],
+    )
+}
+
+/// The Services panel of the window, over the stand-in host.
+fn remote_panel(watch: &pom_remote::Watch) -> services_ui::ServicesPanel {
+    let source = Arc::new(services_ui::RemoteServices::new(
+        watch.clone(),
+        "feat-login",
+        "dev",
+    ));
+    services_ui::ServicesPanel::with_access(
+        source,
+        services_ui::WorkspaceInfo {
+            branch: "feat-login".into(),
+            ticket: "PROJ-101".into(),
+            is_main: false,
+        },
+        Arc::new(|| {}),
+        ROOT.into(),
+    )
+}
+
+/// The panel of the services scenes over a host whose server reports what the local scenes show: `config`,
+/// api/server up 12 minutes, api/jobs crashed, web/app up (or stopped as `stopped` says), three shared up.
+pub fn services_panel(
+    config: &str,
+    stopped: Option<&str>,
+) -> anyhow::Result<services_ui::ServicesPanel> {
+    let state = |which: &str| {
+        if stopped == Some(which) {
+            "stopped"
+        } else {
+            "running"
+        }
+    };
+    let rows = [
+        Row::new("_ws", "gateway", "running"),
+        Row {
+            port: Some(3000),
+            mode: "dev",
+            pid: Some(48213).filter(|_| state("api/server") == "running"),
+            up_for: Some(12 * 60 + 5).filter(|_| state("api/server") == "running"),
+            ..Row::new("api", "server", state("api/server"))
+        },
+        Row {
+            mode: "dev",
+            crash: Some(("KeyError: key not found: \"REDIS_URL\"", 130)),
+            ..Row::new("api", "jobs", "crashed")
+        },
+        Row::new("api", "mailer", "stopped"),
+        Row {
+            port: Some(5173),
+            mode: "hmr",
+            ..Row::new("web", "app", state("web/app"))
+        },
+        Row::new("web", "storybook", "stopped"),
+    ];
+    let board = Arc::new(Board {
+        services: Some(facts(config, &rows, &["postgres", "redis", "files"])),
+        ..Board::default()
+    });
+    let watch = pom_remote::Watch::start(board, "feat-login", Arc::new(|| {}));
+    watch.set_visible(true);
+    wait_until(&watch, |snapshot| snapshot.services.is_some());
+    if watch.services().0.is_none() {
+        anyhow::bail!("the stand-in host never reported its services");
+    }
+    Ok(remote_panel(&watch))
 }

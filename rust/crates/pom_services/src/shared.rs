@@ -21,6 +21,7 @@ const SLOT_RESET_PAUSE: Duration = Duration::from_millis(500);
 pub(crate) const POSTGRES: &str = "postgres";
 /// A Docker that stopped answering must not hold up the panel or an agent asking what runs.
 const SHARED_PS_TIMEOUT: Duration = Duration::from_secs(5);
+const SHARED_LOGS_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_REDIS_PORT: u16 = 6379;
 
@@ -495,6 +496,37 @@ impl ServiceRunner {
 
     /// Shared services that run right now: commands by their holder, containers as Docker reports them (none
     /// when Docker is unreachable).
+    /// The last `lines` lines shared service `name` printed: its container's log, or a command's holder output.
+    pub fn shared_logs(&self, config: &Config, name: &str, lines: usize) -> Result<String, String> {
+        let def = config
+            .shared_services
+            .get(name)
+            .ok_or_else(|| format!("no shared service {name}"))?;
+        if def.is_command() {
+            let holder = self.shared_holder(name);
+            let holders = self.holders();
+            let output = if holders.holder_alive(&holder) {
+                pom_ptyhost::snapshot(holders, &holder, SHARED_PS_TIMEOUT)
+                    .map_err(|error| error.to_string())?
+            } else {
+                holders
+                    .crash_info(&holder)
+                    .map(|info| info.output)
+                    .unwrap_or_default()
+            };
+            let text = crate::strip_terminal_codes(&String::from_utf8_lossy(&output));
+            let all: Vec<&str> = text.lines().collect();
+            return Ok(all[all.len().saturating_sub(lines)..].join("\n"));
+        }
+        let file = self.compose_file();
+        if !file.is_file() {
+            return Ok(String::new());
+        }
+        let tail = lines.to_string();
+        let args = self.compose_args(&file, &["logs", "--no-color", "--tail", &tail, name]);
+        self.docker_within(&args, SHARED_LOGS_TIMEOUT)
+    }
+
     pub fn shared_running(&self) -> HashSet<String> {
         let prefix = self.shared_holder("");
         let mut running: HashSet<String> = self

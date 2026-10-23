@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pom_agent::SessionView;
 
-use crate::server_api::AgentPresence;
+use crate::server_api::{AgentPresence, ServicesFacts};
 use crate::source::{
     last_turn, AgentTurn, Feed, FeedEvent, LinkReport, LogEvent, LogFeed, ProjectSource,
     ServiceAction, SourceError, StatusReport, TransportInfo, Update, WorkspaceList,
@@ -85,6 +85,10 @@ pub struct Snapshot {
     pub logs_live: bool,
     /// Times the session came back to a restarted server, so a view can say so once each time.
     pub server_restarts: u64,
+    /// What the Services panel shows of the workspace, from a server that offers it.
+    pub services: Option<Arc<ServicesFacts>>,
+    /// Why the Services panel's facts could not be read although the machine answered.
+    pub services_problem: Option<String>,
     /// Bumped on every change, so a reader can tell it has something new.
     pub generation: u64,
 }
@@ -265,6 +269,8 @@ impl Watch {
                 snapshot.presence.clear();
                 snapshot.logs = None;
                 snapshot.turn = None;
+                snapshot.services = None;
+                snapshot.services_problem = None;
                 snapshot.generation += 1;
             }
         }
@@ -371,6 +377,22 @@ impl Watch {
 
     pub fn snapshot(&self) -> Snapshot {
         self.shared.snapshot().clone()
+    }
+
+    /// The Services panel's facts of the shown workspace as last read, and why they could not be.
+    pub fn services(&self) -> (Option<Arc<ServicesFacts>>, Option<String>) {
+        let snapshot = self.shared.snapshot();
+        (snapshot.services.clone(), snapshot.services_problem.clone())
+    }
+
+    /// Facts read right after an action, ahead of the push that would bring them.
+    pub fn put_services(&self, facts: ServicesFacts) {
+        let mut snapshot = self.shared.snapshot();
+        if snapshot.branch == facts.branch {
+            snapshot.services = Some(Arc::new(facts));
+            snapshot.services_problem = None;
+            snapshot.generation += 1;
+        }
     }
 
     pub fn generation(&self) -> u64 {
@@ -847,7 +869,16 @@ fn apply(shared: &Shared, waker: &(dyn Fn() + Send + Sync), update: Update) {
             };
             snapshot.turn = Some((update.role, result));
         }
-        Update::Status(_) | Update::Agents(_) | Update::Turn(_) => {}
+        Update::Services(update) if update.branch == snapshot.branch => {
+            match (update.facts, update.error) {
+                (Some(facts), _) => {
+                    snapshot.services = Some(Arc::new(facts));
+                    snapshot.services_problem = None;
+                }
+                (None, error) => snapshot.services_problem = error,
+            }
+        }
+        Update::Status(_) | Update::Agents(_) | Update::Turn(_) | Update::Services(_) => {}
     });
 }
 
@@ -957,6 +988,11 @@ fn look(
     let ask_more = !matches!(workspaces, Err(SourceError::Unreachable(_))) && !branch.is_empty();
     let status = ask_more.then(|| source.status(branch));
     let agents = ask_more.then(|| source.agents(branch));
+    let services = ask_more
+        .then(|| source.transport())
+        .flatten()
+        .filter(|transport| transport.services.facts)
+        .map(|_| source.services_facts(branch));
     let logs = logs
         .filter(|_| ask_more)
         .map(|service| (service.clone(), source.logs(branch, &service)));
@@ -1005,6 +1041,14 @@ fn look(
         }
         if let Some(Ok(agents)) = agents {
             snapshot.agents = agents;
+        }
+        match services {
+            Some(Ok(facts)) => {
+                snapshot.services = Some(Arc::new(facts));
+                snapshot.services_problem = None;
+            }
+            Some(Err(error)) => snapshot.services_problem = Some(error.to_string()),
+            None => {}
         }
         if let Some((service, result)) = logs {
             snapshot.logs = Some((service, logs_text(result)));

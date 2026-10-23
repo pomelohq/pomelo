@@ -16,6 +16,7 @@ ui = { path = "../ui" }
 workspace = { path = "../workspace" }
 settings = { path = "../settings" }
 settings_ui = { path = "../settings_ui" }
+files = { path = "../files" }
 files_ui = { path = "../files_ui" }
 lsp = { path = "../lsp" }
 editor = { package = "pomelo-editor", path = "../editor" }

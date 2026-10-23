@@ -11,7 +11,7 @@ use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
-use crate::access::{ConsoleRequest, LogLines};
+use crate::access::{ConsoleRequest, LogLines, ServiceControl};
 use crate::model::{
     run_action, shared_key, Action, Context, Crash, IntoContext, Shared, SharedRun, Status,
     TabRequest,
@@ -672,6 +672,10 @@ impl ServiceItem {
         }
     }
 
+    fn offers(&self, control: ServiceControl) -> bool {
+        self.context.access.missing(control).is_none()
+    }
+
     fn uptime(&self) -> Option<String> {
         self.context.access.uptime(&self.process_holder())
     }
@@ -725,12 +729,13 @@ impl ServiceItem {
             title = title.child(view::tag(&mode));
         }
         let mut buttons = Vec::new();
-        if running || busy {
+        let controls = self.container.is_none() || self.offers(ServiceControl::Shared);
+        if controls && (running || busy) {
             buttons.push(view::disabled_button(Some(IconKind::Play), "Start"));
-        } else {
+        } else if controls {
             buttons.push(self.button(START, IconKind::Play, "Start", Tone::Primary));
         }
-        if running {
+        if running && controls {
             buttons.push(self.button(STOP, IconKind::Stop, "Stop", Tone::Plain));
             buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
         }
@@ -847,7 +852,7 @@ impl ServiceItem {
             );
         }
         let mut buttons = Vec::new();
-        if port.is_some() && self.container.is_none() {
+        if port.is_some() && self.container.is_none() && self.offers(ServiceControl::Relocate) {
             buttons.push(self.button(
                 NEW_PORT,
                 IconKind::ArrowUpRight,
@@ -855,7 +860,7 @@ impl ServiceItem {
                 Tone::Primary,
             ));
         }
-        if self.container.is_none() {
+        if self.container.is_none() && self.offers(ServiceControl::SideAgents) {
             buttons.push(self.button(FIX, IconKind::Sparkle, "Fix with Claude", Tone::Agent));
         }
         buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
@@ -922,14 +927,17 @@ impl ServiceItem {
                                 .weight(600)
                                 .color(colors.text),
                         )
-                        .child(Self::link(self.base + NEW_PORT, "Change"))
+                        .children(
+                            self.offers(ServiceControl::Relocate)
+                                .then(|| Self::link(self.base + NEW_PORT, "Change")),
+                        )
                         .into(),
                 ));
             }
             let modes = service.mode_names();
             let current_mode = self.context.access.mode(&self.target, &service);
             // How it runs follows where it is reached and what it reads: the mode comes after the env facts.
-            let mode_fact = if modes.len() > 1 {
+            let mode_fact = if modes.len() > 1 && self.offers(ServiceControl::Mode) {
                 Some(Self::fact(
                     "Mode",
                     self.choice(&modes, &current_mode, MODE_BASE),
@@ -942,7 +950,7 @@ impl ServiceItem {
             if let Some(dir) = config.repos.get(&self.target.repo) {
                 let profiles = dir.env_profiles(Some(&service));
                 let current = self.context.access.env_profile(&config, &self.target);
-                if profiles.len() > 1 {
+                if profiles.len() > 1 && self.offers(ServiceControl::EnvProfile) {
                     facts.push(Self::fact(
                         "Env profile",
                         self.choice(&profiles, &current, PROFILE_BASE),
@@ -1169,11 +1177,7 @@ impl ServiceItem {
             STOP => self.run(Action::Stop),
             RESTART => self.run(Action::Restart),
             NEW_PORT => self.run(Action::Relocate),
-            OPEN => {
-                if let Some(url) = self.url() {
-                    self.ask(TabRequest::OpenUrl(url));
-                }
-            }
+            OPEN if self.url().is_some() => self.ask(TabRequest::OpenUrl(self.target.clone())),
             COPY_URL => {
                 if let Some(url) = self.url().or_else(|| self.connection()) {
                     self.ask(TabRequest::Copy(url));

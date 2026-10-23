@@ -12,6 +12,9 @@ mod editor_fixture;
 mod git_fixture;
 mod modal_fixture;
 mod remote_fixture;
+
+/// The project the services scenes draw, local and remote alike.
+const SERVICES_YML: &str = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    env:\n      .env.development:\n        RAILS_ENV: development\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails server -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      app:\n        type: frontend\n        port: true\n        mode: hmr\n        modes:\n          hmr: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n";
 mod terminal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
@@ -277,6 +280,28 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
             ],
         ),
         "services-crashed" => (0, &[("SERVICES", "api/jobs"), ("FACTS", "674")]),
+        // The same cards over a project on another machine: the panel reads what the host's server reports.
+        "remote-services-running" => (
+            0,
+            &[
+                ("SERVICES", "api/server"),
+                ("FACTS", "674"),
+                ("REMOTE", "1"),
+            ],
+        ),
+        "remote-services-stopped" => (
+            0,
+            &[
+                ("SERVICES", "web/app"),
+                ("FACTS", "674"),
+                ("STOPPED", "web/app"),
+                ("REMOTE", "1"),
+            ],
+        ),
+        "remote-services-crashed" => (
+            0,
+            &[("SERVICES", "api/jobs"), ("FACTS", "674"), ("REMOTE", "1")],
+        ),
         "agent-dock-tabs" => (0, &[("TABBAR", "agent")]),
         "components-tabs" => (0, &[("TABBAR", "sample")]),
         // The Git panel over scratch repos in the board's state; GITVIEW=tree|ungrouped, GITAMEND=1, GITSELECT=<rows down>.
@@ -377,7 +402,6 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // A project on another machine from a stand-in source; REMOTEVIEW names the state. The window is laid
         // out at the boards' 1440x900 and cropped to the part a board is about.
         "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
-        "remote-logs" => (0, &[("REMOTEVIEW", "logs"), ("CROP", REMOTE_CENTER)]),
         "remote-disconnected" => (
             0,
             &[("REMOTEVIEW", "disconnected"), ("CROP", REMOTE_CENTER)],
@@ -1169,93 +1193,99 @@ fn main() -> anyhow::Result<()> {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
         }
-        let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
-        std::fs::write(
-            dir.join("pom.yml"),
-            "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    env:\n      .env.development:\n        RAILS_ENV: development\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails server -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      app:\n        type: frontend\n        port: true\n        mode: hmr\n        modes:\n          hmr: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n",
-        )?;
-        let config = pom_config::Config::load(&dir.join("pom.yml"))?;
-        let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
-            pom_services::RunnerOptions {
-                project_root: dir.clone(),
-                session: "myproject".into(),
-                state: pom_paths::StateDir::new(dir.join("state")),
-                holders: pom_ptyhost::SocketDir::new(dir.join("s")),
-                binary: "/nonexistent".into(),
-                docker: "/nonexistent".into(),
-            },
-        ));
-        let mut panel = services_ui::ServicesPanel::new(
-            services_ui::ServicesContext {
-                runner: runner.clone(),
-                config: std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
-                    config,
-                )))),
-                branch: "feat-login".into(),
-                ticket: "PROJ-101".into(),
-                is_main: false,
-                waker: std::sync::Arc::new(|| {}),
-            },
-            dir.join("workspace--feat-login"),
-        );
-        // The facts the boards show: leased ports behind the proxy, and api/server's holder up for 12 minutes.
-        for (repo, service, port) in [("api", "server", 3000), ("web", "app", 5173)] {
-            let key = pom_ports::service_key(
-                &pom_env::port_ws_key("feat-login"),
-                &format!("{repo}~{service}"),
+        let stopped = std::env::var("STOPPED").ok();
+        let mut scratch = None;
+        // REMOTE=1: the same panel over a project on another machine, fed the facts its server would send.
+        let mut panel = if std::env::var("REMOTE").is_ok() {
+            remote_fixture::services_panel(SERVICES_YML, stopped.as_deref())?
+        } else {
+            let dir = std::env::temp_dir().join(format!("pom-snapshot-svc-{}", std::process::id()));
+            std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
+            scratch = Some(dir.clone());
+            std::fs::write(dir.join("pom.yml"), SERVICES_YML)?;
+            let config = pom_config::Config::load(&dir.join("pom.yml"))?;
+            let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(
+                pom_services::RunnerOptions {
+                    project_root: dir.clone(),
+                    session: "myproject".into(),
+                    state: pom_paths::StateDir::new(dir.join("state")),
+                    holders: pom_ptyhost::SocketDir::new(dir.join("s")),
+                    binary: "/nonexistent".into(),
+                    docker: "/nonexistent".into(),
+                },
+            ));
+            let mut panel = services_ui::ServicesPanel::new(
+                services_ui::ServicesContext {
+                    runner: runner.clone(),
+                    config: std::sync::Arc::new(std::sync::RwLock::new(Some(std::sync::Arc::new(
+                        config,
+                    )))),
+                    branch: "feat-login".into(),
+                    ticket: "PROJ-101".into(),
+                    is_main: false,
+                    waker: std::sync::Arc::new(|| {}),
+                },
+                dir.join("workspace--feat-login"),
             );
-            runner.ports().acquire_preferred(&key, port, 1);
-        }
-        let server = runner.holder_name(&pom_services::ServiceTarget {
-            branch: "feat-login".into(),
-            is_main: false,
-            repo: "api".into(),
-            service: "server".into(),
-        });
-        let pidfile = runner.holders().pidfile(&server);
-        if let Some(parent) = pidfile.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&pidfile, "48213\n")?;
-        std::fs::File::options()
-            .write(true)
-            .open(&pidfile)?
-            .set_modified(
-                std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
-            )?;
-        use services_ui::Status;
-        panel.show_status("_ws", "gateway", Status::Running, None, None);
-        panel.show_status("api", "server", Status::Running, None, None);
-        panel.show_status(
-            "api",
-            "jobs",
-            Status::Crashed,
-            None,
-            Some(services_ui::Crash {
-                line: Some("KeyError: key not found: \"REDIS_URL\"".into()),
-                exit: "exit 1".into(),
-                at: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(130)),
-            }),
-        );
-        panel.show_status("web", "app", Status::Running, None, None);
-        panel.show_status(
-            "web",
-            "storybook",
-            Status::Stopped,
-            Some("port 6006 is already in use by node (pid 48213)".into()),
-            None,
-        );
-        for name in ["postgres", "redis", "files"] {
-            panel.show_shared_running(name);
-        }
-        if let Some((repo, service)) = std::env::var("STOPPED")
-            .ok()
-            .as_deref()
-            .and_then(|which| which.split_once('/'))
-        {
-            panel.show_status(repo, service, Status::Stopped, None, None);
-        }
+            // The facts the boards show: leased ports behind the proxy, and api/server's holder up for 12 minutes.
+            for (repo, service, port) in [("api", "server", 3000), ("web", "app", 5173)] {
+                let key = pom_ports::service_key(
+                    &pom_env::port_ws_key("feat-login"),
+                    &format!("{repo}~{service}"),
+                );
+                runner.ports().acquire_preferred(&key, port, 1);
+            }
+            let server = runner.holder_name(&pom_services::ServiceTarget {
+                branch: "feat-login".into(),
+                is_main: false,
+                repo: "api".into(),
+                service: "server".into(),
+            });
+            let pidfile = runner.holders().pidfile(&server);
+            if let Some(parent) = pidfile.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&pidfile, "48213\n")?;
+            std::fs::File::options()
+                .write(true)
+                .open(&pidfile)?
+                .set_modified(
+                    std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5),
+                )?;
+            use services_ui::Status;
+            panel.show_status("_ws", "gateway", Status::Running, None, None);
+            panel.show_status("api", "server", Status::Running, None, None);
+            panel.show_status(
+                "api",
+                "jobs",
+                Status::Crashed,
+                None,
+                Some(services_ui::Crash {
+                    line: Some("KeyError: key not found: \"REDIS_URL\"".into()),
+                    exit: "exit 1".into(),
+                    at: Some(std::time::SystemTime::now() - std::time::Duration::from_secs(130)),
+                }),
+            );
+            panel.show_status("web", "app", Status::Running, None, None);
+            panel.show_status(
+                "web",
+                "storybook",
+                Status::Stopped,
+                Some("port 6006 is already in use by node (pid 48213)".into()),
+                None,
+            );
+            for name in ["postgres", "redis", "files"] {
+                panel.show_shared_running(name);
+            }
+            if let Some((repo, service)) = std::env::var("STOPPED")
+                .ok()
+                .as_deref()
+                .and_then(|which| which.split_once('/'))
+            {
+                panel.show_status(repo, service, Status::Stopped, None, None);
+            }
+            panel
+        };
         let tab = std::env::var("SERVICES").ok().filter(|which| which != "1");
         let (width, height) = if tab.is_some() {
             (1000.0_f32, 520.0_f32)
@@ -1356,8 +1386,10 @@ fn main() -> anyhow::Result<()> {
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         enc.write_header()?.write_image_data(&rgba)?;
-        if let Err(error) = std::fs::remove_dir_all(&dir) {
-            eprintln!("remove {}: {error}", dir.display());
+        if let Some(dir) = scratch {
+            if let Err(error) = std::fs::remove_dir_all(&dir) {
+                eprintln!("remove {}: {error}", dir.display());
+            }
         }
         println!("wrote {out} ({w}x{h})");
         return Ok(());

@@ -36,6 +36,12 @@ pub mod method {
     pub const FS_READ: &str = "fs.read";
     pub const FS_STAT: &str = "fs.stat";
     pub const FS_FILES: &str = "fs.files";
+    pub const SVC_FACTS: &str = "svc.facts";
+    pub const SVC_RUN: &str = "svc.run";
+    pub const SVC_SHARED: &str = "svc.shared";
+    pub const SVC_MODE: &str = "svc.mode";
+    pub const SVC_ENV_PROFILE: &str = "svc.env_profile";
+    pub const SVC_SHARED_LOGS: &str = "svc.shared_logs";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -75,10 +81,19 @@ pub const METHODS: &[&str] = &[
     method::FS_READ,
     method::FS_STAT,
     method::FS_FILES,
+    method::SVC_FACTS,
+    method::SVC_RUN,
+    method::SVC_SHARED,
+    method::SVC_MODE,
+    method::SVC_ENV_PROFILE,
+    method::SVC_SHARED_LOGS,
 ];
 
 /// What the server's HELLO lists beside its methods.
-pub const FEATURES: &[&str] = &[pom_rpc::pty::SHARED_EVENTS, FILES_READ];
+pub const FEATURES: &[&str] = &[pom_rpc::pty::SHARED_EVENTS, FILES_READ, JOB_TASK];
+
+/// The server runs a repo's pre-written command as a job (`job_op::TASK`).
+pub const JOB_TASK: &str = "job.task";
 
 /// The server reads a workspace's files: its tree as it changes, a file, the finder's list.
 pub const FILES_READ: &str = "files.read";
@@ -110,7 +125,11 @@ pub mod topic {
     pub const AGENTS: &str = "agents";
     /// The last turn of the agent the client follows.
     pub const TURN: &str = "turn";
-    pub const ALL: &[&str] = &[WORKSPACES, STATUS, AGENTS, TURN];
+    /// What the Services panel shows of the workspace, from a server that lists `svc.facts`.
+    pub const SERVICES: &str = "services";
+    pub const ALL: &[&str] = &[WORKSPACES, STATUS, AGENTS, TURN, SERVICES];
+    /// What a server from before `svc.facts` pushes.
+    pub const BEFORE_SERVICES: &[&str] = &[WORKSPACES, STATUS, AGENTS, TURN];
 }
 
 pub const REQUIRED: &[&str] = &[
@@ -372,7 +391,9 @@ pub mod job_op {
     pub const WS_SLEEP: &str = "ws.sleep";
     pub const START_WAIT: &str = "start_wait";
     pub const SYNC: &str = "sync";
-    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC];
+    /// A repo's pre-written command, run with the workspace's env.
+    pub const TASK: &str = "task";
+    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC, TASK];
 }
 
 /// `ws.create`: an empty `repos` checks out every repo of the project.
@@ -405,6 +426,16 @@ pub struct StartWaitArgs {
     pub timeout_seconds: u64,
 }
 
+/// `task`: the command of `repo` whose label (its description, else key, else command) is `label`; the
+/// server runs only what the project's config holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TaskArgs {
+    pub branch: String,
+    pub repo: String,
+    pub label: String,
+}
+
 /// A job as the app asks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobRequest {
@@ -413,6 +444,7 @@ pub enum JobRequest {
     Sleep(BranchArgs),
     StartWait(StartWaitArgs),
     Sync(BranchArgs),
+    Task(TaskArgs),
 }
 
 impl JobRequest {
@@ -423,6 +455,7 @@ impl JobRequest {
             JobRequest::Sleep(_) => job_op::WS_SLEEP,
             JobRequest::StartWait(_) => job_op::START_WAIT,
             JobRequest::Sync(_) => job_op::SYNC,
+            JobRequest::Task(_) => job_op::TASK,
         }
     }
 
@@ -430,6 +463,7 @@ impl JobRequest {
         match self {
             JobRequest::Create(args) => &args.branch,
             JobRequest::StartWait(args) => &args.branch,
+            JobRequest::Task(args) => &args.branch,
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 &args.branch
             }
@@ -440,6 +474,7 @@ impl JobRequest {
         let value = match self {
             JobRequest::Create(args) => serde_json::to_value(args),
             JobRequest::StartWait(args) => serde_json::to_value(args),
+            JobRequest::Task(args) => serde_json::to_value(args),
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 serde_json::to_value(args)
             }
@@ -611,4 +646,137 @@ pub struct FsFilesParams {
 pub mod fs_error {
     pub const TOO_LARGE: &str = "too_large";
     pub const BUSY: &str = "busy";
+}
+
+/// How a service stands: `running`, `crashed` (it died and left a record) or `stopped`.
+pub mod service_status {
+    pub const RUNNING: &str = "running";
+    pub const CRASHED: &str = "crashed";
+    pub const STOPPED: &str = "stopped";
+}
+
+/// How a crashed service died: the line of its output that most likely says why, how it exited, and when
+/// (seconds since the epoch).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrashFact {
+    pub line: Option<String>,
+    pub exit: String,
+    pub at: Option<u64>,
+}
+
+/// One service of the workspace as the Services panel shows it. `repo` is `_ws` for a workspace-level one.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceFact {
+    pub repo: String,
+    pub service: String,
+    pub holder: String,
+    pub status: String,
+    pub port: Option<u16>,
+    pub mode: String,
+    pub env_profile: String,
+    /// Its dev-proxy address on the machine.
+    pub url: Option<String>,
+    pub pid: Option<i32>,
+    /// When its holder started, in seconds since the epoch.
+    pub started_at: Option<u64>,
+    pub crash: Option<CrashFact>,
+}
+
+/// A shared service as the Services panel shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedFact {
+    pub name: String,
+    pub running: bool,
+    pub host_port: u16,
+    /// The holder of a command shared service.
+    pub holder: String,
+    pub pid: Option<i32>,
+    pub started_at: Option<u64>,
+    /// What `{{shared.<name>.url}}` gives the workspace.
+    pub connection: Option<String>,
+    /// The folder a command shared service runs in, as shown.
+    pub folder: String,
+}
+
+/// Everything the Services panel shows of one workspace, read on the machine that runs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServicesFacts {
+    pub branch: String,
+    /// The workspace's folder there.
+    pub root: PathBuf,
+    /// The project's pom.yml as it reads now.
+    pub config: String,
+    pub services: Vec<ServiceFact>,
+    pub shared: Vec<SharedFact>,
+    /// The repos checked out in the workspace.
+    pub repos: Vec<String>,
+    /// Running services of the project in other workspaces.
+    pub others_running: usize,
+    /// The dev proxy's addresses reach the machine from elsewhere, not only `localhost` there.
+    pub public_urls: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServicesUpdate {
+    pub branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facts: Option<ServicesFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// What `svc.run` and `svc.shared` do.
+pub mod service_verb {
+    pub const START: &str = "start";
+    pub const STOP: &str = "stop";
+    pub const RESTART: &str = "restart";
+    /// Moves a service to a new port and starts it there.
+    pub const RELOCATE: &str = "relocate";
+}
+
+/// One service of a workspace (`repo` `_ws` for a workspace-level one); `op_id` as for `svc.act`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceRunParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repo: String,
+    pub service: String,
+    pub action: String,
+    pub op_id: String,
+}
+
+/// A shared service, or all of them for `*`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedRunParams {
+    pub cfg: String,
+    pub name: String,
+    pub action: String,
+    pub op_id: String,
+}
+
+/// `value` is the mode or env profile to set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceChoiceParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repo: String,
+    pub service: String,
+    pub value: String,
+}
+
+/// The last `lines` lines of shared service `name`'s output (0: the server's default).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedLogsParams {
+    pub cfg: String,
+    pub name: String,
+    pub lines: usize,
 }

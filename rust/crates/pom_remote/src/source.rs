@@ -10,7 +10,8 @@ use pom_services::{ServiceHealth, SharedHealth};
 use serde::{Deserialize, Serialize};
 
 use crate::server_api::{
-    AgentsUpdate, JobRequest, Progress, StatusUpdate, TurnUpdate, WorkspacesUpdate,
+    AgentsUpdate, JobRequest, Progress, ServicesFacts, ServicesUpdate, StatusUpdate, TurnUpdate,
+    WorkspacesUpdate,
 };
 use crate::{Host, Ssh, EXIT_UNREACHABLE};
 
@@ -176,6 +177,54 @@ pub struct TransportInfo {
     pub jobs: bool,
     /// The server reads the workspace's files: the tree as it changes, a file, the finder's list.
     pub files: bool,
+    /// What the server offers the Services panel.
+    pub services: ServiceOffers,
+}
+
+/// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ServiceOffers {
+    /// `svc.facts` and the `services` push.
+    pub facts: bool,
+    pub run: bool,
+    pub shared: bool,
+    pub mode: bool,
+    pub env_profile: bool,
+    pub shared_logs: bool,
+    /// A repo's pre-written commands as jobs.
+    pub tasks: bool,
+}
+
+/// What `run_service` and `run_shared` do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceVerb {
+    Start,
+    Stop,
+    Restart,
+    Relocate,
+}
+
+impl ServiceVerb {
+    pub fn parse(verb: &str) -> Option<ServiceVerb> {
+        use crate::server_api::service_verb;
+        match verb {
+            service_verb::START => Some(ServiceVerb::Start),
+            service_verb::STOP => Some(ServiceVerb::Stop),
+            service_verb::RESTART => Some(ServiceVerb::Restart),
+            service_verb::RELOCATE => Some(ServiceVerb::Relocate),
+            _ => None,
+        }
+    }
+
+    pub fn verb(self) -> &'static str {
+        use crate::server_api::service_verb;
+        match self {
+            ServiceVerb::Start => service_verb::START,
+            ServiceVerb::Stop => service_verb::STOP,
+            ServiceVerb::Restart => service_verb::RESTART,
+            ServiceVerb::Relocate => service_verb::RELOCATE,
+        }
+    }
 }
 
 /// The long-lived session's state, and how many times it came back to a restarted server.
@@ -192,6 +241,7 @@ pub enum Update {
     Status(StatusUpdate),
     Agents(AgentsUpdate),
     Turn(TurnUpdate),
+    Services(ServicesUpdate),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -329,6 +379,46 @@ pub trait ProjectSource: Send + Sync {
     }
     fn cancel_job(&self, _id: &str) -> Result<(), SourceError> {
         Err(unsupported("Cancelling a workspace job"))
+    }
+    /// What the Services panel shows of workspace `branch`.
+    fn services_facts(&self, _branch: &str) -> Result<ServicesFacts, SourceError> {
+        Err(unsupported("The Services panel"))
+    }
+    /// Runs `verb` on one service of `branch` (`repo` `_ws` for a workspace-level one) and waits for it.
+    fn run_service(
+        &self,
+        _branch: &str,
+        _repo: &str,
+        _service: &str,
+        _verb: ServiceVerb,
+    ) -> Result<(), SourceError> {
+        Err(unsupported("Running a service"))
+    }
+    /// Runs `verb` on shared service `name`, or on all of them for `*`.
+    fn run_shared(&self, _name: &str, _verb: ServiceVerb) -> Result<(), SourceError> {
+        Err(unsupported("Running a shared service"))
+    }
+    fn set_service_mode(
+        &self,
+        _branch: &str,
+        _repo: &str,
+        _service: &str,
+        _mode: &str,
+    ) -> Result<(), SourceError> {
+        Err(unsupported("Changing a service's mode"))
+    }
+    fn set_env_profile(
+        &self,
+        _branch: &str,
+        _repo: &str,
+        _service: &str,
+        _profile: &str,
+    ) -> Result<(), SourceError> {
+        Err(unsupported("Changing a service's env profile"))
+    }
+    /// The last `lines` lines shared service `name` printed.
+    fn shared_logs(&self, _name: &str, _lines: usize) -> Result<String, SourceError> {
+        Err(unsupported("A shared service's output"))
     }
 }
 
