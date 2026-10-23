@@ -188,12 +188,18 @@ impl AgentDriver for ClaudeDriver {
         let yes_at = bottom
             .iter()
             .rposition(|line| line.contains(TRUST_YES_CHOICE))?;
-        let choices = &bottom
-            [yes_at.saturating_sub(TRUST_CHOICES - 1)..(yes_at + TRUST_CHOICES).min(bottom.len())];
-        let selected = choices.iter().find(|line| line.contains(SELECTION_MARK))?;
-        Some(TrustDialog {
-            yes_selected: selected.contains(TRUST_YES_CHOICE),
-        })
+        let no = bottom.get(yes_at.checked_sub(1)?)?;
+        if !no.contains(TRUST_NO_CHOICE) {
+            return None;
+        }
+        let yes = &bottom[yes_at];
+        match (no.contains(SELECTION_MARK), yes.contains(SELECTION_MARK)) {
+            (true, false) => Some(TrustDialog {
+                yes_selected: false,
+            }),
+            (false, true) => Some(TrustDialog { yes_selected: true }),
+            _ => None,
+        }
     }
 
     fn answer_trust(&self, dialog: TrustDialog) -> Keystrokes {
@@ -218,7 +224,7 @@ const DIALOG_CHOICES_MAX: usize = 9;
 /// How much of the end of the screen text the trust prompt check reads.
 const TRUST_TAIL: usize = 600;
 const TRUST_YES_CHOICE: &str = "Yes, I trust this folder";
-const TRUST_CHOICES: usize = 2;
+const TRUST_NO_CHOICE: &str = "No, exit";
 
 static CLAUDE: ClaudeDriver = ClaudeDriver;
 
@@ -234,6 +240,8 @@ pub fn driver(name: &str) -> Option<&'static dyn AgentDriver> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::screen::rendered_lines;
+    use crate::screen::tests::rendered_at_holder_size;
 
     #[test]
     fn a_multi_line_turn_is_one_paste_then_enter() {
@@ -313,6 +321,115 @@ mod tests {
             claude.trust_dialog(&["> Try \"write a test\"".to_string()]),
             None
         );
+    }
+
+    /// The agent's own output at a folder it had never seen, as the holder replays it: one frame, a full clear
+    /// and a redraw, words placed by column, the cursor parked on the highlighted choice.
+    const TRUST_CAPTURE: &[u8] = include_bytes!("../tests/fixtures/trust-screen-2.1.309.bin");
+    /// The agent's output up to its four-choice permission dialog in its full-screen layout, with the
+    /// spinner it keeps redrawing above the dialog afterwards.
+    const PERMISSION_CAPTURE: &[u8] =
+        include_bytes!("../tests/fixtures/permission-screen-2.1.309.bin");
+
+    #[test]
+    fn the_captured_trust_prompt_reads_as_no_highlighted_above_yes() {
+        let claude = driver("claude").expect("claude");
+        assert!(claude.waits_for_trust(TRUST_CAPTURE));
+        for lines in [
+            rendered_lines(TRUST_CAPTURE),
+            rendered_at_holder_size(TRUST_CAPTURE),
+        ] {
+            let no_at = lines
+                .iter()
+                .position(|line| line.trim_start() == "\u{276F} No, exit")
+                .expect("no choice, highlighted");
+            assert_eq!(lines[no_at + 1].trim(), "Yes, I trust this folder");
+            assert_eq!(
+                claude.trust_dialog(&lines),
+                Some(TrustDialog {
+                    yes_selected: false
+                })
+            );
+        }
+        let mut moved = TRUST_CAPTURE.to_vec();
+        moved.extend_from_slice("\x1b[2G \x1b[1B\x1b[2G\u{276F}\x1b[1A".as_bytes());
+        assert_eq!(
+            claude.trust_dialog(&rendered_lines(&moved)),
+            Some(TrustDialog { yes_selected: true }),
+            "the highlight moved down onto yes"
+        );
+    }
+
+    #[test]
+    fn the_captured_permission_dialog_reads_with_its_first_choice_highlighted() {
+        let claude = driver("claude").expect("claude");
+        for lines in [
+            rendered_lines(PERMISSION_CAPTURE),
+            rendered_at_holder_size(PERMISSION_CAPTURE),
+        ] {
+            assert!(lines.iter().any(|line| line.trim() == "\u{276F} 1. Yes"));
+            assert!(lines.iter().any(|line| line.trim() == "4. No"));
+            assert_eq!(
+                claude.permission_dialog(&lines),
+                Some(PermissionDialog {
+                    first_choice_selected: true
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_permission_dialog_placed_by_columns_with_the_cursor_above_it_is_found() {
+        let claude = driver("claude").expect("claude");
+        let choices: [&[&str]; 4] = [
+            &["Yes"],
+            &[
+                "Yes,",
+                "and",
+                "always",
+                "allow",
+                "access",
+                "to",
+                "/p/workspace--feat-login",
+            ],
+            &["Yes,", "and", "switch", "to", "auto", "mode"],
+            &["No"],
+        ];
+        let screen = |selected: usize| -> Vec<u8> {
+            let mut out = String::from(
+                "\x1b[2J\x1b[H\r\x1b[2B\x1b[2GDo\x1b[5Gyou\x1b[9Gwant\x1b[14Gto\x1b[17Gproceed?",
+            );
+            for (index, words) in choices.iter().enumerate() {
+                out.push_str("\r\x1b[1B");
+                if index == selected {
+                    out.push_str("\x1b[2G\u{276F}");
+                }
+                out.push_str(&format!("\x1b[4G{}.", index + 1));
+                let mut column = 7;
+                for word in *words {
+                    out.push_str(&format!("\x1b[{column}G{word}"));
+                    column += word.len() + 1;
+                }
+            }
+            out.push_str("\r\x1b[2B\x1b[2GEsc\x1b[6Gto\x1b[9Gcancel\x1b[H\x1b[3B");
+            out.into_bytes()
+        };
+        assert_eq!(
+            claude.permission_dialog(&rendered_lines(&screen(0))),
+            Some(PermissionDialog {
+                first_choice_selected: true
+            })
+        );
+        for selected in 1..4 {
+            assert_eq!(
+                claude.permission_dialog(&rendered_lines(&screen(selected))),
+                Some(PermissionDialog {
+                    first_choice_selected: false
+                }),
+                "choice {} is highlighted",
+                selected + 1
+            );
+        }
     }
 
     fn permission_screen(head: &[&str], choices: &[&str], selected: usize) -> Vec<String> {
