@@ -114,7 +114,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "agent_list",
-        "The coding-agent sessions of THIS workspace: role, state (starting, needs_trust, idle, thinking, tool_use, compacting, awaiting_input, died, ended, unknown), reason (pending_approval, idle_notification, stop, interrupted, stale or null), running (a turn is in progress), phase (working, waiting, idle, gone), turn, pending_permission (the tool prompt it waits on: id, kind, tool_name, tool_input, answer_by) and whether you may drive it. Only this workspace's sessions exist for you.",
+        "The coding-agent sessions of THIS workspace: role, state (starting, needs_trust, idle, thinking, tool_use, compacting, awaiting_input, died, ended, unknown), reason (pending_approval, idle_notification, stop, interrupted, stale, submitted or null), running (a turn is in progress), phase (working, waiting, idle, gone), turn, pending_permission (the tool prompt it waits on: id, kind, tool_name, tool_input, answer_by) and whether you may drive it. Only this workspace's sessions exist for you.",
         json!({"type": "object", "properties": {}}),
         true,
         Box::new(move |_| {

@@ -1,6 +1,7 @@
 //! `pom ws export|import` and `pom project export|import`: a workspace or a project moved to another machine
 //! as one archive, written to a file or stdout, or streamed over ssh into `pom ... import -` on a host.
 
+use std::cell::Cell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -54,19 +55,34 @@ pub(crate) enum TransferCommand {
     },
 }
 
-fn target(args: &Args, json: bool) -> Result<Target, String> {
+/// Where the archive goes, and whether the report is JSON. `-o json` and `-o table` pick the report's format like
+/// every other command; any other `-o` value is the archive's path.
+fn target(args: &Args) -> Result<(Target, bool), String> {
     let output = args
         .value(&["-o", "--output"])
         .filter(|path| !path.is_empty());
+    let (output, json_format) = match output.as_deref() {
+        Some("json") => (None, true),
+        Some("table") => (None, false),
+        _ => (output, false),
+    };
+    let json = json_format || args.has("--json");
     let host = args.value(&["--to"]).filter(|host| !host.is_empty());
-    match (output, host) {
-        (Some(_), Some(_)) => Err("-o and --to exclude each other".into()),
-        (_, Some(host)) => Ok(Target::Host(host)),
+    let target = match (output, host) {
+        (Some(_), Some(_)) => return Err("-o and --to exclude each other".into()),
+        (_, Some(host)) => Target::Host(host),
         (Some(path), None) if path == "-" && json => {
-            Err("--json prints the report on stdout; write the archive to a file with -o".into())
+            return Err(
+                "--json prints the report on stdout; write the archive to a file with -o".into(),
+            )
         }
-        (output, None) => Ok(Target::File(output)),
-    }
+        (output, None) => Target::File(output),
+    };
+    Ok((target, json))
+}
+
+fn json_report(args: &Args) -> Result<bool, String> {
+    Ok(args.has("--json") || args.json()?)
 }
 
 fn input(args: &Args, usage: &str) -> Result<(String, bool), String> {
@@ -95,17 +111,24 @@ pub(crate) fn parse(words: &[&str], project: bool) -> Result<TransferCommand, St
                         .into(),
                 );
             };
-            let json = args.has("--json");
+            let (target, json) = target(&args)?;
             Ok(TransferCommand::Export {
                 branch: branch.clone(),
-                target: target(&args, json)?,
+                target,
                 databases: !args.has("--no-db"),
                 json,
             })
         }
         ("import", false) => {
-            let args = Args::parse(rest, &["--project", "--branch"])?;
-            args.allow(&["--project", "--branch", "--json", PASSPHRASE_STDIN])?;
+            let args = Args::parse(rest, &["--project", "--branch", "-o", "--output"])?;
+            args.allow(&[
+                "--project",
+                "--branch",
+                "--json",
+                "-o",
+                "--output",
+                PASSPHRASE_STDIN,
+            ])?;
             let (input, passphrase_stdin) = input(
                 &args,
                 "usage: pom ws import <file.pomws | -> [--project name] [--branch new] [--json]",
@@ -115,22 +138,19 @@ pub(crate) fn parse(words: &[&str], project: bool) -> Result<TransferCommand, St
                 project: args.value(&["--project"]).filter(|name| !name.is_empty()),
                 branch: args.value(&["--branch"]).filter(|name| !name.is_empty()),
                 passphrase_stdin,
-                json: args.has("--json"),
+                json: json_report(&args)?,
             })
         }
         ("export", true) => {
             let args = Args::parse(rest, &["-o", "--output", "--to"])?;
             args.allow(&["-o", "--output", "--to", "--json"])?;
             args.at_most(0, "project export")?;
-            let json = args.has("--json");
-            Ok(TransferCommand::ProjectExport {
-                target: target(&args, json)?,
-                json,
-            })
+            let (target, json) = target(&args)?;
+            Ok(TransferCommand::ProjectExport { target, json })
         }
         ("import", true) => {
-            let args = Args::parse(rest, &["--dir"])?;
-            args.allow(&["--dir", "--json", PASSPHRASE_STDIN])?;
+            let args = Args::parse(rest, &["--dir", "-o", "--output"])?;
+            args.allow(&["--dir", "--json", "-o", "--output", PASSPHRASE_STDIN])?;
             let (input, passphrase_stdin) = input(
                 &args,
                 "usage: pom project import <file.pomproj | -> [--dir path] [--json]",
@@ -139,22 +159,117 @@ pub(crate) fn parse(words: &[&str], project: bool) -> Result<TransferCommand, St
                 input,
                 directory: args.value(&["--dir"]).filter(|dir| !dir.is_empty()),
                 passphrase_stdin,
-                json: args.has("--json"),
+                json: json_report(&args)?,
             })
         }
         (other, _) => Err(format!("unknown command {other}")),
     }
 }
 
-/// Why a transfer failed, with the exit code to leave with.
+impl TransferCommand {
+    fn json(&self) -> bool {
+        match self {
+            TransferCommand::Export { json, .. }
+            | TransferCommand::Import { json, .. }
+            | TransferCommand::ProjectExport { json, .. }
+            | TransferCommand::ProjectImport { json, .. } => *json,
+        }
+    }
+}
+
+/// Why a transfer failed, with the exit code to leave with and, when known, its error code.
 pub(crate) struct Failure {
-    code: i32,
+    exit: i32,
+    code: Option<&'static str>,
     message: String,
+    /// The host's own error document, when its import failed.
+    remote: Option<serde_json::Value>,
 }
 
 impl From<String> for Failure {
     fn from(message: String) -> Failure {
-        Failure { code: 1, message }
+        Failure {
+            exit: 1,
+            code: None,
+            message,
+            remote: None,
+        }
+    }
+}
+
+/// Error codes of `{"schema": "pom.ws-transfer/v1", "error": {"code": ...}}`.
+const PASSPHRASE_REQUIRED: &str = "passphrase_required";
+const PASSPHRASE_MISMATCH: &str = "passphrase_mismatch";
+const WRONG_PASSPHRASE: &str = "wrong_passphrase";
+const HOST_UNREACHABLE: &str = "host_unreachable";
+const REMOTE_FAILED: &str = "remote_failed";
+pub(crate) const USAGE: &str = "usage";
+const FAILED: &str = "failed";
+
+/// The passphrase prompt's own failure, remembered so the error that comes back through the transfer as text
+/// still gets its code.
+type Refused = Cell<Option<&'static str>>;
+
+impl Failure {
+    fn code(&self, refused: Option<&'static str>) -> &'static str {
+        if let Some(code) = self.code.or(refused) {
+            return code;
+        }
+        if self.message.contains("wrong password") {
+            WRONG_PASSPHRASE
+        } else {
+            FAILED
+        }
+    }
+}
+
+/// The one document a `--json` transfer prints on stdout when it fails.
+pub(crate) fn error_document(code: &str, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "schema": OUTPUT_SCHEMA,
+        "error": {"code": code, "message": message},
+    })
+}
+
+/// A transfer asked for JSON, so even its usage errors answer in JSON.
+pub(crate) fn wants_json_errors(args: &[String]) -> bool {
+    let transfer = args.windows(2).any(|pair| {
+        matches!(
+            pair[0].as_str(),
+            "ws" | "workspace" | "project" | "projects"
+        ) && matches!(pair[1].as_str(), "export" | "import")
+    });
+    transfer && pom_remote::json_requested(args)
+}
+
+/// One step of progress on stderr: an indented line, or with `--json` `{"event": "progress", ...}`.
+fn progress_line(json: bool, stage: &str, message: &str) -> String {
+    if json {
+        serde_json::json!({"event": "progress", "stage": stage, "message": message}).to_string()
+    } else {
+        format!("    {message}")
+    }
+}
+
+fn warning_line(json: bool, message: &str) -> String {
+    if json {
+        serde_json::json!({"event": "warning", "message": message}).to_string()
+    } else {
+        format!("warning: {message}")
+    }
+}
+
+/// A line the host's pom wrote on its stderr. With `--json` it already is an event, which gets the host added.
+fn remote_line(json: bool, host: &str, line: &str) -> String {
+    if !json {
+        return format!("  remote: {line}");
+    }
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(mut event @ serde_json::Value::Object(_)) => {
+            event["host"] = serde_json::json!(host);
+            event.to_string()
+        }
+        _ => serde_json::json!({"event": "remote", "host": host, "message": line}).to_string(),
     }
 }
 
@@ -165,6 +280,7 @@ pub(crate) fn execute(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    let refused = Refused::new(None);
     let result = match command {
         TransferCommand::Export {
             branch,
@@ -173,7 +289,11 @@ pub(crate) fn execute(
             json,
         } => Session::open(invocation, cwd)
             .map_err(Failure::from)
-            .and_then(|session| export(&session, branch, target, *databases, *json, cwd, out, err)),
+            .and_then(|session| {
+                export(
+                    &session, branch, target, *databases, *json, cwd, &refused, out, err,
+                )
+            }),
         TransferCommand::Import {
             input,
             project,
@@ -188,12 +308,13 @@ pub(crate) fn execute(
             branch.as_deref(),
             *passphrase_stdin,
             *json,
+            &refused,
             out,
             err,
         )
         .map_err(Failure::from),
         TransferCommand::ProjectExport { target, json } => {
-            project_export(invocation, cwd, target, *json, out, err)
+            project_export(invocation, cwd, target, *json, &refused, out, err)
         }
         TransferCommand::ProjectImport {
             input,
@@ -206,18 +327,28 @@ pub(crate) fn execute(
             directory.as_deref(),
             *passphrase_stdin,
             *json,
+            &refused,
             out,
             err,
         )
         .map_err(Failure::from),
     };
-    match result {
-        Ok(()) => 0,
-        Err(failure) => {
-            report(err, &format!("error: {}", failure.message));
-            failure.code
-        }
+    let failure = match result {
+        Ok(()) => return 0,
+        Err(failure) => failure,
+    };
+    if !command.json() {
+        report(err, &format!("error: {}", failure.message));
+        return failure.exit;
     }
+    let mut document = error_document(failure.code(refused.get()), &failure.message);
+    if let Some(remote) = failure.remote {
+        document["error"]["remote"] = remote;
+    }
+    if let Err(error) = say(out, &document.to_string()) {
+        report(err, &format!("error: {} ({error})", failure.message));
+    }
+    failure.exit
 }
 
 /// Where an archive went, for the report.
@@ -254,6 +385,7 @@ fn write_archive<T>(
     default_name: &str,
     cwd: &Path,
     remote: &[&str],
+    json: bool,
     out: &mut dyn Write,
     write: impl FnOnce(Option<&str>, &mut dyn Write) -> Result<T, String>,
 ) -> Result<(T, Written), Failure> {
@@ -274,19 +406,26 @@ fn write_archive<T>(
                 }
                 Err(error) => {
                     if let Err(remove) = std::fs::remove_file(&partial) {
-                        eprintln!("could not remove {}: {remove}", partial.display());
+                        eprintln!(
+                            "{}",
+                            warning_line(
+                                json,
+                                &format!("could not remove {}: {remove}", partial.display())
+                            )
+                        );
                     }
                     Err(error.into())
                 }
             }
         }
-        Target::Host(name) => stream_to_host(name, remote, write),
+        Target::Host(name) => stream_to_host(name, remote, json, write),
     }
 }
 
 fn stream_to_host<T>(
     name: &str,
     remote: &[&str],
+    json: bool,
     write: impl FnOnce(Option<&str>, &mut dyn Write) -> Result<T, String>,
 ) -> Result<(T, Written), Failure> {
     let host = Hosts::default_path()
@@ -300,8 +439,10 @@ fn stream_to_host<T>(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| Failure {
-            code: EXIT_UNREACHABLE,
+            exit: EXIT_UNREACHABLE,
+            code: Some(HOST_UNREACHABLE),
             message: format!("could not run ssh: {error}"),
+            remote: None,
         })?;
     let stdout = child.stdout.take();
     let collected = std::thread::spawn(move || {
@@ -314,11 +455,12 @@ fn stream_to_host<T>(
         bytes
     });
     let stderr = child.stderr.take();
+    let host = name.to_string();
     let relayed = std::thread::spawn(move || {
         let mut last = String::new();
         if let Some(stderr) = stderr {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("  remote: {line}");
+                eprintln!("{}", remote_line(json, &host, &line));
                 if !line.trim().is_empty() {
                     last = line;
                 }
@@ -354,15 +496,29 @@ fn stream_to_host<T>(
             ))
         }
         Some(255) => Err(Failure {
-            code: EXIT_UNREACHABLE,
+            exit: EXIT_UNREACHABLE,
+            code: Some(HOST_UNREACHABLE),
             message: format!(
                 "could not reach host {name} over ssh ({last}); check it with: pom host test {name}"
             ),
+            remote: None,
         }),
-        Some(code) => Err(Failure {
-            code,
-            message: format!("the import on {name} failed (exit {code}); its output is above"),
-        }),
+        Some(code) => {
+            let remote = serde_json::from_slice::<serde_json::Value>(&stdout).ok();
+            let said = remote
+                .as_ref()
+                .and_then(|document| document["error"]["message"].as_str())
+                .map_or_else(
+                    || "its output is above".to_string(),
+                    |message| message.to_string(),
+                );
+            Err(Failure {
+                exit: code,
+                code: Some(REMOTE_FAILED),
+                message: format!("the import on {name} failed (exit {code}): {said}"),
+                remote: remote.map(|document| document["error"].clone()),
+            })
+        }
         None => Err("ssh was killed".to_string().into()),
     }
 }
@@ -384,6 +540,7 @@ fn export(
     databases: bool,
     json: bool,
     cwd: &Path,
+    refused: &Refused,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
@@ -397,24 +554,25 @@ fn export(
     );
     let (report, written) = {
         let err = Mutex::new(&mut *err);
-        let progress = |line: &str| say_to(&err, &format!("    {line}"));
+        let progress = |stage: &str, line: &str| say_to(&err, &progress_line(json, stage, line));
         write_archive(
             target,
             &default_name,
             cwd,
             &["ws", "import"],
+            json,
             out,
             |secret, sink| {
                 let passphrase = || match secret {
                     Some(secret) => Ok(secret.to_string()),
-                    None => passphrase("passphrase to seal the secrets with", true),
+                    None => passphrase("passphrase to seal the secrets with", true, refused),
                 };
                 pom_transfer::export(&context, branch, options, &passphrase, &progress, sink)
             },
         )?
     };
     for warning in &report.warnings {
-        crate::report(err, &format!("warning: {warning}"));
+        crate::report(err, &warning_line(json, warning));
     }
     let manifest = &report.manifest;
     if json {
@@ -529,10 +687,10 @@ fn open_input(
     Ok((Box::new(reader), sent))
 }
 
-fn passphrase_or(sent: &Option<String>, what: &str) -> Result<String, String> {
+fn passphrase_or(sent: &Option<String>, what: &str, refused: &Refused) -> Result<String, String> {
     match sent.as_ref().filter(|sent| !sent.is_empty()) {
         Some(sent) => Ok(sent.clone()),
-        None => passphrase(what, false),
+        None => passphrase(what, false, refused),
     }
 }
 
@@ -545,6 +703,7 @@ fn import(
     branch: Option<&str>,
     passphrase_stdin: bool,
     json: bool,
+    refused: &Refused,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), String> {
@@ -568,10 +727,19 @@ fn import(
     let from_stage = match pom_workspace::failed_run(&state, &target_branch) {
         None => 0,
         Some(failed) if failed.operation == pom_workspace::Operation::Import => {
-            report(
-                err,
-                &format!("resuming the import of {target_branch} at stage {}", failed.failed_stage + 1),
+            let message = format!(
+                "resuming the import of {target_branch} at stage {}",
+                failed.failed_stage + 1
             );
+            if json {
+                report(
+                    err,
+                    &serde_json::json!({"event": "resume", "stage": failed.failed_stage + 1, "message": message})
+                        .to_string(),
+                );
+            } else {
+                report(err, &message);
+            }
             failed.failed_stage
         }
         Some(_) => {
@@ -586,12 +754,12 @@ fn import(
     };
     let context = session.context();
     let plan = pom_transfer::plan_import(&context, &manifest, staging.path(), &options, &|| {
-        passphrase_or(&sent, "passphrase the secrets were sealed with")
+        passphrase_or(&sent, "passphrase the secrets were sealed with", refused)
     })?;
     for warning in &plan.warnings {
-        report(err, &format!("warning: {warning}"));
+        report(err, &warning_line(json, warning));
     }
-    let result = crate::workspaces::stream(err, |sink| {
+    let result = crate::workspaces::stream_as(err, json, |sink| {
         pom_workspace::import(&context, &plan.request, sink)
     })?;
     let outcome = result.map_err(|error| {
@@ -648,6 +816,7 @@ fn project_export(
     cwd: &Path,
     target: &Target,
     json: bool,
+    refused: &Refused,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), Failure> {
@@ -662,17 +831,18 @@ fn project_export(
         &default_name,
         cwd,
         &["project", "import"],
+        json,
         out,
         |secret, sink| {
             let passphrase = || match secret {
                 Some(secret) => Ok(secret.to_string()),
-                None => passphrase("passphrase to seal the secrets with", true),
+                None => passphrase("passphrase to seal the secrets with", true, refused),
             };
             pom_transfer::export_project(&config_path, &state, &passphrase, sink)
         },
     )?;
     for warning in &export.warnings {
-        report(err, &format!("warning: {warning}"));
+        report(err, &warning_line(json, warning));
     }
     let manifest = &export.manifest;
     if json {
@@ -720,12 +890,14 @@ fn project_export(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn project_import(
     cwd: &Path,
     input: &str,
     directory: Option<&str>,
     passphrase_stdin: bool,
     json: bool,
+    refused: &Refused,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<(), String> {
@@ -737,11 +909,11 @@ fn project_import(
         &mut reader,
         &state,
         directory.as_deref(),
-        &|| passphrase_or(&sent, "passphrase the project was sealed with"),
-        &|line| say_to(&err, &format!("    {line}")),
+        &|| passphrase_or(&sent, "passphrase the project was sealed with", refused),
+        &|stage, line| say_to(&err, &progress_line(json, stage, line)),
     )?;
     for warning in &imported.warnings {
-        say_to(&err, &format!("warning: {warning}"));
+        say_to(&err, &warning_line(json, warning));
     }
     if json {
         let document = serde_json::json!({
@@ -811,26 +983,42 @@ fn project_config(
 }
 
 /// `POM_BUNDLE_PASSPHRASE`, else typed on the terminal (hidden); never an argument, so it stays out of `ps`.
-pub(crate) fn passphrase(what: &str, confirm: bool) -> Result<String, String> {
+/// Why it could not get one is left in `refused`.
+fn passphrase(what: &str, confirm: bool, refused: &Refused) -> Result<String, String> {
     if let Some(value) = std::env::var(PASSPHRASE_ENV)
         .ok()
         .filter(|value| !value.is_empty())
     {
         return Ok(value);
     }
-    let missing =
-        || format!("the secrets need a passphrase: set {PASSPHRASE_ENV} or run this on a terminal");
+    let refuse = |code: &'static str, message: String| {
+        refused.set(Some(code));
+        message
+    };
+    let missing = || {
+        refuse(
+            PASSPHRASE_REQUIRED,
+            format!(
+                "the secrets need a passphrase: set {PASSPHRASE_ENV} or run this on a terminal"
+            ),
+        )
+    };
     let mut terminal = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
         .map_err(|_| missing())?;
-    let first = prompt(&mut terminal, &format!("{what}: "))?;
+    let first = prompt(&mut terminal, &format!("{what}: "))
+        .map_err(|error| refuse(PASSPHRASE_REQUIRED, error))?;
     if first.is_empty() {
         return Err(missing());
     }
-    if confirm && prompt(&mut terminal, "again: ")? != first {
-        return Err("the passphrases differ".into());
+    if confirm {
+        let again =
+            prompt(&mut terminal, "again: ").map_err(|error| refuse(PASSPHRASE_REQUIRED, error))?;
+        if again != first {
+            return Err(refuse(PASSPHRASE_MISMATCH, "the passphrases differ".into()));
+        }
     }
     Ok(first)
 }
@@ -944,6 +1132,19 @@ mod tests {
                 json: false,
             })
         );
+        assert_eq!(
+            parsed("export feat-x -o json", false),
+            Ok(TransferCommand::Export {
+                branch: "feat-x".into(),
+                target: Target::File(None),
+                databases: true,
+                json: true,
+            })
+        );
+        assert!(matches!(
+            parsed("import a.pomws -o json", false),
+            Ok(TransferCommand::Import { json: true, .. })
+        ));
         assert_eq!(
             parsed("export --to dev --json", true),
             Ok(TransferCommand::ProjectExport {

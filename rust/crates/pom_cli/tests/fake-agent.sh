@@ -76,6 +76,9 @@ while IFS= read -r line; do
         event MessageDisplay ",\"turn_id\":\"t-$text\",\"message_id\":\"d-$text\",\"index\":1,\"final\":true,\"delta\":\"done\""
         reply "$text" "Working on it: done"
         ;;
+    *late-reminder*)
+        event Notification ",\"message\":\"Claude is waiting for your input\",\"notification_type\":\"idle_prompt\""
+        ;;
     *long*)
         ;;
     *)

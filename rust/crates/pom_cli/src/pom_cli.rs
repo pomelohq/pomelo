@@ -59,10 +59,11 @@ services
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens, directly and through the dev proxy
-  proxy fault add <service> [--path /x] [--status 503] [--delay 2s] [--rate 0.3] [--ttl 10m]
+  proxy fault add <service> [--path /x] [--status 503] [--delay 2s] [--rate 0.3] [--ttl 10m] [--json]
                      make the dev proxy fail or slow down this workspace's requests to a service
-  proxy fault ls [--all] [-o json] | rm <id> | clear
+  proxy fault ls [--all] [--json] | rm <id> [--json] | clear [--json]
                      the fault rules in force; remove one, or every one of the workspace
+                     (add, rm and clear return once the running proxy applies the change)
   proxy              serve the dev proxy and webhook relay for every project (`pom start` runs
                      one in the background when neither the app nor another proxy does)
   proxy config [-o json] | set <key> <value> | reset <key>
@@ -103,6 +104,9 @@ workspaces
                      open an exported workspace here: worktrees at the same commits with the
                      same changes, databases restored, fresh ports, env files rewritten, setup
                      run; a stopped import resumes when run again
+                     with --json (or -o json) stdout is one document, an error with its code on
+                     failure, and stderr carries progress as one JSON event per line; the same
+                     goes for project export and import
   ws gc [--merged] [--closed] [--dry-run] [--yes] [--force] [--json]
                      delete the workspaces whose pull requests (in every repo that has one) are
                      merged, or closed with --closed; asks for each on a terminal, else needs
@@ -343,6 +347,13 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
     };
     let invocation = match parse(&args) {
         Ok(invocation) => invocation,
+        Err(message) if transfer::wants_json_errors(&args) => {
+            let document = transfer::error_document(transfer::USAGE, &message);
+            if let Err(error) = writeln!(out, "{document}") {
+                report(err, &format!("{message} ({error})"));
+            }
+            return 2;
+        }
         Err(message) => {
             report(err, &format!("{message}\n\n{USAGE}"));
             return 2;

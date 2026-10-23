@@ -110,6 +110,16 @@ impl Machine {
             .env("GIT_COMMITTER_EMAIL", "t@example.com")
             .env_remove(pom_passphrase_env())
             .stdin(Stdio::null());
+        // No controlling terminal: a missing passphrase must fail, not prompt whoever runs the tests.
+        // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+        unsafe {
+            std::os::unix::process::CommandExt::pre_exec(&mut command, || {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         // The compose plugin lives under the real home's docker config.
         if let Some(home) = std::env::var_os("HOME") {
             let docker = PathBuf::from(home).join(".docker");
@@ -611,4 +621,125 @@ fn a_project_and_its_workspace_stream_to_a_host_over_ssh() {
 
 fn pom_layout_is_repo(path: &Path) -> bool {
     path.join(".git").exists()
+}
+
+/// Every stderr line of a `--json` transfer is one JSON event.
+fn events(output: &Output) -> Vec<Value> {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let event: Value = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("stderr line is not JSON ({error}): {line}"));
+            assert!(event["event"].is_string(), "{line}");
+            event
+        })
+        .collect()
+}
+
+/// stdout is exactly one JSON document.
+fn one_document(output: &Output) -> Value {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.trim().lines().count(), 1, "{}", text(output));
+    json(output)
+}
+
+fn error_code(output: &Output) -> String {
+    let document = one_document(output);
+    assert_eq!(document["schema"], "pom.ws-transfer/v1", "{document}");
+    assert!(document["error"]["message"].is_string(), "{document}");
+    document["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn json_transfers_print_one_document_and_their_errors_as_json() {
+    let temp = tempfile::Builder::new()
+        .prefix("pomx")
+        .tempdir_in("/tmp")
+        .expect("temp");
+    let origin = origin(temp.path());
+    let mac = Machine::new(temp.path().join("mac"), &origin);
+    let vm = Machine::new(temp.path().join("vm"), &origin);
+    SecretStore::new(mac.state(), "demo")
+        .set("API_KEY", "k-123")
+        .expect("secret");
+    let created = mac.pom(&["ws", "create", "feat-x"]);
+    assert!(created.status.success(), "{}", text(&created));
+
+    let archive = temp.path().join("feat-x.pomws");
+    let exported = mac.pom_with_passphrase(&[
+        "ws",
+        "export",
+        "feat-x",
+        "-o",
+        &archive.to_string_lossy(),
+        "--no-db",
+        "--json",
+    ]);
+    assert!(exported.status.success(), "{}", text(&exported));
+    assert_eq!(one_document(&exported)["action"], "export");
+    let progress = events(&exported);
+    assert!(
+        progress
+            .iter()
+            .any(|event| event["event"] == "progress" && event["stage"] == "repo"),
+        "{progress:?}"
+    );
+
+    let formatted = mac.pom_with_passphrase(&["ws", "export", "feat-x", "--no-db", "-o", "json"]);
+    assert!(formatted.status.success(), "{}", text(&formatted));
+    let report = one_document(&formatted);
+    assert!(
+        report["output"]
+            .as_str()
+            .is_some_and(|output| output.ends_with("demo-feat-x.pomws")),
+        "{report}"
+    );
+    assert!(
+        !mac.root().join("json").exists(),
+        "-o json is the format, not a file"
+    );
+    events(&formatted);
+
+    let no_passphrase = mac.pom(&["ws", "export", "feat-x", "--no-db", "--json"]);
+    assert_eq!(
+        no_passphrase.status.code(),
+        Some(1),
+        "{}",
+        text(&no_passphrase)
+    );
+    assert_eq!(error_code(&no_passphrase), "passphrase_required");
+    events(&no_passphrase);
+
+    let project = mac.pom(&["project", "export", "-o", "json"]);
+    assert_eq!(project.status.code(), Some(1), "{}", text(&project));
+    assert_eq!(error_code(&project), "passphrase_required");
+
+    let wrong = vm
+        .command(&["ws", "import", &archive.to_string_lossy(), "--json"])
+        .env(pom_passphrase_env(), "wrong")
+        .output()
+        .expect("pom");
+    assert_eq!(wrong.status.code(), Some(1), "{}", text(&wrong));
+    assert_eq!(error_code(&wrong), "wrong_passphrase");
+
+    let unsealed = vm.pom(&["ws", "import", &archive.to_string_lossy(), "-o", "json"]);
+    assert_eq!(unsealed.status.code(), Some(1), "{}", text(&unsealed));
+    assert_eq!(error_code(&unsealed), "passphrase_required");
+
+    let usage = mac.pom(&["ws", "export", "--json"]);
+    assert_eq!(usage.status.code(), Some(2), "{}", text(&usage));
+    assert_eq!(error_code(&usage), "usage");
+
+    let imported = vm.pom_with_passphrase(&["ws", "import", &archive.to_string_lossy(), "--json"]);
+    assert!(imported.status.success(), "{}", text(&imported));
+    assert_eq!(one_document(&imported)["action"], "import");
+    let stages = events(&imported);
+    assert!(
+        stages.iter().any(|event| event["event"] == "stage"),
+        "{stages:?}"
+    );
 }

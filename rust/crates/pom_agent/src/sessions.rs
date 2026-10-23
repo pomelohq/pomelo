@@ -77,6 +77,12 @@ pub const IDLE_NOTIFICATION: &str = "idle_notification";
 pub const STOP: &str = "stop";
 pub const INTERRUPTED: &str = "interrupted";
 pub const STALE: &str = "stale";
+/// pom saw a sent prompt start its turn before the agent reported working on it.
+pub const SUBMITTED: &str = "submitted";
+pub const SUBMITTED_EVENT: &str = "Submitted";
+/// The agent's idle reminder needs a minute of idling, so one this soon after a prompt is about the idle time
+/// before it and must not end the turn the prompt just started.
+const IDLE_REMINDER_GRACE_MS: u64 = 10_000;
 
 const AWAITING_INPUT: &str = "awaiting_input";
 
@@ -95,12 +101,13 @@ pub const STATES: [&str; 10] = [
     "unknown",
 ];
 /// Every `reason` a session view reports; `null` when none applies.
-pub const REASONS: [&str; 5] = [
+pub const REASONS: [&str; 6] = [
     PENDING_APPROVAL,
     IDLE_NOTIFICATION,
     STOP,
     INTERRUPTED,
     STALE,
+    SUBMITTED,
 ];
 /// Every `phase`: what a client does next, whatever the exact state.
 pub const PHASES: [&str; 4] = ["working", "waiting", "idle", "gone"];
@@ -133,6 +140,7 @@ pub(crate) fn reason_for(event: &str, state: &str) -> Option<&'static str> {
         "permission_request" | "PermissionRequest" => Some(PENDING_APPROVAL),
         "Notification" if state == AWAITING_INPUT => Some(PENDING_APPROVAL),
         "Notification" => Some(IDLE_NOTIFICATION),
+        SUBMITTED_EVENT => Some(SUBMITTED),
         _ => None,
     }
 }
@@ -279,20 +287,68 @@ pub fn record_event(
     identity: &Identity,
     event: &SessionEvent,
 ) -> std::io::Result<SessionState> {
+    record_event_unless(state, identity, event, |_| false)
+        .map(|recorded| recorded.unwrap_or_default())
+}
+
+/// Once a send saw turn `turn` start: if the session does not show it running (an idle event slipped in after
+/// the prompt), records pom's `Submitted` so it reads `thinking` until the agent's next hook. A turn that
+/// already ended or moved on is left alone, so a Stop always wins. Whether it recorded.
+pub fn mark_submitted(
+    state: &StateDir,
+    identity: &Identity,
+    session_id: &str,
+    turn: u64,
+) -> std::io::Result<bool> {
+    let event = SessionEvent {
+        session_id: session_id.to_string(),
+        event: SUBMITTED_EVENT.into(),
+        state: Some(AgentState::Thinking),
+        ..SessionEvent::default()
+    };
+    let recorded = record_event_unless(state, identity, &event, |current| {
+        current.is_none_or(|current| {
+            let (status, reason) = current.status();
+            current.turn != turn
+                || current.turn_state != TurnState::Running
+                || turn_running(&status, reason.as_deref())
+        })
+    })?;
+    Ok(recorded.is_some())
+}
+
+/// `record_event`, unless `skip` says otherwise of the current state, checked under the session's lock.
+fn record_event_unless(
+    state: &StateDir,
+    identity: &Identity,
+    event: &SessionEvent,
+    skip: impl FnOnce(Option<&SessionState>) -> bool,
+) -> std::io::Result<Option<SessionState>> {
     let dir = session_dir(state, &event.session_id);
     let previous = read_state(state, &event.session_id);
     let record = with_lock(&dir.join(EVENTS_FILE), |file| {
-        let prompts = read_all(file)?
+        let current = read_state(state, &event.session_id);
+        if skip(current.as_ref()) {
+            return Ok(None);
+        }
+        let lines: Vec<EventLine> = read_all(file)?
             .lines()
             .filter_map(|line| serde_json::from_str::<EventLine>(line).ok())
+            .collect();
+        let prompts = lines
+            .iter()
             .filter(|line| line.event == "UserPromptSubmit")
             .count() as u64;
+        let last_prompt_ms = lines
+            .iter()
+            .rev()
+            .find(|line| line.event == "UserPromptSubmit")
+            .map(|line| line.t_ms);
         let turn = if event.event == "UserPromptSubmit" {
             prompts + 1
         } else {
             prompts
         };
-        let current = read_state(state, &event.session_id);
         let turn_state = match event.event.as_str() {
             "UserPromptSubmit" => TurnState::Running,
             "Stop" => TurnState::Ended,
@@ -314,6 +370,16 @@ pub fn record_event(
                 .unwrap_or_else(|| AgentState::Idle.as_str().to_string())
         };
         let t_ms = now_ms();
+        let late_idle_reminder = event.event == "Notification"
+            && event.state == Some(AgentState::Idle)
+            && current
+                .as_ref()
+                .is_some_and(|current| current.turn_state == TurnState::Running)
+            && last_prompt_ms.is_some_and(|at| t_ms.saturating_sub(at) < IDLE_REMINDER_GRACE_MS);
+        let agent_state = match (&current, late_idle_reminder) {
+            (Some(current), true) => current.state.clone(),
+            _ => agent_state,
+        };
         let transcript = if event.transcript.is_empty() {
             current
                 .as_ref()
@@ -338,6 +404,9 @@ pub fn record_event(
         let mut text = serde_json::to_string(&line).map_err(std::io::Error::other)?;
         text.push('\n');
         file.write_all(text.as_bytes())?;
+        if let (Some(current), true) = (&current, late_idle_reminder) {
+            return Ok(Some(current.clone()));
+        }
         let reason = reason_for(&event.event, &agent_state).map(str::to_string);
         let record = SessionState {
             schema: SCHEMA.into(),
@@ -357,9 +426,9 @@ pub fn record_event(
         };
         let blob = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
         pom_paths::write_atomic(&dir.join(STATE_FILE), &blob, 0o644)?;
-        Ok(record)
+        Ok(Some(record))
     })?;
-    if previous.is_none() {
+    if previous.is_none() && record.is_some() {
         index_session(state, identity, &event.session_id)?;
     }
     Ok(record)
@@ -447,6 +516,59 @@ mod tests {
             transcript: "/t.jsonl".into(),
             ..SessionEvent::default()
         }
+    }
+
+    #[test]
+    fn a_sent_turn_reads_running_until_its_stop_even_after_an_idle_event_slips_in() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let main = identity("claude", "ws-myproject-feat-login-claude-raw");
+        let running = |state: &StateDir| {
+            let record = read_state(state, "a").expect("a");
+            let (status, reason) = record.status();
+            (
+                status.clone(),
+                reason.clone(),
+                turn_running(&status, reason.as_deref()),
+            )
+        };
+        record_event(
+            &state,
+            &main,
+            &event("a", "UserPromptSubmit", AgentState::Thinking),
+        )
+        .expect("prompt");
+        assert!(
+            !mark_submitted(&state, &main, "a", 1).expect("mark"),
+            "the hook already says it runs"
+        );
+
+        let reminder = SessionEvent {
+            notification: Some("idle_prompt".into()),
+            ..event("a", "Notification", AgentState::Idle)
+        };
+        record_event(&state, &main, &reminder).expect("late reminder");
+        assert_eq!(running(&state), ("thinking".into(), None, true));
+        assert_eq!(events(&state, "a").len(), 2, "the reminder is still logged");
+
+        record_event(&state, &main, &event("a", "SessionStart", AgentState::Idle)).expect("start");
+        assert!(!running(&state).2);
+        assert!(mark_submitted(&state, &main, "a", 1).expect("mark"));
+        assert_eq!(
+            running(&state),
+            ("thinking".into(), Some(SUBMITTED.into()), true)
+        );
+        assert_eq!(read_state(&state, "a").expect("a").turn, 1);
+
+        record_event(&state, &main, &event("a", "Stop", AgentState::Idle)).expect("stop");
+        assert!(!mark_submitted(&state, &main, "a", 1).expect("mark after stop"));
+        assert_eq!(running(&state), ("idle".into(), Some(STOP.into()), false));
+
+        record_event(&state, &main, &reminder).expect("reminder after the turn");
+        assert_eq!(
+            running(&state),
+            ("idle".into(), Some(IDLE_NOTIFICATION.into()), false)
+        );
     }
 
     #[test]

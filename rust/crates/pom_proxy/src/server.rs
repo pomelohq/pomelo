@@ -354,6 +354,13 @@ async fn handle_proxy(
     client: SocketAddr,
     request: Request<Incoming>,
 ) -> Response<Body> {
+    if is_fault_reload(&request, client) {
+        let loaded = shared.router.reload_faults();
+        return match serde_json::to_string(&loaded) {
+            Ok(body) => json_response(200, body),
+            Err(error) => text_response(500, &format!("dev-proxy: {error}")),
+        };
+    }
     if !shared.router.has_projects() {
         return text_response(503, "dev proxy not configured");
     }
@@ -845,6 +852,16 @@ fn no_webhook_route(path: &str) -> Response<Body> {
         404,
         &format!("no webhook route for {path} (use /<repo>/<service>)"),
     )
+}
+
+fn is_fault_reload(request: &Request<Incoming>, client: SocketAddr) -> bool {
+    request.method() == hyper::Method::POST
+        && request.uri().path() == crate::faults::RELOAD_PATH
+        && request
+            .headers()
+            .get(crate::faults::RELOAD_HEADER)
+            .is_some_and(|value| value.as_bytes() == b"faults")
+        && client.ip().to_canonical().is_loopback()
 }
 
 fn json_response(status: u16, body: String) -> Response<Body> {

@@ -351,6 +351,10 @@ pub trait Machine: Send + Sync {
     fn faults(&self) -> Vec<crate::FaultRule> {
         Vec::new()
     }
+    /// The file the fault rules come from, when there is one.
+    fn faults_source(&self) -> Option<PathBuf> {
+        None
+    }
     /// Starts waking a sleeping workspace without waiting for it.
     fn wake(&self, _project_root: &Path, _branch: &str) {}
     /// Where the last request per workspace is kept; nowhere when `None`.
@@ -903,6 +907,19 @@ impl Router {
             }),
             fault: None,
         })
+    }
+
+    /// Re-reads the fault rules now instead of at the next cache expiry, so `pom proxy fault` can wait for them.
+    pub fn reload_faults(&self) -> crate::LoadedFaults {
+        let rules = self.machine.faults();
+        let ids = rules.iter().map(|rule| rule.id.clone()).collect();
+        if let Ok(mut cache) = self.faults.lock() {
+            *cache = (Some(Instant::now()), rules);
+        }
+        crate::LoadedFaults {
+            source: self.machine.faults_source(),
+            ids,
+        }
     }
 
     /// The first fault rule in force for this request, drawn against its rate.

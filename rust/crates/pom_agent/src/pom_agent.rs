@@ -65,7 +65,7 @@ pub use sessions::{
     events, events_path, now_ms, phase, project_sessions, read_state, record_event, session_dir,
     turn_running, with_lock, workspace_sessions, EventLine, IndexEntry, SessionEvent, SessionState,
     TurnState, IDLE_NOTIFICATION, INTERRUPTED, PENDING_APPROVAL, PHASES, REASONS, SCHEMA, STALE,
-    STATES, STOP,
+    STATES, STOP, SUBMITTED,
 };
 pub use side::{
     format_tokens, last_answer, main_session, other_cli, record_side, second_opinion_launch,

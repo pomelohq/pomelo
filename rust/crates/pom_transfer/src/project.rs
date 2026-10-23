@@ -119,7 +119,7 @@ pub fn import_project(
     state: &StateDir,
     directory: Option<&Path>,
     passphrase: &dyn Fn() -> Result<String, String>,
-    progress: &dyn Fn(&str),
+    progress: &dyn Fn(&str, &str),
 ) -> Result<ProjectImport, String> {
     let staging = Staging::new(state, "project-import")?;
     let text = unpack_any(
@@ -188,7 +188,7 @@ pub fn import_project(
         if pom_layout::is_git_repo(&destination) {
             continue;
         }
-        progress(&format!("cloning {}", repo.name));
+        progress("clone", &format!("cloning {}", repo.name));
         match clone(&repo.remote_url, &repo.default_branch, &destination) {
             Ok(()) => cloned.push(repo.name.clone()),
             Err(error) => warnings.push(format!(

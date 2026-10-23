@@ -532,11 +532,20 @@ pub(crate) enum FaultCommand {
         all: bool,
         json: bool,
     },
-    Remove(String),
-    Clear,
+    Remove {
+        id: String,
+        json: bool,
+    },
+    Clear {
+        json: bool,
+    },
 }
 
 const DEFAULT_FAULT_TTL: Duration = Duration::from_secs(600);
+/// How long `proxy fault add|rm|clear` waits for the running proxy to confirm it re-read the rules.
+const FAULT_APPLY_TIMEOUT: Duration = Duration::from_secs(3);
+/// A proxy too old to confirm re-reads its rules at most this long after they change.
+const UNCONFIRMED_FAULT_RELOAD: Duration = Duration::from_millis(1100);
 
 /// `500ms`, `2s`, `1m`.
 fn delay(text: &str) -> Result<Duration, String> {
@@ -561,9 +570,12 @@ pub(crate) fn parse_fault(rest: &[&str]) -> Result<FaultCommand, String> {
         "--path", "--status", "--delay", "--rate", "--ttl", "-o", "--output",
     ];
     let args = crate::args::Args::parse(rest, &valued)?;
+    let json = || -> Result<bool, String> { Ok(args.has("--json") || args.json()?) };
     match *verb {
         "add" => {
-            args.allow(&valued)?;
+            let mut allowed = valued.to_vec();
+            allowed.push("--json");
+            args.allow(&allowed)?;
             let [service] = args.positional.as_slice() else {
                 return Err("proxy fault add needs one service".into());
             };
@@ -600,28 +612,31 @@ pub(crate) fn parse_fault(rest: &[&str]) -> Result<FaultCommand, String> {
                     .map(|text| crate::agent::parse_duration(&text))
                     .transpose()?
                     .unwrap_or(DEFAULT_FAULT_TTL),
-                json: args.json()?,
+                json: json()?,
             })
         }
         "ls" => {
-            args.allow(&["--all", "-o", "--output"])?;
+            args.allow(&["--all", "--json", "-o", "--output"])?;
             args.at_most(0, "proxy fault ls")?;
             Ok(FaultCommand::List {
                 all: args.has("--all"),
-                json: args.json()?,
+                json: json()?,
             })
         }
         "rm" => {
-            args.allow(&[])?;
+            args.allow(&["--json", "-o", "--output"])?;
             let [id] = args.positional.as_slice() else {
                 return Err("proxy fault rm needs a rule id (from proxy fault ls)".into());
             };
-            Ok(FaultCommand::Remove(id.clone()))
+            Ok(FaultCommand::Remove {
+                id: id.clone(),
+                json: json()?,
+            })
         }
         "clear" => {
-            args.allow(&[])?;
+            args.allow(&["--json", "-o", "--output"])?;
             args.at_most(0, "proxy fault clear")?;
-            Ok(FaultCommand::Clear)
+            Ok(FaultCommand::Clear { json: json()? })
         }
         other => Err(format!(
             "unknown proxy fault subcommand {other} (add, ls, rm, clear)"
@@ -675,14 +690,17 @@ impl crate::Session {
                         ..pom_proxy::FaultRule::default()
                     },
                 )?;
+                let applied = applied_by_proxy(state, |ids| ids.contains(&rule.id));
                 if *json {
-                    let text = serde_json::to_string(&rule).map_err(|error| error.to_string())?;
-                    return crate::say(out, &text);
+                    let mut document =
+                        serde_json::to_value(&rule).map_err(|error| error.to_string())?;
+                    applied.annotate(&mut document);
+                    return crate::say(out, &document.to_string());
                 }
                 crate::say(
                     out,
                     &format!(
-                        "fault {} on {repo}/{name}{} in workspace {} for {}s",
+                        "fault {} on {repo}/{name}{} in workspace {} for {}s{}",
                         rule.id,
                         if rule.path.is_empty() {
                             String::new()
@@ -690,7 +708,8 @@ impl crate::Session {
                             format!(" {}", rule.path)
                         },
                         self.branch,
-                        ttl.as_secs()
+                        ttl.as_secs(),
+                        applied.suffix()
                     ),
                 )
             }
@@ -736,24 +755,125 @@ impl crate::Session {
                 }
                 Ok(())
             }
-            FaultCommand::Remove(id) => {
-                if pom_proxy::remove_fault(state, id)? {
-                    crate::say(out, &format!("removed fault {id}"))
-                } else {
-                    Err(format!("no fault {id}"))
+            FaultCommand::Remove { id, json } => {
+                if !pom_proxy::remove_fault(state, id)? {
+                    return Err(format!("no fault {id}"));
                 }
+                let applied = applied_by_proxy(state, |ids| !ids.contains(id));
+                if *json {
+                    let mut document =
+                        serde_json::json!({ "schema": "pom.proxy/v1", "removed": id });
+                    applied.annotate(&mut document);
+                    return crate::say(out, &document.to_string());
+                }
+                crate::say(out, &format!("removed fault {id}{}", applied.suffix()))
             }
-            FaultCommand::Clear => {
+            FaultCommand::Clear { json } => {
+                let workspace_ids: Vec<String> = pom_proxy::load_faults(state)
+                    .into_iter()
+                    .filter(|rule| {
+                        rule.session == self.config.session && rule.branch == self.branch
+                    })
+                    .map(|rule| rule.id)
+                    .collect();
                 let cleared = pom_proxy::clear_faults(state, &self.config.session, &self.branch)?;
+                let applied = applied_by_proxy(state, |ids| {
+                    !ids.iter().any(|id| workspace_ids.contains(id))
+                });
+                if *json {
+                    let mut document = serde_json::json!({
+                        "schema": "pom.proxy/v1",
+                        "workspace": self.branch,
+                        "cleared": cleared,
+                    });
+                    applied.annotate(&mut document);
+                    return crate::say(out, &document.to_string());
+                }
                 crate::say(
                     out,
                     &format!(
-                        "cleared {cleared} fault rule(s) of workspace {}",
-                        self.branch
+                        "cleared {cleared} fault rule(s) of workspace {}{}",
+                        self.branch,
+                        applied.suffix()
                     ),
                 )
             }
         }
+    }
+}
+
+/// Whether the running proxy obeys the rules as just written, and why not when it does not.
+#[derive(Debug, PartialEq, Eq)]
+struct Applied {
+    applied: bool,
+    reason: Option<String>,
+}
+
+impl Applied {
+    fn annotate(&self, document: &mut serde_json::Value) {
+        document["applied"] = serde_json::json!(self.applied);
+        if let Some(reason) = &self.reason {
+            document["reason"] = serde_json::json!(reason);
+        }
+    }
+
+    fn suffix(&self) -> String {
+        match (&self.reason, self.applied) {
+            (None, true) => " (applied by the running proxy)".into(),
+            (Some(reason), _) => format!(" ({reason})"),
+            (None, false) => String::new(),
+        }
+    }
+}
+
+/// Has the proxy on this machine re-read the rules and waits until `obeys` holds for the ids it loaded, so a
+/// test's next request already meets the change.
+fn applied_by_proxy(state: &StateDir, obeys: impl Fn(&[String]) -> bool) -> Applied {
+    let port = Ports::from_env().proxy;
+    let deadline = std::time::Instant::now() + FAULT_APPLY_TIMEOUT;
+    let not_applied = |reason: String| Applied {
+        applied: false,
+        reason: Some(reason),
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        match pom_proxy::reload_running_faults(port, remaining.max(Duration::from_millis(100))) {
+            pom_proxy::ReloadReply::NotRunning => {
+                return not_applied("no proxy running".into());
+            }
+            pom_proxy::ReloadReply::Unanswered(why) => {
+                std::thread::sleep(UNCONFIRMED_FAULT_RELOAD);
+                return Applied {
+                    applied: true,
+                    reason: Some(format!(
+                        "the proxy on port {port} did not confirm ({why}); waited out its reload"
+                    )),
+                };
+            }
+            pom_proxy::ReloadReply::Loaded(loaded) => {
+                let ours = pom_proxy::faults_path(state);
+                if let Some(source) = loaded.source.filter(|source| *source != ours) {
+                    return not_applied(format!(
+                        "the proxy on port {port} reads {}, not {}",
+                        source.display(),
+                        ours.display()
+                    ));
+                }
+                if obeys(&loaded.ids) {
+                    return Applied {
+                        applied: true,
+                        reason: None,
+                    };
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return not_applied(format!(
+                "the proxy on port {port} did not pick up the change within {} s",
+                FAULT_APPLY_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -805,9 +925,19 @@ mod fault_tests {
         .is_err());
         assert_eq!(
             parse_fault(&["fault", "rm", "f1a2b3"]),
-            Ok(FaultCommand::Remove("f1a2b3".into()))
+            Ok(FaultCommand::Remove {
+                id: "f1a2b3".into(),
+                json: false
+            })
         );
-        assert_eq!(parse_fault(&["fault", "clear"]), Ok(FaultCommand::Clear));
+        assert_eq!(
+            parse_fault(&["fault", "clear", "--json"]),
+            Ok(FaultCommand::Clear { json: true })
+        );
+        assert!(matches!(
+            parse_fault(&["fault", "add", "api/server", "--status", "503", "--json"]),
+            Ok(FaultCommand::Add { json: true, .. })
+        ));
         assert!(matches!(
             parse_fault(&["fault", "ls", "--all"]),
             Ok(FaultCommand::List { all: true, .. })
