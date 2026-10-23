@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Root of Pomelo's machine-wide state (`$XDG_STATE_HOME/pom`, else `~/.local/state/pom`).
@@ -88,10 +89,46 @@ pub fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<
     result
 }
 
+/// Creates `dir` 0700 when missing, then checks it with [`check_private_dir`].
+pub fn ensure_private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
+    match std::fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::DirBuilder::new().mode(0o700).create(dir)?;
+        }
+        Err(error) => return Err(error),
+        Ok(_) => {}
+    }
+    check_private_dir(dir, uid)
+}
+
+/// Checks an existing socket folder is a real directory `uid` owns, tightening it to 0700 if it is looser;
+/// in a shared `/tmp` that is all that keeps another user from planting or reaching the sockets inside.
+pub fn check_private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(dir)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    if metadata.uid() != uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{} belongs to another user", dir.display()),
+        ));
+    }
+    if metadata.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn atomic_write_replaces_and_sets_mode() -> std::io::Result<()> {
@@ -106,6 +143,32 @@ mod tests {
         );
         let leftovers = std::fs::read_dir(temp.path().join("nested"))?.count();
         assert_eq!(leftovers, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn a_socket_dir_owned_by_someone_else_or_open_to_others_is_not_trusted() -> std::io::Result<()>
+    {
+        let temp = tempfile::tempdir()?;
+        let uid = std::fs::metadata(temp.path())?.uid();
+        let dir = temp.path().join("sockets");
+        ensure_private_dir(&dir, uid)?;
+        assert_eq!(std::fs::metadata(&dir)?.permissions().mode() & 0o777, 0o700);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))?;
+        check_private_dir(&dir, uid)?;
+        assert_eq!(std::fs::metadata(&dir)?.permissions().mode() & 0o777, 0o700);
+        let refused = ensure_private_dir(&dir, uid + 1).expect_err("another owner");
+        assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
+
+        let link = temp.path().join("linked");
+        std::os::unix::fs::symlink(&dir, &link)?;
+        assert!(check_private_dir(&link, uid).is_err());
+        assert_eq!(
+            check_private_dir(&temp.path().join("missing"), uid)
+                .expect_err("missing")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
         Ok(())
     }
 

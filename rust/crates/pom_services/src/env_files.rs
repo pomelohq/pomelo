@@ -285,5 +285,5 @@ fn write_env_file(dir: &Path, file: &str, env: &[(String, String)]) -> std::io::
         text.push_str(value);
         text.push('\n');
     }
-    std::fs::write(dir.join(file), text)
+    pom_paths::write_atomic(&dir.join(file), text.as_bytes(), 0o600)
 }

@@ -3830,6 +3830,7 @@ name = "pom_ptyhost"
 version = "0.9.7"
 dependencies = [
  "libc",
+ "pom_paths",
  "sha1",
  "tempfile",
  "workspace_hack",
@@ -4844,6 +4845,7 @@ dependencies = [
  "pom_rpc",
  "pom_services",
  "pom_shell",
+ "serde",
  "serde_json",
  "tempfile",
  "terminal",

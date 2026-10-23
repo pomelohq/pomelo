@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use winit::event_loop::ActiveEventLoop;
@@ -24,8 +25,12 @@ pub(crate) struct RemoteWindow {
     files_unserved: bool,
     /// The Services panel's source, and the workspace it shows.
     services: Option<(String, Arc<services_ui::RemoteServices>)>,
-    /// The agent roles whose tabs were open when last saved, for the shown workspace.
-    agent_tabs: Vec<String>,
+    /// The agent tabs open when last saved, for the shown workspace.
+    agent_tabs: Vec<services_ui::AgentTab>,
+    /// The shown workspace's saved agent tabs still have to be put back, once its panes are in.
+    restore_agent_tabs: bool,
+    /// Workspaces switched away from, live as they were left, by branch.
+    parked: HashMap<String, ParkedRemote>,
     /// Server restarts already told about.
     restarts_told: u64,
     /// Updating pom on the host, written by the thread that runs it.
@@ -40,6 +45,14 @@ pub(crate) struct RemoteWindow {
     pub jira: Arc<pom_remote::RemoteJira>,
     /// Each workspace's ticket status, kept here under `<project>@<host>`.
     tickets: workspaces_ui::TicketStatuses,
+}
+
+/// A remote workspace's views while another one is shown.
+struct ParkedRemote {
+    views: workspace::ParkedWorkspace,
+    files_unserved: bool,
+    services: Option<Arc<services_ui::RemoteServices>>,
+    agent_tabs: Vec<services_ui::AgentTab>,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -319,6 +332,8 @@ impl App {
                 files_unserved: false,
                 services: None,
                 agent_tabs: Vec::new(),
+                restore_agent_tabs: false,
+                parked: HashMap::new(),
                 restarts_told: 0,
                 pom_update: Arc::new(std::sync::Mutex::new(remote_ui::PomUpdate {
                     can_install,
@@ -384,7 +399,9 @@ impl App {
         let info = project_info(remote, &snapshot);
         let panels = vec![remote_services_panel(remote, &snapshot).0];
         let title = remote_title(remote);
+        let upload = image_upload(remote.watch.source());
         self.with_workspace_view(id, |view, _| {
+            view.set_image_upload(Some(upload));
             view.set_project(Some(info), None, None, None);
             view.set_side_panels(panels);
             view.set_ai_available(false);
@@ -449,6 +466,11 @@ impl App {
                 ports.take_notices()
             })
             .unwrap_or_default();
+        if let Some(list) = snapshot.workspaces.as_ref() {
+            remote
+                .parked
+                .retain(|branch, _| list.workspaces.iter().any(|ws| ws.branch == *branch));
+        }
         if remote.active.is_empty() {
             let main_branch = snapshot.workspaces.as_ref().and_then(|list| {
                 list.workspaces
@@ -500,6 +522,7 @@ impl App {
         self.install_remote_terminals(id, &snapshot);
         self.install_remote_files(id, &snapshot);
         self.install_remote_services(id, &snapshot);
+        self.restore_remote_agent_tabs(id);
         self.open_started_agents(id);
         self.save_remote_agent_tabs(id, &snapshot);
     }
@@ -641,11 +664,18 @@ impl App {
             .iter()
             .map(|agent| agent.role.clone())
             .collect();
-        let open: Vec<String> = self
+        let open: Vec<services_ui::AgentTab> = self
             .with_workspace_view(id, |view, _| {
                 roles
                     .into_iter()
-                    .filter(|role| view.agent_item_open(&services_ui::agent_item_id(&branch, role)))
+                    .filter_map(|role| {
+                        let item_id = services_ui::agent_item_id(&branch, &role);
+                        view.agent_item_open(&item_id)
+                            .then(|| services_ui::AgentTab {
+                                center: view.agent_item_in_center(&item_id),
+                                role,
+                            })
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -723,21 +753,43 @@ impl App {
                 watch.start_agent(&role);
             }) as Box<dyn FnMut()>
         });
-        let (host, project) = (remote.host.clone(), remote.project.clone());
         remote.agent_tabs = Vec::new();
+        remote.restore_agent_tabs = true;
         let agents = terminal_ui::TerminalPanel::remote_agent_dock(root, waker, start_agent);
         self.with_workspace_view(id, |view, _| {
             view.set_terminal_views(Some(Box::new(terminals)), Some(Box::new(agents)));
         });
+    }
+
+    /// Puts the shown workspace's saved agent tabs back where they were, after its file panes are in so a tab
+    /// moved next to the code returns there.
+    fn restore_remote_agent_tabs(&mut self, id: WindowId) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if !std::mem::take(&mut remote.restore_agent_tabs) {
+            return;
+        }
         let Some(tabs) = services_ui::RemoteAgentTabs::default_location() else {
             return;
         };
         let mut number = self.next_agent_item;
-        let restored = services_ui::restore_agent_tabs(&watch, &tabs, &host, &project, &mut number);
+        let restored = services_ui::restore_agent_tabs(
+            &remote.watch,
+            &tabs,
+            &remote.host,
+            &remote.project,
+            &mut number,
+        );
         self.next_agent_item = number;
         self.with_workspace_view(id, |view, _| {
-            for (item_id, item) in restored {
-                view.open_agent_item(&item_id, false, move || Some(item));
+            for tab in restored {
+                let item = tab.item;
+                view.open_agent_item(&tab.id, tab.center, move || Some(item));
             }
         });
     }
@@ -851,10 +903,63 @@ impl App {
         if branch == remote.active {
             return;
         }
+        self.switch_remote_workspace(id, branch);
+        self.poll_remote(id);
+    }
+
+    /// Shows `branch`, parking the shown workspace's views so its terminals, agents and editors come back
+    /// as they were.
+    fn switch_remote_workspace(&mut self, id: WindowId, branch: String) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        if remote.active == branch {
+            return;
+        }
+        let snapshot = remote.watch.snapshot();
+        let installed = remote.terminals_for.as_deref() == Some(remote.active.as_str());
+        self.save_remote_agent_tabs(id, &snapshot);
+        let views = if installed {
+            self.with_workspace_view(id, |view, _| view.park())
+        } else {
+            None
+        };
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if let Some(views) = views {
+            let parked = ParkedRemote {
+                views,
+                files_unserved: remote.files_unserved,
+                services: remote.services.take().map(|(_, source)| source),
+                agent_tabs: std::mem::take(&mut remote.agent_tabs),
+            };
+            remote.parked.insert(remote.active.clone(), parked);
+        }
+        remote.terminals_for = None;
+        remote.files_for = None;
+        remote.services = None;
+        remote.restore_agent_tabs = false;
         remote.active = branch;
         remote.watch.set_branch(&remote.active);
         remote.seen = u64::MAX;
-        self.poll_remote(id);
+        let Some(parked) = remote.parked.remove(&remote.active) else {
+            return;
+        };
+        let active = Some(remote.active.clone());
+        remote.terminals_for = active.clone();
+        remote.files_for = active;
+        remote.files_unserved = parked.files_unserved;
+        remote.services = parked
+            .services
+            .map(|source| (remote.active.clone(), source));
+        remote.agent_tabs = parked.agent_tabs;
+        let info = project_info(remote, &remote.watch.snapshot());
+        self.with_workspace_view(id, |view, _| view.resume(info, parked.views));
     }
 
     pub(crate) fn remote_notice_action(&mut self, id: WindowId, index: usize) {
@@ -1097,18 +1202,12 @@ impl App {
         id: WindowId,
         finished: &[workspaces_ui::Finished],
     ) {
-        let Some(remote) = self
-            .mains
-            .get_mut(&id)
-            .and_then(|main| main.remote.as_mut())
-        else {
+        if let Some(created) = finished.iter().rev().find(|done| done.ok && done.created) {
+            self.switch_remote_workspace(id, created.branch.clone());
+        }
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
             return;
         };
-        if let Some(created) = finished.iter().rev().find(|done| done.ok && done.created) {
-            remote.active = created.branch.clone();
-            remote.watch.set_branch(&remote.active);
-            remote.seen = u64::MAX;
-        }
         remote.watch.refresh_now();
     }
 
@@ -1175,6 +1274,21 @@ fn remote_services_panel(
     )
     .with_tab_buttons(buttons);
     (Box::new(panel), source)
+}
+
+/// A screenshot pasted in a terminal here goes to the host, where the agent reading that terminal runs.
+fn image_upload(source: Arc<dyn pom_remote::ProjectSource>) -> workspace::image_paste::ImageUpload {
+    Arc::new(move |png: &[u8]| {
+        source
+            .paste_file(png, "png")
+            .map(|path| path.to_string_lossy().into_owned())
+            .map_err(|error| match error {
+                pom_remote::SourceError::Failed(message) if message.starts_with("Pasting") => {
+                    message
+                }
+                other => format!("Cannot paste the image: {other}"),
+            })
+    })
 }
 
 fn runs_jobs(snapshot: &pom_remote::Snapshot) -> bool {

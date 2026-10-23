@@ -228,6 +228,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 prompt,
                 isolated: true,
                 trust: args.has("--trust"),
+                for_person: false,
             };
             Ok((
                 AgentCommand::Start(StartRequest {

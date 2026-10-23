@@ -4,6 +4,7 @@
 
 pub mod agent_popover;
 mod form;
+pub mod image_paste;
 pub mod keymap;
 pub mod list_nav;
 pub mod pane;
@@ -1296,6 +1297,10 @@ pub trait Item: 'static {
     fn wants_keystrokes(&self) -> bool {
         false
     }
+    /// Whether a pasted image may reach this item as the path of a file kept for it (a terminal).
+    fn takes_pasted_images(&self) -> bool {
+        false
+    }
     fn keystroke(&mut self, _keystroke: &terminal::Keystroke) -> TerminalKeyOutcome {
         TerminalKeyOutcome::Ignored
     }
@@ -2071,6 +2076,14 @@ pub trait ItemInput {
     fn item_keystroke(&mut self, keystroke: &terminal::Keystroke) -> TerminalKeyOutcome;
     fn item_text(&mut self, text: &str);
     fn item_paste(&mut self, text: &str);
+    /// The id of the focused item when a pasted image may reach it.
+    fn image_paste_target(&mut self) -> Option<String> {
+        None
+    }
+    /// Pastes `text` into item `id` wherever it is in the group; false when there is no such item.
+    fn paste_into_item(&mut self, _id: &str, _text: &str) -> bool {
+        false
+    }
     fn item_focus_changed(&mut self, focused: bool);
     fn item_pointer_down(
         &mut self,
