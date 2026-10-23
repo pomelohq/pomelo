@@ -181,6 +181,8 @@ pub struct TransportInfo {
     pub services: ServiceOffers,
     /// The server also saves the workspace's files and changes its tree.
     pub files_write: bool,
+    /// The server searches the workspace's files.
+    pub files_search: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.

@@ -16,7 +16,8 @@ use pom_remote::server_api::{
     WatchChannel, WatchParams, WorkspaceParams,
 };
 use pom_remote::server_api::{
-    ServiceChoiceParams, ServiceRunParams, SharedLogsParams, SharedRunParams,
+    SearchCancelParams, SearchStartParams, ServiceChoiceParams, ServiceRunParams, SharedLogsParams,
+    SharedRunParams,
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
@@ -24,6 +25,7 @@ use pom_rpc::{error_code, RemoteError, Request};
 use crate::fs::{FsService, WriteScope};
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
+use crate::search::SearchService;
 use crate::watch::Watches;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -246,6 +248,7 @@ pub struct Dispatcher {
     watches: Watches,
     jobs: Jobs,
     files: FsService,
+    search: SearchService,
     /// Modes picked for each project's services, kept while the server runs.
     modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
 }
@@ -257,6 +260,7 @@ impl Dispatcher {
             watches: Watches::new(state.clone()),
             jobs: Jobs::new(JOB_MEMORY),
             files: FsService::new(),
+            search: SearchService::new(),
             state,
             holders,
             binary,
@@ -279,6 +283,10 @@ impl Dispatcher {
 
     pub fn files(&self) -> &FsService {
         &self.files
+    }
+
+    pub fn search(&self) -> &SearchService {
+        &self.search
     }
 
     /// The folder of workspace `branch` of the project `cfg`.
@@ -345,6 +353,19 @@ impl Dispatcher {
                 let scope = self.write_scope(&params.cfg, &params.branch)?;
                 self.files.change(name, &scope, params)
             }),
+            method::SEARCH_START => params::<SearchStartParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                let publisher = connection
+                    .publisher(params.channel)
+                    .map_err(|error| invalid(format!("channel {}: {error}", params.channel)))?;
+                self.search
+                    .start(caller.connection, &root, params, publisher)?;
+                Ok(Value::Null)
+            }),
+            method::SEARCH_CANCEL => params::<SearchCancelParams>(raw).map(|params| {
+                self.search.cancel(caller.connection, params.channel);
+                Value::Null
+            }),
             _ => return None,
         })
     }
@@ -381,6 +402,7 @@ impl Dispatcher {
     pub fn disconnect(&self, connection: u64) {
         self.ptys.disconnect(connection);
         self.watches.disconnect(connection);
+        self.search.disconnect(connection);
     }
 
     /// The methods that need to know who asks: watches publish on the caller's connection.

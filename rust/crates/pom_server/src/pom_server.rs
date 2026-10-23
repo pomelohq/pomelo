@@ -9,6 +9,7 @@ mod log;
 mod paths;
 mod peer;
 mod pty;
+mod search;
 mod server;
 mod services;
 mod watch;
@@ -22,6 +23,7 @@ pub use log::{RequestRecord, ServerLog, ROTATE_AT};
 pub use paths::{ensure_private_dir, running_versions, ServerPaths};
 pub use peer::{current_uid, peer_uid};
 pub use pty::{check_cwd, check_holder, check_size, Caller, Ptys, ShellCommand, RETENTION};
+pub use search::{SearchService, LINE_BYTES, PUSH_BYTES};
 pub use server::{
     bind, PeerCheck, Server, ServerHandle, ServerOptions, StartError, DEAD_AFTER,
     DEFAULT_IDLE_EXIT_MINUTES, SOCKET_CHECK_EVERY,

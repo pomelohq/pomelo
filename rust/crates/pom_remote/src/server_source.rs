@@ -20,8 +20,8 @@ use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
-    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, FILES_WRITE, JOBS,
-    JOB_TASK, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
+    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, FILES_SEARCH, FILES_WRITE,
+    JOBS, JOB_TASK, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_api::{
     ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams, SharedRunParams,
@@ -376,6 +376,7 @@ impl Inner {
                 tasks: offers(&[JOB_TASK]),
             },
             files_write: offers(&[FILES_WRITE]),
+            files_search: offers(&[FILES_SEARCH]),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -685,7 +686,7 @@ impl Inner {
         Ok(Some(events))
     }
 
-    fn info(&self) -> Option<TransportInfo> {
+    pub(crate) fn info(&self) -> Option<TransportInfo> {
         locked(&self.info).clone()
     }
 

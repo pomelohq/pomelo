@@ -1,12 +1,12 @@
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use editor::search::{SearchOptions, SearchQuery};
-use files::search::{FileResult, PathMatcher, SearchScope};
+use files::search::{FileResult, SearchRequest};
+use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect};
 use workspace::text_field::{FieldFont, TextField};
@@ -53,6 +53,7 @@ enum Field {
 enum Message {
     File(FileResult),
     Done { limited: bool },
+    Failed(String),
 }
 
 struct Running {
@@ -93,7 +94,7 @@ pub struct ReplaceRequest {
 }
 
 pub struct ProjectSearch {
-    root: PathBuf,
+    fs: Arc<dyn ProjectFs>,
     query: TextField,
     replacement: TextField,
     include: TextField,
@@ -131,9 +132,9 @@ fn font_field() -> TextField {
 }
 
 impl ProjectSearch {
-    pub fn new(root: PathBuf, query: &str) -> ProjectSearch {
+    pub fn new(fs: Arc<dyn ProjectFs>, query: &str) -> ProjectSearch {
         let mut search = ProjectSearch {
-            root,
+            fs,
             query: font_field(),
             replacement: font_field(),
             include: font_field(),
@@ -257,46 +258,37 @@ impl ProjectSearch {
             self.phase = Phase::Idle;
             return;
         }
-        let query = match SearchQuery::new(&text, self.options, None) {
-            Ok(query) => query,
-            Err(error) => {
-                self.error = Some(error);
-                self.phase = Phase::Done;
-                return;
-            }
-        };
-        let (include, exclude) = match (
-            PathMatcher::new(&self.include.text()),
-            PathMatcher::new(&self.exclude.text()),
-        ) {
-            (Ok(include), Ok(exclude)) => (include, exclude),
-            (Err(error), _) | (_, Err(error)) => {
-                self.error = Some(format!("Invalid path pattern: {error}"));
-                self.phase = Phase::Done;
-                return;
-            }
-        };
-        let scope = SearchScope {
-            include,
-            exclude,
+        let request = SearchRequest {
+            query: text,
+            options: self.options,
+            include: self.include.text(),
+            exclude: self.exclude.text(),
             include_ignored: self.include_ignored,
         };
+        if let Err(error) = request.query().and_then(|_| request.scope()) {
+            self.error = Some(error);
+            self.phase = Phase::Done;
+            return;
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::channel();
-        let (root, stop) = (self.root.clone(), cancel.clone());
+        let (fs, stop) = (self.fs.clone(), cancel.clone());
         let spawned = std::thread::Builder::new()
             .name("project-search".into())
             .spawn(move || {
-                let find = |text: &str| query.find_in(text);
                 let found = std::sync::Mutex::new(sender.clone());
-                let limited = files::search::search(&root, &scope, &find, &stop, &|file| {
+                let outcome = fs.search(&request, &stop, &|file| {
                     if let Ok(sender) = found.lock() {
                         if sender.send(Message::File(file)).is_ok() {
                             ui::wake();
                         }
                     }
                 });
-                if sender.send(Message::Done { limited }).is_ok() {
+                let message = match outcome {
+                    Ok(limited) => Message::Done { limited },
+                    Err(error) => Message::Failed(error.to_string()),
+                };
+                if sender.send(message).is_ok() {
                     ui::wake();
                 }
             });
@@ -333,6 +325,11 @@ impl ProjectSearch {
                 }
                 Message::Done { limited } => {
                     self.limit_reached = limited;
+                    self.running = None;
+                    self.phase = Phase::Done;
+                }
+                Message::Failed(error) => {
+                    self.error = Some(error);
                     self.running = None;
                     self.phase = Phase::Done;
                 }
@@ -1298,6 +1295,83 @@ fn wrap_words(text: &str, size: f32, width: f32) -> Vec<String> {
     lines
 }
 
+/// What a replace over files no tab holds did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ReplaceReport {
+    pub replaced: usize,
+    /// Files that changed between the read and the write, left as they were.
+    pub conflicts: Vec<String>,
+    pub failures: Vec<(String, String)>,
+}
+
+impl ReplaceReport {
+    /// What to tell the person, when something was left undone.
+    pub fn problem(&self) -> Option<String> {
+        let list = |paths: &[&str]| {
+            let mut shown = paths.iter().take(3).copied().collect::<Vec<_>>().join(", ");
+            if paths.len() > 3 {
+                shown.push_str(&format!(" and {} more", paths.len() - 3));
+            }
+            shown
+        };
+        if !self.conflicts.is_empty() {
+            let paths: Vec<&str> = self.conflicts.iter().map(String::as_str).collect();
+            return Some(format!(
+                "Not replaced in {}: changed while replacing",
+                list(&paths)
+            ));
+        }
+        let (path, error) = self.failures.first()?;
+        let paths: Vec<&str> = self
+            .failures
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        Some(if paths.len() == 1 {
+            format!("Not replaced in {path}: {error}")
+        } else {
+            format!("Not replaced in {}: {error}", list(&paths))
+        })
+    }
+}
+
+/// Replaces every match of `query` in `paths` through `fs`, each write expecting the file as it was read.
+pub fn replace_in_files(
+    fs: &dyn ProjectFs,
+    paths: &[String],
+    query: &SearchQuery,
+) -> ReplaceReport {
+    let mut report = ReplaceReport::default();
+    for path in paths {
+        let read = match fs.read(path) {
+            Ok(read) => read,
+            Err(error) => {
+                report.failures.push((path.clone(), error.to_string()));
+                continue;
+            }
+        };
+        let Some(text) = read.text else {
+            continue;
+        };
+        let Some(replaced) = replace_in_text(&text, query) else {
+            continue;
+        };
+        let expect = files::FileStat {
+            dir: false,
+            size: read.size,
+            mtime_ns: read.mtime_ns,
+        };
+        match fs.write(path, &replaced, Some(&expect)) {
+            Ok(_) => report.replaced += 1,
+            Err(files::fs::WriteError::Conflict(_)) => report.conflicts.push(path.clone()),
+            Err(files::fs::WriteError::Failed(error)) => {
+                report.failures.push((path.clone(), error.to_string()))
+            }
+        }
+    }
+    report
+}
+
 pub fn replace_in_text(text: &str, query: &SearchQuery) -> Option<String> {
     let hits = query.find_in(text);
     if hits.is_empty() {
@@ -1353,7 +1427,10 @@ mod tests {
     #[test]
     fn results_come_grouped_by_file_in_path_order() {
         let temp = project();
-        let mut search = ProjectSearch::new(temp.path().to_path_buf(), "alpha");
+        let mut search = ProjectSearch::new(
+            Arc::new(files::LocalFs::new(temp.path().to_path_buf())),
+            "alpha",
+        );
         settle(&mut search);
         let paths: Vec<&str> = search
             .results
@@ -1371,7 +1448,8 @@ mod tests {
     #[test]
     fn include_filters_narrow_and_bad_regexes_say_why() {
         let temp = project();
-        let mut search = ProjectSearch::new(temp.path().to_path_buf(), "");
+        let mut search =
+            ProjectSearch::new(Arc::new(files::LocalFs::new(temp.path().to_path_buf())), "");
         search.click(FILTERS);
         search.input_text("src/b.rs");
         search.focus = Some(Field::Query);
@@ -1388,7 +1466,10 @@ mod tests {
     #[test]
     fn a_click_on_a_line_asks_to_open_it_at_the_match() {
         let temp = project();
-        let mut search = ProjectSearch::new(temp.path().to_path_buf(), "alpha");
+        let mut search = ProjectSearch::new(
+            Arc::new(files::LocalFs::new(temp.path().to_path_buf())),
+            "alpha",
+        );
         settle(&mut search);
         let row = search
             .rows
@@ -1430,5 +1511,88 @@ mod tests {
             Some("pub fn a() {}\npub fn b() {}\n")
         );
         Ok(())
+    }
+
+    /// Files on disk whose writes are checked like the server checks them, with one file edited by someone else
+    /// between the read and the write.
+    struct CheckedFs {
+        local: files::LocalFs,
+        edited_meanwhile: String,
+    }
+
+    impl ProjectFs for CheckedFs {
+        fn local_root(&self) -> Option<&std::path::Path> {
+            None
+        }
+        fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn files::TreeFeed> {
+            self.local.watch(wake)
+        }
+        fn stat(&self, path: &str) -> std::io::Result<files::FileStat> {
+            self.local.stat(path)
+        }
+        fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+            self.local.read(path)
+        }
+        fn read_bytes(&self, path: &str, limit: u64) -> std::io::Result<Vec<u8>> {
+            self.local.read_bytes(path, limit)
+        }
+        fn project_files(&self, include_ignored: bool) -> std::io::Result<Vec<String>> {
+            self.local.project_files(include_ignored)
+        }
+        fn write(
+            &self,
+            path: &str,
+            text: &str,
+            expect: Option<&files::FileStat>,
+        ) -> Result<files::FileStat, files::WriteError> {
+            let now = self.local.stat(path)?;
+            let unchanged = expect
+                .is_some_and(|expect| expect.size == now.size && expect.mtime_ns == now.mtime_ns);
+            if path == self.edited_meanwhile || !unchanged {
+                return Err(files::WriteError::Conflict(now));
+            }
+            self.local.write(path, text, expect)
+        }
+    }
+
+    #[test]
+    fn replacing_leaves_a_file_that_changed_meanwhile_and_says_so() -> Result<(), String> {
+        let temp = project();
+        let fs = CheckedFs {
+            local: files::LocalFs::new(temp.path().to_path_buf()),
+            edited_meanwhile: "src/b.rs".into(),
+        };
+        let query = SearchQuery::new("alpha", SearchOptions::default(), Some("gamma".into()))?;
+        let paths = vec![
+            "src/a.rs".to_string(),
+            "src/b.rs".to_string(),
+            "notes.md".to_string(),
+        ];
+        let report = replace_in_files(&fs, &paths, &query);
+        assert_eq!(report.replaced, 1);
+        assert_eq!(report.conflicts, ["src/b.rs"]);
+        assert!(report.failures.is_empty());
+        let read = |path: &str| std::fs::read_to_string(temp.path().join(path)).unwrap_or_default();
+        assert_eq!(read("src/a.rs"), "fn gamma() {}\nfn beta() { gamma(); }\n");
+        assert_eq!(read("src/b.rs"), "// alpha again\n");
+        assert_eq!(
+            report.problem().as_deref(),
+            Some("Not replaced in src/b.rs: changed while replacing")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn files_that_cannot_be_searched_say_why_before_anything_runs() {
+        let unserved = files::UnservedFs::new("Files need a newer pom on dev; update it there");
+        assert_eq!(
+            unserved.search_refusal().as_deref(),
+            Some("Files need a newer pom on dev; update it there")
+        );
+        let temp = project();
+        assert_eq!(
+            files::LocalFs::new(temp.path().to_path_buf()).search_refusal(),
+            None
+        );
     }
 }

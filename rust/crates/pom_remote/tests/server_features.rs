@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pom_remote::server_api::{
-    method, AgentListing, BranchArgs, JobRequest, FEATURES, JOBS, LIVE_LOGS, METHODS, REQUIRED,
+    method, AgentListing, BranchArgs, JobRequest, FEATURES, FILES_SEARCH, JOBS, LIVE_LOGS, METHODS,
+    REQUIRED,
 };
 use pom_remote::{ProjectSource, ServerSource, StatusReport, Timing, Watch, WorkspaceList};
 use pom_rpc::pty::{self, AttachParams, Attached, Mode, Request, Target};
@@ -212,6 +213,33 @@ fn files_open_only_through_a_server_that_reads_them() {
     assert!(current.transport().expect("transport").files);
     assert!(current.transport().expect("transport").files_write);
     assert!(current.files("main").is_some());
+}
+
+#[test]
+fn a_server_that_reads_files_but_predates_search_says_to_update_it() {
+    let before_search: Vec<String> = current_features()
+        .into_iter()
+        .filter(|name| {
+            ![FILES_SEARCH, method::SEARCH_START, method::SEARCH_CANCEL].contains(&name.as_str())
+        })
+        .collect();
+    let (older, _) = source(before_search);
+    older.workspaces().expect("connect");
+    let transport = older.transport().expect("transport");
+    assert!(transport.files && !transport.files_search);
+    let refusal = older
+        .files("main")
+        .expect("files")
+        .search_refusal()
+        .unwrap_or_default();
+    assert!(
+        refusal.contains("cannot search its files here") && refusal.contains("Update it"),
+        "{refusal}"
+    );
+    let (current, _) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").files_search);
+    assert_eq!(current.files("main").expect("files").search_refusal(), None);
 }
 
 #[test]

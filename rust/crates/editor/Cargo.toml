@@ -11,7 +11,7 @@ path = "src/lib.rs"
 
 [dependencies]
 convert_case = "0.11.0"
-fancy-regex = "0.19"
+files = { path = "../files" }
 regex = "1"
 ropey.workspace = true
 serde.workspace = true

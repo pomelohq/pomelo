@@ -1382,6 +1382,7 @@ name = "files"
 version = "0.9.6"
 dependencies = [
  "criterion",
+ "fancy-regex",
  "globset",
  "ignore",
  "notify",
@@ -4084,7 +4085,7 @@ name = "pomelo-editor"
 version = "0.9.6"
 dependencies = [
  "convert_case",
- "fancy-regex",
+ "files",
  "regex",
  "ropey",
  "serde",

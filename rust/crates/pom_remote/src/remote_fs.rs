@@ -14,6 +14,7 @@ use files::fs::{
     READ_LIMIT,
 };
 use files::guard::Refusal;
+use files::search::{FileResult as SearchHit, SearchRequest};
 use files::FileEntry;
 use pom_rpc::{Connection, Error, PushEvent, StreamEvent, StreamReceiver};
 use serde::de::DeserializeOwned;
@@ -21,7 +22,9 @@ use serde::Serialize;
 
 use crate::server_api::{
     fs_error, method, FsChangeParams, FsFilesParams, FsPathParams, FsRead, FsReadParams,
-    FsWatchParams, FsWriteParams, FsWritten, TreeChunk, FS_TREE_TOPIC, WRITE_READY,
+    FsWatchParams, FsWriteParams, FsWritten, SearchCancelParams, SearchDone, SearchFound,
+    SearchStartParams, TreeChunk, FS_TREE_TOPIC, SEARCH_DONE_TOPIC, SEARCH_FOUND_TOPIC,
+    WRITE_READY,
 };
 use crate::server_source::Inner;
 use crate::source::READ_TIMEOUT;
@@ -52,11 +55,14 @@ enum Attempt {
 pub struct RemoteFs {
     inner: Arc<Inner>,
     branch: String,
+    /// Names this view's searches to the server, which stops one when the next starts.
+    searcher: String,
 }
 
 impl RemoteFs {
     pub(crate) fn new(inner: Arc<Inner>, branch: &str) -> RemoteFs {
         RemoteFs {
+            searcher: inner.next_op_id(),
             inner,
             branch: branch.to_string(),
         }
@@ -535,6 +541,81 @@ impl ProjectFs for RemoteFs {
         self.change(method::FS_APPEND_GITIGNORE, path, "", is_dir)
     }
 
+    fn search(
+        &self,
+        request: &SearchRequest,
+        cancel: &AtomicBool,
+        on_file: &(dyn Fn(SearchHit) + Sync),
+    ) -> io::Result<bool> {
+        let connection = self.connection()?;
+        let subscription = connection
+            .subscribe()
+            .map_err(|error| io_error(&self.inner, error))?;
+        let channel = subscription.channel();
+        let params = SearchStartParams {
+            cfg: self.inner.config().to_string(),
+            branch: self.branch.clone(),
+            channel,
+            searcher: self.searcher.clone(),
+            search: request.clone(),
+        };
+        self.ask::<serde_json::Value>(&connection, method::SEARCH_START, params)?;
+        let mut pieces = Pieces::default();
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                match connection
+                    .start_request(method::SEARCH_CANCEL, SearchCancelParams { channel })
+                {
+                    Ok(pending) => pending.forget(),
+                    Err(error) => eprintln!("search.cancel: {error}"),
+                }
+                return Ok(false);
+            }
+            match subscription.recv_timeout(FEED_TICK) {
+                Ok(PushEvent::Value { topic, value }) if topic == SEARCH_FOUND_TOPIC => {
+                    let found: SearchFound = serde_json::from_value(value).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, format!("search: {error}"))
+                    })?;
+                    pieces.take(found, on_file);
+                }
+                Ok(PushEvent::Value { topic, value }) if topic == SEARCH_DONE_TOPIC => {
+                    pieces.flush(on_file);
+                    let done: SearchDone = serde_json::from_value(value).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidData, format!("search: {error}"))
+                    })?;
+                    return match done.error {
+                        Some(error) => Err(io::Error::new(io::ErrorKind::InvalidInput, error)),
+                        None => Ok(done.limited),
+                    };
+                }
+                Ok(PushEvent::Value { .. }) | Err(Error::Timeout) => {}
+                Ok(PushEvent::End { reason }) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        format!("the search stopped: {reason}"),
+                    ))
+                }
+                Err(error) => return Err(io_error(&self.inner, error)),
+            }
+        }
+    }
+
+    fn search_refusal(&self) -> Option<String> {
+        let info = self.inner.info()?;
+        if info.files_search {
+            return None;
+        }
+        let host = self.inner.host_name();
+        Some(match info.remote_version {
+            Some(version) => format!(
+                "pom {version} on {host} cannot search its files here. Update it to search in this window."
+            ),
+            None => format!(
+                "pom on {host} cannot search its files here. Update it to search in this window."
+            ),
+        })
+    }
+
     fn expand(&self, path: &str) -> io::Result<()> {
         let connection = self.connection()?;
         let params = FsPathParams {
@@ -552,6 +633,51 @@ impl ProjectFs for RemoteFs {
 
     fn host(&self) -> Option<&str> {
         Some(self.inner.host_name())
+    }
+}
+
+/// Joins the pieces of a file split over several pushes before handing it on.
+#[derive(Default)]
+struct Pieces {
+    open: Option<SearchHit>,
+}
+
+impl Pieces {
+    fn take(&mut self, found: SearchFound, on_file: &(dyn Fn(SearchHit) + Sync)) {
+        let count = found.files.len();
+        for (index, file) in found.files.into_iter().enumerate() {
+            let file = match self.open.take() {
+                Some(mut open) if open.path == file.path => {
+                    let mut excerpts = file.excerpts.into_iter();
+                    if let Some(first) = excerpts.next() {
+                        let follows = |last: &Vec<files::search::SearchLine>| matches!((last.last(), first.first()), (Some(end), Some(start)) if end.number + 1 == start.number);
+                        match open.excerpts.last_mut() {
+                            Some(last) if follows(last) => last.extend(first),
+                            _ => open.excerpts.push(first),
+                        }
+                    }
+                    open.excerpts.extend(excerpts);
+                    open.match_count += file.match_count;
+                    open
+                }
+                Some(other) => {
+                    on_file(other);
+                    file
+                }
+                None => file,
+            };
+            if found.continued && index + 1 == count {
+                self.open = Some(file);
+            } else {
+                on_file(file);
+            }
+        }
+    }
+
+    fn flush(&mut self, on_file: &(dyn Fn(SearchHit) + Sync)) {
+        if let Some(open) = self.open.take() {
+            on_file(open);
+        }
     }
 }
 
