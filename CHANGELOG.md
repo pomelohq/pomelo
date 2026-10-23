@@ -7,6 +7,9 @@ All notable changes to Pomelo are documented here. The format is based on
 ## [0.9.8] - 2026-10-24
 
 ### Added
+- The Git panel in a remote window: the same panel, branch menu and branch diff as a local one, with git running on the host through pom server; fetch, pull and push run there with progress. A host with an older pom says to update it; a failed sign-in points to `pom doctor` on the host. Needs this pom on the host. (#335, #338, #339)
+- Pull requests in a remote window: summaries on the workspace rows and the PR blocks and tabs in the Git panel, using the GitHub token of the `<project>@<host>` session, else the project's own. (#343)
+- `pom doctor` checks that git can sign in to each repo's origin (`git.auth:<repo>`, with a fix for ssh or https); `--quick` skips it. (#345)
 - Pasting an image (Cmd+V or Ctrl+V with a screenshot on the clipboard) into a terminal or agent tab of a remote window uploads it to a private folder on the host and pastes its path, so the agent there attaches it. Needs this pom on the host. (#342)
 - SECURITY.md: how to report a vulnerability, and a threat model per surface with its known gaps. (#331)
 
