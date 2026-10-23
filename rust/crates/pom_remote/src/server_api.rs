@@ -36,6 +36,7 @@ pub mod method {
     pub const FS_READ: &str = "fs.read";
     pub const FS_STAT: &str = "fs.stat";
     pub const FS_FILES: &str = "fs.files";
+    pub const FS_EXPAND: &str = "fs.expand";
     pub const SVC_FACTS: &str = "svc.facts";
     pub const SVC_RUN: &str = "svc.run";
     pub const SVC_SHARED: &str = "svc.shared";
@@ -103,6 +104,7 @@ pub const METHODS: &[&str] = &[
     method::FS_REMOVE,
     method::FS_TRASH,
     method::FS_APPEND_GITIGNORE,
+    method::FS_EXPAND,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -591,12 +593,15 @@ pub struct Progress {
 pub const EXIT_CANCELLED: i32 = 130;
 
 /// `channel` is the client's subscription the tree is pushed on, as [`TreeChunk`]s under [`FS_TREE_TOPIC`].
+/// With `lazy_ignored` a gitignored folder comes as a lazy entry whose contents follow [`method::FS_EXPAND`];
+/// a server from before it sends every folder's contents.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FsWatchParams {
     pub cfg: String,
     pub branch: String,
     pub channel: u32,
+    pub lazy_ignored: bool,
 }
 
 /// The workspace folder whose tree is pushed.

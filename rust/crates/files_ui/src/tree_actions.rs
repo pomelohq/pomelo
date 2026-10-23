@@ -77,6 +77,7 @@ fn entry(path: &str, is_dir: bool) -> files::FileEntry {
         path: path.to_string(),
         is_dir,
         size: 0,
+        lazy: false,
     }
 }
 

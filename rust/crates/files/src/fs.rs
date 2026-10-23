@@ -2,9 +2,12 @@
 //! server there. The tree comes as a feed: a snapshot that fills in as the walk goes, then patches as files
 //! change.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -196,6 +199,10 @@ pub trait ProjectFs: Send + Sync {
     /// Adds `path` to the .gitignore of the repository it is in.
     fn add_to_gitignore(&self, _path: &str, _is_dir: bool) -> io::Result<()> {
         Err(unsupported())
+    }
+    /// Asks for the contents of a lazy folder; they come through the tree's feed.
+    fn expand(&self, _path: &str) -> io::Result<()> {
+        Ok(())
     }
     /// Whether the machine the files are on can be reached right now.
     fn online(&self) -> bool {
@@ -460,6 +467,7 @@ fn entry_for(root: &Path, full: &Path, links: Links) -> Option<(FileEntry, bool)
                         path,
                         is_dir: dir,
                         size: 0,
+                        lazy: false,
                     },
                     false,
                 ));
@@ -478,6 +486,7 @@ fn entry_for(root: &Path, full: &Path, links: Links) -> Option<(FileEntry, bool)
             path,
             is_dir,
             size: if is_dir { 0 } else { metadata.len() },
+            lazy: false,
         },
         is_dir,
     ))
@@ -491,20 +500,57 @@ pub fn walk_in_batches(
     batch: usize,
     found: &mut dyn FnMut(Vec<FileEntry>) -> bool,
 ) -> bool {
-    let mut queue = std::collections::VecDeque::from([dir.to_path_buf()]);
+    walk(root, dir, links, None, batch, found)
+}
+
+/// Like [`walk_in_batches`] without following links, except that a gitignored folder is listed as lazy and not
+/// entered unless its path is in `opened`; inside an opened one, every folder is gitignored.
+pub fn walk_lazily(
+    root: &Path,
+    dir: &Path,
+    opened: &HashSet<String>,
+    batch: usize,
+    found: &mut dyn FnMut(Vec<FileEntry>) -> bool,
+) -> bool {
+    walk(root, dir, Links::Stay, Some(opened), batch, found)
+}
+
+fn walk(
+    root: &Path,
+    dir: &Path,
+    links: Links,
+    opened: Option<&HashSet<String>>,
+    batch: usize,
+    found: &mut dyn FnMut(Vec<FileEntry>) -> bool,
+) -> bool {
+    let start = match opened {
+        Some(_) => IgnoreRules::inside(dir),
+        None => IgnoreRules::default(),
+    };
+    let mut queue = std::collections::VecDeque::from([(dir.to_path_buf(), start)]);
     let mut pending = Vec::new();
-    while let Some(next) = queue.pop_front() {
+    while let Some((next, rules)) = queue.pop_front() {
         let Ok(children) = std::fs::read_dir(&next) else {
             continue;
         };
         for child in children.flatten() {
             let full = child.path();
-            let Some((entry, descend)) = entry_for(root, &full, links) else {
+            let Some((mut entry, mut descend)) = entry_for(root, &full, links) else {
                 continue;
             };
+            let mut child_rules = None;
+            if let (Some(opened), true) = (opened, descend) {
+                let ignored = rules.ignores(&full, true);
+                if ignored && !opened.contains(&entry.path) {
+                    entry.lazy = true;
+                    descend = false;
+                } else {
+                    child_rules = Some(rules.enter(&full, ignored));
+                }
+            }
             pending.push(entry);
             if descend {
-                queue.push_back(full);
+                queue.push_back((full, child_rules.unwrap_or_default()));
             }
             if pending.len() >= batch && !found(std::mem::take(&mut pending)) {
                 return false;
@@ -514,8 +560,108 @@ pub fn walk_in_batches(
     pending.is_empty() || found(pending)
 }
 
+/// The gitignore rules for what is inside one folder, innermost last, as git applies them.
+#[derive(Clone, Default)]
+struct IgnoreRules {
+    matchers: Vec<Arc<Gitignore>>,
+    inside_ignored: bool,
+}
+
+fn global_gitignore() -> Option<Arc<Gitignore>> {
+    static GLOBAL: std::sync::OnceLock<Option<Arc<Gitignore>>> = std::sync::OnceLock::new();
+    GLOBAL
+        .get_or_init(|| {
+            let (global, _) = Gitignore::global();
+            (!global.is_empty()).then(|| Arc::new(global))
+        })
+        .clone()
+}
+
+fn gitignore_at(dir: &Path, file: &Path) -> Option<Arc<Gitignore>> {
+    if !file.is_file() {
+        return None;
+    }
+    let mut builder = GitignoreBuilder::new(dir);
+    if let Some(error) = builder.add(file) {
+        eprintln!("reading {}: {error}", file.display());
+    }
+    let built = builder.build().ok()?;
+    (!built.is_empty()).then(|| Arc::new(built))
+}
+
+impl IgnoreRules {
+    /// The rules for `dir`'s contents, read from the repository holding it down to `dir`.
+    fn inside(dir: &Path) -> IgnoreRules {
+        let Some(top) = dir.ancestors().find(|folder| folder.join(".git").exists()) else {
+            return IgnoreRules::default();
+        };
+        let Ok(below) = dir.strip_prefix(top) else {
+            return IgnoreRules::default();
+        };
+        let mut rules = IgnoreRules::default().enter(top, false);
+        let mut folder = top.to_path_buf();
+        for part in below.components() {
+            folder.push(part);
+            let ignored = rules.ignores(&folder, true);
+            rules = rules.enter(&folder, ignored);
+        }
+        rules
+    }
+
+    fn enter(&self, dir: &Path, ignored: bool) -> IgnoreRules {
+        if ignored || self.inside_ignored {
+            return IgnoreRules {
+                matchers: Vec::new(),
+                inside_ignored: true,
+            };
+        }
+        let mut rules = if dir.join(".git").exists() {
+            let mut fresh = IgnoreRules::default();
+            fresh.matchers.extend(global_gitignore());
+            fresh
+                .matchers
+                .extend(gitignore_at(dir, &dir.join(".git/info/exclude")));
+            fresh
+        } else {
+            self.clone()
+        };
+        rules
+            .matchers
+            .extend(gitignore_at(dir, &dir.join(".gitignore")));
+        rules
+    }
+
+    fn ignores(&self, full: &Path, is_dir: bool) -> bool {
+        if self.inside_ignored {
+            return true;
+        }
+        for matcher in self.matchers.iter().rev() {
+            match matcher.matched(full, is_dir) {
+                ignore::Match::Ignore(_) => return true,
+                ignore::Match::Whitelist(_) => return false,
+                ignore::Match::None => {}
+            }
+        }
+        false
+    }
+}
+
 /// What changed under `root` at `changed` (paths a watcher reported), read again from disk.
 pub fn patch_for(root: &Path, changed: &[String], links: Links) -> TreePatch {
+    patch(root, changed, links, None)
+}
+
+/// [`patch_for`] for a tree walked with [`walk_lazily`].
+pub fn patch_lazily(root: &Path, changed: &[String], opened: &HashSet<String>) -> TreePatch {
+    patch(root, changed, Links::Stay, Some(opened))
+}
+
+fn patch(
+    root: &Path,
+    changed: &[String],
+    links: Links,
+    opened: Option<&HashSet<String>>,
+) -> TreePatch {
     let mut changed: Vec<&String> = changed.iter().collect();
     changed.sort();
     changed.dedup();
@@ -535,12 +681,18 @@ pub fn patch_for(root: &Path, changed: &[String], links: Links) -> TreePatch {
         }
         patch.removed.push(path.clone());
         let full = root.join(path);
-        let Some((entry, descend)) = entry_for(root, &full, links) else {
+        let Some((mut entry, mut descend)) = entry_for(root, &full, links) else {
             continue;
         };
+        if let (Some(opened), true, Some(parent)) = (opened, descend, full.parent()) {
+            if IgnoreRules::inside(parent).ignores(&full, true) && !opened.contains(path) {
+                entry.lazy = true;
+                descend = false;
+            }
+        }
         patch.upserted.push(entry);
         if descend {
-            walk_in_batches(root, &full, links, usize::MAX, &mut |found| {
+            walk(root, &full, links, opened, usize::MAX, &mut |found| {
                 patch.upserted.extend(found);
                 true
             });
@@ -665,6 +817,7 @@ mod tests {
             path: path.into(),
             is_dir,
             size: 0,
+            lazy: false,
         }
     }
 
@@ -675,6 +828,7 @@ mod tests {
             path: "src/main.rs".into(),
             is_dir: false,
             size: 12,
+            lazy: false,
         };
         let json = serde_json::to_string(&file)?;
         assert_eq!(json, r#"{"path":"src/main.rs","dir":false,"size":12}"#);
@@ -780,6 +934,75 @@ mod tests {
                 ("away", false),
                 ("src", true),
                 ("src/a.rs", false)
+            ]
+        );
+        Ok(())
+    }
+
+    fn lazy_paths(root: &Path, dir: &Path, opened: &HashSet<String>) -> Vec<(String, bool)> {
+        let mut found = Vec::new();
+        walk_lazily(root, dir, opened, 3, &mut |batch| {
+            found.extend(batch);
+            true
+        });
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        found
+            .into_iter()
+            .map(|entry| (entry.path, entry.lazy))
+            .collect()
+    }
+
+    #[test]
+    fn a_lazy_walk_lists_ignored_folders_without_entering_them() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let api = root.join("api");
+        std::fs::create_dir_all(api.join(".git"))?;
+        std::fs::write(api.join(".gitignore"), "dist\n/tmp/\n*.log\n")?;
+        std::fs::create_dir_all(api.join("src/dist"))?;
+        std::fs::create_dir_all(api.join("dist/assets"))?;
+        std::fs::write(api.join("dist/app.js"), "x")?;
+        std::fs::write(api.join("dist/assets/a.css"), "x")?;
+        std::fs::create_dir_all(api.join("tmp/cache"))?;
+        std::fs::write(api.join("src/main.rs"), "x")?;
+        std::fs::write(api.join("debug.log"), "x")?;
+        std::fs::create_dir_all(root.join("web/dist"))?;
+        let lazy = |path: &str| (path.to_string(), true);
+        let eager = |path: &str| (path.to_string(), false);
+        assert_eq!(
+            lazy_paths(&root, &root, &HashSet::new()),
+            [
+                eager("api"),
+                eager("api/.gitignore"),
+                eager("api/debug.log"),
+                lazy("api/dist"),
+                eager("api/src"),
+                lazy("api/src/dist"),
+                eager("api/src/main.rs"),
+                lazy("api/tmp"),
+                eager("web"),
+                eager("web/dist"),
+            ]
+        );
+        let opened: HashSet<String> = ["api/dist".to_string()].into();
+        assert_eq!(
+            lazy_paths(&root, &api.join("dist"), &opened),
+            [eager("api/dist/app.js"), lazy("api/dist/assets")]
+        );
+        let patch = patch_lazily(&root, &["api/tmp".into(), "api/dist".into()], &opened);
+        let mut upserted: Vec<(&str, bool)> = patch
+            .upserted
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.lazy))
+            .collect();
+        upserted.sort();
+        assert_eq!(
+            upserted,
+            [
+                ("api/dist", false),
+                ("api/dist/app.js", false),
+                ("api/dist/assets", true),
+                ("api/tmp", true)
             ]
         );
         Ok(())

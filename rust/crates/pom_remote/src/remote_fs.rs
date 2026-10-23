@@ -30,6 +30,8 @@ use crate::source::READ_TIMEOUT;
 const FEED_TICK: Duration = Duration::from_millis(250);
 /// The wait before following the tree again after the session dropped.
 const RESUBSCRIBE_WAIT: Duration = Duration::from_millis(500);
+/// How often a snapshot still arriving is shown as it stands.
+const PARTIAL_EVERY: Duration = Duration::from_millis(500);
 /// How long a save waits for the machine to come back before it gives up; the text stays in the editor.
 const SAVE_PATIENCE: Duration = Duration::from_secs(30 * 60);
 /// How long a change to the tree waits for the machine: the tree shows it meanwhile, so not long.
@@ -533,6 +535,17 @@ impl ProjectFs for RemoteFs {
         self.change(method::FS_APPEND_GITIGNORE, path, "", is_dir)
     }
 
+    fn expand(&self, path: &str) -> io::Result<()> {
+        let connection = self.connection()?;
+        let params = FsPathParams {
+            cfg: self.inner.config().to_string(),
+            branch: self.branch.clone(),
+            path: path.to_string(),
+        };
+        self.ask::<serde_json::Value>(&connection, method::FS_EXPAND, params)
+            .map(|_| ())
+    }
+
     fn online(&self) -> bool {
         self.inner.live_connection().is_some()
     }
@@ -582,36 +595,44 @@ struct TreeFollower {
 #[derive(Default)]
 struct Assembly {
     snapshot: Option<Vec<FileEntry>>,
+    shown: Option<Instant>,
 }
 
 impl Assembly {
-    /// The event a chunk makes: the snapshot so far, or a patch once the snapshot is complete.
-    fn take(&mut self, chunk: TreeChunk) -> TreeEvent {
+    /// The event a chunk makes: the snapshot so far now and then, the whole one at its last chunk, or a patch
+    /// once the snapshot is complete.
+    fn take(&mut self, chunk: TreeChunk) -> Option<TreeEvent> {
         if chunk.reset {
             self.snapshot = Some(Vec::new());
+            self.shown = None;
         }
         let Some(entries) = self.snapshot.as_mut() else {
-            return TreeEvent::Patch(TreePatch {
+            return Some(TreeEvent::Patch(TreePatch {
                 upserted: chunk.entries,
                 removed: chunk.removed,
                 changed: chunk.changed,
-            });
+            }));
         };
         entries.extend(chunk.entries);
         if chunk.last {
             let mut entries = self.snapshot.take().unwrap_or_default();
             entries.sort_by(|a, b| a.path.cmp(&b.path));
-            return TreeEvent::Snapshot {
+            return Some(TreeEvent::Snapshot {
                 entries,
                 complete: true,
-            };
+            });
         }
+        // Copying the snapshot so far for every chunk grows with the square of a large tree.
+        if self.shown.is_some_and(|at| at.elapsed() < PARTIAL_EVERY) {
+            return None;
+        }
+        self.shown = Some(Instant::now());
         let mut sofar = entries.clone();
         sofar.sort_by(|a, b| a.path.cmp(&b.path));
-        TreeEvent::Snapshot {
+        Some(TreeEvent::Snapshot {
             entries: sofar,
             complete: false,
-        }
+        })
     }
 }
 
@@ -658,6 +679,7 @@ impl TreeFollower {
             cfg: self.inner.config().to_string(),
             branch: self.branch.clone(),
             channel: subscription.channel(),
+            lazy_ignored: true,
         };
         let asked = connection
             .start_request(method::FS_WATCH, params)
@@ -676,7 +698,10 @@ impl TreeFollower {
                         Ok(chunk) => chunk,
                         Err(error) => return format!("an unreadable tree: {error}"),
                     };
-                    if !self.send(assembly.take(chunk)) {
+                    let Some(event) = assembly.take(chunk) else {
+                        continue;
+                    };
+                    if !self.send(event) {
                         return "closed".to_string();
                     }
                 }
@@ -709,11 +734,16 @@ mod tests {
         });
         assert_eq!(
             first,
-            TreeEvent::Snapshot {
+            Some(TreeEvent::Snapshot {
                 entries: vec![entry("b")],
                 complete: false
-            }
+            })
         );
+        let soon = assembly.take(TreeChunk {
+            entries: vec![entry("c")],
+            ..TreeChunk::default()
+        });
+        assert_eq!(soon, None, "the snapshot so far is shown now and then");
         let done = assembly.take(TreeChunk {
             last: true,
             entries: vec![entry("a")],
@@ -721,17 +751,17 @@ mod tests {
         });
         assert_eq!(
             done,
-            TreeEvent::Snapshot {
-                entries: vec![entry("a"), entry("b")],
+            Some(TreeEvent::Snapshot {
+                entries: vec![entry("a"), entry("b"), entry("c")],
                 complete: true
-            }
+            })
         );
         let patch = assembly.take(TreeChunk {
             last: true,
             removed: vec!["a".into()],
             ..TreeChunk::default()
         });
-        assert!(matches!(patch, TreeEvent::Patch(patch) if patch.removed == ["a"]));
+        assert!(matches!(patch, Some(TreeEvent::Patch(patch)) if patch.removed == ["a"]));
         let again = assembly.take(TreeChunk {
             reset: true,
             last: true,
@@ -739,10 +769,10 @@ mod tests {
         });
         assert_eq!(
             again,
-            TreeEvent::Snapshot {
+            Some(TreeEvent::Snapshot {
                 entries: Vec::new(),
                 complete: true
-            }
+            })
         );
     }
 }

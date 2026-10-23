@@ -16,6 +16,7 @@ fn synthetic(dirs: usize, files: usize) -> Vec<FileEntry> {
             path: format!("d{a}"),
             is_dir: true,
             size: 0,
+            lazy: false,
         });
         for b in 0..dirs {
             out.push(FileEntry {
@@ -23,6 +24,7 @@ fn synthetic(dirs: usize, files: usize) -> Vec<FileEntry> {
                 path: format!("d{a}/s{b}"),
                 is_dir: true,
                 size: 0,
+                lazy: false,
             });
             for c in 0..files {
                 out.push(FileEntry {
@@ -30,6 +32,7 @@ fn synthetic(dirs: usize, files: usize) -> Vec<FileEntry> {
                     path: format!("d{a}/s{b}/f{c}.rs"),
                     is_dir: false,
                     size: 100,
+                    lazy: false,
                 });
             }
         }

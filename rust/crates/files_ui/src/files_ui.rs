@@ -7259,6 +7259,10 @@ pub struct FilesView {
         std::sync::mpsc::Receiver<std::io::Result<files::FileResult>>,
     )>,
     expanded: HashSet<String>,
+    /// Gitignored folders whose contents the other machine sends only once they are opened.
+    lazy_dirs: HashSet<String>,
+    /// Lazy folders whose contents were asked for.
+    expanding: HashSet<String>,
     /// The editor area's split panes and their tabs.
     panes: PaneGroupView,
     /// Tree moves (from, to) still to apply to the other pane group's tabs, and that group's dirty file ids.
@@ -7412,6 +7416,7 @@ impl FilesView {
                     self.entries = entries;
                     self.scanning = !complete;
                     self.interrupted = None;
+                    self.expanding.clear();
                     patched = true;
                 }
                 files::TreeEvent::Patch(patch) => {
@@ -7429,12 +7434,49 @@ impl FilesView {
         }
         if patched {
             self.tree = files::build_tree(&self.entries);
+            self.lazy_dirs = self
+                .entries
+                .iter()
+                .filter(|entry| entry.lazy)
+                .map(|entry| entry.path.clone())
+                .collect();
             self.flat_dirty = true;
         }
         if self.is_remote() {
             self.reload_changed(changed_files);
         }
         true
+    }
+
+    /// Asks, off the UI thread, for the contents of each open lazy folder not asked for yet.
+    fn expand_lazy_folders(&mut self) {
+        if self.lazy_dirs.is_empty() {
+            return;
+        }
+        self.expanding.retain(|path| self.expanded.contains(path));
+        let wanted: Vec<String> = self
+            .expanded
+            .iter()
+            .filter(|path| self.lazy_dirs.contains(*path) && !self.expanding.contains(*path))
+            .cloned()
+            .collect();
+        for path in wanted {
+            let fs = self.fs.clone();
+            let folder = path.clone();
+            let spawned = std::thread::Builder::new()
+                .name("file-tree-expand".into())
+                .spawn(move || {
+                    if let Err(error) = fs.expand(&folder) {
+                        eprintln!("opening {folder}: {error}");
+                    }
+                });
+            match spawned {
+                Ok(_) => {
+                    self.expanding.insert(path);
+                }
+                Err(error) => eprintln!("opening {path}: {error}"),
+            }
+        }
     }
 
     /// Reads again, off the UI thread, each open file that changed on the other machine.
@@ -7652,6 +7694,8 @@ impl FilesView {
             entries: Vec::new(),
             pending_reloads: Vec::new(),
             expanded: HashSet::new(),
+            lazy_dirs: HashSet::new(),
+            expanding: HashSet::new(),
             panes: PaneGroupView::new(PaneGroupConfig {
                 id_base: FUNC_VIEW_BASE,
                 show_nav: true,
@@ -9616,6 +9660,7 @@ impl FunctionView for FilesView {
         // Left: the file tree. Rebuild the flattened visible rows + the click-id mapping.
         // Re-flatten only when the tree structure changed (expand/collapse), not on scroll.
         if self.flat_dirty {
+            self.expand_lazy_folders();
             let f = self.visible_rows();
             self.click_targets = f.iter().map(|r| (r.path.clone(), r.is_dir)).collect();
             self.flat_cache = f;

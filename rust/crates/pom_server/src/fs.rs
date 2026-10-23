@@ -2,7 +2,7 @@
 //! pushed as a chunked snapshot and then as patches, files read inline or streamed, saves checked against what
 //! the client last read, and tree changes run once per op id. Every path passes the guard first.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -73,9 +73,11 @@ fn failed(message: impl Into<String>) -> RemoteError {
 enum Command {
     Add(Publisher),
     Changed,
+    Expand(String),
 }
 
-type Roots = Arc<Mutex<HashMap<PathBuf, Sender<Command>>>>;
+/// A folder's watch, kept apart for clients that take gitignored folders lazily and those from before.
+type Roots = Arc<Mutex<HashMap<(PathBuf, bool), Sender<Command>>>>;
 
 pub struct FsService {
     roots: Roots,
@@ -119,13 +121,14 @@ impl FsService {
     }
 
     /// Pushes `root`'s tree on `publisher`: a snapshot, then patches as files change.
-    pub fn watch(&self, root: &Path, publisher: Publisher) -> Result<(), RemoteError> {
+    pub fn watch(&self, root: &Path, lazy: bool, publisher: Publisher) -> Result<(), RemoteError> {
         let root = root
             .canonicalize()
             .map_err(|error| failed(format!("the workspace folder: {error}")))?;
+        let key = (root.clone(), lazy);
         let mut roots = locked(&self.roots);
         let mut publisher = Some(publisher);
-        if let Some(commands) = roots.get(&root) {
+        if let Some(commands) = roots.get(&key) {
             if let Some(given) = publisher.take() {
                 match commands.send(Command::Add(given)) {
                     Ok(()) => return Ok(()),
@@ -149,7 +152,9 @@ impl FsService {
         let watcher = files::TreeWatcher::new(&root, wake)
             .map_err(|error| failed(format!("watching the workspace: {error}")))?;
         let folder = RootWatch {
-            root: root.clone(),
+            root,
+            lazy,
+            opened: HashSet::new(),
             watcher,
             commands,
             roots: self.roots.clone(),
@@ -163,8 +168,26 @@ impl FsService {
             .name("pom-server-files".into())
             .spawn(move || folder.run(publisher))
             .map_err(|error| RemoteError::new(error_code::INTERNAL, error.to_string()))?;
-        roots.insert(root, sender);
+        roots.insert(key, sender);
         Ok(())
+    }
+
+    /// Sends the contents of lazy folder `path` to every client following `root`'s tree.
+    pub fn expand(&self, root: &Path, path: &str) -> Result<(), RemoteError> {
+        let root = root
+            .canonicalize()
+            .map_err(|error| failed(format!("the workspace folder: {error}")))?;
+        let full = guard::resolve(&root, path).map_err(refused)?;
+        let Some(path) = guard::relative(&root, &full) else {
+            return Err(failed(format!("{path} is not in the workspace")));
+        };
+        let roots = locked(&self.roots);
+        let Some(commands) = roots.get(&(root, true)) else {
+            return Err(failed("the tree is not followed"));
+        };
+        commands
+            .send(Command::Expand(path))
+            .map_err(|_| failed("the watch went away"))
     }
 
     pub fn stat(&self, root: &Path, path: &str) -> Result<FileStat, RemoteError> {
@@ -609,6 +632,9 @@ fn stream_file(mut sender: StreamSender, head: Vec<u8>, mut file: std::fs::File,
 /// One watched folder, owned by its thread: everything it pushes goes out in order from here.
 struct RootWatch {
     root: PathBuf,
+    lazy: bool,
+    /// Gitignored folders a client opened, whose contents are in the tree and kept up to date.
+    opened: HashSet<String>,
     watcher: files::TreeWatcher,
     commands: Receiver<Command>,
     roots: Roots,
@@ -644,23 +670,34 @@ impl RootWatch {
         self.add(first);
         let root = self.root.clone();
         let mut deferred = false;
-        files::fs::walk_in_batches(&root, &root, Links::Stay, CHUNK_ENTRIES, &mut |batch| {
-            while let Ok(command) = self.commands.try_recv() {
+        let mut expands = Vec::new();
+        let mut found = |watch: &mut RootWatch, batch: Vec<FileEntry>| {
+            while let Ok(command) = watch.commands.try_recv() {
                 match command {
-                    Command::Add(publisher) => self.add(publisher),
+                    Command::Add(publisher) => watch.add(publisher),
                     Command::Changed => deferred = true,
+                    Command::Expand(path) => expands.push(path),
                 }
             }
             for entry in &batch {
-                self.entries.insert(entry.path.clone(), entry.clone());
+                watch.entries.insert(entry.path.clone(), entry.clone());
             }
-            self.broadcast(TreeChunk {
-                scan_id: self.scan_id,
+            watch.broadcast(TreeChunk {
+                scan_id: watch.scan_id,
                 entries: batch,
                 ..TreeChunk::default()
             });
             true
-        });
+        };
+        if self.lazy {
+            files::fs::walk_lazily(&root, &root, &HashSet::new(), CHUNK_ENTRIES, &mut |batch| {
+                found(&mut self, batch)
+            });
+        } else {
+            files::fs::walk_in_batches(&root, &root, Links::Stay, CHUNK_ENTRIES, &mut |batch| {
+                found(&mut self, batch)
+            });
+        }
         self.complete = true;
         self.broadcast(TreeChunk {
             scan_id: self.scan_id,
@@ -670,11 +707,15 @@ impl RootWatch {
         if deferred {
             self.changed();
         }
+        for path in expands {
+            self.expand(path);
+        }
         let mut idle_since: Option<Instant> = None;
         loop {
             match self.commands.recv_timeout(TICK) {
                 Ok(Command::Add(publisher)) => self.add(publisher),
                 Ok(Command::Changed) => self.changed(),
+                Ok(Command::Expand(path)) => self.expand(path),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -704,8 +745,13 @@ impl RootWatch {
                 self.changed();
                 false
             }
+            Ok(Command::Expand(path)) => {
+                drop(roots);
+                self.expand(path);
+                false
+            }
             Err(_) => {
-                roots.remove(&self.root);
+                roots.remove(&(self.root.clone(), self.lazy));
                 true
             }
         }
@@ -713,6 +759,12 @@ impl RootWatch {
 
     /// Sends a new subscriber everything known so far, as a fresh snapshot.
     fn add(&mut self, publisher: Publisher) {
+        if self.send_snapshot(&publisher) {
+            self.subscribers.push(publisher);
+        }
+    }
+
+    fn send_snapshot(&self, publisher: &Publisher) -> bool {
         let entries: Vec<FileEntry> = self.entries.values().cloned().collect();
         let pieces = chunks(entries);
         let count = pieces.len();
@@ -725,10 +777,49 @@ impl RootWatch {
                 ..TreeChunk::default()
             };
             if publisher.publish(FS_TREE_TOPIC, &chunk).is_err() {
-                return;
+                return false;
             }
         }
-        self.subscribers.push(publisher);
+        true
+    }
+
+    /// Walks the whole folder again and sends everyone the new snapshot, as after its own .gitignore changed.
+    fn rescan(&mut self) {
+        self.entries.clear();
+        let opened = self.opened.clone();
+        files::fs::walk_lazily(&self.root, &self.root, &opened, usize::MAX, &mut |batch| {
+            for entry in batch {
+                self.entries.insert(entry.path.clone(), entry);
+            }
+            true
+        });
+        self.scan_id += 1;
+        let subscribers = std::mem::take(&mut self.subscribers);
+        self.subscribers = subscribers
+            .into_iter()
+            .filter(|publisher| self.send_snapshot(publisher))
+            .collect();
+    }
+
+    /// Whether `path` lies in a folder whose contents nobody opened, so no client has it.
+    fn under_lazy(&self, path: &str) -> bool {
+        let mut current = path;
+        while let Some((parent, _)) = current.rsplit_once('/') {
+            if self.entries.get(parent).is_some_and(|entry| entry.lazy) {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    fn expand(&mut self, path: String) {
+        if !self.entries.get(&path).is_some_and(|entry| entry.lazy) {
+            return;
+        }
+        self.opened.insert(path.clone());
+        let patch = files::fs::patch_lazily(&self.root, &[path], &self.opened);
+        self.publish(patch);
     }
 
     fn broadcast(&mut self, chunk: TreeChunk) {
@@ -737,15 +828,41 @@ impl RootWatch {
     }
 
     fn changed(&mut self) {
-        let changes = self.watcher.take_changes();
+        let mut changes = self.watcher.take_changes();
         if changes.is_empty() {
             return;
         }
+        let mut rescan = false;
+        let patch = if self.lazy {
+            changes.retain(|path| !self.under_lazy(path));
+            let mut rules_changed = Vec::new();
+            for path in &changes {
+                match path.rsplit_once('/') {
+                    Some((folder, ".gitignore")) => rules_changed.push(folder.to_string()),
+                    None if path == ".gitignore" => rescan = true,
+                    _ => {}
+                }
+            }
+            if rescan {
+                self.rescan();
+            }
+            changes.extend(rules_changed);
+            if changes.is_empty() {
+                return;
+            }
+            files::fs::patch_lazily(&self.root, &changes, &self.opened)
+        } else {
+            files::fs::patch_for(&self.root, &changes, Links::Stay)
+        };
+        self.publish(patch);
+    }
+
+    fn publish(&mut self, patch: TreePatch) {
         let TreePatch {
             upserted,
             removed,
             changed,
-        } = files::fs::patch_for(&self.root, &changes, Links::Stay);
+        } = patch;
         for path in &removed {
             let under = format!("{path}/");
             self.entries.remove(path);
@@ -847,7 +964,7 @@ mod tests {
             let publisher = server
                 .publisher(subscription.channel())
                 .map_err(std::io::Error::other)?;
-            assert!(service.watch(temp.path(), publisher).is_ok());
+            assert!(service.watch(temp.path(), false, publisher).is_ok());
         }
         assert_eq!(service.watched(), 1);
         for subscription in [&first, &second] {
@@ -867,6 +984,89 @@ mod tests {
             0,
             "gone once nobody watched for the linger"
         );
+        Ok(())
+    }
+
+    /// The entries of every chunk up to and including the next with `last`.
+    fn entries_until_last(subscription: &pom_rpc::Subscription) -> Vec<(String, bool)> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut found = Vec::new();
+        loop {
+            assert!(Instant::now() < deadline, "no last chunk: {found:?}");
+            if let Ok(pom_rpc::PushEvent::Value { value, .. }) =
+                subscription.recv_timeout(Duration::from_millis(100))
+            {
+                let chunk: TreeChunk = serde_json::from_value(value).unwrap_or_default();
+                found.extend(
+                    chunk
+                        .entries
+                        .into_iter()
+                        .map(|entry| (entry.path, entry.lazy)),
+                );
+                if chunk.last {
+                    found.sort();
+                    return found;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_lazy_tree_sends_an_ignored_folder_once_it_is_opened() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        std::fs::create_dir(root.join(".git"))?;
+        std::fs::write(root.join(".gitignore"), "dist/\n")?;
+        std::fs::create_dir_all(root.join("dist/assets"))?;
+        std::fs::write(root.join("dist/app.js"), "x")?;
+        std::fs::write(root.join("main.rs"), "x")?;
+        let reject = |_: pom_rpc::Request, _: &pom_rpc::RequestContext| {
+            Err(RemoteError::new(error_code::METHOD_NOT_FOUND, "none"))
+        };
+        let (client, server) = pom_rpc::mock::connected(pom_rpc::Config::default(), reject)
+            .map_err(std::io::Error::other)?;
+        let service = FsService::new();
+        let subscription = client.subscribe().map_err(std::io::Error::other)?;
+        let publisher = server
+            .publisher(subscription.channel())
+            .map_err(std::io::Error::other)?;
+        assert!(service.watch(&root, true, publisher).is_ok());
+        let owned = |list: &[(&str, bool)]| -> Vec<(String, bool)> {
+            list.iter()
+                .map(|(path, lazy)| (path.to_string(), *lazy))
+                .collect()
+        };
+        assert_eq!(
+            entries_until_last(&subscription),
+            owned(&[(".gitignore", false), ("dist", true), ("main.rs", false)])
+        );
+        assert!(service.expand(&root, "../elsewhere").is_err());
+        assert!(service.expand(&root, "dist").is_ok());
+        assert_eq!(
+            entries_until_last(&subscription),
+            owned(&[
+                ("dist", false),
+                ("dist/app.js", false),
+                ("dist/assets", true)
+            ])
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(root.join("dist/assets/hidden.css"), "x")?;
+        std::fs::write(root.join("dist/new.js"), "x")?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let entries = entries_until_last(&subscription);
+            assert!(
+                !entries
+                    .iter()
+                    .any(|(path, _)| path.starts_with("dist/assets/")),
+                "{entries:?}"
+            );
+            if entries.iter().any(|(path, _)| path == "dist/new.js") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no patch for dist/new.js");
+        }
         Ok(())
     }
 
