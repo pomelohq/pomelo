@@ -14,7 +14,7 @@ pub(crate) struct TreeOps {
     clipboard: Option<TreeClipboard>,
     prompt: Option<(u64, TreePrompt)>,
     next_token: u64,
-    toast: Option<String>,
+    pub(crate) toast: Option<String>,
 }
 
 pub(crate) struct TreeEdit {
@@ -202,10 +202,22 @@ fn has_restorable_changes(work_dir: &Path, full: &Path) -> bool {
 }
 
 impl FilesView {
+    /// Whether `path` is a folder, as the tree knows it for files on another machine.
+    fn is_dir_entry(&self, path: &str) -> bool {
+        if !self.is_remote() {
+            return self.root.join(path).is_dir();
+        }
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .ok()
+            .and_then(|index| self.entries.get(index))
+            .is_some_and(|entry| entry.is_dir)
+    }
+
     pub(crate) fn menu_state(&self, path: Option<&str>) -> TreeMenuState {
-        let is_dir = path.is_none_or(|path| self.root.join(path).is_dir());
+        let is_dir = path.is_none_or(|path| self.is_dir_entry(path));
         let full = self.root.join(path.unwrap_or(""));
-        let work_dir = git_work_dir(&full);
+        let work_dir = (!self.is_remote()).then(|| git_work_dir(&full)).flatten();
         TreeMenuState {
             is_dir,
             is_root: path.is_none(),
@@ -224,7 +236,11 @@ impl FilesView {
         action: TreeAction,
     ) -> Option<Prompt> {
         let target = path.unwrap_or("").to_string();
-        let target_is_dir = path.is_none_or(|path| self.root.join(path).is_dir());
+        let target_is_dir = path.is_none_or(|path| self.is_dir_entry(path));
+        if self.is_remote() && !matches!(action, TreeAction::ExpandAll | TreeAction::CollapseAll) {
+            self.tree_ops.toast = Some("Files on another machine are read-only for now".into());
+            return None;
+        }
         match action {
             TreeAction::NewFile | TreeAction::NewDirectory => {
                 let parent = if target_is_dir {

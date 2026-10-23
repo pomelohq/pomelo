@@ -60,7 +60,13 @@ mod snippet_store;
 mod tree_actions;
 use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
-use files::FileNode;
+use files::{FileNode, LocalFs, ProjectFs};
+
+type SharedFs = std::sync::Arc<dyn ProjectFs>;
+
+fn local_fs(root: &Path) -> SharedFs {
+    std::sync::Arc::new(LocalFs::new(root.to_path_buf()))
+}
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 use workspace::{
     ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, Elevation, FunctionView, Item,
@@ -706,7 +712,10 @@ enum SoftWrap {
 type PreviewUpdate = (Option<(String, u64)>, Option<usize>);
 
 struct FileItem {
+    fs: SharedFs,
     root: PathBuf,
+    /// Why the file could not be read, shown in place of its text.
+    load_error: Option<String>,
     path: String,
     name: String,
     /// The editable text model (`None` = binary/unpreviewable). Char-offset rope with multi-cursor + undo.
@@ -1272,29 +1281,77 @@ impl FileItem {
         item
     }
 
+    /// Takes a newer read of the file from another machine: a clean tab shows it, an edited one is in conflict.
+    fn take_fresh_read(&mut self, read: files::FileResult) -> bool {
+        let modified = read.modified();
+        if self.saved_mtime.is_some_and(|saved| modified <= saved) {
+            return false;
+        }
+        if self.buffer.as_ref().is_some_and(|b| b.is_dirty()) {
+            self.conflict = true;
+            return true;
+        }
+        let Some(text) = read.text else {
+            return false;
+        };
+        if let Some(b) = self.buffer.as_mut() {
+            let cursor = b.cursor();
+            if b.reload(&text) {
+                b.mark_saved();
+                b.place_cursor(cursor.min(b.rope.len_chars()));
+            }
+        }
+        self.saved_mtime = Some(modified);
+        self.refresh();
+        self.ensure_visible();
+        true
+    }
+
     fn retarget(&mut self, path: &str) {
         self.path = path.to_string();
         self.name = path.rsplit('/').next().unwrap_or(path).to_string();
-        self.saved_mtime = files::mtime(&self.root, path).ok();
+        self.saved_mtime = self.local_mtime();
         self.diagnostics.clear();
-        if self.buffer.is_some() {
+        if self.buffer.is_some() && self.is_local() {
             self.git = git_diff::GitDiff::load(self.root.join(path));
         }
     }
 
     fn new(root: PathBuf, path: &str, text: Option<String>) -> Self {
+        Self::in_fs(local_fs(&root), root, path, text)
+    }
+
+    fn is_local(&self) -> bool {
+        self.fs.local_root().is_some()
+    }
+
+    /// The modification time on disk, asked only of local files: another machine's come with each read.
+    fn local_mtime(&self) -> Option<std::time::SystemTime> {
+        if !self.is_local() {
+            return self.saved_mtime;
+        }
+        self.fs.stat(&self.path).ok().map(|stat| stat.modified())
+    }
+
+    /// `root` is where the files are, shown and used as ids even when they are on another machine.
+    fn in_fs(fs: SharedFs, root: PathBuf, path: &str, text: Option<String>) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let lang = Lang::detect(path, text.as_deref().and_then(|t| t.lines().next()));
         let buffer = text.map(|t| EditorBuffer::from_text(&t));
         let syntax = buffer.as_ref().and_then(|_| Syntax::new(lang));
-        let saved_mtime = files::mtime(&root, path).ok();
-        let git = if buffer.is_some() {
+        let local = fs.local_root().is_some();
+        let saved_mtime = local
+            .then(|| fs.stat(path).ok().map(|stat| stat.modified()))
+            .flatten();
+        let git = if buffer.is_some() && local {
             git_diff::GitDiff::load(root.join(path))
         } else {
             git_diff::GitDiff::default()
         };
         Self {
+            fs,
             root,
+            load_error: None,
             path: path.to_string(),
             name,
             buffer,
@@ -1356,7 +1413,7 @@ impl FileItem {
             link: None,
             active_diagnostic: None,
             scratch: None,
-            read_only: false,
+            read_only: !local,
             save_check: None,
             footer: None,
             premeasured: false,
@@ -1383,8 +1440,13 @@ impl FileItem {
         }
     }
 
-    fn loaded(root: PathBuf, path: &str, loaded: LoadedFile) -> Self {
-        let mut item = Self::new(root, path, None);
+    fn loaded(fs: SharedFs, root: PathBuf, path: &str, loaded: LoadedFile) -> Self {
+        let mut item = Self::in_fs(fs, root, path, None);
+        if loaded.saved_mtime.is_some() {
+            item.saved_mtime = loaded.saved_mtime;
+        }
+        item.load_error = loaded.error;
+        item.read_only |= !item.is_local();
         let Some(buffer) = loaded.buffer else {
             return item;
         };
@@ -1398,7 +1460,9 @@ impl FileItem {
         item.lang = Lang::detect(path, Some(&first_line));
         item.syntax = Syntax::new(item.lang);
         item.soft_wrap = default_soft_wrap(item.lang);
-        item.git = git_diff::GitDiff::load(item.root.join(path));
+        if item.is_local() {
+            item.git = git_diff::GitDiff::load(item.root.join(path));
+        }
         item.buffer = Some(buffer);
         item.line_widths = loaded.widths;
         item.premeasured = true;
@@ -4586,24 +4650,25 @@ impl Item for FileItem {
             return None;
         }
         let text = self.buffer.as_ref().map(|b| b.text_for_save());
-        let mut item = FileItem::new(self.root.clone(), &self.path, text);
+        let mut item = FileItem::in_fs(self.fs.clone(), self.root.clone(), &self.path, text);
         item.saved_mtime = self.saved_mtime;
+        item.read_only |= !self.is_local();
         item.set_language(self.lang);
         Some(Box::new(item))
     }
 
     fn render(&mut self) -> Node {
         if self.buffer.is_none() {
+            let message = match &self.load_error {
+                Some(error) => format!("Cannot open this file: {error}"),
+                None => "Cannot preview this file".to_string(),
+            };
             return div()
                 .col()
                 .flex(1.0)
                 .px(MESSAGE_PAD)
                 .py(MESSAGE_PAD)
-                .child(
-                    label("Cannot preview this file")
-                        .size(13.0)
-                        .color(theme().text_muted),
-                )
+                .child(label(message).size(13.0).color(theme().text_muted))
                 .into();
         }
         self.refresh();
@@ -4937,6 +5002,9 @@ impl Item for FileItem {
         if self.scratch.is_some() {
             return Ok(());
         }
+        if !self.is_local() {
+            return Err("Files on another machine are read-only for now".into());
+        }
         if self.read_only {
             return Err("main is read-only: make changes in a branch workspace".into());
         }
@@ -4970,10 +5038,10 @@ impl Item for FileItem {
     }
 
     fn refresh_disk_state(&mut self) {
-        if self.scratch.is_some() {
+        if self.scratch.is_some() || !self.is_local() {
             return;
         }
-        let Ok(disk) = files::mtime(&self.root, &self.path) else {
+        let Ok(disk) = self.fs.stat(&self.path).map(|stat| stat.modified()) else {
             return;
         };
         if self.saved_mtime.is_some_and(|saved| disk <= saved) {
@@ -4983,10 +5051,7 @@ impl Item for FileItem {
             self.conflict = true;
             return;
         }
-        let Some(text) = files::read(&self.root, &self.path)
-            .ok()
-            .and_then(|c| c.text)
-        else {
+        let Some(text) = self.fs.read(&self.path).ok().and_then(|read| read.text) else {
             return;
         };
         if let Some(b) = self.buffer.as_mut() {
@@ -6444,22 +6509,42 @@ const BACKGROUND_OPEN_BYTES: u64 = 8 * 1024 * 1024;
 struct LoadedFile {
     buffer: Option<EditorBuffer>,
     widths: LineWidths,
+    /// When it was read from another machine, the modification time it had there.
+    saved_mtime: Option<std::time::SystemTime>,
+    error: Option<String>,
 }
 
-fn load_file(root: &Path, path: &str) -> LoadedFile {
-    let loaded = files::text_file(root, path).and_then(|found| match found {
-        Some((full, len)) => load_text_in_pieces(&full, len).map(Some),
-        None => Ok(None),
-    });
-    let (buffer, widths) = match loaded {
-        Ok(Some((buffer, widths))) => (Some(buffer), widths),
-        Ok(None) => (None, LineWidths::default()),
+fn load_file(fs: &dyn ProjectFs, path: &str) -> LoadedFile {
+    let mut saved_mtime = None;
+    let loaded = match fs.local_root() {
+        Some(root) => files::text_file(root, path).and_then(|found| match found {
+            Some((full, len)) => load_text_in_pieces(&full, len).map(Some),
+            None => Ok(None),
+        }),
+        None => fs.read(path).map(|read| {
+            saved_mtime = Some(read.modified());
+            read.text.map(|text| {
+                let ending = LineEnding::detect(&text);
+                let rope = Rope::from_str(&editor::buffer::normalize_newlines(&text));
+                let widths = LineWidths::measure(&rope, TAB_COLS);
+                (EditorBuffer::from_rope(rope, ending), widths)
+            })
+        }),
+    };
+    let (buffer, widths, error) = match loaded {
+        Ok(Some((buffer, widths))) => (Some(buffer), widths, None),
+        Ok(None) => (None, LineWidths::default(), None),
         Err(error) => {
             eprintln!("open {path}: {error}");
-            (None, LineWidths::default())
+            (None, LineWidths::default(), Some(error.to_string()))
         }
     };
-    LoadedFile { buffer, widths }
+    LoadedFile {
+        buffer,
+        widths,
+        saved_mtime,
+        error,
+    }
 }
 
 fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, LineWidths)> {
@@ -6544,6 +6629,7 @@ fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, 
 }
 
 struct PendingOpen {
+    fs: SharedFs,
     root: PathBuf,
     path: String,
     pane: u64,
@@ -6734,6 +6820,7 @@ enum ImageState {
 }
 
 struct ImageItem {
+    fs: SharedFs,
     root: PathBuf,
     path: String,
     name: String,
@@ -6747,10 +6834,9 @@ impl Drop for ImageItem {
     }
 }
 
-/// Decodes `file` within the memory limit and scales it down to fit `IMAGE_SIDE_LIMIT`, keeping its aspect.
-fn decode_image(file: &std::path::Path) -> Result<(DecodedImage, u32, u32, Vec<u8>), String> {
-    let mut reader = image::ImageReader::open(file)
-        .map_err(|error| error.to_string())?
+/// Decodes `bytes` within the memory limit and scales it down to fit `IMAGE_SIDE_LIMIT`, keeping its aspect.
+fn decode_image(bytes: &[u8]) -> Result<(DecodedImage, u32, u32, Vec<u8>), String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
     let mut limits = image::Limits::default();
@@ -6777,6 +6863,10 @@ fn decode_image(file: &std::path::Path) -> Result<(DecodedImage, u32, u32, Vec<u
 
 impl ImageItem {
     fn new(root: &std::path::Path, path: &str) -> Self {
+        Self::in_fs(local_fs(root), root, path)
+    }
+
+    fn in_fs(fs: SharedFs, root: &std::path::Path, path: &str) -> Self {
         let name = path.rsplit('/').next().unwrap_or(path).to_string();
         let id = image_id(path);
         ui::retain_image(id);
@@ -6784,14 +6874,18 @@ impl ImageItem {
             ImageState::Ready(None)
         } else {
             let (sender, receiver) = std::sync::mpsc::channel();
-            let file = root.join(path);
+            let (reader, file) = (fs.clone(), path.to_string());
             let spawned = std::thread::Builder::new()
                 .name("image-decode".into())
                 .spawn(move || {
-                    let decoded = decode_image(&file).map(|(original, width, height, rgba)| {
-                        ui::set_image(id, width, height, rgba);
-                        original
-                    });
+                    let decoded = reader
+                        .read_bytes(&file, files::fs::IMAGE_READ_LIMIT)
+                        .map_err(|error| error.to_string())
+                        .and_then(|bytes| decode_image(&bytes))
+                        .map(|(original, width, height, rgba)| {
+                            ui::set_image(id, width, height, rgba);
+                            original
+                        });
                     sender.send(decoded).ok();
                     ui::wake();
                 });
@@ -6801,6 +6895,7 @@ impl ImageItem {
             }
         };
         Self {
+            fs,
             root: root.to_path_buf(),
             path: path.to_string(),
             name,
@@ -6829,7 +6924,11 @@ impl Item for ImageItem {
         Some(MaterialIcon::Image)
     }
     fn clone_on_split(&self) -> Option<Box<dyn Item>> {
-        Some(Box::new(ImageItem::new(&self.root, &self.path)))
+        Some(Box::new(ImageItem::in_fs(
+            self.fs.clone(),
+            &self.root,
+            &self.path,
+        )))
     }
     fn tab_detail(&self) -> Option<String> {
         match &self.state {
@@ -6860,7 +6959,7 @@ impl Item for ImageItem {
     fn render(&mut self) -> Node {
         let message = match &self.state {
             ImageState::Loading(_) => Some("Loading...".to_string()),
-            ImageState::Failed(error) => Some(format!("Cannot decode this image: {error}")),
+            ImageState::Failed(error) => Some(format!("Cannot show this image: {error}")),
             ImageState::Ready(_) => None,
         };
         if let Some(message) = message {
@@ -6897,12 +6996,15 @@ trait OpenFile {
     fn open_file(&mut self, root: &std::path::Path, path: &str) {
         self.open_file_as(root, path, OpenAs::Tab);
     }
-    fn open_file_as(&mut self, root: &std::path::Path, path: &str, how: OpenAs);
+    fn open_file_as(&mut self, root: &std::path::Path, path: &str, how: OpenAs) {
+        self.open_file_in(&local_fs(root), root, path, how);
+    }
+    fn open_file_in(&mut self, fs: &SharedFs, root: &std::path::Path, path: &str, how: OpenAs);
     fn place_opened(&mut self, item: Box<dyn Item>, how: OpenAs);
 }
 
 impl OpenFile for Pane {
-    fn open_file_as(&mut self, root: &std::path::Path, path: &str, how: OpenAs) {
+    fn open_file_in(&mut self, fs: &SharedFs, root: &std::path::Path, path: &str, how: OpenAs) {
         let existing = self
             .open
             .iter()
@@ -6921,10 +7023,16 @@ impl OpenFile for Pane {
         }
         let ext = path.rsplit('.').next().unwrap_or("");
         let item: Box<dyn Item> = if is_image_ext(ext) {
-            Box::new(ImageItem::new(root, path))
+            Box::new(ImageItem::in_fs(fs.clone(), root, path))
         } else {
-            let text = files::read(root, path).ok().and_then(|c| c.text);
-            Box::new(FileItem::new(root.to_path_buf(), path, text))
+            let read = fs.read(path).ok();
+            let modified = read.as_ref().map(files::FileResult::modified);
+            let text = read.and_then(|read| read.text);
+            let mut item = FileItem::in_fs(fs.clone(), root.to_path_buf(), path, text);
+            if item.saved_mtime.is_none() {
+                item.saved_mtime = modified;
+            }
+            Box::new(item)
         };
         self.place_opened(item, how);
     }
@@ -6950,6 +7058,8 @@ struct Row {
 }
 
 pub struct FilesView {
+    fs: SharedFs,
+    /// Where the files are: on this machine, or the workspace's folder on another one.
     root: PathBuf,
     /// Files open here can be read but not edited (the main workspace: work happens in branch workspaces).
     read_only: bool,
@@ -6957,10 +7067,17 @@ pub struct FilesView {
     /// Paths still editable in a read-only view: the project's config lives outside any branch.
     writable: Vec<PathBuf>,
     tree: Vec<FileNode>,
-    /// The tree walk still running off the UI thread; the tree fills in as it reports.
-    scan: Option<files::BackgroundScan>,
+    /// The tree as it is walked and then changes; the tree fills in as it reports.
+    feed: Option<Box<dyn files::TreeFeed>>,
+    scanning: bool,
+    /// Why the tree stopped following its files, while it waits for them to come back.
+    interrupted: Option<String>,
     entries: Vec<files::FileEntry>,
-    watcher: Option<files::TreeWatcher>,
+    /// Reads of open files that changed on another machine, by path.
+    pending_reloads: Vec<(
+        String,
+        std::sync::mpsc::Receiver<std::io::Result<files::FileResult>>,
+    )>,
     expanded: HashSet<String>,
     /// The editor area's split panes and their tabs.
     panes: PaneGroupView,
@@ -7045,7 +7162,7 @@ impl FilesView {
     /// Opens at once with an empty tree; the tree fills in from a background walk so a large workspace
     /// never stalls the window.
     pub fn read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only;
+        self.read_only = read_only || self.is_remote();
         self
     }
 
@@ -7059,62 +7176,159 @@ impl FilesView {
         self
     }
 
-    pub fn new(root: PathBuf) -> Self {
-        let scan = files::BackgroundScan::start(root.clone(), std::sync::Arc::new(ui::wake));
-        let watcher = files::TreeWatcher::new(&root, std::sync::Arc::new(ui::wake))
-            .map_err(|error| eprintln!("file tree watch failed: {error}"))
-            .ok();
-        let mut view = Self::with_tree(root, Vec::new());
-        view.scan = Some(scan);
-        view.watcher = watcher;
+    /// The files of `fs`; `root_label` is the workspace's folder, shown for files on another machine.
+    pub fn new(fs: SharedFs, root_label: PathBuf) -> Self {
+        let root = fs.local_root().map(Path::to_path_buf).unwrap_or(root_label);
+        let feed = fs.watch(std::sync::Arc::new(ui::wake));
+        let mut view = Self::with_tree(fs, root, Vec::new());
+        view.feed = Some(feed);
+        view.scanning = true;
         view
     }
 
-    fn apply_disk_changes(&mut self) -> bool {
-        let Some(changes) = self.watcher.as_ref().map(files::TreeWatcher::take_changes) else {
+    /// The files in `root` on this machine.
+    pub fn local(root: PathBuf) -> Self {
+        Self::new(local_fs(&root), root)
+    }
+
+    /// Whether the files are on another machine, where this view only reads them for now.
+    pub fn is_remote(&self) -> bool {
+        self.fs.local_root().is_none()
+    }
+
+    /// Whether the tree is still being walked.
+    pub fn scanning(&self) -> bool {
+        self.scanning
+    }
+
+    /// Takes what the feed reported into the tree, and has open files look again at what changed.
+    fn poll_tree(&mut self) -> bool {
+        let Some(feed) = self.feed.as_mut() else {
             return false;
         };
-        if changes.is_empty() {
+        let events = feed.poll();
+        if events.is_empty() {
             return false;
         }
-        if self.scan.is_none() {
-            files::apply_changes(&self.root, &mut self.entries, &changes);
+        let mut changed_files: Vec<String> = Vec::new();
+        let mut patched = false;
+        for event in events {
+            match event {
+                files::TreeEvent::Snapshot { entries, complete } => {
+                    self.entries = entries;
+                    self.scanning = !complete;
+                    self.interrupted = None;
+                    patched = true;
+                }
+                files::TreeEvent::Patch(patch) => {
+                    if !self.scanning {
+                        files::fs::apply_patch(&mut self.entries, &patch);
+                        patched |= !patch.upserted.is_empty() || !patch.removed.is_empty();
+                    }
+                    changed_files.extend(patch.changed.into_iter().map(|file| file.path));
+                    if self.fs.local_root().is_some() {
+                        self.panes.refresh_disk_state();
+                    }
+                }
+                files::TreeEvent::Interrupted(reason) => self.interrupted = Some(reason),
+            }
+        }
+        if patched {
             self.tree = files::build_tree(&self.entries);
             self.flat_dirty = true;
         }
-        self.panes.refresh_disk_state();
+        if self.is_remote() {
+            self.reload_changed(changed_files);
+        }
         true
+    }
+
+    /// Reads again, off the UI thread, each open file that changed on the other machine.
+    fn reload_changed(&mut self, mut paths: Vec<String>) {
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            let mut open = false;
+            self.panes.for_each_item_mut(&mut |item| {
+                open |= item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                    .is_some_and(|file| file.path == path && file.scratch.is_none());
+            });
+            if !open || self.pending_reloads.iter().any(|(known, _)| *known == path) {
+                continue;
+            }
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let (fs, file) = (self.fs.clone(), path.clone());
+            let spawned = std::thread::Builder::new()
+                .name("file-reload".into())
+                .spawn(move || {
+                    if sender.send(fs.read(&file)).is_ok() {
+                        ui::wake();
+                    }
+                });
+            match spawned {
+                Ok(_) => self.pending_reloads.push((path, receiver)),
+                Err(error) => eprintln!("reload {path}: {error}"),
+            }
+        }
+    }
+
+    fn poll_reloads(&mut self) -> bool {
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.pending_reloads.len() {
+            let read = match self.pending_reloads[index].1.try_recv() {
+                Ok(read) => read,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_reloads.remove(index);
+                    continue;
+                }
+            };
+            let (path, _) = self.pending_reloads.remove(index);
+            let read = match read {
+                Ok(read) => read,
+                Err(error) => {
+                    eprintln!("reload {path}: {error}");
+                    continue;
+                }
+            };
+            self.panes.for_each_item_mut(&mut |item| {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                    .filter(|file| file.path == path && file.scratch.is_none())
+                {
+                    changed |= file.take_fresh_read(read.clone());
+                }
+            });
+        }
+        changed
     }
 
     #[cfg(test)]
     pub(crate) fn scanned(root: PathBuf) -> Self {
         let tree = files::build_tree(&files::list(&root));
-        Self::with_tree(root, tree)
+        Self::with_tree(local_fs(&root), root, tree)
     }
 
-    /// Take the newest scan progress into the tree; returns whether the tree changed.
-    fn apply_scan(&mut self) -> bool {
-        let Some(update) = self.scan.as_ref().and_then(files::BackgroundScan::latest) else {
-            return false;
-        };
-        if !update.scanning {
-            self.scan = None;
-        }
-        self.tree = files::build_tree(&update.entries);
-        self.entries = update.entries;
-        self.flat_dirty = true;
-        true
-    }
-
-    fn with_tree(root: PathBuf, tree: Vec<FileNode>) -> Self {
-        let lsp =
-            (!cfg!(test)).then(|| lsp::LspStore::new(root.clone(), std::sync::Arc::new(ui::wake)));
+    fn with_tree(fs: SharedFs, root: PathBuf, tree: Vec<FileNode>) -> Self {
+        let lsp = (!cfg!(test) && fs.local_root().is_some())
+            .then(|| lsp::LspStore::new(root.clone(), std::sync::Arc::new(ui::wake)));
         Self {
+            read_only: fs.local_root().is_none(),
+            fs,
             root,
             tree,
-            scan: None,
+            feed: None,
+            scanning: false,
+            interrupted: None,
             entries: Vec::new(),
-            watcher: None,
+            pending_reloads: Vec::new(),
             expanded: HashSet::new(),
             panes: PaneGroupView::new(PaneGroupConfig {
                 id_base: FUNC_VIEW_BASE,
@@ -7150,7 +7364,6 @@ impl FilesView {
                 zoom_whole_group: false,
             }),
             hover: None,
-            read_only: false,
             save_check: None,
             writable: Vec::new(),
             pending_moves: Vec::new(),
@@ -7344,7 +7557,8 @@ impl FilesView {
     }
 
     fn open_file_as(&mut self, path: &str, how: OpenAs) {
-        let root = self.root.clone();
+        let (fs, root) = (self.fs.clone(), self.root.clone());
+        let remote = self.is_remote();
         let Some(pane) = self.panes.active_pane_mut() else {
             return;
         };
@@ -7352,11 +7566,14 @@ impl FilesView {
             .open
             .iter()
             .any(|item| item.id().as_deref() == Some(path));
-        let large = std::fs::metadata(root.join(path))
-            .is_ok_and(|meta| meta.len() >= BACKGROUND_OPEN_BYTES);
+        // Another machine's files always load off the UI thread: every read is a round trip.
+        let large = remote
+            || fs
+                .stat(path)
+                .is_ok_and(|stat| stat.size >= BACKGROUND_OPEN_BYTES);
         let ext = path.rsplit('.').next().unwrap_or("");
         if already_open || !large || is_image_ext(ext) {
-            pane.open_file_as(&root, path, how);
+            pane.open_file_in(&fs, &root, path, how);
             return;
         }
         if self
@@ -7368,14 +7585,17 @@ impl FilesView {
         }
         let pane = pane.id;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let (worker_root, worker_path) = (root.clone(), path.to_string());
+        let (worker_fs, worker_path) = (fs.clone(), path.to_string());
         let spawned = std::thread::Builder::new()
             .name("file-open".into())
             .spawn(move || {
-                sender.send(load_file(&worker_root, &worker_path)).ok();
+                if sender.send(load_file(&*worker_fs, &worker_path)).is_ok() {
+                    ui::wake();
+                }
             });
         match spawned {
             Ok(_) => self.pending_opens.push(PendingOpen {
+                fs,
                 root,
                 path: path.to_string(),
                 pane,
@@ -7384,8 +7604,9 @@ impl FilesView {
             }),
             Err(error) => {
                 eprintln!("open {path} in the background: {error}");
+                let (fs, root) = (self.fs.clone(), self.root.clone());
                 if let Some(pane) = self.panes.active_pane_mut() {
-                    pane.open_file_as(&self.root.clone(), path, how);
+                    pane.open_file_in(&fs, &root, path, how);
                 }
             }
         }
@@ -7408,7 +7629,7 @@ impl FilesView {
                 }
             };
             let pending = self.pending_opens.remove(index);
-            let item = FileItem::loaded(pending.root, &pending.path, loaded);
+            let item = FileItem::loaded(pending.fs, pending.root, &pending.path, loaded);
             let mut item: Option<Box<dyn workspace::Item>> = Some(Box::new(item));
             self.panes.group.for_each_pane_mut(&mut |pane| {
                 if pane.id == pending.pane {
@@ -7907,12 +8128,15 @@ impl FilesView {
 
     fn load_finder_candidates(&mut self, include_ignored: bool) {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let root = self.root.clone();
+        let fs = self.fs.clone();
         let spawned = std::thread::Builder::new()
             .name("file-finder-list".into())
             .spawn(move || {
-                let candidates =
-                    file_finder::Candidates::new(files::project_files(&root, include_ignored));
+                let listed = fs.project_files(include_ignored).unwrap_or_else(|error| {
+                    eprintln!("listing the files for the finder: {error}");
+                    Vec::new()
+                });
+                let candidates = file_finder::Candidates::new(listed);
                 if sender.send(candidates).is_ok() {
                     ui::wake();
                 }
@@ -8182,6 +8406,11 @@ impl FilesView {
     }
 
     fn deploy_project_search(&mut self) {
+        if self.is_remote() {
+            self.tree_ops.toast =
+                Some("Searching files on another machine is not available yet".into());
+            return;
+        }
         let seed = self
             .panes
             .active_item()
@@ -9057,7 +9286,7 @@ impl FunctionView for FilesView {
     }
 
     fn render_tree(&mut self) -> Option<workspace::TreePanel> {
-        self.apply_scan();
+        self.poll_tree();
         // Left: the file tree. Rebuild the flattened visible rows + the click-id mapping.
         // Re-flatten only when the tree structure changed (expand/collapse), not on scroll.
         if self.flat_dirty {
@@ -9729,7 +9958,8 @@ impl FunctionView for FilesView {
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();
         outcome.changed |= self.serve_server_logs();
-        outcome.changed |= self.apply_disk_changes();
+        outcome.changed |= self.poll_tree();
+        outcome.changed |= self.poll_reloads();
         outcome.changed |= self.serve_project_search();
         outcome.changed |= self.serve_project_diagnostics();
         self.sync_markdown_previews();
@@ -9815,6 +10045,9 @@ impl FunctionView for FilesView {
     }
 
     fn open_diff(&mut self, path: &Path, base: Option<String>) {
+        if self.is_remote() {
+            return;
+        }
         let path = path.to_path_buf();
         self.track_nav(|view| {
             let (root, relative) = match path.strip_prefix(&view.root) {
@@ -9840,6 +10073,13 @@ impl FunctionView for FilesView {
     }
 
     fn open_file_at(&mut self, path: &Path, row: Option<u32>, column: Option<u32>) {
+        if self.is_remote() {
+            if let Ok(relative) = path.strip_prefix(&self.root) {
+                let relative = relative.to_string_lossy().into_owned();
+                self.open_file_as(&relative, OpenAs::Tab);
+            }
+            return;
+        }
         let path = path.to_path_buf();
         self.track_nav(|view| {
             let (root, relative) = match path.strip_prefix(&view.root) {
@@ -9874,7 +10114,7 @@ impl FunctionView for FilesView {
     }
 
     fn root_dir(&self) -> Option<PathBuf> {
-        Some(self.root.clone())
+        (!self.is_remote()).then(|| self.root.clone())
     }
 
     fn open_path(&mut self, path: &str) {
@@ -9973,13 +10213,13 @@ mod line_layout_tests {
         let root = std::env::temp_dir().join(format!("pomelo-scan-view-{}", std::process::id()));
         std::fs::create_dir_all(root.join("src")).expect("dirs");
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("file");
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::local(root.clone());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while view.scan.is_some() && std::time::Instant::now() < deadline {
+        while view.scanning() && std::time::Instant::now() < deadline {
             view.render_tree();
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(view.scan.is_none(), "scan finished");
+        assert!(!view.scanning(), "scan finished");
         assert_eq!(view.tree, FilesView::scanned(root.clone()).tree);
         if let Err(error) = std::fs::remove_dir_all(&root) {
             eprintln!("leaving {}: {error}", root.display());
@@ -12063,7 +12303,7 @@ mod markdown_preview_tests {
         let temp = tempfile::tempdir().expect("temp");
         let root = temp.path().to_path_buf();
         std::fs::write(root.join("app.rs"), "fn main() {}\n").expect("write");
-        let mut view = FilesView::new(root.clone()).read_only(true);
+        let mut view = FilesView::local(root.clone()).read_only(true);
         view.open_file("app.rs");
         view.tick_items(&|| None);
         view.editor_text("oops");
@@ -12092,7 +12332,7 @@ mod markdown_preview_tests {
                 Ok(())
             }
         });
-        let mut view = FilesView::new(root.clone()).save_check(check);
+        let mut view = FilesView::local(root.clone()).save_check(check);
         view.open_file("pom.yml");
         view.tick_items(&|| None);
         view.editor_text("[");
@@ -12114,7 +12354,7 @@ mod markdown_preview_tests {
         let main = project.join("workspace--main");
         std::fs::create_dir_all(&main).expect("main dir");
         std::fs::write(project.join("pom.yml"), "session: demo\n").expect("write");
-        let mut view = FilesView::new(main)
+        let mut view = FilesView::local(main)
             .read_only(true)
             .writable(vec![project.join("pom.yml")]);
         view.open_file_at(&project.join("pom.yml"), None, None);
@@ -12139,7 +12379,7 @@ mod markdown_preview_tests {
         let root = temp.path().to_path_buf();
         std::fs::write(root.join("NOTES.md"), "# Notes\n").expect("write");
         std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::local(root.clone());
         view.open_file("main.rs");
         view.panes
             .layout(Rect::new(0.0, 0.0, 1200.0, 800.0, ui::Rgba::TRANSPARENT));
@@ -12166,7 +12406,7 @@ mod markdown_preview_tests {
         let root = temp.path().to_path_buf();
         std::fs::write(root.join("README.md"), "# Title\n\nbody\n").expect("write");
         std::fs::write(root.join("main.rs"), "fn main() {}\n").expect("write");
-        let mut view = FilesView::new(root.clone());
+        let mut view = FilesView::local(root.clone());
         view.open_file("main.rs");
         view.editor_key(EditKey::OpenMarkdownPreviewToTheSide, false);
         assert_eq!(
@@ -12246,7 +12486,8 @@ mod image_tests {
         image::RgbaImage::from_pixel(20_000, 300, image::Rgba([200, 30, 30, 255]))
             .save(&file)
             .expect("png");
-        let (original, width, height, rgba) = decode_image(&file).expect("decoded");
+        let (original, width, height, rgba) =
+            decode_image(&std::fs::read(&file).expect("read")).expect("decoded");
         assert_eq!((original.width, original.height), (20_000, 300));
         assert!(width <= IMAGE_SIDE_LIMIT && height <= IMAGE_SIDE_LIMIT);
         assert_eq!(width, IMAGE_SIDE_LIMIT, "the long side fills the limit");
@@ -12258,7 +12499,7 @@ mod image_tests {
         let temp = tempfile::tempdir().expect("temp");
         let file = temp.path().join("broken.png");
         std::fs::write(&file, b"not an image").expect("write");
-        assert!(decode_image(&file).is_err());
+        assert!(decode_image(b"not an image").is_err());
         let mut item = ImageItem::new(temp.path(), "broken.png");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while matches!(item.state, ImageState::Loading(_)) && std::time::Instant::now() < deadline {
@@ -12980,5 +13221,162 @@ mod active_file_tests {
         let mut files = FilesView::scanned(folder);
         files.open_file_at(&config, None, None);
         assert_eq!(files.active_file_path(), Some(config));
+    }
+}
+
+#[cfg(test)]
+mod remote_files_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Files on another machine, as a test holds them: what a read returns and what the feed reports next.
+    #[derive(Default)]
+    struct Elsewhere {
+        files: Mutex<HashMap<String, (String, u64)>>,
+        events: Arc<Mutex<Vec<files::TreeEvent>>>,
+    }
+
+    struct Feed(Arc<Mutex<Vec<files::TreeEvent>>>);
+
+    impl files::TreeFeed for Feed {
+        fn poll(&mut self) -> Vec<files::TreeEvent> {
+            self.0
+                .lock()
+                .map(|mut events| std::mem::take(&mut *events))
+                .unwrap_or_default()
+        }
+    }
+
+    impl Elsewhere {
+        fn put(&self, path: &str, text: &str, mtime_ns: u64) {
+            if let Ok(mut files) = self.files.lock() {
+                files.insert(path.into(), (text.into(), mtime_ns));
+            }
+        }
+
+        fn report(&self, event: files::TreeEvent) {
+            if let Ok(mut events) = self.events.lock() {
+                events.push(event);
+            }
+        }
+
+        fn get(&self, path: &str) -> std::io::Result<(String, u64)> {
+            self.files
+                .lock()
+                .ok()
+                .and_then(|files| files.get(path).cloned())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+        }
+    }
+
+    impl ProjectFs for Elsewhere {
+        fn local_root(&self) -> Option<&Path> {
+            None
+        }
+
+        fn watch(&self, _wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn files::TreeFeed> {
+            Box::new(Feed(self.events.clone()))
+        }
+
+        fn stat(&self, path: &str) -> std::io::Result<files::FileStat> {
+            let (text, mtime_ns) = self.get(path)?;
+            Ok(files::FileStat {
+                dir: false,
+                size: text.len() as u64,
+                mtime_ns,
+            })
+        }
+
+        fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+            let (text, mtime_ns) = self.get(path)?;
+            Ok(files::FileResult::from_bytes(text.into_bytes(), mtime_ns))
+        }
+
+        fn read_bytes(&self, path: &str, _limit: u64) -> std::io::Result<Vec<u8>> {
+            Ok(self.get(path)?.0.into_bytes())
+        }
+
+        fn project_files(&self, _include_ignored: bool) -> std::io::Result<Vec<String>> {
+            Ok(self
+                .files
+                .lock()
+                .map(|files| files.keys().cloned().collect())
+                .unwrap_or_default())
+        }
+    }
+
+    fn entry(path: &str, is_dir: bool) -> files::FileEntry {
+        files::FileEntry {
+            path: path.into(),
+            is_dir,
+            ..files::FileEntry::default()
+        }
+    }
+
+    fn open_text(view: &FilesView) -> Option<String> {
+        view.panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+            .and_then(|file| file.buffer.as_ref().map(|b| b.rope.to_string()))
+    }
+
+    fn settle(view: &mut FilesView, done: impl Fn(&FilesView) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done(view) && std::time::Instant::now() < deadline {
+            view.tick_items(&|| None);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn files_on_another_machine_show_read_only_and_follow_its_changes() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        elsewhere.report(files::TreeEvent::Snapshot {
+            entries: vec![entry("src", true)],
+            complete: false,
+        });
+        let fs: SharedFs = elsewhere.clone();
+        let mut view = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/main"));
+        assert!(view.is_remote());
+        view.render_tree();
+        assert!(view.scanning());
+        elsewhere.report(files::TreeEvent::Snapshot {
+            entries: vec![entry("src", true), entry("src/main.rs", false)],
+            complete: true,
+        });
+        view.render_tree();
+        assert!(!view.scanning());
+        assert_eq!(view.tree[0].children[0].path, "src/main.rs");
+
+        view.open_file("src/main.rs");
+        settle(&mut view, |view| open_text(view).is_some());
+        assert_eq!(open_text(&view).as_deref(), Some("fn main() {}\n"));
+        view.editor_text("oops");
+        assert_eq!(open_text(&view).as_deref(), Some("fn main() {}\n"));
+
+        elsewhere.put("src/main.rs", "fn main() { run(); }\n", 20);
+        elsewhere.report(files::TreeEvent::Patch(files::TreePatch {
+            changed: vec![files::ChangedFile {
+                path: "src/main.rs".into(),
+                mtime_ns: 20,
+                size: 21,
+            }],
+            ..files::TreePatch::default()
+        }));
+        settle(&mut view, |view| {
+            open_text(view).as_deref() == Some("fn main() { run(); }\n")
+        });
+        assert_eq!(open_text(&view).as_deref(), Some("fn main() { run(); }\n"));
+
+        assert!(view
+            .run_tree_action(Some("src/main.rs"), workspace::TreeAction::Delete)
+            .is_none());
+        assert!(view.tree_ops.toast.is_some());
+        assert!(
+            view.root_dir().is_none(),
+            "no saved panes for another machine"
+        );
     }
 }

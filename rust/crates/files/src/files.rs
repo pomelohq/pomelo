@@ -4,20 +4,28 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod fs;
+pub mod guard;
 pub mod search;
 mod watch;
+pub use fs::{
+    ChangedFile, FileResult, FileStat, LocalFs, ProjectFs, TreeEvent, TreeFeed, TreePatch,
+};
 pub use watch::TreeWatcher;
 
 /// Directory names never descended into (the Go walk's `skipDirNames` plus `target`: the walk is eager and
 /// recursive, and a Rust `target/` has enough files to stall the synchronous rebuild on window open).
-const SKIP_DIRS: &[&str] = &[".git", ".pom", "node_modules", ".ddata", "target"];
+pub(crate) const SKIP_DIRS: &[&str] = &[".git", ".pom", "node_modules", ".ddata", "target"];
 
 /// One file or directory, mirroring the Go `FileEntry`. `path` is forward-slash-relative to the workspace root
 /// (the Go model also carries a `repo`; a single-root workspace uses `""`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct FileEntry {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub repo: String,
     pub path: String,
+    #[serde(rename = "dir")]
     pub is_dir: bool,
     pub size: u64,
 }
@@ -93,39 +101,7 @@ pub fn project_files(root: &Path, include_ignored: bool) -> Vec<String> {
 }
 
 pub fn apply_changes(root: &Path, entries: &mut Vec<FileEntry>, changed: &[String]) {
-    let mut changed: Vec<&String> = changed.iter().collect();
-    changed.sort();
-    changed.dedup();
-    let mut roots: Vec<&String> = Vec::new();
-    for path in changed {
-        if !roots
-            .last()
-            .is_some_and(|parent| path.starts_with(&format!("{parent}/")))
-        {
-            roots.push(path);
-        }
-    }
-    for path in roots {
-        if path.split('/').any(|part| SKIP_DIRS.contains(&part)) {
-            continue;
-        }
-        let under = format!("{path}/");
-        entries.retain(|entry| entry.path != *path && !entry.path.starts_with(&under));
-        let full = root.join(path);
-        let Ok(meta) = std::fs::metadata(&full) else {
-            continue;
-        };
-        entries.push(FileEntry {
-            repo: String::new(),
-            path: path.clone(),
-            is_dir: meta.is_dir(),
-            size: if meta.is_dir() { 0 } else { meta.len() },
-        });
-        if meta.is_dir() {
-            walk(root, &full, entries);
-        }
-    }
-    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    fs::apply_patch(entries, &fs::patch_for(root, changed, fs::Links::Follow));
 }
 
 /// How often a running scan hands the UI what it has found so far.
@@ -386,7 +362,7 @@ fn sort_level(level: &mut [FileNode]) {
 
 /// A file's contents, mirroring the Go `ReadFile` response: decoded `text` for text files, or `binary` set for
 /// non-text (images/blobs the UI can't show as text yet).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileContent {
     pub text: Option<String>,
     pub binary: bool,
@@ -440,7 +416,7 @@ pub fn mtime(root: &Path, rel: &str) -> std::io::Result<std::time::SystemTime> {
 }
 
 /// Join `rel` onto `root`, rejecting `..` traversal so a path can never escape the workspace root.
-fn safe_join(root: &Path, rel: &str) -> std::io::Result<PathBuf> {
+pub(crate) fn safe_join(root: &Path, rel: &str) -> std::io::Result<PathBuf> {
     if rel.split('/').any(|c| c == ".." || c == ".") {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

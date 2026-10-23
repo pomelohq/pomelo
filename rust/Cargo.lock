@@ -1385,6 +1385,8 @@ dependencies = [
  "globset",
  "ignore",
  "notify",
+ "serde",
+ "serde_json",
  "tempfile",
  "trash",
  "workspace_hack",

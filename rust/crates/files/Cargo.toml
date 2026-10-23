@@ -10,6 +10,7 @@ path = "src/files.rs"
 
 [dev-dependencies]
 tempfile = "3"
+serde_json.workspace = true
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
@@ -19,6 +20,7 @@ harness = false
 [dependencies]
 globset = "0.4"
 ignore = "0.4"
+serde.workspace = true
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 trash = "5"
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
