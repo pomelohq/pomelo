@@ -1,6 +1,7 @@
 name: CI
 
-# Path-gated so a docs-only change runs nothing heavy; the build is cached so repeat runs only rebuild what changed.
+# A docs-only change runs nothing heavy and a pull request tests only what it touches; the build is cached so repeat
+# runs only rebuild what changed.
 # Releases live in release.yml.
 on:
   pull_request:
@@ -16,44 +17,62 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect changed areas
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      rust: ${{ steps.f.outputs.rust }}
-      workflows: ${{ steps.f.outputs.workflows }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
-        id: f
-        with:
-          filters: |
-            rust:
-              - 'rust/**'
-              - '.github/workflows/ci.yml'
-            workflows:
-              - '.github/workflows/**'
-
-  fmt:
-    name: Rust fmt
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+  # What the change needs: a docs-only change runs nothing heavy, and a pull request tests only the crates it
+  # changed and every crate depending on them. Main runs everything (and saves the caches).
+  orchestrate:
+    name: Plan the checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: rust
+    outputs:
+      run_tests: ${{ steps.plan.outputs.run_tests }}
+      run_action_checks: ${{ steps.plan.outputs.run_action_checks }}
+      filterset: ${{ steps.plan.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup show
-      - run: cargo fmt --check
+        with:
+          fetch-depth: 0
+      - id: plan
+        working-directory: rust
+        run: |
+          if [ -z "$GITHUB_BASE_REF" ]; then
+            printf 'run_tests=true\nrun_action_checks=true\nfilterset=\n' | tee -a "$GITHUB_OUTPUT"
+          else
+            scripts/changed-crates.sh "$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  check_style:
+    name: Style
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' || needs.orchestrate.outputs.run_action_checks == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: cargo fmt --check
+        if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+        working-directory: rust
+        run: |
+          rustup show >/dev/null
+          cargo fmt --check
+      # Workflow mistakes otherwise show only when the workflow runs, which for releases is at tag time.
+      - name: actionlint
+        if: ${{ needs.orchestrate.outputs.run_action_checks == 'true' }}
+        run: |
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
 
   # Clippy and the tests run side by side from the same restored build; only the test job saves it.
-  rust-clippy:
-    name: Rust clippy
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+  clippy_mac:
+    name: Clippy (macOS)
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: macos-15
     timeout-minutes: 60
     defaults:
@@ -85,10 +104,10 @@ jobs:
           tool: cargo-hakari
       - run: make hakari-check lint
 
-  rust:
-    name: Rust test
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+  run_tests_mac:
+    name: Tests (macOS)
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -102,6 +121,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       POM_TARGET_LIMIT_GB: 8
       NEXTEST_PROFILE: ci
+      TEST_FILTER: ${{ needs.orchestrate.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -172,11 +192,38 @@ jobs:
             gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
           done
 
-  # Clippy and the tests on Linux, which ships its own build: platform code there compiles and is tested only here.
-  rust-linux:
-    name: Rust clippy + test (Linux)
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+  # Linux ships its own build: platform code there compiles and is tested only here.
+  clippy_linux:
+    name: Clippy (Linux)
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+      POM_TARGET_LIMIT_GB: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the libraries the window and fonts build against
+        run: scripts/install-linux-build-deps.sh
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: rust
+          shared-key: linux-ci
+          save-if: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-hakari
+      - run: make hakari-check lint
+
+  run_tests_linux:
+    name: Tests (Linux)
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -190,14 +237,11 @@ jobs:
       CARGO_INCREMENTAL: 0
       POM_TARGET_LIMIT_GB: 8
       NEXTEST_PROFILE: ci
+      TEST_FILTER: ${{ needs.orchestrate.outputs.filterset }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the libraries the window and fonts build against
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends \
-            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libx11-dev libx11-xcb-dev \
-            libxcursor-dev libxrandr-dev libxi-dev libfontconfig-dev libfreetype-dev libvulkan-dev
+        run: scripts/install-linux-build-deps.sh
       # Installs the toolchain rust/rust-toolchain.toml pins.
       - run: rustup show
       # Dependencies only, saved from main so a PR starts warm without a second copy of every crate's build.
@@ -208,8 +252,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-hakari,cargo-nextest
-      - run: make hakari-check lint
+          tool: cargo-nextest
       - name: Tests (a test that passes only on its retry is listed as flaky)
         run: |
           set -o pipefail
@@ -220,6 +263,9 @@ jobs:
           grep -E '^\s+FLAKY' "$RUNNER_TEMP/test.log" | sort -u | while IFS= read -r line; do
             echo "::warning title=Flaky test::$(echo "$line" | sed -E 's/^ +//')"
           done || true
+      # The clippy job saves nothing, so main's dependency cache carries what clippy builds too.
+      - if: github.ref == 'refs/heads/main'
+        run: make lint
       # A changed Cargo.lock starts a new entry while the old ones stay; only the newest is restored. This job's
       # own entry is saved after it ends, so the one kept here is the previous build.
       - name: Drop older dependency caches
@@ -236,8 +282,8 @@ jobs:
   # (workspace create with a Postgres database, start --wait, the dev proxy, an agent session).
   cli-smoke:
     name: pom CLI headless smoke (Linux)
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -306,8 +352,8 @@ jobs:
   # jobs through `pom server proxy` behind a fake ssh.
   pom-server:
     name: pom server (Linux)
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -353,8 +399,8 @@ jobs:
   # The macOS runners have no Docker; these tests need a real Postgres (and Redis), so they run here.
   postgres:
     name: Real Postgres tests (Linux)
-    needs: changes
-    if: ${{ needs.changes.outputs.rust == 'true' }}
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
@@ -373,43 +419,22 @@ jobs:
       - run: cargo test -p pom_services --test snapshots --test queues -- --test-threads 1
       - run: cargo test -p pom_cli --test transfer -- --test-threads 1
 
-  # Workflow mistakes otherwise show only when the workflow runs, which for releases is at tag time.
-  actionlint:
-    name: Lint workflows
-    needs: changes
-    if: ${{ needs.changes.outputs.workflows == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      ACTIONLINT_VERSION: 1.7.12
-      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: |
-          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL --max-time 60 --retry 3 -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$archive"
-          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
-          "$RUNNER_TEMP/actionlint" -color
-
-  # The one required check: path-gated jobs may be skipped, and a skipped job never satisfies a branch rule.
+  # The one required check: gated jobs may be skipped, and a skipped job never satisfies a branch rule.
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, fmt, rust-clippy, rust, rust-linux, cli-smoke, pom-server, postgres, actionlint]
+    needs: [orchestrate, check_style, clippy_mac, run_tests_mac, clippy_linux, run_tests_linux, cli-smoke, pom-server, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - run: |
-          echo "changes=${{ needs.changes.result }} fmt=${{ needs.fmt.result }} rust-clippy=${{ needs.rust-clippy.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} pom-server=${{ needs.pom-server.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
-          test "${{ needs.changes.result }}" = "success" || exit 1
-          case "${{ needs.fmt.result }}" in success|skipped) ;; *) echo "fmt failed"; exit 1 ;; esac
-          case "${{ needs.rust-clippy.result }}" in success|skipped) ;; *) echo "clippy failed"; exit 1 ;; esac
-          case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust tests failed"; exit 1 ;; esac
-          case "${{ needs.rust-linux.result }}" in success|skipped) ;; *) echo "rust on Linux failed"; exit 1 ;; esac
-          case "${{ needs.cli-smoke.result }}" in success|skipped) ;; *) echo "pom CLI smoke failed"; exit 1 ;; esac
-          case "${{ needs.pom-server.result }}" in success|skipped) ;; *) echo "pom server tests failed"; exit 1 ;; esac
-          case "${{ needs.postgres.result }}" in success|skipped) ;; *) echo "postgres tests failed"; exit 1 ;; esac
-          case "${{ needs.actionlint.result }}" in success|skipped) ;; *) echo "workflow lint failed"; exit 1 ;; esac
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          test "$(echo "$RESULTS" | jq -r '.orchestrate.result')" = "success" || exit 1
+          failed="$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')"
+          if [ -n "$failed" ]; then
+            echo "failed: $failed"
+            exit 1
+          fi
           echo "CI gate passed"

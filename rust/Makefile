@@ -49,9 +49,10 @@ appcast:
 	scripts/make-appcast.sh
 
 # Each test in its own process, all binaries at once; .config/nextest.toml keeps apart the ones that share a resource.
+# TEST_FILTER, a nextest filterset, narrows the run (CI passes the changed crates and their dependents).
 test: trim
 	@if cargo nextest --version >/dev/null 2>&1; then \
-		cargo nextest run --workspace && cargo test --doc --workspace; \
+		cargo nextest run --workspace --no-tests=pass $${TEST_FILTER:+-E "$$TEST_FILTER"} && cargo test --doc --workspace; \
 	else \
 		echo "cargo-nextest not installed (cargo install cargo-nextest): running plain cargo test"; \
 		cargo test; \

@@ -42,14 +42,17 @@ touching anything here. These override defaults.
 `cargo nextest run --workspace` + `cargo test --doc`. All must pass. Our crates must be warning-clean. It
 gates every commit: `cargo fmt && make check && git commit ...`.
 
-- While iterating, run `make check-changed`: fmt on everything, then clippy and tests only for the crates
-  changed since `origin/main` (committed, staged, unstaged or untracked) and every crate that depends on them,
-  plus the workspace-hack check when a `Cargo.toml` or `Cargo.lock` changed. A file outside every crate (the
-  root manifest, the lockfile, `.config/`) checks everything. It is not the gate; `make check` still is.
+- While iterating, run `make check-changed`: fmt and clippy on everything (unchanged crates are already
+  checked, so that is cheap), the tests of the crates changed since `origin/main` (committed, staged, unstaged or
+  untracked) and of every crate that depends on them, and the workspace-hack check when a Cargo file changed. A
+  file outside every crate (the toolchain, the root manifest, the lockfile, `.config/`, `scripts/`) runs every
+  test. `scripts/changed-crates.sh` makes that choice for it and for CI, where a pull request tests the same way
+  and main runs everything. It is not the gate; `make check` still is.
 - Tests run under cargo-nextest, each in its own process with every binary at once. A test that shares
   something outside its process (Docker, a fixed or freshly leased port, a real sshd or cgroup, a quiet machine
   for timings) goes in a test group in `.config/nextest.toml`; an in-process lock no longer serializes it.
-  `make test-cargo` runs plain `cargo test`. CI retries a failing test once and lists it as flaky.
+  A test running past 60s is killed and named; give a slow one a longer `slow-timeout` there. `make test-cargo`
+  runs plain `cargo test`. CI retries a failing test once and lists it as flaky.
 
 After adding or changing a dependency, run `cargo hakari generate && cargo hakari manage-deps`
 (`cargo install cargo-hakari`): `crates/workspace_hack` pins one feature set for third-party crates, so every
