@@ -961,6 +961,14 @@ impl App {
     /// Opens the workspace's coding agent in the terminal panel, or focuses its tab. The agent runs in
     /// its own holder, so it survives the app and the tab reattaches to it.
     fn open_agent(&mut self, id: WindowId) {
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            self.open_remote_main_agent(id);
+            return;
+        }
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };

@@ -475,6 +475,36 @@ impl App {
         }
     }
 
+    /// The host's main agent of the shown workspace, started there when none runs.
+    pub(crate) fn open_remote_main_agent(&mut self, id: WindowId) {
+        let Some(watch) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.watch.clone())
+        else {
+            return;
+        };
+        let snapshot = watch.snapshot();
+        let role = pom_agent::CLAUDE_DRIVER;
+        if snapshot
+            .agents
+            .iter()
+            .any(|agent| agent.alive && agent.role == role)
+        {
+            self.open_remote_agent(id, &watch, role);
+            return;
+        }
+        self.with_workspace_view(id, |view, _| view.reveal_agent_dock());
+        if snapshot
+            .transport
+            .as_ref()
+            .is_some_and(|transport| transport.agents)
+        {
+            watch.start_agent(role);
+        }
+    }
+
     fn open_remote_agent(&mut self, id: WindowId, watch: &pom_remote::Watch, role: &str) {
         let item_id = services_ui::agent_item_id(&watch.snapshot().branch, role);
         let number = self.next_agent_item;

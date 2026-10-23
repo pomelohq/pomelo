@@ -7402,6 +7402,15 @@ impl WorkspaceView {
         self.pending.persist = true;
     }
 
+    /// Shows the agent dock with nothing in it yet, for an agent that is still starting.
+    pub fn reveal_agent_dock(&mut self) {
+        self.layout.agent_hidden = false;
+        self.show_agent_panel();
+        self.focus_group(InputGroup::Agent);
+        self.panes_input = true;
+        self.pending.persist = true;
+    }
+
     fn focus_center_agent(&mut self) {
         self.set_terminal_focus(false);
         self.set_agent_focus(false);
