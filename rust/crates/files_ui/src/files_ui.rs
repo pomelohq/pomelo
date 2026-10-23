@@ -1073,7 +1073,8 @@ pub fn completion_preview(
 }
 
 pub fn project_search_preview(root: PathBuf, query: &str, filters: bool) -> Box<dyn Item> {
-    let mut search = project_search::ProjectSearch::new(root, query);
+    let mut search =
+        project_search::ProjectSearch::new(std::sync::Arc::new(files::LocalFs::new(root)), query);
     search.wait_for_results(filters);
     Box::new(search)
 }
@@ -1085,7 +1086,8 @@ pub fn project_search_scoped(
     replacement: &str,
     include: &str,
 ) -> Box<dyn Item> {
-    let mut search = project_search::ProjectSearch::new(root, query);
+    let mut search =
+        project_search::ProjectSearch::new(std::sync::Arc::new(files::LocalFs::new(root)), query);
     search.show_scope(replacement, include);
     search.wait_for_results(true);
     Box::new(search)
@@ -7332,6 +7334,7 @@ pub struct FilesView {
     discarding: Vec<String>,
     /// Tree changes on their way to the other machine, shown already.
     tree_jobs: Vec<tree_actions::TreeJob>,
+    replacing: Vec<std::sync::mpsc::Receiver<project_search::ReplaceReport>>,
 }
 
 const OFFLINE_NOTICE_H: f32 = 48.0;
@@ -7685,6 +7688,7 @@ impl FilesView {
             asked_save: None,
             discarding: Vec::new(),
             tree_jobs: Vec::new(),
+            replacing: Vec::new(),
             fs,
             root,
             tree,
@@ -8776,9 +8780,8 @@ impl FilesView {
     }
 
     fn deploy_project_search(&mut self) {
-        if self.is_remote() {
-            self.tree_ops.toast =
-                Some("Searching files on another machine is not available yet".into());
+        if let Some(reason) = self.fs.search_refusal() {
+            self.tree_ops.toast = Some(reason);
             return;
         }
         let seed = self
@@ -8799,7 +8802,7 @@ impl FilesView {
             }
             return;
         }
-        let search = project_search::ProjectSearch::new(self.root.clone(), &seed);
+        let search = project_search::ProjectSearch::new(self.fs.clone(), &seed);
         self.add_center_item(Box::new(search));
     }
 
@@ -8873,19 +8876,57 @@ impl FilesView {
                 }
             }
         });
-        for relative in &request.paths {
-            let full = self.root.join(relative);
-            if open_paths.contains(&full) {
-                continue;
-            }
-            let Some(text) = self.fs.read(relative).ok().and_then(|read| read.text) else {
-                continue;
-            };
-            if let Some(replaced) = project_search::replace_in_text(&text, &query) {
-                if let Err(error) = self.fs.write(relative, &replaced, None) {
-                    eprintln!("replace all: write {relative}: {error}");
+        let closed: Vec<String> = request
+            .paths
+            .iter()
+            .filter(|relative| !open_paths.contains(&self.root.join(relative)))
+            .cloned()
+            .collect();
+        if !self.is_remote() {
+            let report = project_search::replace_in_files(&*self.fs, &closed, &query);
+            self.replaced(report);
+            return;
+        }
+        let (sender, answer) = std::sync::mpsc::channel();
+        let fs = self.fs.clone();
+        let spawned = std::thread::Builder::new()
+            .name("project-replace".into())
+            .spawn(move || {
+                if sender
+                    .send(project_search::replace_in_files(&*fs, &closed, &query))
+                    .is_ok()
+                {
+                    ui::wake();
                 }
+            });
+        match spawned {
+            Ok(_) => self.replacing.push(answer),
+            Err(error) => self.tree_ops.toast = Some(format!("Replace all: {error}")),
+        }
+    }
+
+    /// Takes the outcome of replaces sent to another machine.
+    fn poll_replacing(&mut self) -> bool {
+        let mut done = Vec::new();
+        self.replacing.retain(|answer| match answer.try_recv() {
+            Ok(report) => {
+                done.push(report);
+                false
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => false,
+        });
+        let changed = !done.is_empty();
+        for report in done {
+            self.replaced(report);
+        }
+        changed
+    }
+
+    /// Says what a replace left undone, then searches again so the results show what is left.
+    fn replaced(&mut self, report: project_search::ReplaceReport) {
+        if let Some(problem) = report.problem() {
+            self.tree_ops.toast = Some(problem);
         }
         self.panes.group.for_each_pane_mut(&mut |pane| {
             for item in pane.open.iter_mut() {
@@ -10356,6 +10397,7 @@ impl FunctionView for FilesView {
         outcome.changed |= self.poll_tree_jobs();
         outcome.changed |= self.follow_saves();
         outcome.changed |= self.serve_project_search();
+        outcome.changed |= self.poll_replacing();
         outcome.changed |= self.serve_project_diagnostics();
         self.sync_markdown_previews();
         if let Some(check) = self.save_check.as_ref() {

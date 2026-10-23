@@ -51,6 +51,8 @@ pub mod method {
     pub const FS_REMOVE: &str = "fs.remove";
     pub const FS_TRASH: &str = "fs.trash";
     pub const FS_APPEND_GITIGNORE: &str = "fs.append_gitignore";
+    pub const SEARCH_START: &str = "search.start";
+    pub const SEARCH_CANCEL: &str = "search.cancel";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -105,6 +107,8 @@ pub const METHODS: &[&str] = &[
     method::FS_TRASH,
     method::FS_APPEND_GITIGNORE,
     method::FS_EXPAND,
+    method::SEARCH_START,
+    method::SEARCH_CANCEL,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -113,6 +117,7 @@ pub const FEATURES: &[&str] = &[
     FILES_READ,
     JOB_TASK,
     FILES_WRITE,
+    FILES_SEARCH,
 ];
 
 /// The server runs a repo's pre-written command as a job (`job_op::TASK`).
@@ -122,6 +127,9 @@ pub const JOB_TASK: &str = "job.task";
 pub const FILES_READ: &str = "files.read";
 /// The server saves a workspace's files and changes its tree: new files and folders, moves, copies, removals.
 pub const FILES_WRITE: &str = "files.write";
+
+/// The server searches a workspace's files and pushes what it finds.
+pub const FILES_SEARCH: &str = "files.search";
 
 /// The methods a server must list for the app to take pushes instead of asking again and again.
 pub const PUSH: &[&str] = &[
@@ -714,6 +722,46 @@ pub struct FsChangeParams {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_dir: bool,
     pub op_id: String,
+}
+
+/// Starts a project search pushed on the client's subscription `channel`: [`SearchFound`] under
+/// [`SEARCH_FOUND_TOPIC`] as files turn up, then one [`SearchDone`] under [`SEARCH_DONE_TOPIC`]. A new search from
+/// the same `searcher` on the same connection stops the one before.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchStartParams {
+    pub cfg: String,
+    pub branch: String,
+    pub channel: u32,
+    pub searcher: String,
+    pub search: files::search::SearchRequest,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchCancelParams {
+    pub channel: u32,
+}
+
+pub const SEARCH_FOUND_TOPIC: &str = "search.found";
+pub const SEARCH_DONE_TOPIC: &str = "search.done";
+
+/// Files with matches. A file too large for one push comes in pieces, one after another: each piece but the last
+/// is the last file of a push with `continued`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchFound {
+    pub files: Vec<files::search::FileResult>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub continued: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchDone {
+    pub limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Error codes of the `fs.*` methods beside the path guard's.

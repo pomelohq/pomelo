@@ -1,9 +1,261 @@
+//! Project search: the query (plain text with ASCII case folding and optional whole word, or regex with a case
+//! flag, `\c`/`\C` inline overrides and whole word via `\b`, replacements expanding capture groups), the path
+//! filters, and the walk that runs a query over a folder.
+
 use std::ops::Range;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
+use fancy_regex::{Regex, RegexBuilder};
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchOptions {
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+}
+
+pub enum Query {
+    Text {
+        query: String,
+        case_sensitive: bool,
+        whole_word: bool,
+        replacement: Option<String>,
+    },
+    Regex {
+        regex: Regex,
+        /// Built from escaped literal text, so replacements are literal too.
+        escaped: bool,
+        replacement: Option<String>,
+    },
+}
+
+impl Query {
+    pub fn new(
+        query: &str,
+        options: SearchOptions,
+        replacement: Option<String>,
+    ) -> Result<Self, String> {
+        let query = normalize_newlines(query).into_owned();
+        if options.regex {
+            return build_regex(query, options, false, replacement);
+        }
+        // ASCII case folding can't handle other scripts, so those go through an escaped regex.
+        if !options.case_sensitive && !query.is_ascii() {
+            return build_regex(
+                fancy_regex::escape(&query).into_owned(),
+                options,
+                true,
+                replacement,
+            );
+        }
+        Ok(Self::Text {
+            query,
+            case_sensitive: options.case_sensitive,
+            whole_word: options.whole_word,
+            replacement,
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Text { query, .. } => query.is_empty(),
+            Self::Regex { regex, .. } => regex.as_str().is_empty(),
+        }
+    }
+
+    /// Byte ranges of the matches in `text`, in order.
+    pub fn find_in(&self, text: &str) -> Vec<Range<usize>> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+        match self {
+            Self::Text {
+                query,
+                case_sensitive,
+                whole_word,
+                ..
+            } => {
+                let hits: Vec<Range<usize>> = if *case_sensitive {
+                    text.match_indices(query.as_str())
+                        .map(|(at, m)| at..at + m.len())
+                        .collect()
+                } else {
+                    let haystack = text.to_ascii_lowercase();
+                    let needle = query.to_ascii_lowercase();
+                    haystack
+                        .match_indices(needle.as_str())
+                        .map(|(at, m)| at..at + m.len())
+                        .collect()
+                };
+                hits.into_iter()
+                    .filter(|hit| {
+                        !*whole_word
+                            || !text[..hit.start].chars().last().is_some_and(is_word_char)
+                                && !text[hit.end..].chars().next().is_some_and(is_word_char)
+                    })
+                    .collect()
+            }
+            Self::Regex { regex, .. } => regex
+                .find_iter(text)
+                .flatten()
+                .map(|m| m.start()..m.end())
+                .collect(),
+        }
+    }
+
+    /// The text replacing `hit` (byte range within `line`, the lines it spans). Regex replacements expand
+    /// `$1`-style groups and `\n`, `\t`, `\\` escapes.
+    pub fn replacement_for(&self, line: &str, hit: Range<usize>) -> Option<String> {
+        match self {
+            Self::Text { replacement, .. }
+            | Self::Regex {
+                replacement,
+                escaped: true,
+                ..
+            } => replacement.clone(),
+            Self::Regex {
+                regex,
+                replacement: Some(replacement),
+                escaped: false,
+            } => {
+                let replacement = unescape_replacement(replacement);
+                let captures = regex
+                    .captures_from_pos(line, hit.start)
+                    .ok()
+                    .flatten()
+                    .filter(|c| c.get(0).is_some_and(|m| m.range() == hit));
+                match captures {
+                    Some(captures) => {
+                        let mut out = String::new();
+                        captures.expand(&replacement, &mut out);
+                        Some(out)
+                    }
+                    None => Some(
+                        regex
+                            .replace(line.get(hit)?, replacement.as_str())
+                            .into_owned(),
+                    ),
+                }
+            }
+            Self::Regex {
+                replacement: None, ..
+            } => None,
+        }
+    }
+}
+
+fn unescape_replacement(replacement: &str) -> String {
+    let mut out = String::with_capacity(replacement.len());
+    let mut chars = replacement.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.peek() {
+                Some('\\') => {
+                    out.push('\\');
+                    chars.next();
+                }
+                Some('n') => {
+                    out.push('\n');
+                    chars.next();
+                }
+                Some('t') => {
+                    out.push('\t');
+                    chars.next();
+                }
+                _ => out.push(c),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// `\c` in a pattern forces case-insensitive and `\C` case-sensitive matching; the flags are removed.
+fn case_sensitive_from_pattern(pattern: &str) -> Option<(bool, String)> {
+    if !(pattern.contains("\\c") || pattern.contains("\\C")) {
+        return None;
+    }
+    let mut escaped = false;
+    let mut out = String::new();
+    let mut case_sensitive = None;
+    for c in pattern.chars() {
+        if escaped {
+            match c {
+                'c' => case_sensitive = Some(false),
+                'C' => case_sensitive = Some(true),
+                _ => {
+                    out.push('\\');
+                    out.push(c);
+                }
+            }
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else {
+            out.push(c);
+        }
+    }
+    case_sensitive.map(|flag| (flag, out))
+}
+
+fn build_regex(
+    mut pattern: String,
+    options: SearchOptions,
+    escaped: bool,
+    replacement: Option<String>,
+) -> Result<Query, String> {
+    let mut case_sensitive = options.case_sensitive;
+    if let Some((flag, stripped)) = case_sensitive_from_pattern(&pattern) {
+        case_sensitive = flag;
+        pattern = stripped;
+    }
+    if options.whole_word {
+        // Only anchor at edges that are word chars; `\b` next to punctuation would never match.
+        let is_word = |s: &str| {
+            s.chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        };
+        let mut word = String::new();
+        if pattern.get(0..1).is_some_and(is_word) {
+            word.push_str("\\b");
+        }
+        word.push_str(&pattern);
+        if pattern
+            .get(pattern.len().saturating_sub(1)..)
+            .is_some_and(is_word)
+        {
+            word.push_str("\\b");
+        }
+        pattern = word;
+    }
+    let regex = RegexBuilder::new(&pattern)
+        .case_insensitive(!case_sensitive)
+        .multi_line(true)
+        .crlf(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(Query::Regex {
+        regex,
+        escaped,
+        replacement,
+    })
+}
+
+fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\r') {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
 
 pub const MAX_FILES: usize = 5_000;
 pub const MAX_MATCHES: usize = 10_000;
@@ -75,7 +327,52 @@ pub struct SearchScope {
     pub include_ignored: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the project search box asks: the query as typed, its toggles, and the path filters as typed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearchRequest {
+    pub query: String,
+    pub options: SearchOptions,
+    pub include: String,
+    pub exclude: String,
+    pub include_ignored: bool,
+}
+
+impl SearchRequest {
+    pub fn query(&self) -> Result<Query, String> {
+        Query::new(&self.query, self.options, None)
+    }
+
+    pub fn scope(&self) -> Result<SearchScope, String> {
+        match (
+            PathMatcher::new(&self.include),
+            PathMatcher::new(&self.exclude),
+        ) {
+            (Ok(include), Ok(exclude)) => Ok(SearchScope {
+                include,
+                exclude,
+                include_ignored: self.include_ignored,
+            }),
+            (Err(error), _) | (_, Err(error)) => Err(format!("Invalid path pattern: {error}")),
+        }
+    }
+}
+
+/// Runs `request` over `root` as [`search`] does; an error says why the query or a filter cannot be used.
+pub fn run(
+    root: &Path,
+    request: &SearchRequest,
+    cancel: &AtomicBool,
+    on_file: &(dyn Fn(FileResult) + Sync),
+) -> Result<bool, String> {
+    let query = request.query()?;
+    let scope = request.scope()?;
+    let find = |text: &str| query.find_in(text);
+    Ok(search(root, &scope, &find, cancel, on_file))
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchLine {
     /// Zero-based line number in the file.
     pub number: usize,
@@ -84,7 +381,8 @@ pub struct SearchLine {
     pub hits: Vec<Range<usize>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FileResult {
     pub path: String,
     pub excerpts: Vec<Vec<SearchLine>>,
@@ -231,6 +529,59 @@ pub fn search(
 mod tests {
     use super::*;
 
+    fn query(text: &str, options: SearchOptions) -> Query {
+        Query::new(text, options, None).unwrap()
+    }
+
+    #[test]
+    fn text_search_folds_ascii_case_and_respects_whole_words() {
+        let q = query("foo", SearchOptions::default());
+        assert_eq!(q.find_in("Foo food foo"), vec![0..3, 4..7, 9..12]);
+        let q = query(
+            "foo",
+            SearchOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(q.find_in("Foo food foo"), vec![0..3, 9..12]);
+    }
+
+    #[test]
+    fn regex_replacement_expands_groups() {
+        let q = Query::new(
+            r"(\w+)=(\d)",
+            SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+            Some("$2:$1".into()),
+        )
+        .unwrap();
+        let line = "a=1 b=2";
+        let hits = q.find_in(line);
+        assert_eq!(hits, vec![0..3, 4..7]);
+        assert_eq!(q.replacement_for(line, 4..7).as_deref(), Some("2:b"));
+    }
+
+    #[test]
+    fn inline_case_flag_overrides_the_option() {
+        let q = query(
+            r"\CFoo",
+            SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(q.find_in("foo Foo"), vec![4..7]);
+    }
+
+    #[test]
+    fn non_ascii_case_insensitive_text_goes_through_regex() {
+        let q = query("\u{c9}t\u{e9}", SearchOptions::default());
+        assert_eq!(q.find_in("\u{e9}t\u{e9}").len(), 1);
+    }
+
     #[test]
     fn patterns_split_outside_braces_and_match_folders() -> Result<(), String> {
         assert_eq!(
@@ -304,5 +655,120 @@ mod tests {
         assert_eq!(found[0].path, "src/a.rs");
         assert_eq!(found[0].match_count, 2);
         Ok(())
+    }
+
+    type OnFile<'a> = &'a (dyn Fn(FileResult) + Sync);
+
+    #[test]
+    fn a_request_finds_what_its_query_and_scope_find() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let root = temp.path();
+        let write = |path: &str, text: &str| -> Result<(), String> {
+            let full = root.join(path);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::write(full, text).map_err(|error| error.to_string())
+        };
+        write(".gitignore", "dist/\n")?;
+        write("src/a.rs", "fn Alpha() {}\nlet alpha_beta = alpha;\n")?;
+        write("docs/b.md", "ALPHA \u{e9}t\u{e9}\n")?;
+        write("dist/c.js", "alpha\n")?;
+        let collect = |run: &dyn Fn(OnFile)| {
+            let found = Mutex::new(Vec::new());
+            run(&|file| {
+                if let Ok(mut found) = found.lock() {
+                    found.push(file);
+                }
+            });
+            let mut found = found.into_inner().unwrap_or_default();
+            found.sort_by(|a, b| a.path.cmp(&b.path));
+            found
+        };
+        let requests = [
+            ("alpha", SearchOptions::default(), "", "", false),
+            (
+                "alpha",
+                SearchOptions {
+                    whole_word: true,
+                    ..Default::default()
+                },
+                "",
+                "",
+                false,
+            ),
+            (
+                r"\bal\w+",
+                SearchOptions {
+                    regex: true,
+                    ..Default::default()
+                },
+                "src",
+                "",
+                false,
+            ),
+            ("\u{c9}T\u{c9}", SearchOptions::default(), "", "*.rs", true),
+        ];
+        for (text, options, include, exclude, include_ignored) in requests {
+            let request = SearchRequest {
+                query: text.into(),
+                options,
+                include: include.into(),
+                exclude: exclude.into(),
+                include_ignored,
+            };
+            let query = Query::new(text, options, None)?;
+            let scope = SearchScope {
+                include: PathMatcher::new(include)?,
+                exclude: PathMatcher::new(exclude)?,
+                include_ignored,
+            };
+            let find = |text: &str| query.find_in(text);
+            let direct = collect(&|on_file| {
+                search(root, &scope, &find, &AtomicBool::new(false), on_file);
+            });
+            let requested = collect(&|on_file| {
+                if let Err(error) = run(root, &request, &AtomicBool::new(false), on_file) {
+                    panic!("{error}");
+                }
+            });
+            assert!(!direct.is_empty(), "{text}");
+            assert_eq!(requested, direct, "{text}");
+        }
+        let bad = SearchRequest {
+            query: "(".into(),
+            options: SearchOptions {
+                regex: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(run(root, &bad, &AtomicBool::new(false), &|_| {}).is_err());
+        let bad_path = SearchRequest {
+            query: "alpha".into(),
+            include: "[".into(),
+            ..Default::default()
+        };
+        assert!(run(root, &bad_path, &AtomicBool::new(false), &|_| {})
+            .is_err_and(|error| error.starts_with("Invalid path pattern")));
+        let wire =
+            serde_json::to_string(&request_round_trip()).map_err(|error| error.to_string())?;
+        let back: SearchRequest = serde_json::from_str(&wire).map_err(|error| error.to_string())?;
+        assert_eq!(back, request_round_trip());
+        Ok(())
+    }
+
+    fn request_round_trip() -> SearchRequest {
+        SearchRequest {
+            query: "a".into(),
+            options: SearchOptions {
+                case_sensitive: true,
+                whole_word: false,
+                regex: true,
+            },
+            include: "src, *.{rs,toml}".into(),
+            exclude: "vendor".into(),
+            include_ignored: true,
+        }
     }
 }

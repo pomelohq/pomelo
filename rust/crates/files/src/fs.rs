@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -12,6 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::search::{FileResult as SearchHit, SearchRequest};
 use crate::{BackgroundScan, FileEntry, TreeWatcher, SKIP_DIRS};
 
 /// A read up to this size comes back in its answer; a larger one is streamed.
@@ -144,6 +146,8 @@ impl From<io::Error> for WriteError {
     }
 }
 
+const NO_SEARCH: &str = "Searching these files is not available here";
+
 fn unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -199,6 +203,23 @@ pub trait ProjectFs: Send + Sync {
     /// Adds `path` to the .gitignore of the repository it is in.
     fn add_to_gitignore(&self, _path: &str, _is_dir: bool) -> io::Result<()> {
         Err(unsupported())
+    }
+    /// Runs a project search, handing each file with matches to `on_file` as it is found, until done or `cancel`
+    /// is set; returns whether a limit was reached.
+    fn search(
+        &self,
+        _request: &SearchRequest,
+        _cancel: &AtomicBool,
+        _on_file: &(dyn Fn(SearchHit) + Sync),
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            NO_SEARCH.to_string(),
+        ))
+    }
+    /// Why these files cannot be searched from here, when they cannot.
+    fn search_refusal(&self) -> Option<String> {
+        Some(NO_SEARCH.to_string())
     }
     /// Asks for the contents of a lazy folder; they come through the tree's feed.
     fn expand(&self, _path: &str) -> io::Result<()> {
@@ -373,6 +394,20 @@ impl ProjectFs for LocalFs {
 
     fn trash(&self, path: &str) -> io::Result<()> {
         crate::trash(&self.root, path)
+    }
+
+    fn search(
+        &self,
+        request: &SearchRequest,
+        cancel: &AtomicBool,
+        on_file: &(dyn Fn(SearchHit) + Sync),
+    ) -> io::Result<bool> {
+        crate::search::run(&self.root, request, cancel, on_file)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+    }
+
+    fn search_refusal(&self) -> Option<String> {
+        None
     }
 
     fn add_to_gitignore(&self, path: &str, is_dir: bool) -> io::Result<()> {
@@ -788,6 +823,10 @@ impl ProjectFs for UnservedFs {
 
     fn watch(&self, _wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn TreeFeed> {
         Box::new(EmptyTree { sent: false })
+    }
+
+    fn search_refusal(&self) -> Option<String> {
+        Some(self.reason.clone())
     }
 
     fn stat(&self, _path: &str) -> io::Result<FileStat> {
