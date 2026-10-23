@@ -25,7 +25,7 @@ use crate::server_api::{
 };
 use crate::server_api::{
     JiraParams, ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams,
-    SharedRunParams, UsageParams, UsageReport, JIRA,
+    SharedRunParams, UsageParams, UsageReport, GIT, GIT_REMOTE, JIRA,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -382,6 +382,7 @@ impl Inner {
             jira: offers(JIRA),
             module_store: offers(&[MODULE_STORE]) && offers(JOBS),
             paste: offers(&[method::PASTE_PUT]),
+            git: offers(GIT) && offers(&[GIT_REMOTE]) && offers(JOBS),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -624,7 +625,35 @@ fn supervise(weak: &Weak<Inner>) {
     }
 }
 
+impl ServerSource {
+    pub(crate) fn from_inner(inner: Arc<Inner>) -> ServerSource {
+        ServerSource { inner }
+    }
+
+    fn git_repos_offered(&self) -> Result<(), SourceError> {
+        if self.inner.offering(|info| info.git)?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "The Git panel needs a newer pom on {}; update it there",
+                self.inner.host.name
+            )));
+        }
+        Ok(())
+    }
+}
+
 impl Inner {
+    /// Asks the server `name`; a host read over plain ssh says that `what` needs pom server.
+    pub(crate) fn ask_server<T: DeserializeOwned>(
+        self: &Arc<Self>,
+        name: &str,
+        params: impl Serialize,
+        timeout: Duration,
+        what: &str,
+    ) -> Result<T, SourceError> {
+        let route = self.request(name, params, timeout)?;
+        self.server_only(route, what)
+    }
+
     /// One request; a connection that dropped is waited for and the request asked once more.
     fn request<T: DeserializeOwned>(
         self: &Arc<Self>,
@@ -946,6 +975,64 @@ impl ProjectSource for ServerSource {
             inner.kick();
             std::thread::sleep(SUPERVISOR_TICK);
         }
+    }
+
+    fn git(&self, branch: &str) -> Option<Arc<dyn git::access::GitAccess>> {
+        let info = self.inner.info()?;
+        (info.via == Via::Server && info.git).then(|| {
+            Arc::new(crate::remote_git::RemoteGit::new(
+                self.inner.clone(),
+                branch,
+            )) as Arc<dyn git::access::GitAccess>
+        })
+    }
+
+    fn git_repos(&self, branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
+        self.git_repos_offered()?;
+        crate::remote_git::RemoteGit::new(self.inner.clone(), branch).repos()
+    }
+
+    fn git_branches(
+        &self,
+        branch: &str,
+        repo: &str,
+    ) -> Result<crate::server_api::GitBranches, SourceError> {
+        self.git_repos_offered()?;
+        let params = crate::server_api::GitRepoParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+        };
+        self.inner.ask_server(
+            method::GIT_BRANCHES,
+            params,
+            READ_TIMEOUT,
+            "Listing a repo's branches",
+        )
+    }
+
+    fn change_git_branch(
+        &self,
+        branch: &str,
+        repo: &str,
+        action: &str,
+        target: &str,
+    ) -> Result<String, SourceError> {
+        self.git_repos_offered()?;
+        let params = crate::server_api::GitBranchParams {
+            cfg: self.inner.config.clone(),
+            branch: branch.to_string(),
+            repo: repo.to_string(),
+            action: action.to_string(),
+            target: target.to_string(),
+            op_id: self.inner.next_op_id(),
+        };
+        self.inner.ask_server(
+            method::GIT_BRANCH,
+            params,
+            ACT_TIMEOUT,
+            "Changing a repo's branch",
+        )
     }
 
     fn files(&self, branch: &str) -> Option<Arc<dyn files::ProjectFs>> {

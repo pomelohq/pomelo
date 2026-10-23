@@ -16,6 +16,7 @@ use pom_remote::server_api::{
     JobStartParams, LogsParams, OpParams, OpResult, ProjectParams, TurnParams, WatchBranchParams,
     WatchChannel, WatchParams, WorkspaceParams,
 };
+use pom_remote::server_api::{GitActParams, GitReadParams, GitRepoParams, GitWatchParams};
 use pom_remote::server_api::{
     SearchCancelParams, SearchStartParams, ServiceChoiceParams, ServiceRunParams, SharedLogsParams,
     SharedRunParams, UsageParams,
@@ -24,6 +25,7 @@ use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
 use crate::fs::{FsService, WriteScope};
+use crate::git::GitService;
 use crate::jira::JiraService;
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::paste::PasteService;
@@ -258,6 +260,7 @@ pub struct Dispatcher {
     usage: UsageService,
     jira: JiraService,
     paste: PasteService,
+    git: GitService,
 }
 
 impl Dispatcher {
@@ -276,6 +279,7 @@ impl Dispatcher {
             modes: Mutex::new(HashMap::new()),
             usage: UsageService::from_env(),
             jira: JiraService::from_env(),
+            git: GitService::new(),
         }
     }
 
@@ -309,6 +313,10 @@ impl Dispatcher {
 
     pub fn search(&self) -> &SearchService {
         &self.search
+    }
+
+    pub fn git(&self) -> &GitService {
+        &self.git
     }
 
     /// The folder of workspace `branch` of the project `cfg`.
@@ -384,6 +392,15 @@ impl Dispatcher {
                     .start(caller.connection, &root, params, publisher)?;
                 Ok(Value::Null)
             }),
+            method::GIT_WATCH => params::<GitWatchParams>(raw).and_then(|params| {
+                check_branch(&params.branch)?;
+                let source = self.source(&params.cfg)?;
+                let publisher = connection
+                    .publisher(params.channel)
+                    .map_err(|error| invalid(format!("channel {}: {error}", params.channel)))?;
+                self.git
+                    .watch(caller.connection, &source, params, publisher)
+            }),
             method::SEARCH_CANCEL => params::<SearchCancelParams>(raw).map(|params| {
                 self.search.cancel(caller.connection, params.channel);
                 Value::Null
@@ -427,6 +444,7 @@ impl Dispatcher {
         self.ptys.disconnect(connection);
         self.watches.disconnect(connection);
         self.search.disconnect(connection);
+        self.git.disconnect(connection);
     }
 
     /// The methods that need to know who asks: watches publish on the caller's connection.
@@ -636,6 +654,38 @@ impl Dispatcher {
                     .map_err(|error| RemoteError::new(FAILED, error.to_string()))?
                     .session;
                 self.jira.answer(&self.state, &session, name, params)
+            }
+            method::GIT_REPOS => {
+                let params: WorkspaceParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                to_value(crate::git::repos(&source, &params.branch)?)
+            }
+            method::GIT_SCAN => {
+                let params: GitRepoParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                self.git.scan(&source, &params)
+            }
+            method::GIT_BRANCHES => {
+                let params: GitRepoParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                self.git.branches(&source, &params)
+            }
+            method::GIT_BRANCH => {
+                let params: pom_remote::server_api::GitBranchParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                self.git.change_branch(&source, params)
+            }
+            method::GIT_ACT => {
+                let params: GitActParams = serde_json::from_value(raw.clone())
+                    .map_err(|error| invalid(format!("bad params: {error}")))?;
+                let source = self.source(&params.cfg)?;
+                self.git.act(&source, params)
+            }
+            method::GIT_READ => {
+                let params: GitReadParams = serde_json::from_value(raw.clone())
+                    .map_err(|error| invalid(format!("bad params: {error}")))?;
+                let source = self.source(&params.cfg)?;
+                self.git.read(&source, params)
             }
             method::OP_RESULT => {
                 let params: OpParams = params(raw)?;

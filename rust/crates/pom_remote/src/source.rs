@@ -191,6 +191,8 @@ pub struct TransportInfo {
     pub module_store: bool,
     /// The server keeps a file pasted in a terminal here, for the program there to read.
     pub paste: bool,
+    /// The server reads and changes the workspace's repos for the Git panel, and runs their fetch, pull and push.
+    pub git: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
@@ -343,6 +345,33 @@ pub trait ProjectSource: Send + Sync {
     /// The files of workspace `branch`, read where they are; `None` when the machine cannot serve them.
     fn files(&self, _branch: &str) -> Option<Arc<dyn files::ProjectFs>> {
         None
+    }
+    /// The repos of workspace `branch` for the Git panel, run where they are; `None` when the machine cannot.
+    fn git(&self, _branch: &str) -> Option<Arc<dyn git::access::GitAccess>> {
+        None
+    }
+    /// The repos of workspace `branch` as the Git panel lists them.
+    fn git_repos(&self, _branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
+        Err(unsupported("The Git panel"))
+    }
+    /// Repo `repo`'s branches as the branch picker lists them.
+    fn git_branches(
+        &self,
+        _branch: &str,
+        _repo: &str,
+    ) -> Result<crate::server_api::GitBranches, SourceError> {
+        Err(unsupported("Listing a repo's branches"))
+    }
+    /// Keeps, switches to or picks (`server_api::branch_action`) the branch repo `repo` of `branch` uses, or
+    /// fetches its origin; returns what it did.
+    fn change_git_branch(
+        &self,
+        _branch: &str,
+        _repo: &str,
+        _action: &str,
+        _target: &str,
+    ) -> Result<String, SourceError> {
+        Err(unsupported("Changing a repo's branch"))
     }
     /// The dev proxy port on the machine, when it says; its workspace addresses are forwarded there.
     fn dev_proxy_port(&self) -> Option<u16> {

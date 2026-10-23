@@ -6,6 +6,7 @@ mod editor;
 mod forward;
 mod local;
 mod remote_fs;
+mod remote_git;
 mod remote_jira;
 mod remote_ports;
 pub mod server_api;
@@ -32,6 +33,7 @@ pub use local::{
 };
 pub use pom_rpc::pty::LinkState;
 pub use remote_fs::RemoteFs;
+pub use remote_git::{repo_sources, RemoteGit};
 pub use remote_jira::{remote_jira_session, HostJira, JiraPlace, RemoteJira};
 pub use remote_ports::{
     reachable_notice, GatewayRoute, PortsSetup, RemotePorts, SharedPort, GATEWAY_LABEL,

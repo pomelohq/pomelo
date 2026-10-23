@@ -552,3 +552,23 @@ fn a_dropped_session_comes_back_with_backoff_and_a_new_server_counts_as_a_restar
     assert_eq!(source.server_id(), "server-1");
     assert!(source.workspaces().is_ok());
 }
+
+#[test]
+fn the_git_panel_runs_on_the_host_only_through_a_server_that_lists_git() {
+    let before_git: Vec<String> = current_features()
+        .into_iter()
+        .filter(|name| !name.starts_with("git."))
+        .collect();
+    let (older, _) = source(before_git);
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").git);
+    assert!(older.git("feat").is_none());
+    let said = older
+        .git_repos("feat")
+        .expect_err("an older server cannot list repos");
+    assert!(said.to_string().contains("needs a newer pom on"), "{said}");
+    let (current, _) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").git);
+    assert!(current.git("feat").is_some());
+}

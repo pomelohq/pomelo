@@ -13,6 +13,7 @@ use pom_remote::server_api::{
     JobStartParams, JobStarted, Progress, StartWaitArgs, StoreArgs, TaskArgs, EXIT_CANCELLED,
     PROGRESS_TOPIC,
 };
+use pom_remote::server_api::{GitRemoteArgs, GitRemoteOutcome};
 use pom_remote::{LocalSource, OpenedProject, ProjectSource, ServiceAction};
 use pom_rpc::{error_code, Connection, ConnectionState, Publisher, RemoteError};
 use pom_services::{ServiceTarget, WaitOutcome};
@@ -191,6 +192,7 @@ enum Work {
     Sync(Workspace),
     Task(Task),
     Store(StoreWork),
+    Git(std::path::PathBuf, git::access::RemoteCommand),
 }
 
 /// A Store page request, with what runs a script in place of the login shell and the sizes measured before.
@@ -453,6 +455,13 @@ fn checked_work(
                 sizes: pom_workspace::SizeCache::default(),
             }))
         }
+        job_op::GIT_REMOTE => {
+            let args: GitRemoteArgs = parsed(args)?;
+            check_branch(&args.branch)?;
+            args.command.check().map_err(invalid)?;
+            let repo = crate::git::repo(source, &args.branch, &args.repo)?;
+            Ok(Work::Git(repo.root, args.command))
+        }
         other => Err(invalid(format!("no job {other}"))),
     }
 }
@@ -519,6 +528,9 @@ fn checked_task(
 }
 
 fn run(job: &Job, source: &LocalSource, work: Work) {
+    if let Work::Git(root, command) = work {
+        return run_git(job, &root, &command);
+    }
     let opened = match source.open_project() {
         Ok(opened) => opened,
         Err(error) => {
@@ -544,8 +556,50 @@ fn run(job: &Job, source: &LocalSource, work: Work) {
         }
         Work::Sync(workspace) => sync(job, source, &opened, &workspace),
         Work::Task(task) => run_task(job, &task),
-        Work::Store(_) => {}
+        Work::Store(_) | Work::Git(..) => {}
     }
+}
+
+/// Git's progress lines this often at most, so a long push keeps a short record.
+const GIT_PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// Runs one fetch, pull or push: git's progress as lines, then how it ended as `data`.
+fn run_git(job: &Job, root: &std::path::Path, command: &git::access::RemoteCommand) {
+    job.stages(&[&format!("git {}", command.verb())]);
+    job.push(progress_kind::STAGE_STARTED, Some(0), "");
+    let last = Mutex::new(None::<Instant>);
+    let tell = |line: &str| {
+        let mut last = locked(&last);
+        if last.is_some_and(|at| at.elapsed() < GIT_PROGRESS_EVERY) && !line.ends_with("done.") {
+            return;
+        }
+        *last = Some(Instant::now());
+        drop(last);
+        job.push(progress_kind::LINE, Some(0), line);
+    };
+    let result = git::access::run_remote(root, command, Some(&tell));
+    let outcome = match result {
+        Ok(output) => GitRemoteOutcome {
+            output: Some(output),
+            error: None,
+        },
+        Err(error) => GitRemoteOutcome {
+            output: None,
+            error: Some(error),
+        },
+    };
+    let failed = outcome.error.is_some();
+    match serde_json::to_value(&outcome) {
+        Ok(data) => job.push_event(Progress {
+            kind: progress_kind::DATA.to_string(),
+            stage: Some(0),
+            data: Some(data),
+            ..Progress::default()
+        }),
+        Err(error) => return job.fail(0, error.to_string(), EXIT_FAILED),
+    }
+    job.push(progress_kind::STAGE_DONE, Some(0), "");
+    job.finish(if failed { EXIT_FAILED } else { 0 });
 }
 
 fn checked_store_request(request: &module_store::Request) -> Result<(), RemoteError> {

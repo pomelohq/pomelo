@@ -14,7 +14,8 @@ const BRANCH_FIELDS: &str =
     "%(refname)%00%(authorname)%00%(committerdate:relative)%00%(subject)%00%(symref)";
 
 /// A branch of a repo, as the branch picker lists it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BranchInfo {
     /// Without the `origin/` of a remote branch.
     pub name: String,

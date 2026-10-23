@@ -62,6 +62,13 @@ pub mod method {
     pub const JIRA_BOARDS: &str = "jira.boards";
     pub const JIRA_LIST: &str = "jira.list";
     pub const PASTE_PUT: &str = "paste.put";
+    pub const GIT_REPOS: &str = "git.repos";
+    pub const GIT_SCAN: &str = "git.scan";
+    pub const GIT_WATCH: &str = "git.watch";
+    pub const GIT_ACT: &str = "git.act";
+    pub const GIT_READ: &str = "git.read";
+    pub const GIT_BRANCHES: &str = "git.branches";
+    pub const GIT_BRANCH: &str = "git.branch";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -127,6 +134,13 @@ pub const METHODS: &[&str] = &[
     method::JIRA_BOARDS,
     method::JIRA_LIST,
     method::PASTE_PUT,
+    method::GIT_REPOS,
+    method::GIT_SCAN,
+    method::GIT_WATCH,
+    method::GIT_ACT,
+    method::GIT_READ,
+    method::GIT_BRANCHES,
+    method::GIT_BRANCH,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -137,6 +151,7 @@ pub const FEATURES: &[&str] = &[
     FILES_WRITE,
     FILES_SEARCH,
     MODULE_STORE,
+    GIT_REMOTE,
 ];
 
 /// The server runs a repo's pre-written command as a job (`job_op::TASK`).
@@ -149,6 +164,9 @@ pub const FILES_WRITE: &str = "files.write";
 
 /// The server runs the node_modules Store page's requests as jobs (`job_op::STORE`).
 pub const MODULE_STORE: &str = "module_store";
+
+/// The server runs the Git panel's fetch, pull and push as jobs (`job_op::GIT_REMOTE`).
+pub const GIT_REMOTE: &str = "git.remote";
 
 /// The server searches a workspace's files and pushes what it finds.
 pub const FILES_SEARCH: &str = "files.search";
@@ -182,6 +200,17 @@ pub const JIRA: &[&str] = &[
     method::JIRA_ISSUE,
     method::JIRA_BOARDS,
     method::JIRA_LIST,
+];
+
+/// The methods a server must list for the app to show its repos in the Git panel.
+pub const GIT: &[&str] = &[
+    method::GIT_REPOS,
+    method::GIT_SCAN,
+    method::GIT_WATCH,
+    method::GIT_ACT,
+    method::GIT_READ,
+    method::GIT_BRANCHES,
+    method::GIT_BRANCH,
 ];
 
 /// What a watch pushes, each as its full value whenever it changed.
@@ -461,7 +490,11 @@ pub mod job_op {
     pub const TASK: &str = "task";
     /// A request of the node_modules Store page, reporting [`module_store::StoreUpdate`]s as `data`.
     pub const STORE: &str = "store";
-    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC, TASK, STORE];
+    /// A fetch, pull or push of one repo, reporting git's progress as lines and its outcome as `data`.
+    pub const GIT_REMOTE: &str = "git.remote";
+    pub const ALL: &[&str] = &[
+        WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC, TASK, STORE, GIT_REMOTE,
+    ];
 }
 
 /// `ws.create`: an empty `repos` checks out every repo of the project.
@@ -511,6 +544,24 @@ pub struct StoreArgs {
     pub request: module_store::Request,
 }
 
+/// `git.remote`: `command` in repo `repo` of workspace `branch`, with the machine's own git credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitRemoteArgs {
+    pub branch: String,
+    pub repo: String,
+    pub command: git::access::RemoteCommand,
+}
+
+/// How a `git.remote` job ended: git's output, or its error.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitRemoteOutcome {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<git::working_copy::CommandOutput>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<git::working_copy::CommandError>,
+}
+
 /// A job as the app asks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobRequest {
@@ -521,6 +572,7 @@ pub enum JobRequest {
     Sync(BranchArgs),
     Task(TaskArgs),
     Store(StoreArgs),
+    GitRemote(GitRemoteArgs),
 }
 
 impl JobRequest {
@@ -533,6 +585,7 @@ impl JobRequest {
             JobRequest::Sync(_) => job_op::SYNC,
             JobRequest::Task(_) => job_op::TASK,
             JobRequest::Store(_) => job_op::STORE,
+            JobRequest::GitRemote(_) => job_op::GIT_REMOTE,
         }
     }
 
@@ -542,6 +595,7 @@ impl JobRequest {
             JobRequest::StartWait(args) => &args.branch,
             JobRequest::Task(args) => &args.branch,
             JobRequest::Store(_) => "",
+            JobRequest::GitRemote(args) => &args.branch,
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 &args.branch
             }
@@ -554,6 +608,7 @@ impl JobRequest {
             JobRequest::StartWait(args) => serde_json::to_value(args),
             JobRequest::Task(args) => serde_json::to_value(args),
             JobRequest::Store(args) => serde_json::to_value(args),
+            JobRequest::GitRemote(args) => serde_json::to_value(args),
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 serde_json::to_value(args)
             }
@@ -1016,4 +1071,100 @@ pub struct PasteParams {
 #[serde(default)]
 pub struct Pasted {
     pub path: PathBuf,
+}
+
+/// One repo of workspace `branch`, by its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitRepoParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repo: String,
+}
+
+/// `op` on repo `repo` of workspace `branch`; `op_id` makes asking again after a reconnect answer the first run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitActParams {
+    #[serde(default)]
+    pub cfg: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub repo: String,
+    pub op: git::access::GitOp,
+    #[serde(default)]
+    pub op_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitReadParams {
+    #[serde(default)]
+    pub cfg: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub repo: String,
+    pub read: git::access::GitRead,
+}
+
+/// Pushes [`GitScanned`] under [`GIT_SCAN_TOPIC`] on the client's subscription `channel` whenever one of `repos`
+/// (names) of workspace `branch` reads differently, and once for each at the start.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitWatchParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repos: Vec<String>,
+    pub channel: u32,
+}
+
+pub const GIT_SCAN_TOPIC: &str = "git.scan";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitScanned {
+    pub repo: String,
+    pub scan: git::scan::RepoScan,
+}
+
+/// What `git.act` did: nothing to say, or git's error with its output.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitActed {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<git::working_copy::CommandError>,
+}
+
+/// A repo's branches as the branch picker lists them, read from its checkout in the workspace (else in main).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitBranches {
+    /// The branch the main checkout is on, which a new branch starts from.
+    pub base: String,
+    pub branches: Vec<pom_workspace::BranchInfo>,
+}
+
+/// What `git.branch` does to a repo of a workspace.
+pub mod branch_action {
+    /// Keeps the branch the repo is on now as the one it uses.
+    pub const KEEP: &str = "keep";
+    /// Checks out `target`.
+    pub const SWITCH: &str = "switch";
+    /// Fetches origin, then checks out `target`.
+    pub const USE: &str = "use";
+    /// Fetches origin in the checkout the branches are listed from.
+    pub const FETCH: &str = "fetch";
+    pub const ALL: &[&str] = &[KEEP, SWITCH, USE, FETCH];
+}
+
+/// A change to which branch repo `repo` of workspace `branch` uses; answers what it did, as a sentence.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitBranchParams {
+    pub cfg: String,
+    pub branch: String,
+    pub repo: String,
+    pub action: String,
+    pub target: String,
+    pub op_id: String,
 }
