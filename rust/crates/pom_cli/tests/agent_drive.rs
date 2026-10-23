@@ -507,3 +507,185 @@ fn a_pending_approval_still_refuses_a_send_and_a_queue_says_what_it_waited_on() 
         "{error}"
     );
 }
+
+impl Fixture {
+    /// Runs one hook the way the agent's own hooks do, with a payload shaped like the agent's.
+    fn hook(&self, event: &str, extra: Value) {
+        let mut payload = serde_json::json!({
+            "session_id": "s1",
+            "transcript_path": self.temp.path().join("s1.jsonl"),
+            "cwd": self.root().join("workspace--feat"),
+            "permission_mode": "default",
+            "hook_event_name": event,
+        });
+        if let (Some(payload), Value::Object(extra)) = (payload.as_object_mut(), extra) {
+            payload.extend(extra);
+        }
+        let mut child = Command::new(POM)
+            .args(["claude-hook", "--session"])
+            .current_dir(self.root().join("workspace--feat"))
+            .env("XDG_STATE_HOME", self.temp.path().join("state"))
+            .env("POM_PTY_SOCK_DIR", self.temp.path().join("s"))
+            .env("POM_AGENT_HOLDER", HOLDER)
+            .env("POM_AGENT_ROLE", "reviewer")
+            .env("POM_PROJECT_SESSION", "demo")
+            .env("POM_WORKSPACE", "feat")
+            .env("POM_AGENT_DRIVER", "claude")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("hook");
+        std::io::Write::write_all(
+            child.stdin.as_mut().expect("stdin"),
+            payload.to_string().as_bytes(),
+        )
+        .expect("payload");
+        drop(child.stdin.take());
+        assert!(child.wait_with_output().expect("hook").status.success());
+    }
+
+    /// Types a turn into the agent's terminal the way a person at the app does: no lease claimed.
+    fn type_as_person(&self, text: &str) {
+        let mut connection = pom_ptyhost::connect_writer(&self.holders(), HOLDER).expect("connect");
+        connection
+            .input(format!("\x1b[200~{text}\x1b[201~").as_bytes())
+            .expect("paste");
+        std::thread::sleep(Duration::from_millis(60));
+        connection.input(b"\r").expect("enter");
+    }
+
+    fn wait(&self, extra: &[&str]) -> (Option<i32>, Value) {
+        let mut args = vec!["agent", "wait", "feat/reviewer", "--json"];
+        args.extend_from_slice(extra);
+        let output = self.pom(&args);
+        (output.status.code(), stdout_json(&output))
+    }
+}
+
+#[test]
+fn ls_says_whether_a_turn_runs_and_its_phase() {
+    let fixture = Fixture::new();
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "idle");
+    assert_eq!(reviewer["running"], false);
+    assert_eq!(reviewer["phase"], "idle");
+    let sent = fixture.send("long", &["--take"]);
+    assert_eq!(sent.status.code(), Some(0));
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "thinking");
+    assert_eq!(reviewer["running"], true);
+    assert_eq!(reviewer["phase"], "working");
+}
+
+#[test]
+fn turn_end_on_an_idle_session_waits_for_the_next_turn_not_the_last_one() {
+    let fixture = Fixture::new();
+    fixture.type_as_person("hello");
+    fixture.until("the person's turn to end", |fixture| {
+        fixture.reviewer()["last_event"] == "Stop"
+    });
+    let (code, outcome) = fixture.wait(&["--timeout", "2s"]);
+    assert_eq!(
+        code,
+        Some(2),
+        "the person's finished turn is not what a later wait waits for: {outcome}"
+    );
+    assert_eq!(outcome["reached"], "timeout");
+    assert_eq!(outcome["for_turn"], 2);
+
+    let (code, outcome) = fixture.wait(&["--turn", "1", "--timeout", "2s"]);
+    assert_eq!(code, Some(0), "{outcome}");
+    assert_eq!(
+        (outcome["reached"].as_str(), outcome["for_turn"].as_u64()),
+        (Some("turn-end"), Some(1))
+    );
+
+    let sent = fixture.send("again", &["--as-person"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let (code, outcome) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0), "{outcome}");
+    assert_eq!(
+        outcome["for_turn"], 2,
+        "the turn the last send started counts once it ended"
+    );
+    let (code, _) = fixture.wait(&["--turn", "3", "--timeout", "1s"]);
+    assert_eq!(code, Some(2), "turn 3 never started");
+}
+
+#[test]
+fn turn_end_after_a_reopen_waits_for_a_new_turn() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("hello", &["--take"]);
+    assert_eq!(sent.status.code(), Some(0));
+    let (code, outcome) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0), "{outcome}");
+    assert_eq!(outcome["for_turn"], 1);
+
+    fixture.hook("SessionStart", serde_json::json!({"source": "compact"}));
+    let (code, outcome) = fixture.wait(&["--timeout", "2s"]);
+    assert_eq!(
+        (code, outcome["for_turn"].as_u64()),
+        (Some(0), Some(1)),
+        "compacting is not a reopen"
+    );
+
+    fixture.hook("SessionStart", serde_json::json!({"source": "resume"}));
+    let (code, outcome) = fixture.wait(&["--timeout", "2s"]);
+    assert_eq!(
+        code,
+        Some(2),
+        "a resumed session's old turn is over: {outcome}"
+    );
+    assert_eq!(outcome["for_turn"], 2);
+    let (code, outcome) = fixture.wait(&["--turn", "1", "--timeout", "2s"]);
+    assert_eq!((code, outcome["for_turn"].as_u64()), (Some(0), Some(1)));
+}
+
+#[test]
+fn the_person_who_drives_may_send_from_another_client_without_moving_the_lease() {
+    let fixture = Fixture::new();
+    let plain = fixture.send("hello", &[]);
+    assert_eq!(stderr_json(&plain)["error"], "lease");
+    let both = fixture.send("hello", &["--take", "--as-person"]);
+    assert_eq!(both.status.code(), Some(2), "a usage error");
+
+    let sent = fixture.send("hello", &["--as-person"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    assert_eq!(
+        fixture.holders().input_lease(HOLDER),
+        None,
+        "still the person's"
+    );
+    fixture.until("the turn to end", |fixture| {
+        fixture.reviewer()["last_event"] == "Stop"
+    });
+    let read = fixture.json(&["agent", "read", "feat/reviewer", "--json"]);
+    assert_eq!(read["turns"][0]["origin"], "human");
+    assert_eq!(read["turns"][0]["items"][0]["text"], "echo: hello");
+
+    let taken = fixture.send("mine", &["--take"]);
+    assert_eq!(taken.status.code(), Some(0));
+    fixture.until("the turn to end", |fixture| {
+        fixture.reviewer()["last_event"] == "Stop"
+    });
+    let refused = fixture.send("hello", &["--as-person"]);
+    assert_eq!(refused.status.code(), Some(6));
+    let error = stderr_json(&refused);
+    assert_eq!(error["error"], "lease");
+    assert!(
+        error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("an orchestrator")),
+        "{error}"
+    );
+}

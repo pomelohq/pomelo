@@ -64,6 +64,14 @@ pub fn turn_meta(state: &StateDir, session_id: &str, turn: u64) -> TurnMeta {
     .unwrap_or_default()
 }
 
+/// Whether pom sent turn `turn` (`agent send` or `ask`), rather than someone typing it.
+pub fn turn_was_sent(state: &StateDir, session_id: &str, turn: u64) -> bool {
+    session_dir(state, session_id)
+        .join("turns")
+        .join(format!("{turn}.json"))
+        .is_file()
+}
+
 /// One turn's place in the transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnSpan {

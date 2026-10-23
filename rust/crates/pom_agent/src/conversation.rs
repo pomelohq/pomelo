@@ -19,7 +19,7 @@ use crate::policy::{write_answer, Answer};
 use crate::sessions::{
     events, now_ms, read_state, record_event, session_dir, with_lock, SessionEvent, TurnState,
 };
-use crate::turns::{turn_meta, write_turn_meta, Origin, TurnMeta};
+use crate::turns::{turn_meta, turn_spans, turn_was_sent, write_turn_meta, Origin, TurnMeta};
 
 const POLL: Duration = Duration::from_millis(200);
 /// How long a submitted prompt may take to show up as a new turn before Enter is pressed once more.
@@ -37,6 +37,18 @@ pub const NOT_SUBMITTED_EXIT: i32 = 5;
 pub const TIMEOUT_EXIT: i32 = 2;
 pub const AWAITING_INPUT_EXIT: i32 = 3;
 pub const DIED_EXIT: i32 = 4;
+
+/// On whose authority a caller types into a session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SendAs {
+    /// As the holder of the session's lease, which must allow the caller.
+    #[default]
+    LeaseHolder,
+    /// Takes the lease first (`--take`); a person's session goes to the caller.
+    TakeOver,
+    /// As the person who drives the session (`--as-person`), from another client; the lease stays theirs.
+    Person,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WaitUntil {
@@ -64,6 +76,9 @@ pub struct WaitOutcome {
     pub reached: String,
     pub state: String,
     pub turn: u64,
+    /// The turn a `turn-end` wait waited for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_turn: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
     /// For a dead session: `killed`, `user_exited`, `crashed` or `auth_failed`.
@@ -153,6 +168,44 @@ impl Drive {
         .map_err(|error| DriveError::Failed(format!("could not take the lease: {error}")))
     }
 
+    /// The lease a caller types under, refused when `send_as` does not give it the right to.
+    pub fn typing_lease(
+        &self,
+        gate: &Gate<'_>,
+        view: &SessionView,
+        send_as: SendAs,
+    ) -> Result<Lease, DriveError> {
+        match send_as {
+            SendAs::TakeOver => {
+                if gate.caller().is_agent() {
+                    return Err(DriveError::Invalid(
+                        "only a person or an orchestrator may take a session over".into(),
+                    ));
+                }
+                self.take_lease(gate, view)
+            }
+            SendAs::Person => {
+                if gate.caller().is_agent() {
+                    return Err(DriveError::Invalid(
+                        "an agent cannot act as the person who drives a session".into(),
+                    ));
+                }
+                let lease = read_lease(&self.state, &view.holder);
+                if lease.class != LeaseClass::Human {
+                    let by = crate::presence::driven_by(&self.state, &view.holder)
+                        .unwrap_or_else(|| lease.by.clone());
+                    return Err(Refusal::LeaseHeld { by }.into());
+                }
+                Ok(lease)
+            }
+            SendAs::LeaseHolder => {
+                let lease = read_lease(&self.state, &view.holder);
+                lease.allows(gate.caller())?;
+                Ok(lease)
+            }
+        }
+    }
+
     /// Sends one user turn and returns its number once the agent has taken it.
     pub fn send(
         &self,
@@ -160,7 +213,7 @@ impl Drive {
         view: &SessionView,
         text: &str,
         queue: bool,
-        take: bool,
+        send_as: SendAs,
         timeout: Option<Duration>,
     ) -> Result<u64, DriveError> {
         if text.trim().is_empty() {
@@ -176,18 +229,7 @@ impl Drive {
                 view.handle
             )));
         }
-        if take && gate.caller().is_agent() {
-            return Err(DriveError::Invalid(
-                "only a person or an orchestrator may take a session over".into(),
-            ));
-        }
-        let lease = if take {
-            self.take_lease(gate, view)?
-        } else {
-            let lease = read_lease(&self.state, &view.holder);
-            lease.allows(gate.caller())?;
-            lease
-        };
+        let lease = self.typing_lease(gate, view, send_as)?;
         let (current, reason) = read_state(&self.state, &view.session_id)
             .map(|record| record.status())
             .unwrap_or_else(|| (view.state.clone(), view.reason.clone()));
@@ -206,9 +248,10 @@ impl Drive {
                 }
             }
             let before = read_state(&self.state, &view.session_id).map_or(view.turn, |record| record.turn);
-            let origin = match gate.caller() {
-                Caller::Agent { .. } => Origin::Agent,
-                Caller::Operator => Origin::Orchestrator,
+            let origin = match (gate.caller(), send_as) {
+                (Caller::Agent { .. }, _) => Origin::Agent,
+                (Caller::Operator, SendAs::Person) => Origin::Human,
+                (Caller::Operator, _) => Origin::Orchestrator,
             };
             write_turn_meta(
                 &self.state,
@@ -238,7 +281,7 @@ impl Drive {
                         &self.state,
                         &self.project,
                         &view.workspace,
-                        json!({"event": "message", "from": gate.caller().holder().unwrap_or("operator"), "to": view.holder, "role": view.role, "turn": turn, "depth": depth, "origin": origin, "chars": text.chars().count()}),
+                        json!({"event": "message", "from": sender(gate, send_as), "to": view.holder, "role": view.role, "turn": turn, "depth": depth, "origin": origin, "chars": text.chars().count()}),
                     )?;
                     return Ok(Ok(turn));
                 }
@@ -281,8 +324,33 @@ impl Drive {
         }
     }
 
-    /// Blocks until the session reaches `until` (for turn `turn`, by default the current one), asks for a
-    /// permission, dies or the wait times out. It reads hook state; it never looks at the screen.
+    /// The turn a `turn-end` wait without `--turn` waits for: the running one; else the one the last send
+    /// started while it is still the latest and the session was not reopened since; else the next one.
+    pub fn default_wait_turn(&self, view: &SessionView) -> u64 {
+        let Some(record) = read_state(&self.state, &view.session_id) else {
+            return view.turn + 1;
+        };
+        if record.turn_state == TurnState::Running {
+            return record.turn;
+        }
+        if record.turn == 0 || !turn_was_sent(&self.state, &view.session_id, record.turn) {
+            return record.turn + 1;
+        }
+        let lines = events(&self.state, &view.session_id);
+        let reopened = lines
+            .iter()
+            .rposition(|line| line.event == "UserPromptSubmit" && line.turn == record.turn)
+            .is_none_or(|at| lines[at..].iter().any(reopens));
+        if reopened {
+            record.turn + 1
+        } else {
+            record.turn
+        }
+    }
+
+    /// Blocks until the session reaches `until`, asks for a permission, dies or the wait times out. A
+    /// `turn-end` wait ends with exactly turn `turn`, by default `default_wait_turn`. It reads hook state;
+    /// it never looks at the screen.
     pub fn wait(
         &self,
         view: &SessionView,
@@ -292,12 +360,7 @@ impl Drive {
     ) -> WaitOutcome {
         let started = Instant::now();
         let mut misses = 0;
-        let start_record = read_state(&self.state, &view.session_id);
-        let target = turn.unwrap_or_else(|| {
-            start_record
-                .as_ref()
-                .map_or(view.turn, |record| record.turn)
-        });
+        let target = turn.unwrap_or_else(|| self.default_wait_turn(view));
         let mut quiet_since: Option<(u64, Instant)> = None;
         loop {
             let record = read_state(&self.state, &view.session_id);
@@ -314,6 +377,7 @@ impl Drive {
                 reached: reached.into(),
                 state: state.clone(),
                 turn: current,
+                for_turn: (until == WaitUntil::TurnEnd).then_some(target),
                 stop_reason: stop_reason.map(str::to_string),
                 cause,
                 exit_code,
@@ -333,21 +397,27 @@ impl Drive {
             }
             match until {
                 WaitUntil::TurnEnd => {
-                    if current > target
-                        || (current == target
-                            && matches!(turn_state, TurnState::Ended | TurnState::Cancelled))
+                    if current == target
+                        && matches!(turn_state, TurnState::Ended | TurnState::Cancelled)
                     {
-                        let reason = if current == target && turn_state == TurnState::Cancelled {
+                        let reason = if turn_state == TurnState::Cancelled {
                             "cancelled"
                         } else {
                             "end_turn"
                         };
                         return outcome("turn-end", Some(reason), None, 0);
                     }
-                    if let Some(record) = record
-                        .as_ref()
-                        .filter(|record| record.turn_state == TurnState::Running)
-                    {
+                    if current > target {
+                        let reason = turn_spans(&events(&self.state, &view.session_id))
+                            .into_iter()
+                            .find(|span| span.turn == target)
+                            .and_then(|span| span.stop_reason)
+                            .unwrap_or("end_turn");
+                        return outcome("turn-end", Some(reason), None, 0);
+                    }
+                    if let Some(record) = record.as_ref().filter(|record| {
+                        record.turn == target && record.turn_state == TurnState::Running
+                    }) {
                         if transcript_says_end_turn(Path::new(&record.transcript), &mut quiet_since)
                         {
                             return outcome("turn-end", Some("end_turn"), None, 0);
@@ -407,10 +477,14 @@ impl Drive {
     }
 
     /// Stops the current turn with the agent's own interrupt key.
-    pub fn interrupt(&self, gate: &Gate<'_>, view: &SessionView) -> Result<(), DriveError> {
+    pub fn interrupt(
+        &self,
+        gate: &Gate<'_>,
+        view: &SessionView,
+        send_as: SendAs,
+    ) -> Result<(), DriveError> {
         gate.drivable_target(&view.holder)?;
-        let lease = read_lease(&self.state, &view.holder);
-        lease.allows(gate.caller())?;
+        let lease = self.typing_lease(gate, view, send_as)?;
         let agent_driver = driver(&view.driver).ok_or_else(|| Refusal::NotDrivable {
             role: view.role.clone(),
         })?;
@@ -609,6 +683,24 @@ impl Drive {
     }
 }
 
+/// Who the workspace log says sent a turn.
+fn sender<'a>(gate: &'a Gate<'_>, send_as: SendAs) -> &'a str {
+    match (gate.caller().holder(), send_as) {
+        (Some(holder), _) => holder,
+        (None, SendAs::Person) => "person",
+        (None, _) => "operator",
+    }
+}
+
+/// An event after which the session runs a conversation anew: launched, resumed or cleared, never compacted.
+fn reopens(line: &crate::sessions::EventLine) -> bool {
+    match line.event.as_str() {
+        crate::sessions::LAUNCHED_EVENT => true,
+        "SessionStart" => line.detail["source"] != "compact",
+        _ => false,
+    }
+}
+
 /// Whether the transcript's last reply ended its turn and nothing has been written for a moment.
 fn transcript_says_end_turn(path: &Path, quiet_since: &mut Option<(u64, Instant)>) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
@@ -714,6 +806,7 @@ mod tests {
             last_event: String::new(),
             last_event_age_s: 0,
             stale: false,
+            ..SessionView::default()
         };
         let record = |view: &SessionView, event: &str, detail: Value| {
             drive.record(view, event, Some(AgentState::Idle), detail);
@@ -746,5 +839,100 @@ mod tests {
         )
         .expect("crash");
         assert_eq!(drive.death_cause(&unauthorized), "auth_failed");
+    }
+
+    fn live_session(temp: &Path) -> (Drive, SessionView) {
+        let drive = Drive {
+            state: StateDir::new(temp.join("state")),
+            holders: SocketDir::new(temp.join("s")),
+            project: "myproject".into(),
+            home: temp.into(),
+            binary: "/bin/false".into(),
+            tool_path: String::new(),
+            limits: Default::default(),
+        };
+        let holder = "ws-myproject-feat-login-claude-reviewer";
+        std::fs::create_dir_all(temp.join("s")).expect("dir");
+        std::fs::write(
+            drive.holders.pidfile(holder),
+            format!("{}\n{holder}\n", std::process::id()),
+        )
+        .expect("pidfile");
+        let view = SessionView {
+            handle: "feat-login/reviewer".into(),
+            workspace: "feat-login".into(),
+            role: "reviewer".into(),
+            holder: holder.into(),
+            driver: "claude".into(),
+            session_id: "s".into(),
+            alive: true,
+            drivable: true,
+            ..SessionView::default()
+        };
+        (drive, view)
+    }
+
+    #[test]
+    fn a_wait_for_a_later_turn_ignores_the_running_turns_transcript() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (drive, view) = live_session(temp.path());
+        let transcript = temp.path().join("t.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"assistant\",\"message\":{\"content\":[],\"stop_reason\":\"end_turn\"}}\n",
+        )
+        .expect("transcript");
+        let event = SessionEvent {
+            session_id: "s".into(),
+            event: "UserPromptSubmit".into(),
+            state: Some(AgentState::Thinking),
+            transcript: transcript.to_string_lossy().into_owned(),
+            ..SessionEvent::default()
+        };
+        record_event(&drive.state, &identity_of(&drive, &view), &event).expect("turn 1");
+        let waited = drive.wait(&view, WaitUntil::TurnEnd, Some(2), Some(END_TURN_QUIET * 3));
+        assert_eq!(
+            (waited.reached.as_str(), waited.for_turn),
+            ("timeout", Some(2))
+        );
+        let current = drive.wait(
+            &view,
+            WaitUntil::TurnEnd,
+            None,
+            Some(Duration::from_secs(5)),
+        );
+        assert_eq!(
+            (current.reached.as_str(), current.for_turn),
+            ("turn-end", Some(1)),
+            "the running turn's transcript still ends it when that is the turn waited for"
+        );
+    }
+
+    #[test]
+    fn an_agent_can_neither_take_a_session_nor_act_as_its_person() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (drive, view) = live_session(temp.path());
+        let gate = Gate::open(
+            &drive.state,
+            Caller::Agent {
+                holder: "ws-myproject-feat-login-claude-raw".into(),
+            },
+            crate::gate::Workspace {
+                project: "myproject".into(),
+                branch: "feat-login".into(),
+            },
+            crate::gate::Limits::OPERATOR,
+        )
+        .expect("gate");
+        for send_as in [SendAs::Person, SendAs::TakeOver] {
+            assert!(matches!(
+                drive.typing_lease(&gate, &view, send_as),
+                Err(DriveError::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            drive.typing_lease(&gate, &view, SendAs::LeaseHolder),
+            Err(DriveError::Refused(Refusal::LeaseHeld { .. }))
+        ));
     }
 }

@@ -23,7 +23,8 @@ mod watch;
 pub use caller::Caller;
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
 pub use conversation::{
-    WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT, NOT_SUBMITTED_EXIT, TIMEOUT_EXIT,
+    SendAs, WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT, NOT_SUBMITTED_EXIT,
+    TIMEOUT_EXIT,
 };
 pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView, NEEDS_TRUST_EXIT};
 pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
@@ -54,9 +55,10 @@ pub use presence::{
     workspace_agent_state, PendingApproval,
 };
 pub use sessions::{
-    events, events_path, now_ms, project_sessions, read_state, record_event, session_dir,
-    with_lock, workspace_sessions, EventLine, IndexEntry, SessionEvent, SessionState, TurnState,
-    IDLE_NOTIFICATION, INTERRUPTED, PENDING_APPROVAL, SCHEMA, STALE, STOP,
+    events, events_path, now_ms, phase, project_sessions, read_state, record_event, session_dir,
+    turn_running, with_lock, workspace_sessions, EventLine, IndexEntry, SessionEvent, SessionState,
+    TurnState, IDLE_NOTIFICATION, INTERRUPTED, PENDING_APPROVAL, PHASES, REASONS, SCHEMA, STALE,
+    STATES, STOP,
 };
 pub use side::{
     format_tokens, last_answer, main_session, other_cli, record_side, second_opinion_launch,

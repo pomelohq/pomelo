@@ -80,8 +80,53 @@ pub const STALE: &str = "stale";
 
 const AWAITING_INPUT: &str = "awaiting_input";
 
+/// Every `state` a session view reports. The first seven come from the agent and pom's launch; `died`,
+/// `ended` and `unknown` only from a view, for a session whose holder is gone or never reported.
+pub const STATES: [&str; 10] = [
+    STARTING_STATE,
+    NEEDS_TRUST_STATE,
+    "idle",
+    "thinking",
+    "tool_use",
+    "compacting",
+    AWAITING_INPUT,
+    "died",
+    "ended",
+    "unknown",
+];
+/// Every `reason` a session view reports; `null` when none applies.
+pub const REASONS: [&str; 5] = [
+    PENDING_APPROVAL,
+    IDLE_NOTIFICATION,
+    STOP,
+    INTERRUPTED,
+    STALE,
+];
+/// Every `phase`: what a client does next, whatever the exact state.
+pub const PHASES: [&str; 4] = ["working", "waiting", "idle", "gone"];
+
+/// Whether a turn is in progress: the agent works on it, or it waits on a permission inside it.
+pub fn turn_running(state: &str, reason: Option<&str>) -> bool {
+    match state {
+        "thinking" | "tool_use" | "compacting" => true,
+        AWAITING_INPUT => reason == Some(PENDING_APPROVAL),
+        _ => false,
+    }
+}
+
+/// The coarse phase of a state: `working` (a turn runs), `waiting` (it cannot go on until someone acts or it
+/// finishes starting), `idle` (it takes a turn now) or `gone` (its holder ended).
+pub fn phase(state: &str) -> &'static str {
+    match state {
+        "thinking" | "tool_use" | "compacting" => "working",
+        "idle" => "idle",
+        "died" | "ended" => "gone",
+        _ => "waiting",
+    }
+}
+
 /// Why an event left the session in `state`, for the states a driver has to tell apart.
-fn reason_for(event: &str, state: &str) -> Option<&'static str> {
+pub(crate) fn reason_for(event: &str, state: &str) -> Option<&'static str> {
     match event {
         "Stop" => Some(STOP),
         "Interrupted" => Some(INTERRUPTED),
@@ -587,5 +632,33 @@ mod tests {
             legacy("PreToolUse", "tool_use", TurnState::Running),
             ("tool_use".to_string(), None)
         );
+    }
+
+    #[test]
+    fn every_state_has_a_phase_and_only_work_or_a_pending_approval_runs_a_turn() {
+        let phases: Vec<(&str, &str, bool)> = STATES
+            .iter()
+            .map(|state| {
+                let reason = (*state == AWAITING_INPUT).then_some(PENDING_APPROVAL);
+                (*state, phase(state), turn_running(state, reason))
+            })
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                ("starting", "waiting", false),
+                ("needs_trust", "waiting", false),
+                ("idle", "idle", false),
+                ("thinking", "working", true),
+                ("tool_use", "working", true),
+                ("compacting", "working", true),
+                ("awaiting_input", "waiting", true),
+                ("died", "gone", false),
+                ("ended", "gone", false),
+                ("unknown", "waiting", false),
+            ]
+        );
+        assert!(!turn_running(AWAITING_INPUT, None));
+        assert!(phases.iter().all(|(_, phase, _)| PHASES.contains(phase)));
     }
 }

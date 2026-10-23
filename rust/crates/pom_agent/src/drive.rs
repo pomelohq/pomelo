@@ -14,9 +14,9 @@ use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
 use crate::sessions::{
-    events, now_ms, read_state, record_event, workspace_sessions, EventLine, SessionEvent,
-    SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE, SCHEMA, STALE,
-    STARTING_STATE,
+    events, now_ms, phase, read_state, record_event, turn_running, workspace_sessions, EventLine,
+    SessionEvent, SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE,
+    SCHEMA, STALE, STARTING_STATE,
 };
 use crate::turns::{read_turns, settle_transcript, RecordedTurn, SETTLE_CAP, SETTLE_QUIET};
 
@@ -118,19 +118,30 @@ pub struct SessionView {
     pub session_id: String,
     pub alive: bool,
     pub drivable: bool,
-    /// `idle`, `thinking`, `tool_use`, `compacting`, `awaiting_input`, `died` or `unknown`.
+    /// One of `sessions::STATES`.
     pub state: String,
-    /// `pending_approval`, `idle_notification`, `stop`, `interrupted`, `stale` or none.
+    /// One of `sessions::REASONS`, or none.
     pub reason: Option<String>,
     pub turn: u64,
     pub last_event: String,
     pub last_event_age_s: u64,
     pub stale: bool,
+    /// A turn is in progress: working, or waiting on a permission inside it.
+    pub running: bool,
+    /// One of `sessions::PHASES`.
+    pub phase: String,
 }
 
 impl SessionView {
     pub fn is_working(&self) -> bool {
         matches!(self.state.as_str(), "thinking" | "tool_use" | "compacting")
+    }
+
+    /// Sets `running` and `phase` from `state` and `reason`.
+    fn derive_phase(mut self) -> SessionView {
+        self.running = turn_running(&self.state, self.reason.as_deref());
+        self.phase = phase(&self.state).to_string();
+        self
     }
 }
 
@@ -174,7 +185,9 @@ fn view_of(record: &SessionState, alive: bool, drivable: bool, now: u64) -> Sess
         last_event: record.last_event.clone(),
         last_event_age_s: age / 1000,
         stale,
+        ..SessionView::default()
     }
+    .derive_phase()
 }
 
 /// A handle names a session as `<workspace>/<role>`, or just its role inside the workspace in use.
@@ -233,6 +246,7 @@ impl Drive {
             if waiting && self.shows_trust_prompt(&view.holder, &view.driver) {
                 self.mark_needs_trust(&view.holder, &view.session_id, branch);
                 view.state = NEEDS_TRUST_STATE.into();
+                *view = std::mem::take(view).derive_phase();
             }
         }
         let prefix = workspace_prefix(&self.project, branch);
@@ -243,22 +257,26 @@ impl Drive {
             let Some(role) = holder_role(&holder, &self.project, branch) else {
                 continue;
             };
-            views.push(SessionView {
-                handle: format!("{branch}/{}", role.role),
-                workspace: branch.to_string(),
-                role: role.role,
-                holder,
-                driver: role.driver.to_string(),
-                session_id: String::new(),
-                alive: true,
-                drivable: role.drivable,
-                state: "unknown".into(),
-                reason: None,
-                turn: 0,
-                last_event: String::new(),
-                last_event_age_s: 0,
-                stale: false,
-            });
+            views.push(
+                SessionView {
+                    handle: format!("{branch}/{}", role.role),
+                    workspace: branch.to_string(),
+                    role: role.role,
+                    holder,
+                    driver: role.driver.to_string(),
+                    session_id: String::new(),
+                    alive: true,
+                    drivable: role.drivable,
+                    state: "unknown".into(),
+                    reason: None,
+                    turn: 0,
+                    last_event: String::new(),
+                    last_event_age_s: 0,
+                    stale: false,
+                    ..SessionView::default()
+                }
+                .derive_phase(),
+            );
         }
         views.sort_by(|a, b| a.role.cmp(&b.role));
         views
@@ -422,22 +440,26 @@ impl Drive {
             .list(&workspace.branch)
             .into_iter()
             .find(|view| view.holder == holder)
-            .unwrap_or(SessionView {
-                handle: format!("{}/{role_name}", workspace.branch),
-                workspace: workspace.branch.clone(),
-                role: role_name,
-                holder,
-                driver: crate::identity::CLAUDE_DRIVER.into(),
-                session_id: String::new(),
-                alive: false,
-                drivable: true,
-                state: "starting".into(),
-                reason: None,
-                turn: 0,
-                last_event: String::new(),
-                last_event_age_s: 0,
-                stale: false,
-            }))
+            .unwrap_or(
+                SessionView {
+                    handle: format!("{}/{role_name}", workspace.branch),
+                    workspace: workspace.branch.clone(),
+                    role: role_name,
+                    holder,
+                    driver: crate::identity::CLAUDE_DRIVER.into(),
+                    session_id: String::new(),
+                    alive: false,
+                    drivable: true,
+                    state: "starting".into(),
+                    reason: None,
+                    turn: 0,
+                    last_event: String::new(),
+                    last_event_age_s: 0,
+                    stale: false,
+                    ..SessionView::default()
+                }
+                .derive_phase(),
+            ))
     }
 
     /// Ends a session and its holder.
@@ -615,6 +637,10 @@ pub fn watch_line(branch: &str, role: &str, session_id: &str, line: &EventLine) 
         "state": line.state,
         "turn": line.turn,
     });
+    let reason = crate::sessions::reason_for(&line.event, &line.state);
+    value["reason"] = json!(reason);
+    value["running"] = json!(turn_running(&line.state, reason));
+    value["phase"] = json!(phase(&line.state));
     if let Some(tool) = &line.tool {
         value["tool"] = json!(tool);
     }

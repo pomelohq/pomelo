@@ -166,6 +166,7 @@ pub fn session_event(input: &[u8]) -> Option<SessionEvent> {
             "Stop" => json!({ "stop_reason": "end_turn" }),
             "PreCompact" => json!({ "trigger": field("trigger") }),
             "SessionEnd" => json!({ "reason": field("reason") }),
+            "SessionStart" => json!({ "source": field("source") }),
             _ => Value::Null,
         },
     })
