@@ -315,20 +315,36 @@ pub fn diagnose(
     out
 }
 
-/// The dev proxy listens where other machines can reach it, and it has no authentication of its own.
-pub fn proxy_exposure(bind: std::net::IpAddr, trusted_proxies: usize) -> Option<Finding> {
+/// The dev proxy listens where other machines can reach it: it refuses to start without a token unless the
+/// risk was accepted. `refusal` is why it will not start, if it will not.
+pub fn proxy_exposure(
+    bind: std::net::IpAddr,
+    trusted_proxies: usize,
+    has_token: bool,
+    refusal: Option<String>,
+) -> Option<Finding> {
     if bind.is_loopback() {
         return None;
     }
+    if let Some(reason) = refusal {
+        return Some(
+            Finding::new("proxy.refused", Severity::Error, "Dev proxy will not start")
+                .detail(reason)
+                .fix("`pom proxy token new` (other machines then present it), or `pom proxy config reset bind`"),
+        );
+    }
+    if has_token {
+        return None;
+    }
     let detail = if trusted_proxies == 0 {
-        format!("proxy.bind is {bind} and proxy.trusted_proxies is empty: anyone who reaches that address opens every workspace's services, and forwarded headers from a reverse proxy are ignored")
+        format!("proxy.bind is {bind}, proxy.allow_unauthenticated is on and proxy.trusted_proxies is empty: anyone who reaches that address opens every workspace's services, and forwarded headers from a reverse proxy are ignored")
     } else {
-        format!("proxy.bind is {bind}: anyone who reaches that address opens every workspace's services")
+        format!("proxy.bind is {bind} and proxy.allow_unauthenticated is on: anyone who reaches that address opens every workspace's services")
     };
     Some(
-        Finding::new("proxy.exposed", Severity::Warn, "Dev proxy reachable from other machines")
+        Finding::new("proxy.exposed", Severity::Warn, "Dev proxy reachable from other machines with no token")
             .detail(detail)
-            .fix("keep the address on a private network (Tailscale, a LAN) or behind a reverse proxy, or `pom proxy config reset bind`"),
+            .fix("`pom proxy token new`, or keep the address on a private network (Tailscale, a LAN) or behind an authenticating reverse proxy, or `pom proxy config reset bind`"),
     )
 }
 
@@ -521,9 +537,19 @@ mod tests {
 
     #[test]
     fn only_a_non_loopback_proxy_is_reported() {
-        assert!(proxy_exposure("127.0.0.1".parse().unwrap(), 0).is_none());
-        assert!(proxy_exposure("::1".parse().unwrap(), 0).is_none());
-        let finding = proxy_exposure("100.64.0.10".parse().unwrap(), 0).unwrap();
+        assert!(proxy_exposure("127.0.0.1".parse().unwrap(), 0, false, None).is_none());
+        assert!(proxy_exposure("::1".parse().unwrap(), 0, false, None).is_none());
+        assert!(proxy_exposure("100.64.0.10".parse().unwrap(), 0, true, None).is_none());
+        let refused = proxy_exposure(
+            "0.0.0.0".parse().unwrap(),
+            0,
+            false,
+            Some("refusing to listen on 0.0.0.0".into()),
+        )
+        .unwrap();
+        assert_eq!(refused.severity, Severity::Error);
+        assert_eq!(refused.id, "proxy.refused");
+        let finding = proxy_exposure("100.64.0.10".parse().unwrap(), 0, false, None).unwrap();
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.detail.contains("trusted_proxies is empty"));
         let mut findings = vec![Finding::new("ok", Severity::Ok, "Ready to run")];

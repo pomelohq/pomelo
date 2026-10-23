@@ -1,3 +1,4 @@
+mod access;
 mod activity;
 mod error_page;
 mod faults;
@@ -12,6 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use pom_config::Config;
 
+pub use access::{
+    new_proxy_token, proxy_token, refusal, remove_proxy_token, ProxyToken, TokenSource,
+    MIN_TOKEN_LENGTH, TOKEN_COOKIE, TOKEN_HEADER, TOKEN_PARAM,
+};
 pub use activity::{read_activity, ActivityEntry, ActivityFile, ACTIVITY_SCHEMA};
 pub use faults::{
     add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, reload_running_faults,
@@ -88,6 +93,8 @@ impl Ports {
 pub struct Initial {
     pub projects: Vec<ProjectRoute>,
     pub github: Option<GithubHook>,
+    /// What other machines must present; without one a non-loopback bind is refused (see `refusal`).
+    pub token: Option<ProxyToken>,
 }
 
 /// Which of the two servers to run.
@@ -336,6 +343,12 @@ impl DevProxy {
             webhook: network.ports.webhook,
             proxy: network.ports.proxy,
         };
+        if let Some(reason) = refusal(&network, initial.token.as_ref()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                reason,
+            ));
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pom-proxy")
@@ -347,6 +360,7 @@ impl DevProxy {
             router.clone(),
             log.clone(),
             network.clone(),
+            initial.token.map(|token| token.value),
         ));
         router.set_projects(initial.projects);
         if let Some(hook) = initial.github {
@@ -389,7 +403,7 @@ impl DevProxy {
                 Err(error) => eprintln!("webhook relay: {address} unavailable: {error}"),
             }
         }
-        if network.exposed() && (proxy_bound || webhook_bound) {
+        if network.exposed() && network.allow_unauthenticated && (proxy_bound || webhook_bound) {
             eprintln!("dev proxy: {}", exposure_warning(&network));
         }
         drop(_entered);
@@ -458,7 +472,7 @@ pub fn listening(port: u16) -> bool {
     .is_ok()
 }
 
-/// Other machines can reach the proxy: say so, since it has no authentication.
+/// Other machines can reach the proxy with no token: say so.
 pub fn exposure_warning(network: &pom_env::DevNetwork) -> String {
     let trust = if network.trusted_proxies.is_empty() {
         " and no proxy.trusted_proxies, so forwarded headers are ignored"
@@ -466,7 +480,7 @@ pub fn exposure_warning(network: &pom_env::DevNetwork) -> String {
         ""
     };
     format!(
-        "listening on {}, reachable from other machines{trust}. It has no authentication: keep it on a private network (Tailscale, a LAN) or behind a reverse proxy",
+        "listening on {}, reachable from other machines{trust}. proxy.allow_unauthenticated is on, so no token is asked for: keep it on a private network (Tailscale, a LAN) or behind an authenticating reverse proxy, or run `pom proxy token new`",
         network.bind
     )
 }

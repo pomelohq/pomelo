@@ -240,7 +240,7 @@ fn the_default_network_is_localhost_only() {
         "web.web.proj-101.dev.example.net",
         "X-Forwarded-Proto: https\r\n",
     );
-    assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+    assert!(response.starts_with("HTTP/1.1 421"), "{response}");
     let host = format!("web.web.proj-101.localhost:{}", ports.proxy);
     let response = request(ports.proxy, &host, "X-Forwarded-Proto: https\r\n");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -253,4 +253,57 @@ fn the_default_network_is_localhost_only() {
         response.contains("set-cookie: other=2; Path=/; Domain=.example.org\r\n"),
         "{response}"
     );
+}
+
+fn exposed(allow_unauthenticated: bool) -> DevNetwork {
+    DevNetwork::new(
+        DevPorts {
+            webhook: free_port(),
+            proxy: free_port(),
+        },
+        &ProxySettings {
+            // TEST-NET-1: never this machine's, so binding it fails and only loopback serves.
+            bind: "192.0.2.1".into(),
+            allow_unauthenticated,
+            ..ProxySettings::default()
+        },
+    )
+}
+
+fn start_exposed(network: DevNetwork, token: Option<&str>) -> std::io::Result<DevProxy> {
+    DevProxy::start_with(
+        Box::new(FakeMachine { leases: Vec::new() }),
+        network,
+        Serve::default(),
+        pom_proxy::Initial {
+            token: token.map(|value| pom_proxy::ProxyToken {
+                value: value.into(),
+                source: pom_proxy::TokenSource::Env("POM_PROXY_TOKEN".into()),
+            }),
+            ..pom_proxy::Initial::default()
+        },
+    )
+}
+
+#[test]
+fn a_non_loopback_bind_without_a_token_refuses_to_start() {
+    let Err(error) = start_exposed(exposed(false), None) else {
+        panic!("an exposed proxy with no token must not start");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let message = error.to_string();
+    assert!(
+        message.contains("refusing to listen on 192.0.2.1"),
+        "{message}"
+    );
+    assert!(message.contains("pom proxy token new"), "{message}");
+    assert!(start_exposed(exposed(false), Some("short")).is_err());
+}
+
+#[test]
+fn a_token_or_the_risk_flag_lets_it_start() {
+    let with_token = start_exposed(exposed(false), Some("0123456789abcdef0123")).expect("token");
+    assert!(with_token.proxy_running());
+    let accepted = start_exposed(exposed(true), None).expect("flag");
+    assert!(accepted.proxy_running());
 }

@@ -21,6 +21,7 @@ pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_ports = { path = "../pom_ports" }
 pom_ptyhost = { path = "../pom_ptyhost" }
+pom_secrets = { path = "../pom_secrets" }
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true

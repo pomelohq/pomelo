@@ -236,7 +236,7 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
         ports.proxy,
         "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
     );
-    assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+    assert!(response.starts_with("HTTP/1.1 421"), "{response}");
 }
 
 #[test]
@@ -547,6 +547,7 @@ fn a_delivery_the_moment_the_relay_listens_already_sees_the_projects() {
                 config: Arc::new(RwLock::new(Some(Arc::new(config())))),
             }],
             github: Some(hook),
+            token: None,
         },
     )
     .expect("start");
@@ -556,4 +557,141 @@ fn a_delivery_the_moment_the_relay_listens_already_sees_the_projects() {
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     assert!(response.contains(r#"{"projects":1}"#), "{response}");
+}
+
+#[test]
+fn a_name_that_only_resolves_here_is_refused_before_any_service_sees_it() {
+    let (sender, seen) = mpsc::channel();
+    let backend = echo_backend(sender);
+    let (_proxy, ports) = start(vec![service_lease("feat-login", backend)], HashMap::new());
+    for host in ["evil.example.com", "evil.example.com:8767", ""] {
+        let response = request(
+            ports.proxy,
+            &format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+        );
+        assert!(response.starts_with("HTTP/1.1 421"), "{host}: {response}");
+    }
+    assert!(seen.try_recv().is_err());
+    let response = request(
+        ports.proxy,
+        &format!(
+            "GET / HTTP/1.1\r\nHost: server.api.feat-login.localhost:{}\r\nConnection: close\r\n\r\n",
+            ports.proxy
+        ),
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
+#[test]
+fn a_web_page_cannot_reach_poms_own_endpoints_but_pom_can() {
+    let (sender, seen) = mpsc::channel();
+    let backend = echo_backend(sender);
+    let (_proxy, ports) = start(vec![service_lease("feat-login", backend)], HashMap::new());
+    let control = |host: &str, method: &str, extra: &str| {
+        request(
+            ports.proxy,
+            &format!(
+                "{method} /_pom/faults HTTP/1.1\r\nHost: {host}\r\nX-Pom-Control: faults\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n"
+            ),
+        )
+    };
+    let local = format!("127.0.0.1:{}", ports.proxy);
+    let service = "server.api.feat-login.localhost";
+    for (host, method, extra) in [
+        (
+            local.as_str(),
+            "POST",
+            "Origin: https://evil.example.com\r\n",
+        ),
+        (local.as_str(), "POST", "Sec-Fetch-Site: cross-site\r\n"),
+        (
+            local.as_str(),
+            "POST",
+            "Origin: http://localhost:3000\r\nSec-Fetch-Site: same-site\r\n",
+        ),
+        (
+            service,
+            "OPTIONS",
+            "Origin: https://evil.example.com\r\nAccess-Control-Request-Method: POST\r\n",
+        ),
+        (service, "POST", "Origin: https://evil.example.com\r\n"),
+    ] {
+        let response = control(host, method, extra);
+        assert!(
+            response.starts_with("HTTP/1.1 403"),
+            "{method} {host} {extra}: {response}"
+        );
+    }
+    assert!(control(&local, "GET", "").starts_with("HTTP/1.1 405"));
+    assert!(control(service, "OPTIONS", "").starts_with("HTTP/1.1 405"));
+    assert!(
+        seen.try_recv().is_err(),
+        "no /_pom/ request reaches a service"
+    );
+    assert!(matches!(
+        pom_proxy::reload_running_faults(ports.proxy, Duration::from_secs(5)),
+        pom_proxy::ReloadReply::Loaded(_)
+    ));
+}
+
+#[test]
+fn the_relay_refuses_requests_a_web_page_makes() {
+    let (sender, _seen) = mpsc::channel();
+    let backend = echo_backend(sender);
+    let (_proxy, ports) = start(vec![service_lease("feat-login", backend)], HashMap::new());
+    let post = |extra: &str| {
+        request(
+            ports.webhook,
+            &format!("POST /api/server/hook HTTP/1.1\r\nHost: 127.0.0.1\r\n{extra}Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"),
+        )
+    };
+    assert!(post("Origin: https://evil.example.com\r\n").starts_with("HTTP/1.1 403"));
+    assert!(post("Sec-Fetch-Site: cross-site\r\n").starts_with("HTTP/1.1 403"));
+    let response = post("Stripe-Signature: t=1,v1=abc\r\n");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
+#[test]
+fn this_machine_needs_no_token_and_services_never_see_one() {
+    let (sender, seen) = mpsc::channel();
+    let backend = echo_backend(sender);
+    let ports = Ports {
+        webhook: free_port(),
+        proxy: free_port(),
+    };
+    let proxy = DevProxy::start_with(
+        Box::new(FakeMachine {
+            leases: vec![service_lease("feat-login", backend)],
+            envs: HashMap::new(),
+        }),
+        pom_env::DevNetwork::local(pom_env::DevPorts {
+            webhook: ports.webhook,
+            proxy: ports.proxy,
+        }),
+        Serve::default(),
+        pom_proxy::Initial {
+            token: Some(pom_proxy::ProxyToken {
+                value: "0123456789abcdef0123".into(),
+                source: pom_proxy::TokenSource::Secret,
+            }),
+            ..pom_proxy::Initial::default()
+        },
+    )
+    .expect("start");
+    proxy.set_projects(vec![ProjectRoute {
+        root: "/tmp/demo".into(),
+        config: Arc::new(RwLock::new(Some(Arc::new(config())))),
+    }]);
+    let response = request(
+        ports.proxy,
+        "GET /v1?a=1&pom_token=0123456789abcdef0123 HTTP/1.1\r\nHost: server.api.feat-login.localhost\r\nCookie: sid=1; pom_token=0123456789abcdef0123\r\nX-Pom-Token: 0123456789abcdef0123\r\nConnection: close\r\n\r\n",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let head = seen
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(head.starts_with("get /v1?a=1 http/1.1"), "{head}");
+    assert!(head.contains("cookie: sid=1\r\n"), "{head}");
+    assert!(!head.contains("0123456789abcdef0123"), "{head}");
 }

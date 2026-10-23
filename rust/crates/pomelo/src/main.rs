@@ -722,6 +722,7 @@ struct App {
     settings_read: Option<std::time::SystemTime>,
     settings_checked: Option<Instant>,
     dev_proxy: Option<pom_proxy::DevProxy>,
+    dev_proxy_refused: Option<String>,
     /// The public address the workspaces' env files were last written for.
     env_address: Option<pom_env::PublicAddress>,
     dev_requests: dev_services::DevRequestsTabs,
@@ -1467,9 +1468,13 @@ impl App {
                     },
                 );
                 let network = pom_env::dev_network();
-                if let Some(finding) =
-                    pom_doctor::proxy_exposure(network.bind, network.trusted_proxies.len())
-                {
+                let token = pom_proxy::proxy_token(&network, &pom_paths::StateDir::from_env());
+                if let Some(finding) = pom_doctor::proxy_exposure(
+                    network.bind,
+                    network.trusted_proxies.len(),
+                    token.is_some(),
+                    pom_proxy::refusal(&network, token.as_ref()),
+                ) {
                     pom_doctor::add_finding(&mut findings, finding);
                 }
                 if let Some(finding) = bundled_pom_shadowed(path) {
@@ -2297,6 +2302,17 @@ impl App {
                 pom_paths::StateDir::from_env(),
                 pom_ptyhost::SocketDir::from_env(),
             );
+            let network = pom_env::dev_network();
+            let token = pom_proxy::proxy_token(&network, &state);
+            let refused = pom_proxy::refusal(&network, token.as_ref());
+            if refused.is_some() {
+                if refused != self.dev_proxy_refused {
+                    eprintln!("dev proxy: {}", refused.as_deref().unwrap_or_default());
+                }
+                self.dev_proxy_refused = refused;
+                return;
+            }
+            self.dev_proxy_refused = None;
             let binary = std::env::current_exe().ok();
             static SCHEDULE: std::sync::Once = std::sync::Once::new();
             if let Some(binary) = binary.clone().filter(|_| !SCHEDULE.is_completed()) {
@@ -2330,13 +2346,9 @@ impl App {
             let initial = pom_proxy::Initial {
                 projects: projects.clone(),
                 github: push.map(|push| push.hook()),
+                token,
             };
-            match pom_proxy::DevProxy::start_with(
-                Box::new(machine),
-                pom_env::dev_network(),
-                serve,
-                initial,
-            ) {
+            match pom_proxy::DevProxy::start_with(Box::new(machine), network, serve, initial) {
                 Ok(proxy) => self.dev_proxy = Some(proxy),
                 Err(error) => eprintln!("dev proxy failed to start: {error}"),
             }

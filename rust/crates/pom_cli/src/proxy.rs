@@ -81,9 +81,10 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
         pom_proxy::Initial {
             projects: registered_routes(state),
             github: Some(push.hook()),
+            token: pom_proxy::proxy_token(&network, state),
         },
     )
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("dev proxy: {error}"))?;
     if !proxy.proxy_running() {
         return Err(format!("could not listen on port {}", ports.proxy));
     }
@@ -136,6 +137,11 @@ pub(crate) fn ensure_running(out: &mut dyn Write) -> Result<(), String> {
         return Ok(());
     }
     let state = StateDir::from_env();
+    let network = pom_env::dev_network();
+    let token = pom_proxy::proxy_token(&network, &state);
+    if let Some(reason) = pom_proxy::refusal(&network, token.as_ref()) {
+        return writeln!(out, "dev proxy not started: {reason}").map_err(|error| error.to_string());
+    }
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -184,12 +190,14 @@ pub(crate) enum ProxyConfigCommand {
     Reset { key: String },
 }
 
-const PROXY_KEYS: [&str; 5] = [
+const PROXY_KEYS: [&str; 7] = [
     "bind",
     "domain",
     "public_scheme",
     "public_port",
     "trusted_proxies",
+    "token_env",
+    "allow_unauthenticated",
 ];
 
 pub(crate) fn parse_config(rest: &[&str]) -> Result<ProxyConfigCommand, String> {
@@ -247,6 +255,18 @@ fn apply_proxy_setting(
                 .collect::<Result<_, _>>()?
         }
         ("trusted_proxies", None) => proxy.trusted_proxies = defaults.trusted_proxies,
+        ("token_env", Some(value)) => proxy.token_env = settings::parse_env_name(value)?,
+        ("token_env", None) => proxy.token_env = defaults.token_env,
+        ("allow_unauthenticated", Some(value)) => {
+            proxy.allow_unauthenticated = match value.trim() {
+                "true" => true,
+                "false" => false,
+                _ => return Err(format!("{value}: allow_unauthenticated is true or false")),
+            }
+        }
+        ("allow_unauthenticated", None) => {
+            proxy.allow_unauthenticated = defaults.allow_unauthenticated
+        }
         (other, _) => return Err(format!("unknown proxy setting {other}")),
     }
     Ok(proxy)
@@ -285,6 +305,8 @@ fn show_network(
                 "public_scheme": if network.https { "https" } else { "http" },
                 "public_port": network.public_port,
                 "trusted_proxies": trusted,
+                "token_env": network.token_env,
+                "allow_unauthenticated": network.allow_unauthenticated,
             },
             "proxy_port": network.ports.proxy,
             "webhook_port": network.ports.webhook,
@@ -309,18 +331,102 @@ fn show_network(
                 trusted.join(", ")
             }
         ),
+        format!("token_env        {}", network.token_env),
+        format!("allow_unauthenticated  {}", network.allow_unauthenticated),
         format!("service URLs     {example}"),
     ];
     for line in lines {
         crate::say(out, &line)?;
     }
-    if network.exposed() {
+    let token = pom_proxy::proxy_token(network, &StateDir::from_env());
+    if let Some(reason) = pom_proxy::refusal(network, token.as_ref()) {
+        crate::say(out, &format!("error: {reason}"))?;
+    } else if network.exposed() && token.is_none() {
         crate::say(
             out,
             &format!("warning: {}", pom_proxy::exposure_warning(network)),
         )?;
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TokenCommand {
+    Show,
+    New,
+    Remove,
+}
+
+pub(crate) fn parse_token(rest: &[&str]) -> Result<TokenCommand, String> {
+    match rest {
+        [] => Ok(TokenCommand::Show),
+        ["new"] => Ok(TokenCommand::New),
+        ["rm"] => Ok(TokenCommand::Remove),
+        _ => Err("usage: pom proxy token [new | rm]".into()),
+    }
+}
+
+/// `pom proxy token`: the token other machines present to a non-loopback proxy.
+pub(crate) fn token_command(
+    command: &TokenCommand,
+    state: &StateDir,
+    out: &mut dyn Write,
+) -> Result<(), String> {
+    let network = pom_env::dev_network();
+    let example = network.public().url(&format!(
+        "<service>.<repo>.<workspace>.{}",
+        network.public().domain
+    ));
+    let usage = |token: &str| {
+        format!(
+            "open a link once with ?{}={token} (for example {example}/?{}={token}); scripts send the {} header; webhook URLs from another machine add ?{}={token}",
+            pom_proxy::TOKEN_PARAM,
+            pom_proxy::TOKEN_PARAM,
+            "X-Pom-Token",
+            pom_proxy::TOKEN_PARAM,
+        )
+    };
+    match command {
+        TokenCommand::Show => match pom_proxy::proxy_token(&network, state) {
+            Some(token) => {
+                let from = match &token.source {
+                    pom_proxy::TokenSource::Env(name) => format!("from ${name}"),
+                    pom_proxy::TokenSource::Secret => "kept by pom (pom proxy token new)".into(),
+                };
+                crate::say(out, &format!("{}  {from}", token.value))?;
+                crate::say(out, &usage(&token.value))
+            }
+            None => crate::say(
+                out,
+                &format!(
+                    "no proxy token: `pom proxy token new` makes one, or set ${}",
+                    network.token_env
+                ),
+            ),
+        },
+        TokenCommand::New => {
+            let token = pom_proxy::new_proxy_token(state)?;
+            crate::say(out, &token)?;
+            if std::env::var_os(&network.token_env).is_some() {
+                crate::say(
+                    out,
+                    &format!("${} is set and wins over this one", network.token_env),
+                )?;
+            }
+            crate::say(out, &usage(&token))?;
+            if pom_proxy::listening(network.ports.proxy) {
+                crate::say(
+                    out,
+                    "restart the running proxy to use it (the app restarts its own; stop `pom proxy` and run it again)",
+                )?;
+            }
+            Ok(())
+        }
+        TokenCommand::Remove => {
+            pom_proxy::remove_proxy_token(state)?;
+            crate::say(out, "removed the proxy token pom kept")
+        }
+    }
 }
 
 /// `pom proxy config`: shows or changes how the dev proxy is reached. A new public address rewrites every
@@ -367,9 +473,19 @@ pub(crate) fn config_command(
     if after.public() != before.public() {
         refresh_env_files(state, out)?;
     }
-    if (after.bind, &after.trusted_proxies, &after.domain)
-        != (before.bind, &before.trusted_proxies, &before.domain)
-        && pom_proxy::listening(after.ports.proxy)
+    if (
+        after.bind,
+        &after.trusted_proxies,
+        &after.domain,
+        &after.token_env,
+        after.allow_unauthenticated,
+    ) != (
+        before.bind,
+        &before.trusted_proxies,
+        &before.domain,
+        &before.token_env,
+        before.allow_unauthenticated,
+    ) && pom_proxy::listening(after.ports.proxy)
     {
         crate::say(
             out,

@@ -3668,7 +3668,7 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
             description: if s.proxy.bind_ip().is_loopback() {
                 "Only this machine can reach the proxy and the webhook relay. A private address (Tailscale, a LAN) lets another machine in; they stay on loopback too.".into()
             } else {
-                "Other machines can reach the proxy and the webhook relay, and they have no authentication: keep this address on a private network or behind a reverse proxy.".into()
+                "Other machines can reach the proxy and the webhook relay, and must present the proxy token (pom proxy token new). Without a token the proxy does not start, unless proxy.allow_unauthenticated is on.".into()
             },
             control: Control::TextInput {
                 id: CTRL_PROXY_BIND,
