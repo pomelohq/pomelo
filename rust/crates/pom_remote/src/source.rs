@@ -189,6 +189,8 @@ pub struct TransportInfo {
     pub jira: bool,
     /// The server runs the node_modules Store page's requests.
     pub module_store: bool,
+    /// The server keeps a file pasted in a terminal here, for the program there to read.
+    pub paste: bool,
     /// The server reads and changes the workspace's repos for the Git panel, and runs their fetch, pull and push.
     pub git: bool,
 }
@@ -472,6 +474,16 @@ pub trait ProjectSource: Send + Sync {
 
     fn shared_logs(&self, _name: &str, _lines: usize) -> Result<String, SourceError> {
         Err(unsupported("A shared service's output"))
+    }
+
+    /// Keeps `bytes` as a private file of type `extension` on the machine and says where, for a program in a
+    /// terminal there to read (a screenshot pasted for an agent).
+    fn paste_file(
+        &self,
+        _bytes: &[u8],
+        _extension: &str,
+    ) -> Result<std::path::PathBuf, SourceError> {
+        Err(unsupported("Pasting an image"))
     }
 }
 

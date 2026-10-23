@@ -13,7 +13,7 @@ use pom_remote::{
 };
 use pom_rpc::pty::{AttachParams, Attached, PtyProvider, Request, Target, Terminal};
 use pom_rpc::{Connection, RemoteError, RequestContext, StreamSender};
-use services_ui::{restore_agent_tabs, RemoteAgentTabs, RemoteLease};
+use services_ui::{restore_agent_tabs, AgentTab, RemoteAgentTabs, RemoteLease};
 use terminal_ui::LeaseSource;
 
 const DEV: &str = "ws-myproject-feat-login-claude-raw";
@@ -173,7 +173,16 @@ fn saved_remote_agent_tabs_reattach_to_running_agents_only() {
         "dev",
         "myproject",
         "feat-login",
-        &["dev".to_string(), "gone".to_string()],
+        &[
+            AgentTab {
+                role: "dev".into(),
+                center: true,
+            },
+            AgentTab {
+                role: "gone".into(),
+                center: false,
+            },
+        ],
     )
     .expect("save");
     let mut number = 10;
@@ -184,9 +193,11 @@ fn saved_remote_agent_tabs_reattach_to_running_agents_only() {
         1,
         "an agent that no longer runs gets no tab"
     );
-    let (id, item) = &restored[0];
-    assert_eq!(id, "agent:feat-login/dev");
-    let holder = item
+    let tab = &restored[0];
+    assert_eq!(tab.id, "agent:feat-login/dev");
+    assert!(tab.center, "the tab goes back next to the code");
+    let holder = tab
+        .item
         .as_any()
         .and_then(|any| any.downcast_ref::<terminal_ui::TerminalItem>())
         .and_then(|terminal| terminal.terminal().holder_name());

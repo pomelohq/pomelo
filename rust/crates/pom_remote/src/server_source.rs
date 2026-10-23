@@ -381,6 +381,7 @@ impl Inner {
             usage: offers(&[method::USAGE_GET]),
             jira: offers(JIRA),
             module_store: offers(&[MODULE_STORE]) && offers(JOBS),
+            paste: offers(&[method::PASTE_PUT]),
             git: offers(GIT) && offers(&[GIT_REMOTE]) && offers(JOBS),
         });
         let server_id = server.server_id.unwrap_or_default();
@@ -1302,6 +1303,24 @@ impl ProjectSource for ServerSource {
             .inner
             .request::<serde_json::Value>(name, params, READ_TIMEOUT)?;
         self.inner.server_only(route, "Jira")
+    }
+
+    fn paste_file(&self, bytes: &[u8], extension: &str) -> Result<std::path::PathBuf, SourceError> {
+        let host = &self.inner.host.name;
+        if self.inner.connection()?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "Pasting an image needs pom server on {host}; it is read over plain ssh"
+            )));
+        }
+        let Some(connection) = self.inner.offering(|info| info.paste)? else {
+            return Err(SourceError::Failed(format!(
+                "Pasting an image needs a newer pom on {host}; update it there"
+            )));
+        };
+        crate::remote_fs::paste(&connection, bytes, extension).map_err(|error| match error {
+            pom_rpc::Error::Remote(remote) => SourceError::Failed(remote.message),
+            other => SourceError::Unreachable(format!("{host} stopped answering: {other}")),
+        })
     }
 
     fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {

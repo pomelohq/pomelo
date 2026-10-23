@@ -4,6 +4,23 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-10-24
+
+### Added
+- Pasting an image (Cmd+V or Ctrl+V with a screenshot on the clipboard) into a terminal or agent tab of a remote window uploads it to a private folder on the host and pastes its path, so the agent there attaches it. Needs this pom on the host. (#342)
+- SECURITY.md: how to report a vulnerability, and a threat model per surface with its known gaps. (#331)
+
+### Changed
+- An agent opened from the app in a remote window starts as it does locally, with your MCP servers and plugins; agents started by `pom agent start` or by another agent stay isolated. Needs this pom on the host; restart agents already running. (#336)
+- The screen-reading fallback never types an allow into an agent's dialog: `pom agent allow` on a dialog no hook holds fails with `allow_needs_hook`, nothing is typed while a person drives, and every key is sent only if a fresh read shows the same dialog. `pom agent start --trust` trusts the folder through the agent's config. (#332)
+- An agent's `config_set` can no longer change the `agents` section of pom.yml or overwrite a pom.yml it cannot read. (#334)
+- Env files are written 0600, and credential headers in Dev Requests show `[redacted]`. (#334)
+- Pomelo refuses a terminal socket folder that is a symlink or owned by another user. (#334)
+
+### Fixed
+- A remote file tree that stayed empty on a large workspace: the host watches only the folders the tree shows, never node_modules, and one workspace's watch no longer holds up the others. Needs this pom on the host. (#333)
+- Switching workspaces in a remote window no longer loses the terminal, editor and agent tabs; an agent tab moved next to the code comes back there. (#341, #337)
+
 ## [0.9.7] - 2026-10-23
 
 ### Added

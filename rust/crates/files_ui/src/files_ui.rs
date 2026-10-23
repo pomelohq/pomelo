@@ -9513,6 +9513,14 @@ impl ItemInput for FilesView {
         self.panes.item_paste(text);
     }
 
+    fn image_paste_target(&mut self) -> Option<String> {
+        self.panes.image_paste_target()
+    }
+
+    fn paste_into_item(&mut self, id: &str, text: &str) -> bool {
+        self.panes.paste_into_item(id, text)
+    }
+
     fn item_focus_changed(&mut self, focused: bool) {
         self.panes.item_focus_changed(focused);
     }

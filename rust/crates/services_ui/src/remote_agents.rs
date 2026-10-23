@@ -106,6 +106,13 @@ pub fn remote_agent_item(
     }
 }
 
+/// An agent tab put back where it was.
+pub struct RestoredTab {
+    pub id: String,
+    pub center: bool,
+    pub item: Box<dyn workspace::Item>,
+}
+
 /// The agent tabs saved for the watched workspace, each attached again to its agent; an agent that no longer
 /// runs gets no tab. Item numbers come from `next_number`.
 pub fn restore_agent_tabs(
@@ -114,15 +121,19 @@ pub fn restore_agent_tabs(
     host: &str,
     project: &str,
     next_number: &mut u64,
-) -> Vec<(String, Box<dyn workspace::Item>)> {
+) -> Vec<RestoredTab> {
     let branch = watch.snapshot().branch;
-    tabs.roles(host, project, &branch)
+    tabs.tabs(host, project, &branch)
         .into_iter()
-        .filter_map(|role| {
+        .filter_map(|tab| {
             let number = *next_number;
             *next_number += 1;
-            let item = remote_agent_item(watch, &role, number)?;
-            Some((agent_item_id(&branch, &role), item))
+            let item = remote_agent_item(watch, &tab.role, number)?;
+            Some(RestoredTab {
+                id: agent_item_id(&branch, &tab.role),
+                center: tab.center,
+                item,
+            })
         })
         .collect()
 }
@@ -139,12 +150,43 @@ pub fn next_agent_role(agents: &[SessionView]) -> String {
         .unwrap_or_else(|| "agent".to_string())
 }
 
-/// Open agent tabs of remote projects by `host/project`, then workspace, as their roles.
+/// Open agent tabs of remote projects by `host/project`, then workspace.
 pub struct RemoteAgentTabs {
     path: PathBuf,
 }
 
-type Saved = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+/// An open agent tab: its role, and whether it was moved next to the code.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct AgentTab {
+    pub role: String,
+    pub center: bool,
+}
+
+// Files saved before tabs could sit next to the code list bare roles.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredTab {
+    Role(String),
+    Placed {
+        role: String,
+        #[serde(default)]
+        center: bool,
+    },
+}
+
+impl<'de> serde::Deserialize<'de> for AgentTab {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match StoredTab::deserialize(deserializer)? {
+            StoredTab::Role(role) => AgentTab {
+                role,
+                center: false,
+            },
+            StoredTab::Placed { role, center } => AgentTab { role, center },
+        })
+    }
+}
+
+type Saved = BTreeMap<String, BTreeMap<String, Vec<AgentTab>>>;
 
 impl RemoteAgentTabs {
     pub fn new(path: PathBuf) -> RemoteAgentTabs {
@@ -164,7 +206,7 @@ impl RemoteAgentTabs {
         read(&self.path)
     }
 
-    pub fn roles(&self, host: &str, project: &str, branch: &str) -> Vec<String> {
+    pub fn tabs(&self, host: &str, project: &str, branch: &str) -> Vec<AgentTab> {
         self.load()
             .get(&Self::key(host, project))
             .and_then(|branches| branches.get(branch))
@@ -177,14 +219,14 @@ impl RemoteAgentTabs {
         host: &str,
         project: &str,
         branch: &str,
-        roles: &[String],
+        tabs: &[AgentTab],
     ) -> std::io::Result<()> {
         let mut saved = self.load();
         let branches = saved.entry(Self::key(host, project)).or_default();
-        if roles.is_empty() {
+        if tabs.is_empty() {
             branches.remove(branch);
         } else {
-            branches.insert(branch.to_string(), roles.to_vec());
+            branches.insert(branch.to_string(), tabs.to_vec());
         }
         saved.retain(|_, branches| !branches.is_empty());
         let bytes = serde_json::to_vec_pretty(&saved).map_err(std::io::Error::other)?;
@@ -203,23 +245,48 @@ fn read(path: &Path) -> Saved {
 mod tests {
     use super::*;
 
+    fn tab(role: &str, center: bool) -> AgentTab {
+        AgentTab {
+            role: role.into(),
+            center,
+        }
+    }
+
     #[test]
     fn open_agent_tabs_are_kept_per_host_project_and_workspace() {
         let temp = tempfile::tempdir().expect("temp");
         let tabs = RemoteAgentTabs::new(temp.path().join("remote-agents.json"));
-        assert!(tabs.roles("dev", "myproject", "feat-login").is_empty());
-        let roles = vec!["claude".to_string(), "agent-2".to_string()];
-        tabs.save("dev", "myproject", "feat-login", &roles)
+        assert!(tabs.tabs("dev", "myproject", "feat-login").is_empty());
+        let open = vec![tab("claude", true), tab("agent-2", false)];
+        tabs.save("dev", "myproject", "feat-login", &open)
             .expect("save");
-        tabs.save("lab", "myproject", "feat-login", &["claude".into()])
+        tabs.save("lab", "myproject", "feat-login", &[tab("claude", false)])
             .expect("save");
-        assert_eq!(tabs.roles("dev", "myproject", "feat-login"), roles);
-        assert!(tabs.roles("dev", "myproject", "main").is_empty());
-        assert_eq!(tabs.roles("lab", "myproject", "feat-login"), ["claude"]);
+        assert_eq!(tabs.tabs("dev", "myproject", "feat-login"), open);
+        assert!(tabs.tabs("dev", "myproject", "main").is_empty());
+        assert_eq!(
+            tabs.tabs("lab", "myproject", "feat-login"),
+            [tab("claude", false)]
+        );
         tabs.save("dev", "myproject", "feat-login", &[])
             .expect("save");
-        assert!(tabs.roles("dev", "myproject", "feat-login").is_empty());
-        assert_eq!(tabs.roles("lab", "myproject", "feat-login"), ["claude"]);
+        assert!(tabs.tabs("dev", "myproject", "feat-login").is_empty());
+        assert_eq!(
+            tabs.tabs("lab", "myproject", "feat-login"),
+            [tab("claude", false)]
+        );
+    }
+
+    #[test]
+    fn tabs_saved_as_bare_roles_come_back_in_the_dock() {
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("remote-agents.json");
+        std::fs::write(&path, r#"{"dev/myproject":{"feat-login":["claude"]}}"#).expect("write");
+        let tabs = RemoteAgentTabs::new(path);
+        assert_eq!(
+            tabs.tabs("dev", "myproject", "feat-login"),
+            [tab("claude", false)]
+        );
     }
 
     #[test]

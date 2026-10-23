@@ -26,8 +26,8 @@ use model::{shared_key, Context, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
 pub use model::{Action, Crash, ServicesContext, SharedConfig, Status, WorkspaceInfo};
 pub use remote::{LineStream, RemoteServices};
 pub use remote_agents::{
-    agent_item_id, next_agent_role, remote_agent_item, restore_agent_tabs, RemoteAgentTabs,
-    RemoteLease,
+    agent_item_id, next_agent_role, remote_agent_item, restore_agent_tabs, AgentTab,
+    RemoteAgentTabs, RemoteLease, RestoredTab,
 };
 pub use view::ago;
 use view::{action_button, State, Tone};

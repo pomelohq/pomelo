@@ -423,6 +423,8 @@ pub struct WorkspaceView {
     /// The terminal a terminal context menu was opened on: its group, pane path and what it showed then.
     menu_terminal: Option<(InputGroup, Vec<usize>, crate::TerminalContext)>,
     toast: Option<Toast>,
+    /// Set in a window whose terminals run on another machine: a pasted image goes there as a file.
+    image_pastes: Option<crate::image_paste::ImagePastes<InputGroup>>,
     notification: Option<Notification>,
     server_notices: std::collections::VecDeque<crate::ServerNotice>,
     shown_problem: Option<String>,
@@ -514,6 +516,7 @@ impl WorkspaceView {
             titlebar_press: false,
             titlebar_click: None,
             toast: None,
+            image_pastes: None,
             notification: None,
             server_notices: std::collections::VecDeque::new(),
             shown_problem: None,
@@ -1531,6 +1534,55 @@ impl WorkspaceView {
         self.notification
             .as_ref()
             .map(|n| (n.title.as_str(), n.message.as_str()))
+    }
+
+    /// Sends an image pasted in a terminal through `upload` and pastes the path it answers; `None` (a local
+    /// window) leaves pasting as it is.
+    pub fn set_image_upload(&mut self, upload: Option<crate::image_paste::ImageUpload>) {
+        self.image_pastes = upload.map(crate::image_paste::ImagePastes::new);
+    }
+
+    /// Cmd+V, or Ctrl+V (which agents read as paste), with only an image on the clipboard.
+    fn paste_image(&mut self, group: InputGroup, keystroke: &terminal::Keystroke) -> bool {
+        let m = keystroke.modifiers;
+        let paste_key = keystroke.key == "v" && !m.shift && !m.alt && (m.cmd != m.ctrl);
+        if !paste_key || self.image_pastes.is_none() {
+            return false;
+        }
+        let Some(item) = self
+            .input(group)
+            .and_then(|input| input.image_paste_target())
+        else {
+            return false;
+        };
+        let Some(image) = crate::image_paste::clipboard_image() else {
+            return false;
+        };
+        if let Some(pastes) = &self.image_pastes {
+            pastes.start(group, item, image);
+        }
+        true
+    }
+
+    fn finish_image_pastes(&mut self) {
+        let done = self
+            .image_pastes
+            .as_ref()
+            .map(|pastes| pastes.take_done())
+            .unwrap_or_default();
+        for (group, item, result) in done {
+            match result {
+                Ok(path) => {
+                    let pasted = self
+                        .input(group)
+                        .is_some_and(|input| input.paste_into_item(&item, &path));
+                    if !pasted {
+                        self.show_toast("The terminal closed before the image arrived", None);
+                    }
+                }
+                Err(reason) => self.show_toast(reason, None),
+            }
+        }
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, action: Option<String>) {
@@ -6839,6 +6891,7 @@ impl WorkspaceView {
 
     /// Bring every shell's output in before drawing; closes the panel once its last shell exits.
     fn sync_terminals(&mut self) {
+        self.finish_image_pastes();
         let items = self
             .layout
             .files_view
@@ -7213,6 +7266,9 @@ impl WorkspaceView {
                 };
             }
         }
+        if self.paste_image(group, keystroke) {
+            return true;
+        }
         let Some(input) = self.input(group) else {
             return false;
         };
@@ -7463,6 +7519,15 @@ impl WorkspaceView {
                 .as_mut()
                 .and_then(|files| files.pane_group_mut())
                 .is_some_and(|group| group.has_item(id))
+    }
+
+    /// Whether the agent tab `id` was moved next to the code.
+    pub fn agent_item_in_center(&mut self, id: &str) -> bool {
+        self.layout
+            .files_view
+            .as_mut()
+            .and_then(|files| files.pane_group_mut())
+            .is_some_and(|group| group.has_item(id))
     }
 
     /// Sends `text` to the agent tab `id` as a message; false when it is not open.
