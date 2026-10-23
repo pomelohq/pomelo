@@ -686,6 +686,12 @@ impl TerminalPanelView for TerminalPanel {
             .map(|item| Box::new(item) as Box<dyn Item>)
     }
 
+    fn new_item_typing(&mut self, cwd: Option<PathBuf>, input: &str) -> Option<Box<dyn Item>> {
+        let mut item = self.spawn_item(cwd)?;
+        item.text(input);
+        Some(Box::new(item))
+    }
+
     fn command_item(
         &mut self,
         title: String,

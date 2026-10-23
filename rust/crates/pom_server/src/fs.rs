@@ -1,6 +1,6 @@
-//! A workspace's files for a remote app, read only: one watcher per folder shared by every client that shows it,
-//! its tree pushed as a chunked snapshot and then as patches, files read inline or streamed. Every path passes
-//! the guard first.
+//! A workspace's files for a remote app: one watcher per folder shared by every client that shows it, its tree
+//! pushed as a chunked snapshot and then as patches, files read inline or streamed, saves checked against what
+//! the client last read, and tree changes run once per op id. Every path passes the guard first.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
@@ -11,10 +11,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use files::fs::{Links, INLINE_READ_LIMIT, READ_LIMIT};
-use files::guard::{self, GuardError};
+use files::guard::{self, GuardError, Parents};
 use files::{FileEntry, FileStat, TreePatch};
 use pom_remote::server_api::{
-    fs_error, FsFilesParams, FsRead, FsReadParams, TreeChunk, FS_TREE_TOPIC,
+    fs_error, method, FsChangeParams, FsFilesParams, FsRead, FsReadParams, FsWriteParams,
+    FsWritten, TreeChunk, FS_TREE_TOPIC, WRITE_READY,
 };
 use pom_rpc::{error_code, Connection, Publisher, RemoteError, StreamSender};
 use serde_json::Value;
@@ -25,8 +26,35 @@ pub const CHUNK_ENTRIES: usize = 4000;
 /// Below the frame limit with room for the JSON around each entry.
 pub const CHUNK_BYTES: usize = 768 * 1024;
 pub const MAX_FS_STREAMS: usize = 16;
+/// The largest save, matching the largest file that opens.
+pub const WRITE_LIMIT: u64 = READ_LIMIT;
 const STREAM_PIECE: usize = 32 * 1024;
 const TICK: Duration = Duration::from_secs(1);
+/// How often a save's sender hears how much has arrived, so it never runs far ahead.
+const UPLOAD_REPORT: u64 = 256 * 1024;
+/// A save whose text stops coming this long is dropped; the client sends it again.
+const UPLOAD_STALL: Duration = Duration::from_secs(30);
+
+/// Where changes may land: the workspace folder, and in the main workspace only the project's config.
+pub struct WriteScope {
+    pub root: PathBuf,
+    pub config: PathBuf,
+    pub main: bool,
+}
+
+impl WriteScope {
+    fn check(&self, target: &Path) -> Result<(), RemoteError> {
+        guard::check_scope(target, self.main.then_some(self.config.as_path())).map_err(refused)
+    }
+
+    fn is_config(&self, target: &Path) -> bool {
+        self.config
+            .canonicalize()
+            .is_ok_and(|config| config == target)
+    }
+}
+
+type Outcome = Result<Value, RemoteError>;
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
@@ -53,6 +81,7 @@ pub struct FsService {
     roots: Roots,
     linger: Arc<Mutex<Duration>>,
     streams: Arc<AtomicUsize>,
+    ops: crate::Ops<Outcome>,
 }
 
 impl Default for FsService {
@@ -76,6 +105,7 @@ impl FsService {
             roots: Arc::new(Mutex::new(HashMap::new())),
             linger: Arc::new(Mutex::new(WATCH_LINGER)),
             streams: Arc::new(AtomicUsize::new(0)),
+            ops: crate::Ops::new(crate::OP_MEMORY),
         }
     }
 
@@ -263,6 +293,259 @@ impl FsService {
             .map_err(|error| RemoteError::new(error_code::INTERNAL, error.to_string()))?;
         Ok(Value::Null)
     }
+}
+
+impl FsService {
+    /// Saves a file, once per op id: the text inline or streamed, refused when the file is no longer what the
+    /// client expects (unless it already holds this very text, as after a save whose answer was lost).
+    pub fn write(
+        &self,
+        connection: &Connection,
+        scope: &WriteScope,
+        params: FsWriteParams,
+    ) -> Result<Value, RemoteError> {
+        crate::check_op_id(&params.op_id)?;
+        let op_id = params.op_id.clone();
+        self.ops.run_keeping(&op_id, || {
+            let bytes = match params.text.clone() {
+                Some(text) => text.into_bytes(),
+                None => match self.receive_upload(connection, &params) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        let keep = error.code != fs_error::INCOMPLETE;
+                        return (Err(error), keep);
+                    }
+                },
+            };
+            (save(scope, &params, &bytes), true)
+        })
+    }
+
+    /// The save's text as INPUT on its channel, after telling the client it may send; how much has arrived
+    /// goes back now and then as an 8-byte count.
+    fn receive_upload(
+        &self,
+        connection: &Connection,
+        params: &FsWriteParams,
+    ) -> Result<Vec<u8>, RemoteError> {
+        if params.size > WRITE_LIMIT {
+            return Err(RemoteError::new(
+                fs_error::TOO_LARGE,
+                format!(
+                    "{} MiB is past the {} MiB a save can be",
+                    params.size / (1024 * 1024),
+                    WRITE_LIMIT / (1024 * 1024)
+                ),
+            ));
+        }
+        let Some(mut sender) = attach(connection, params.channel)? else {
+            return Err(RemoteError::new(
+                error_code::INVALID_PARAMS,
+                "a save without its text needs a stream channel",
+            ));
+        };
+        let _slot = self.take_stream()?;
+        let Some(input) = sender.take_input() else {
+            return Err(RemoteError::new(
+                error_code::INTERNAL,
+                "the save's input was taken",
+            ));
+        };
+        let incomplete = |why: String| RemoteError::new(fs_error::INCOMPLETE, why);
+        sender
+            .write(WRITE_READY)
+            .map_err(|error| incomplete(error.to_string()))?;
+        let size = usize::try_from(params.size).unwrap_or(usize::MAX);
+        let mut bytes = Vec::with_capacity(size);
+        let mut reported = 0u64;
+        while bytes.len() < size {
+            let chunk = input
+                .recv_timeout(UPLOAD_STALL)
+                .map_err(|error| incomplete(format!("the text stopped coming: {error}")))?;
+            if chunk.offset != bytes.len() as u64 || bytes.len() + chunk.bytes.len() > size {
+                return Err(incomplete("the text came out of order".to_string()));
+            }
+            bytes.extend_from_slice(&chunk.bytes);
+            let received = bytes.len() as u64;
+            if received - reported >= UPLOAD_REPORT || received == params.size {
+                reported = received;
+                sender
+                    .write(&received.to_be_bytes())
+                    .map_err(|error| incomplete(error.to_string()))?;
+            }
+        }
+        sender.finish("done");
+        Ok(bytes)
+    }
+
+    /// A change to the tree, once per op id.
+    pub fn change(
+        &self,
+        name: &str,
+        scope: &WriteScope,
+        params: FsChangeParams,
+    ) -> Result<Value, RemoteError> {
+        crate::check_op_id(&params.op_id)?;
+        self.ops.run(&params.op_id, || {
+            change(name, scope, &params).map(|()| Value::Null)
+        })
+    }
+}
+
+fn io_failed(error: std::io::Error) -> RemoteError {
+    failed(error.to_string())
+}
+
+fn stat_of(metadata: &std::fs::Metadata) -> FileStat {
+    FileStat {
+        dir: metadata.is_dir(),
+        size: if metadata.is_dir() { 0 } else { metadata.len() },
+        mtime_ns: metadata
+            .modified()
+            .map(files::fs::mtime_ns)
+            .unwrap_or_default(),
+    }
+}
+
+fn save(scope: &WriteScope, params: &FsWriteParams, bytes: &[u8]) -> Outcome {
+    let target =
+        guard::resolve_write(&scope.root, &params.path, Parents::Create).map_err(refused)?;
+    scope.check(&target)?;
+    if scope.is_config(&target) {
+        let text = std::str::from_utf8(bytes)
+            .map_err(|_| RemoteError::new(fs_error::REJECTED, "pom.yml must be text"))?;
+        pom_config::edit::check_edit(&scope.config, text)
+            .map_err(|problem| RemoteError::new(fs_error::REJECTED, problem))?;
+    }
+    let found = match std::fs::metadata(&target) {
+        Ok(metadata) => stat_of(&metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => FileStat::default(),
+        Err(error) => return Err(io_failed(error)),
+    };
+    if let Some(expect) = &params.expect {
+        let same = found.mtime_ns == expect.mtime_ns && found.size == expect.size;
+        if !same {
+            let already = std::fs::read(&target).is_ok_and(|current| current == bytes);
+            return to_value(FsWritten {
+                written: already,
+                conflict: !already,
+                mtime_ns: found.mtime_ns,
+                size: found.size,
+            });
+        }
+    }
+    std::fs::write(&target, bytes).map_err(io_failed)?;
+    let now = std::fs::metadata(&target).map_err(io_failed)?;
+    let now = stat_of(&now);
+    to_value(FsWritten {
+        written: true,
+        conflict: false,
+        mtime_ns: now.mtime_ns,
+        size: now.size,
+    })
+}
+
+fn change(name: &str, scope: &WriteScope, params: &FsChangeParams) -> Result<(), RemoteError> {
+    let root = &scope.root;
+    let path = params.path.as_str();
+    match name {
+        method::FS_CREATE_FILE => {
+            let target = guard::resolve_new(root, path, Parents::Create).map_err(refused)?;
+            scope.check(&target)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map(|_| ())
+                .map_err(io_failed)
+        }
+        method::FS_CREATE_DIR => {
+            let target = guard::resolve_new(root, path, Parents::Create).map_err(refused)?;
+            scope.check(&target)?;
+            std::fs::create_dir(&target).map_err(io_failed)
+        }
+        method::FS_RENAME | method::FS_COPY => {
+            let source = guard::resolve_entry(root, &params.from).map_err(refused)?;
+            scope.check(&source)?;
+            let target = guard::resolve_new(root, path, Parents::Create).map_err(refused)?;
+            scope.check(&target)?;
+            if target.starts_with(&source) {
+                return Err(RemoteError::new(
+                    error_code::INVALID_PARAMS,
+                    "a folder cannot go inside itself",
+                ));
+            }
+            if name == method::FS_RENAME {
+                std::fs::rename(&source, &target).map_err(io_failed)
+            } else {
+                copy_entry(&source, &target).map_err(io_failed)
+            }
+        }
+        method::FS_REMOVE | method::FS_TRASH => {
+            let entry = guard::resolve_entry(root, path).map_err(refused)?;
+            scope.check(&entry)?;
+            if name == method::FS_TRASH {
+                return files::trash_path(&entry).map_err(io_failed);
+            }
+            let kind = entry.symlink_metadata().map_err(io_failed)?.file_type();
+            if kind.is_dir() {
+                std::fs::remove_dir_all(&entry).map_err(io_failed)
+            } else {
+                std::fs::remove_file(&entry).map_err(io_failed)
+            }
+        }
+        method::FS_APPEND_GITIGNORE => append_gitignore(scope, path, params.is_dir),
+        other => Err(RemoteError::new(
+            error_code::METHOD_NOT_FOUND,
+            format!("no method {other}"),
+        )),
+    }
+}
+
+/// Copies a file or folder; a link is copied as the link, never as what it points at.
+fn copy_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let kind = from.symlink_metadata()?.file_type();
+    if kind.is_symlink() {
+        #[cfg(unix)]
+        return std::os::unix::fs::symlink(std::fs::read_link(from)?, to);
+        #[cfg(not(unix))]
+        return Err(std::io::Error::other("links cannot be copied here"));
+    }
+    if kind.is_dir() {
+        std::fs::create_dir(to)?;
+        for child in std::fs::read_dir(from)? {
+            let child = child?;
+            copy_entry(&child.path(), &to.join(child.file_name()))?;
+        }
+        return Ok(());
+    }
+    std::fs::copy(from, to).map(|_| ())
+}
+
+/// Adds `path` to the .gitignore of the repository holding it, which must be inside the workspace.
+fn append_gitignore(scope: &WriteScope, path: &str, is_dir: bool) -> Result<(), RemoteError> {
+    let entry = guard::resolve_entry(&scope.root, path).map_err(refused)?;
+    let root = guard::resolve(&scope.root, "").map_err(refused)?;
+    let Some((work_dir, pattern)) = files::fs::gitignore_line(&entry, is_dir)
+        .filter(|(work_dir, _)| work_dir.starts_with(&root))
+    else {
+        return Err(failed(format!("{path} is not in a repository")));
+    };
+    let relative = guard::relative(&root, &work_dir.join(".gitignore"))
+        .ok_or_else(|| failed("the .gitignore is outside the workspace".to_string()))?;
+    let target = guard::resolve_write(&root, &relative, Parents::MustExist).map_err(refused)?;
+    scope.check(&target)?;
+    let mut contents = match std::fs::read_to_string(&target) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(io_failed(error)),
+    };
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(&pattern);
+    contents.push('\n');
+    std::fs::write(&target, contents).map_err(io_failed)
 }
 
 fn to_value(value: impl serde::Serialize) -> Result<Value, RemoteError> {
@@ -584,6 +867,44 @@ mod tests {
             0,
             "gone once nobody watched for the linger"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn main_saves_only_its_config_and_only_one_that_loads() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        let config = root.join("pom.yml");
+        std::fs::write(&config, "session: demo\n")?;
+        std::fs::write(root.join("app.rs"), "fn main() {}\n")?;
+        let scope = WriteScope {
+            root: root.clone(),
+            config: config.clone(),
+            main: true,
+        };
+        let params = |path: &str| FsWriteParams {
+            path: path.into(),
+            op_id: "op".into(),
+            ..FsWriteParams::default()
+        };
+        let code = |outcome: Outcome| outcome.err().map(|error| error.code);
+        assert_eq!(
+            code(save(&scope, &params("app.rs"), b"changed")),
+            Some("read_only".to_string())
+        );
+        assert_eq!(
+            code(save(&scope, &params("pom.yml"), b"repos: [")),
+            Some(fs_error::REJECTED.to_string())
+        );
+        assert_eq!(std::fs::read_to_string(&config)?, "session: demo\n");
+        let saved = save(&scope, &params("pom.yml"), b"session: demo\n# note\n");
+        assert!(saved.is_ok(), "{saved:?}");
+        assert_eq!(std::fs::read_to_string(&config)?, "session: demo\n# note\n");
+        let branch = WriteScope {
+            main: false,
+            ..scope
+        };
+        assert!(save(&branch, &params("app.rs"), b"changed").is_ok());
         Ok(())
     }
 }

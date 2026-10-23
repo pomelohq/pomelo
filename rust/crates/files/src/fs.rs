@@ -116,6 +116,38 @@ pub enum TreeEvent {
     Interrupted(String),
 }
 
+/// Why a write did not happen.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The file is no longer what the write expected (it changed since it was read); this is what it is now.
+    Conflict(FileStat),
+    Failed(io::Error),
+}
+
+impl std::fmt::Display for WriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WriteError::Conflict(_) => formatter.write_str("the file changed since it was opened"),
+            WriteError::Failed(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for WriteError {}
+
+impl From<io::Error> for WriteError {
+    fn from(error: io::Error) -> Self {
+        WriteError::Failed(error)
+    }
+}
+
+fn unsupported() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "these files cannot be changed from here",
+    )
+}
+
 pub trait TreeFeed: Send {
     /// What happened since the last call, oldest first.
     fn poll(&mut self) -> Vec<TreeEvent>;
@@ -133,17 +165,124 @@ pub trait ProjectFs: Send + Sync {
     fn read_bytes(&self, path: &str, limit: u64) -> io::Result<Vec<u8>>;
     /// Every file the finder offers, gitignored ones only when asked.
     fn project_files(&self, include_ignored: bool) -> io::Result<Vec<String>>;
+    /// Writes `text` over the file in place. With `expect`, a file that is no longer that one is left as it is
+    /// and reported as a conflict.
+    fn write(
+        &self,
+        _path: &str,
+        _text: &str,
+        _expect: Option<&FileStat>,
+    ) -> Result<FileStat, WriteError> {
+        Err(WriteError::Failed(unsupported()))
+    }
+    fn create_file(&self, _path: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    fn create_dir(&self, _path: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    fn rename(&self, _from: &str, _to: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    fn copy(&self, _from: &str, _to: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    fn remove(&self, _path: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    fn trash(&self, _path: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+    /// Adds `path` to the .gitignore of the repository it is in.
+    fn add_to_gitignore(&self, _path: &str, _is_dir: bool) -> io::Result<()> {
+        Err(unsupported())
+    }
+    /// Whether the machine the files are on can be reached right now.
+    fn online(&self) -> bool {
+        true
+    }
+    /// The machine the files are on, when it is another one.
+    fn host(&self) -> Option<&str> {
+        None
+    }
 }
+
+/// The repository folder holding `full` (the nearest with a `.git`) and the .gitignore line naming `full` there.
+pub fn gitignore_line(full: &Path, is_dir: bool) -> Option<(PathBuf, String)> {
+    let work_dir = full.ancestors().find(|dir| dir.join(".git").exists())?;
+    let relative = full.strip_prefix(work_dir).ok()?;
+    let mut pattern = relative.to_string_lossy().replace('\\', "/");
+    if pattern.is_empty() {
+        return None;
+    }
+    if is_dir {
+        pattern.push('/');
+    }
+    Some((work_dir.to_path_buf(), pattern))
+}
+
+/// Where a file of `len` bytes splits into `pieces` runs of whole lines: the start of each, then `len`.
+pub fn line_bounds(full: &Path, len: u64, pieces: u64) -> io::Result<Vec<u64>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut bounds = vec![0u64];
+    let mut file = std::fs::File::open(full)?;
+    for index in 1..pieces {
+        let previous = bounds.last().copied().unwrap_or(0);
+        let nominal = (len * index / pieces).max(previous);
+        file.seek(SeekFrom::Start(nominal))?;
+        let mut window = [0u8; 64 * 1024];
+        let mut at = nominal;
+        let boundary = loop {
+            let read = file.read(&mut window)?;
+            if read == 0 {
+                break len;
+            }
+            if let Some(newline) = window[..read].iter().position(|byte| *byte == b'\n') {
+                break at + newline as u64 + 1;
+            }
+            at += read as u64;
+        };
+        bounds.push(boundary);
+    }
+    bounds.push(len);
+    Ok(bounds)
+}
+
+/// The bytes of `full` from `start` up to `end`.
+pub fn read_range(full: &Path, start: u64, end: u64) -> io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(full)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = vec![0u8; usize::try_from(end.saturating_sub(start)).unwrap_or(0)];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// A file past what can be opened, told apart from other failed reads.
+#[derive(Debug)]
+pub struct TooLarge(pub String);
+
+impl std::fmt::Display for TooLarge {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for TooLarge {}
 
 pub fn too_large(size: u64, limit: u64) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
-        format!(
+        TooLarge(format!(
             "the file is {} MiB, past the {} MiB that can be opened",
             size / (1024 * 1024),
             limit / (1024 * 1024)
-        ),
+        )),
     )
+}
+
+pub fn is_too_large(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<TooLarge>())
 }
 
 /// The files on this machine, read in place.
@@ -188,6 +327,53 @@ impl ProjectFs for LocalFs {
 
     fn project_files(&self, include_ignored: bool) -> io::Result<Vec<String>> {
         Ok(crate::project_files(&self.root, include_ignored))
+    }
+
+    /// The editor here watches the disk itself, so `expect` is not checked: a save writes what it has.
+    fn write(
+        &self,
+        path: &str,
+        text: &str,
+        _expect: Option<&FileStat>,
+    ) -> Result<FileStat, WriteError> {
+        let modified = crate::write(&self.root, path, text)?;
+        Ok(FileStat {
+            dir: false,
+            size: text.len() as u64,
+            mtime_ns: mtime_ns(modified),
+        })
+    }
+
+    fn create_file(&self, path: &str) -> io::Result<()> {
+        crate::create_file(&self.root, path)
+    }
+
+    fn create_dir(&self, path: &str) -> io::Result<()> {
+        crate::create_dir(&self.root, path)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        crate::rename(&self.root, from, to)
+    }
+
+    fn copy(&self, from: &str, to: &str) -> io::Result<()> {
+        crate::copy_recursive(&self.root, from, to)
+    }
+
+    fn remove(&self, path: &str) -> io::Result<()> {
+        crate::remove(&self.root, path)
+    }
+
+    fn trash(&self, path: &str) -> io::Result<()> {
+        crate::trash(&self.root, path)
+    }
+
+    fn add_to_gitignore(&self, path: &str, is_dir: bool) -> io::Result<()> {
+        let full = crate::safe_join(&self.root, path)?;
+        match gitignore_line(&full, is_dir) {
+            Some((work_dir, pattern)) => crate::append_to_gitignore(&work_dir, &pattern),
+            None => Ok(()),
+        }
     }
 }
 

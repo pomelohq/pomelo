@@ -1602,7 +1602,7 @@ impl WorkspaceView {
             }
             TabRestore::Restore => {}
         }
-        let Some(root) = self.layout.files_view.as_ref().and_then(|v| v.root_dir()) else {
+        let Some(root) = self.layout.files_view.as_ref().and_then(|v| v.panes_key()) else {
             return;
         };
         if let Some(saved) = crate::persistence::load_workspace(&root) {
@@ -1623,7 +1623,7 @@ impl WorkspaceView {
 
     fn panes_state(&self) -> Option<(std::path::PathBuf, String)> {
         let files = self.layout.files_view.as_ref()?;
-        let root = files.root_dir()?;
+        let root = files.panes_key()?;
         let state = crate::persistence::SerializedWorkspace {
             root: root.clone(),
             center: files.save_panes(),
@@ -4080,6 +4080,22 @@ impl WorkspaceView {
             } => {
                 self.show_toast(message, Some(action));
                 self.toast_then = Some((kind, *then));
+            }
+            crate::PanelRequest::TypeInTerminal { input } => {
+                let Some(item) = self
+                    .layout
+                    .terminal_view
+                    .as_mut()
+                    .and_then(|view| view.new_item_typing(None, &input))
+                else {
+                    self.show_toast("No terminal can be opened here".to_string(), None);
+                    return;
+                };
+                self.set_terminal_focus(false);
+                if let Some(view) = self.layout.files_view.as_mut() {
+                    view.add_center_item(item);
+                }
+                self.panes_input = true;
             }
             crate::PanelRequest::RunCommand {
                 title,
@@ -7626,6 +7642,16 @@ impl WorkspaceView {
     }
 
     fn pull_server_notices(&mut self) {
+        if self.pending_prompt.is_none() && self.close_prompt.is_none() {
+            if let Some(prompt) = self
+                .layout
+                .files_view
+                .as_mut()
+                .and_then(|view| view.take_prompt())
+            {
+                self.pending_prompt = Some(prompt);
+            }
+        }
         if let Some(view) = self.layout.files_view.as_mut() {
             self.server_notices.extend(view.take_server_notices());
             let withdrawn = view.take_withdrawn_notices();

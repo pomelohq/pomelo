@@ -179,6 +179,8 @@ pub struct TransportInfo {
     pub files: bool,
     /// What the server offers the Services panel.
     pub services: ServiceOffers,
+    /// The server also saves the workspace's files and changes its tree.
+    pub files_write: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.

@@ -309,6 +309,10 @@ pub enum PanelRequest {
         then: Box<PanelRequest>,
     },
     OpenMenu,
+    /// A new shell tab in the editor area with `input` typed at its prompt.
+    TypeInTerminal {
+        input: String,
+    },
     /// Run a command in a new terminal tab (`argv` spawned in `cwd` with `env` added), titled `title`.
     RunCommand {
         title: String,

@@ -1480,9 +1480,15 @@ impl PaneGroupView {
                     else {
                         continue;
                     };
-                    if let Err(error) = item.save() {
-                        errors.push(format!("Failed to save {}: {error}", dirty.title));
-                        request.ids.retain(|id| *id != dirty.id);
+                    match item.save() {
+                        Err(error) => {
+                            errors.push(format!("Failed to save {}: {error}", dirty.title));
+                            request.ids.retain(|id| *id != dirty.id);
+                        }
+                        Ok(()) if item.close_when_saved() => {
+                            request.ids.retain(|id| *id != dirty.id);
+                        }
+                        Ok(()) => {}
                     }
                 }
             }

@@ -10,10 +10,10 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_remote::server_api::{
     method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
-    AgentStartParams, AgentStarted, FollowLogsParams, FsFilesParams, FsPathParams, FsReadParams,
-    FsWatchParams, FsWatched, JobFollowParams, JobParams, JobStartParams, LogsParams, OpParams,
-    OpResult, ProjectParams, TurnParams, WatchBranchParams, WatchChannel, WatchParams,
-    WorkspaceParams,
+    AgentStartParams, AgentStarted, FollowLogsParams, FsChangeParams, FsFilesParams, FsPathParams,
+    FsReadParams, FsWatchParams, FsWatched, FsWriteParams, JobFollowParams, JobParams,
+    JobStartParams, LogsParams, OpParams, OpResult, ProjectParams, TurnParams, WatchBranchParams,
+    WatchChannel, WatchParams, WorkspaceParams,
 };
 use pom_remote::server_api::{
     ServiceChoiceParams, ServiceRunParams, SharedLogsParams, SharedRunParams,
@@ -21,7 +21,7 @@ use pom_remote::server_api::{
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
-use crate::fs::FsService;
+use crate::fs::{FsService, WriteScope};
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
 use crate::watch::Watches;
@@ -136,24 +136,21 @@ pub fn check_op_id(op_id: &str) -> Result<(), RemoteError> {
     }
 }
 
-enum Op {
+enum Op<T> {
     Running,
-    Done {
-        result: Result<String, String>,
-        finished: Instant,
-    },
+    Done { result: T, finished: Instant },
 }
 
 /// Actions by op id, kept for [`OP_MEMORY`] after they finish so a client that lost its connection can
 /// learn the outcome instead of running the action again.
-pub struct Ops {
-    entries: Mutex<HashMap<String, Op>>,
+pub struct Ops<T = Result<String, String>> {
+    entries: Mutex<HashMap<String, Op<T>>>,
     finished: Condvar,
     memory: Duration,
 }
 
-impl Ops {
-    pub fn new(memory: Duration) -> Ops {
+impl<T: Clone> Ops<T> {
+    pub fn new(memory: Duration) -> Ops<T> {
         Ops {
             entries: Mutex::new(HashMap::new()),
             finished: Condvar::new(),
@@ -161,13 +158,13 @@ impl Ops {
         }
     }
 
-    fn entries(&self) -> MutexGuard<'_, HashMap<String, Op>> {
+    fn entries(&self) -> MutexGuard<'_, HashMap<String, Op<T>>> {
         self.entries
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn prune(&self, entries: &mut HashMap<String, Op>) {
+    fn prune(&self, entries: &mut HashMap<String, Op<T>>) {
         entries.retain(|_, op| match op {
             Op::Running => true,
             Op::Done { finished, .. } => finished.elapsed() < self.memory,
@@ -175,11 +172,13 @@ impl Ops {
     }
 
     /// Runs `work` once per `op_id`: a repeat waits for the first run, or gets its remembered result.
-    pub fn run(
-        &self,
-        op_id: &str,
-        work: impl FnOnce() -> Result<String, String>,
-    ) -> Result<String, String> {
+    pub fn run(&self, op_id: &str, work: impl FnOnce() -> T) -> T {
+        self.run_keeping(op_id, || (work(), true))
+    }
+
+    /// [`Ops::run`] for work that may end without doing anything (its input stopped coming): when `work` says
+    /// not to keep its result, a repeat runs it again instead of hearing the failure.
+    pub fn run_keeping(&self, op_id: &str, work: impl FnOnce() -> (T, bool)) -> T {
         let mut entries = self.entries();
         self.prune(&mut entries);
         loop {
@@ -196,18 +195,26 @@ impl Ops {
         }
         entries.insert(op_id.to_string(), Op::Running);
         drop(entries);
-        let result = work();
-        self.entries().insert(
-            op_id.to_string(),
-            Op::Done {
-                result: result.clone(),
-                finished: Instant::now(),
-            },
-        );
+        let (result, keep) = work();
+        let mut entries = self.entries();
+        if keep {
+            entries.insert(
+                op_id.to_string(),
+                Op::Done {
+                    result: result.clone(),
+                    finished: Instant::now(),
+                },
+            );
+        } else {
+            entries.remove(op_id);
+        }
+        drop(entries);
         self.finished.notify_all();
         result
     }
+}
 
+impl Ops<Result<String, String>> {
     pub fn result(&self, op_id: &str) -> OpResult {
         let mut entries = self.entries();
         self.prune(&mut entries);
@@ -281,6 +288,15 @@ impl Dispatcher {
         Ok(source.workspace_terminals(branch).map_err(failed)?.worktree)
     }
 
+    /// Where changes to workspace `branch` may land.
+    fn write_scope(&self, cfg: &str, branch: &str) -> Result<WriteScope, RemoteError> {
+        check_branch(branch)?;
+        let config = registered_config(&self.state, cfg)?;
+        let source = self.source(cfg)?;
+        let (root, main) = source.workspace_folder(branch).map_err(failed)?;
+        Ok(WriteScope { root, config, main })
+    }
+
     /// The workspace's files: the tree pushed on the caller's subscription, reads streamed on its streams.
     pub fn dispatch_fs(
         &self,
@@ -309,6 +325,20 @@ impl Dispatcher {
             method::FS_FILES => params::<FsFilesParams>(raw).and_then(|params| {
                 let root = self.workspace_root(&params.cfg, &params.branch)?;
                 self.files.files(connection, &root, &params)
+            }),
+            method::FS_WRITE => params::<FsWriteParams>(raw).and_then(|params| {
+                let scope = self.write_scope(&params.cfg, &params.branch)?;
+                self.files.write(connection, &scope, params)
+            }),
+            name @ (method::FS_CREATE_FILE
+            | method::FS_CREATE_DIR
+            | method::FS_RENAME
+            | method::FS_COPY
+            | method::FS_REMOVE
+            | method::FS_TRASH
+            | method::FS_APPEND_GITIGNORE) => params::<FsChangeParams>(raw).and_then(|params| {
+                let scope = self.write_scope(&params.cfg, &params.branch)?;
+                self.files.change(name, &scope, params)
             }),
             _ => return None,
         })

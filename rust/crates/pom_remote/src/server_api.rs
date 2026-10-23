@@ -42,6 +42,14 @@ pub mod method {
     pub const SVC_MODE: &str = "svc.mode";
     pub const SVC_ENV_PROFILE: &str = "svc.env_profile";
     pub const SVC_SHARED_LOGS: &str = "svc.shared_logs";
+    pub const FS_WRITE: &str = "fs.write";
+    pub const FS_CREATE_FILE: &str = "fs.create_file";
+    pub const FS_CREATE_DIR: &str = "fs.create_dir";
+    pub const FS_RENAME: &str = "fs.rename";
+    pub const FS_COPY: &str = "fs.copy";
+    pub const FS_REMOVE: &str = "fs.remove";
+    pub const FS_TRASH: &str = "fs.trash";
+    pub const FS_APPEND_GITIGNORE: &str = "fs.append_gitignore";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -87,16 +95,31 @@ pub const METHODS: &[&str] = &[
     method::SVC_MODE,
     method::SVC_ENV_PROFILE,
     method::SVC_SHARED_LOGS,
+    method::FS_WRITE,
+    method::FS_CREATE_FILE,
+    method::FS_CREATE_DIR,
+    method::FS_RENAME,
+    method::FS_COPY,
+    method::FS_REMOVE,
+    method::FS_TRASH,
+    method::FS_APPEND_GITIGNORE,
 ];
 
 /// What the server's HELLO lists beside its methods.
-pub const FEATURES: &[&str] = &[pom_rpc::pty::SHARED_EVENTS, FILES_READ, JOB_TASK];
+pub const FEATURES: &[&str] = &[
+    pom_rpc::pty::SHARED_EVENTS,
+    FILES_READ,
+    JOB_TASK,
+    FILES_WRITE,
+];
 
 /// The server runs a repo's pre-written command as a job (`job_op::TASK`).
 pub const JOB_TASK: &str = "job.task";
 
 /// The server reads a workspace's files: its tree as it changes, a file, the finder's list.
 pub const FILES_READ: &str = "files.read";
+/// The server saves a workspace's files and changes its tree: new files and folders, moves, copies, removals.
+pub const FILES_WRITE: &str = "files.write";
 
 /// The methods a server must list for the app to take pushes instead of asking again and again.
 pub const PUSH: &[&str] = &[
@@ -642,10 +665,60 @@ pub struct FsFilesParams {
     pub channel: u32,
 }
 
+/// A save: the text inline, or `size` bytes sent as INPUT on `channel` once the server writes [`WRITE_READY`]
+/// there. `expect` is the file as the client last read or saved it; a file that is no longer that one is kept
+/// and reported as a conflict. `op_id` makes asking again after a reconnect answer the first save's outcome.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsWriteParams {
+    pub cfg: String,
+    pub branch: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub channel: u32,
+    pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expect: Option<files::FileStat>,
+    pub op_id: String,
+}
+
+/// What a save did: `written` with the file as it now is, or a `conflict` with the file as found.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsWritten {
+    pub written: bool,
+    pub conflict: bool,
+    pub mtime_ns: u64,
+    pub size: u64,
+}
+
+/// The first bytes the server sends on a save's channel: it is listening, the text may come.
+pub const WRITE_READY: &[u8] = b"ready";
+
+/// A change to the tree: `path` alone (new file, new folder, remove, trash, .gitignore) or `from` to `path`
+/// (rename, copy). `is_dir` says what `path` is for a .gitignore line.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsChangeParams {
+    pub cfg: String,
+    pub branch: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub from: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_dir: bool,
+    pub op_id: String,
+}
+
 /// Error codes of the `fs.*` methods beside the path guard's.
 pub mod fs_error {
     pub const TOO_LARGE: &str = "too_large";
     pub const BUSY: &str = "busy";
+    /// The text is not something the file may hold, such as a project config that does not load.
+    pub const REJECTED: &str = "rejected";
+    /// The save's text stopped coming before all of it arrived; asking again sends it again.
+    pub const INCOMPLETE: &str = "incomplete";
 }
 
 /// How a service stands: `running`, `crashed` (it died and left a record) or `stopped`.

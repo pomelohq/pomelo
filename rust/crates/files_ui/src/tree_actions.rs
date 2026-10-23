@@ -17,6 +17,170 @@ pub(crate) struct TreeOps {
     pub(crate) toast: Option<String>,
 }
 
+impl TreeOps {
+    pub(crate) fn next_save_token(&mut self) -> u64 {
+        self.next_token += 1;
+        self.next_token
+    }
+}
+
+/// A change to the tree, run on whichever machine the files are on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TreeChange {
+    CreateFile(String),
+    CreateDir(String),
+    Rename { from: String, to: String },
+    Copy { from: String, to: String },
+    Remove { path: String, trash: bool },
+    Gitignore { path: String, is_dir: bool },
+}
+
+impl TreeChange {
+    fn run(&self, fs: &dyn files::ProjectFs) -> std::io::Result<()> {
+        match self {
+            TreeChange::CreateFile(path) => fs.create_file(path),
+            TreeChange::CreateDir(path) => fs.create_dir(path),
+            TreeChange::Rename { from, to } => fs.rename(from, to),
+            TreeChange::Copy { from, to } => fs.copy(from, to),
+            TreeChange::Remove { path, trash: true } => fs.trash(path),
+            TreeChange::Remove { path, trash: false } => fs.remove(path),
+            TreeChange::Gitignore { path, is_dir } => fs.add_to_gitignore(path, *is_dir),
+        }
+    }
+
+    fn failure(&self, error: &std::io::Error) -> String {
+        match self {
+            TreeChange::CreateFile(path) | TreeChange::CreateDir(path) => {
+                format!("Failed to create {path}: {error}")
+            }
+            TreeChange::Rename { from, .. } => format!("Failed to rename {from}: {error}"),
+            TreeChange::Copy { from, .. } => format!("Failed to paste {from}: {error}"),
+            TreeChange::Remove { path, trash } => {
+                let verb = if *trash { "trash" } else { "delete" };
+                format!("Failed to {verb} {path}: {error}")
+            }
+            TreeChange::Gitignore { .. } => format!("Failed to add to .gitignore: {error}"),
+        }
+    }
+}
+
+/// A change sent to the other machine and already shown: its answer, and how to take it back when it fails.
+pub(crate) struct TreeJob {
+    change: TreeChange,
+    answer: std::sync::mpsc::Receiver<std::io::Result<()>>,
+    undo: files::TreePatch,
+}
+
+fn entry(path: &str, is_dir: bool) -> files::FileEntry {
+    files::FileEntry {
+        repo: String::new(),
+        path: path.to_string(),
+        is_dir,
+        size: 0,
+    }
+}
+
+/// The folders above `path` the tree does not have yet, outermost first.
+fn missing_parents(entries: &[files::FileEntry], path: &str) -> Vec<String> {
+    let mut missing = Vec::new();
+    let mut parent = parent_of(path);
+    while !parent.is_empty() {
+        let known = entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(parent))
+            .is_ok();
+        if known {
+            break;
+        }
+        missing.push(parent.to_string());
+        parent = parent_of(parent);
+    }
+    missing.reverse();
+    missing
+}
+
+/// What `change` does to the tree as shown, and the patch that undoes it.
+fn optimistic(
+    entries: &[files::FileEntry],
+    change: &TreeChange,
+) -> (files::TreePatch, files::TreePatch) {
+    let under = |path: &str| -> Vec<files::FileEntry> {
+        entries
+            .iter()
+            .filter(|entry| is_within(&entry.path, path))
+            .cloned()
+            .collect()
+    };
+    let placed = |to: &str, moved: &[files::FileEntry], from: &str| -> Vec<files::FileEntry> {
+        let mut placed: Vec<files::FileEntry> = missing_parents(entries, to)
+            .iter()
+            .map(|parent| entry(parent, true))
+            .collect();
+        placed.extend(moved.iter().map(|entry| files::FileEntry {
+            path: format!("{to}{}", &entry.path[from.len()..]),
+            ..entry.clone()
+        }));
+        placed
+    };
+    let added = |to: &str| -> String {
+        missing_parents(entries, to)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| to.to_string())
+    };
+    match change {
+        TreeChange::CreateFile(path) | TreeChange::CreateDir(path) => {
+            let is_dir = matches!(change, TreeChange::CreateDir(_));
+            let made = [entry(path, is_dir)];
+            let apply = files::TreePatch {
+                upserted: placed(path, &made, path),
+                ..files::TreePatch::default()
+            };
+            let undo = files::TreePatch {
+                removed: vec![added(path)],
+                ..files::TreePatch::default()
+            };
+            (apply, undo)
+        }
+        TreeChange::Rename { from, to } => {
+            let moved = under(from);
+            let apply = files::TreePatch {
+                removed: vec![from.clone()],
+                upserted: placed(to, &moved, from),
+                ..files::TreePatch::default()
+            };
+            let undo = files::TreePatch {
+                removed: vec![added(to)],
+                upserted: moved,
+                ..files::TreePatch::default()
+            };
+            (apply, undo)
+        }
+        TreeChange::Copy { from, to } => {
+            let apply = files::TreePatch {
+                upserted: placed(to, &under(from), from),
+                ..files::TreePatch::default()
+            };
+            let undo = files::TreePatch {
+                removed: vec![added(to)],
+                ..files::TreePatch::default()
+            };
+            (apply, undo)
+        }
+        TreeChange::Remove { path, .. } => {
+            let apply = files::TreePatch {
+                removed: vec![path.clone()],
+                ..files::TreePatch::default()
+            };
+            let undo = files::TreePatch {
+                upserted: under(path),
+                ..files::TreePatch::default()
+            };
+            (apply, undo)
+        }
+        TreeChange::Gitignore { .. } => (files::TreePatch::default(), files::TreePatch::default()),
+    }
+}
+
 pub(crate) struct TreeEdit {
     pub(crate) target: EditTarget,
     pub(crate) field: TextField,
@@ -73,8 +237,9 @@ fn stem_len(name: &str) -> usize {
 /// Where pasting `source` onto `target` lands, and the chars of its new name worth selecting for a rename when
 /// the name had to be disambiguated.
 pub(crate) fn paste_destination(
-    root: &Path,
+    exists: &dyn Fn(&str) -> bool,
     source: &str,
+    source_is_dir: bool,
     target: &str,
     target_is_dir: bool,
 ) -> (String, Option<usize>) {
@@ -84,7 +249,6 @@ pub(crate) fn paste_destination(
         target
     };
     let name = file_name(source);
-    let source_is_dir = root.join(source).is_dir();
     let (stem, extension) = match name.rfind('.') {
         Some(dot) if dot > 0 && !source_is_dir => (&name[..dot], Some(&name[dot + 1..])),
         _ => (name, None),
@@ -92,7 +256,7 @@ pub(crate) fn paste_destination(
     let mut destination = join(parent, name);
     let mut selection = None;
     let mut attempt = 0;
-    while files::exists(root, &destination) {
+    while exists(&destination) {
         let mut candidate = format!("{stem} copy");
         if attempt > 0 {
             candidate.push_str(&format!(" {attempt}"));
@@ -202,6 +366,94 @@ fn has_restorable_changes(work_dir: &Path, full: &Path) -> bool {
 }
 
 impl FilesView {
+    /// Whether something is at `path`: on disk here, or in the tree of files on another machine.
+    fn path_exists(&self, path: &str) -> bool {
+        if !self.is_remote() {
+            return files::exists(&self.root, path);
+        }
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .is_ok()
+    }
+
+    /// Runs `change`: at once here, the toast saying why it failed; on another machine shown at once and sent
+    /// off, taken back when it fails there. Returns false when it failed here.
+    pub(crate) fn change_tree(&mut self, change: TreeChange) -> bool {
+        if !self.is_remote() {
+            return match change.run(&*self.fs) {
+                Ok(()) => true,
+                Err(error) => {
+                    self.tree_ops.toast = Some(change.failure(&error));
+                    false
+                }
+            };
+        }
+        let (apply, undo) = optimistic(&self.entries, &change);
+        self.patch_tree(&apply);
+        let (sender, answer) = std::sync::mpsc::channel();
+        let (fs, sent) = (self.fs.clone(), change.clone());
+        let spawned = std::thread::Builder::new()
+            .name("file-tree-change".into())
+            .spawn(move || {
+                if sender.send(sent.run(&*fs)).is_ok() {
+                    ui::wake();
+                }
+            });
+        match spawned {
+            Ok(_) => {
+                self.tree_jobs.push(TreeJob {
+                    change,
+                    answer,
+                    undo,
+                });
+                true
+            }
+            Err(error) => {
+                self.patch_tree(&undo);
+                self.tree_ops.toast = Some(change.failure(&error));
+                false
+            }
+        }
+    }
+
+    fn patch_tree(&mut self, patch: &files::TreePatch) {
+        if patch.is_empty() {
+            return;
+        }
+        files::fs::apply_patch(&mut self.entries, patch);
+        self.tree = files::build_tree(&self.entries);
+        self.flat_dirty = true;
+    }
+
+    /// Takes the answers to tree changes sent off; one that failed is taken back from the tree and its tabs.
+    pub(crate) fn poll_tree_jobs(&mut self) -> bool {
+        let mut changed = false;
+        let mut index = 0;
+        while index < self.tree_jobs.len() {
+            let answer = match self.tree_jobs[index].answer.try_recv() {
+                Ok(answer) => answer,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(std::io::Error::other("the change stopped"))
+                }
+            };
+            let job = self.tree_jobs.remove(index);
+            changed = true;
+            let Err(error) = answer else {
+                continue;
+            };
+            self.patch_tree(&job.undo);
+            if let TreeChange::Rename { from, to } = &job.change {
+                self.retarget_paths(to, from);
+            }
+            self.tree_ops.toast = Some(job.change.failure(&error));
+        }
+        changed
+    }
+
     /// Whether `path` is a folder, as the tree knows it for files on another machine.
     fn is_dir_entry(&self, path: &str) -> bool {
         if !self.is_remote() {
@@ -221,7 +473,7 @@ impl FilesView {
         TreeMenuState {
             is_dir,
             is_root: path.is_none(),
-            has_git_repo: work_dir.is_some(),
+            has_git_repo: work_dir.is_some() || self.is_remote(),
             has_git_changes: !is_dir
                 && work_dir
                     .as_deref()
@@ -237,8 +489,17 @@ impl FilesView {
     ) -> Option<Prompt> {
         let target = path.unwrap_or("").to_string();
         let target_is_dir = path.is_none_or(|path| self.is_dir_entry(path));
-        if self.is_remote() && !matches!(action, TreeAction::ExpandAll | TreeAction::CollapseAll) {
-            self.tree_ops.toast = Some("Files on another machine are read-only for now".into());
+        let changes = !matches!(
+            action,
+            TreeAction::ExpandAll
+                | TreeAction::CollapseAll
+                | TreeAction::Cut
+                | TreeAction::Copy
+                | TreeAction::OpenWithSystem
+        );
+        if self.is_remote() && self.read_only && changes {
+            self.tree_ops.toast =
+                Some("main is read-only: make changes in a branch workspace".into());
             return None;
         }
         match action {
@@ -254,6 +515,10 @@ impl FilesView {
                 if path.is_some() {
                     self.start_rename(&target, None);
                 }
+            }
+            TreeAction::OpenWithSystem if self.is_remote() => {
+                self.tree_ops.toast =
+                    Some("Files on another machine open here in the editor only".into());
             }
             TreeAction::OpenWithSystem => {
                 if let Err(error) = desktop::open(self.root.join(&target)) {
@@ -340,15 +605,10 @@ impl FilesView {
         }
         match prompt {
             TreePrompt::Remove { path, trash } => {
-                let result = if trash {
-                    files::trash(&self.root, &path)
-                } else {
-                    files::remove(&self.root, &path)
-                };
-                if let Err(error) = result {
-                    let verb = if trash { "trash" } else { "delete" };
-                    self.tree_ops.toast = Some(format!("Failed to {verb} {path}: {error}"));
-                }
+                self.change_tree(TreeChange::Remove {
+                    path: path.clone(),
+                    trash,
+                });
                 self.expanded.retain(|dir| !is_within(dir, &path));
                 self.reload_tree();
             }
@@ -387,7 +647,12 @@ impl FilesView {
         let scope = path.unwrap_or("");
         let within = |dir: &str| scope.is_empty() || is_within(dir, scope);
         if expand {
-            for entry in files::list(&self.root) {
+            let listed = if self.is_remote() {
+                self.entries.clone()
+            } else {
+                files::list(&self.root)
+            };
+            for entry in listed {
                 if entry.is_dir && within(&entry.path) {
                     self.expanded.insert(entry.path);
                 }
@@ -399,23 +664,10 @@ impl FilesView {
     }
 
     fn add_to_gitignore(&mut self, path: &str, is_dir: bool) {
-        let full = self.root.join(path);
-        let Some(work_dir) = git_work_dir(&full) else {
-            return;
-        };
-        let Ok(relative) = full.strip_prefix(&work_dir) else {
-            return;
-        };
-        let mut pattern = relative.to_string_lossy().replace('\\', "/");
-        if pattern.is_empty() {
-            return;
-        }
-        if is_dir {
-            pattern.push('/');
-        }
-        if let Err(error) = files::append_to_gitignore(&work_dir, &pattern) {
-            self.tree_ops.toast = Some(format!("Failed to add to .gitignore: {error}"));
-        }
+        self.change_tree(TreeChange::Gitignore {
+            path: path.to_string(),
+            is_dir,
+        });
         self.reload_tree();
     }
 
@@ -430,27 +682,34 @@ impl FilesView {
         let mut pasted = Vec::new();
         let mut last = None;
         for source in &sources {
-            let (destination, selection) =
-                paste_destination(&self.root, source, target, target_is_dir);
+            let source_is_dir = self.is_dir_entry(source);
+            let (destination, selection) = paste_destination(
+                &|path| self.path_exists(path),
+                source,
+                source_is_dir,
+                target,
+                target_is_dir,
+            );
             if is_cut && is_within(&destination, source) {
                 continue;
             }
-            let result = if is_cut {
-                files::rename(&self.root, source, &destination)
+            let change = if is_cut {
+                TreeChange::Rename {
+                    from: source.clone(),
+                    to: destination.clone(),
+                }
             } else {
-                files::copy_recursive(&self.root, source, &destination)
+                TreeChange::Copy {
+                    from: source.clone(),
+                    to: destination.clone(),
+                }
             };
-            match result {
-                Ok(()) => {
-                    if is_cut {
-                        self.retarget_paths(source, &destination);
-                    }
-                    pasted.push(destination.clone());
-                    last = Some((destination, selection));
+            if self.change_tree(change) {
+                if is_cut {
+                    self.retarget_paths(source, &destination);
                 }
-                Err(error) => {
-                    self.tree_ops.toast = Some(format!("Failed to paste {source}: {error}"));
-                }
+                pasted.push(destination.clone());
+                last = Some((destination, selection));
             }
         }
         if is_cut {
@@ -461,7 +720,7 @@ impl FilesView {
             return;
         };
         self.reveal_in_tree(&destination);
-        if !self.root.join(&destination).is_dir() {
+        if !self.is_dir_entry(&destination) {
             self.open_file(&destination);
         }
         if selection.is_some() {
@@ -485,7 +744,7 @@ impl FilesView {
     }
 
     fn start_rename(&mut self, path: &str, selection_end: Option<usize>) {
-        let is_dir = self.root.join(path).is_dir();
+        let is_dir = self.is_dir_entry(path);
         let name = file_name(path);
         let end = selection_end.unwrap_or(if is_dir {
             name.chars().count()
@@ -594,22 +853,19 @@ impl FilesView {
         match target {
             EditTarget::New { parent, is_dir } => {
                 let path = join(&parent, &name);
-                if files::exists(&self.root, &path) {
+                if self.path_exists(&path) {
                     if blurred {
                         self.cancel_tree_edit();
                     }
                     return;
                 }
                 let is_dir = is_dir || indicates_dir;
-                let result = if is_dir {
-                    files::create_dir(&self.root, &path)
-                } else {
-                    files::create_file(&self.root, &path)
-                };
                 self.tree_ops.edit = None;
-                if let Err(error) = result {
-                    self.tree_ops.toast = Some(format!("Failed to create {path}: {error}"));
-                }
+                self.change_tree(if is_dir {
+                    TreeChange::CreateDir(path.clone())
+                } else {
+                    TreeChange::CreateFile(path.clone())
+                });
                 self.reload_tree();
                 self.reveal_in_tree(&path);
                 if !is_dir {
@@ -622,18 +878,18 @@ impl FilesView {
                     self.cancel_tree_edit();
                     return;
                 }
-                if files::exists(&self.root, &new_path) {
+                if self.path_exists(&new_path) {
                     if blurred {
                         self.cancel_tree_edit();
                     }
                     return;
                 }
                 self.tree_ops.edit = None;
-                match files::rename(&self.root, &path, &new_path) {
-                    Ok(()) => self.retarget_paths(&path, &new_path),
-                    Err(error) => {
-                        self.tree_ops.toast = Some(format!("Failed to rename {path}: {error}"));
-                    }
+                if self.change_tree(TreeChange::Rename {
+                    from: path.clone(),
+                    to: new_path.clone(),
+                }) {
+                    self.retarget_paths(&path, &new_path);
                 }
                 self.reload_tree();
                 self.reveal_in_tree(&new_path);
@@ -641,14 +897,18 @@ impl FilesView {
         }
     }
 
+    /// Reads the tree here again; another machine's follows by itself.
     fn reload_tree(&mut self) {
+        if self.is_remote() {
+            return;
+        }
         self.entries = files::list(&self.root);
         self.tree = files::build_tree(&self.entries);
         self.flat_dirty = true;
     }
 
     /// Follow a move on disk: open tabs and expanded folders at or under `from` now live under `to`.
-    fn retarget_paths(&mut self, from: &str, to: &str) {
+    pub(crate) fn retarget_paths(&mut self, from: &str, to: &str) {
         let moved = |path: &str| -> Option<String> {
             is_within(path, from).then(|| format!("{to}{}", &path[from.len()..]))
         };
@@ -867,13 +1127,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("pomelo-paste-{}", std::process::id()));
         std::fs::create_dir_all(root.join("dir")).ok();
         std::fs::write(root.join("dir/a.rs"), "").ok();
-        let (destination, selection) = paste_destination(&root, "dir/a.rs", "dir/a.rs", false);
+        let exists = |path: &str| files::exists(&root, path);
+        let (destination, selection) =
+            paste_destination(&exists, "dir/a.rs", false, "dir/a.rs", false);
         assert_eq!(destination, "dir/a copy.rs");
         assert_eq!(selection, Some("a copy".len()));
         std::fs::write(root.join("dir/a copy.rs"), "").ok();
-        let (destination, _) = paste_destination(&root, "dir/a.rs", "dir", true);
+        let (destination, _) = paste_destination(&exists, "dir/a.rs", false, "dir", true);
         assert_eq!(destination, "dir/a copy 1.rs");
-        let (destination, selection) = paste_destination(&root, "dir", "dir", true);
+        let (destination, selection) = paste_destination(&exists, "dir", true, "dir", true);
         assert_eq!(destination, "dir copy");
         assert_eq!(selection, Some("dir copy".len()));
         std::fs::remove_dir_all(&root).ok();
