@@ -668,7 +668,9 @@ impl App {
             self.open_remote_agent(id, &watch, role);
             return;
         }
-        self.with_workspace_view(id, |view, _| view.reveal_agent_dock());
+        if self.settings.agent_open_in != "center" {
+            self.with_workspace_view(id, |view, _| view.reveal_agent_dock());
+        }
         if snapshot
             .transport
             .as_ref()
@@ -682,8 +684,9 @@ impl App {
         let item_id = services_ui::agent_item_id(&watch.snapshot().branch, role);
         let number = self.next_agent_item;
         self.next_agent_item += 1;
+        let in_center = self.settings.agent_open_in == "center";
         self.with_workspace_view(id, |view, _| {
-            view.open_agent_item(&item_id, false, || {
+            view.open_agent_item(&item_id, in_center, || {
                 services_ui::remote_agent_item(watch, role, number)
             })
         });
