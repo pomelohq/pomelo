@@ -1,9 +1,11 @@
 //! Fault rules for e2e tests: make one workspace service's requests through the dev proxy fail or slow down,
 //! for a while. They live in `<state>/proxy/faults.json`, so the CLI writes them and any running proxy obeys.
 
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use pom_paths::StateDir;
 use serde::{Deserialize, Serialize};
@@ -159,6 +161,59 @@ pub fn clear_faults(state: &StateDir, session: &str, branch: &str) -> Result<usi
     let cleared = before - rules.len();
     save_faults(state, rules)?;
     Ok(cleared)
+}
+
+/// The running proxy's control path that re-reads the fault rules at once; the header keeps it off any service's
+/// own `/_pom/faults`.
+pub const RELOAD_PATH: &str = "/_pom/faults";
+pub const RELOAD_HEADER: &str = "x-pom-control";
+
+/// The rules a running proxy loaded when asked, and the file it read them from.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadedFaults {
+    #[serde(default)]
+    pub source: Option<PathBuf>,
+    #[serde(default)]
+    pub ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReloadReply {
+    NotRunning,
+    Loaded(LoadedFaults),
+    /// Something listens but did not answer the control request (an older proxy, or one stuck).
+    Unanswered(String),
+}
+
+/// Asks the proxy on `port` of this machine to re-read the fault rules now, and what it loaded.
+pub fn reload_running_faults(port: u16, timeout: Duration) -> ReloadReply {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, timeout) else {
+        return ReloadReply::NotRunning;
+    };
+    let request = format!(
+        "POST {RELOAD_PATH} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{RELOAD_HEADER}: faults\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    );
+    let mut response = Vec::new();
+    let exchanged = stream
+        .set_read_timeout(Some(timeout))
+        .and_then(|()| stream.set_write_timeout(Some(timeout)))
+        .and_then(|()| stream.write_all(request.as_bytes()))
+        .and_then(|()| stream.read_to_end(&mut response));
+    if let Err(error) = exchanged {
+        return ReloadReply::Unanswered(error.to_string());
+    }
+    let text = String::from_utf8_lossy(&response);
+    let Some((head, body)) = text.split_once("\r\n\r\n") else {
+        return ReloadReply::Unanswered("no HTTP response".into());
+    };
+    if !head.starts_with("HTTP/1.1 200") {
+        return ReloadReply::Unanswered(head.lines().next().unwrap_or_default().to_string());
+    }
+    match serde_json::from_str::<LoadedFaults>(body) {
+        Ok(loaded) => ReloadReply::Loaded(loaded),
+        Err(error) => ReloadReply::Unanswered(format!("unreadable answer: {error}")),
+    }
 }
 
 #[cfg(test)]

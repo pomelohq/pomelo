@@ -14,8 +14,8 @@ use pom_config::Config;
 
 pub use activity::{read_activity, ActivityEntry, ActivityFile, ACTIVITY_SCHEMA};
 pub use faults::{
-    add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, remove_fault, Fault,
-    FaultRule,
+    add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, reload_running_faults,
+    remove_fault, Fault, FaultRule, LoadedFaults, ReloadReply,
 };
 pub use machine::{listening_ports_in_tree, SystemMachine, Waker};
 pub use routing::{

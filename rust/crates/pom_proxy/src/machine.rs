@@ -51,6 +51,10 @@ impl Machine for SystemMachine {
         crate::load_faults(&self.state)
     }
 
+    fn faults_source(&self) -> Option<std::path::PathBuf> {
+        Some(crate::faults_path(&self.state))
+    }
+
     fn service_envs(&self, project_root: &Path, branch: &str) -> WorkspaceState {
         WorkspaceState::load(&pom_layout::workspace_folder(project_root, branch))
     }

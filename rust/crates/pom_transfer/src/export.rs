@@ -23,13 +23,13 @@ pub struct ExportReport {
 }
 
 /// Writes the workspace on `branch` as a `.pomws` archive to `out`. `passphrase` is asked only when the config
-/// uses secrets; `progress` gets one line per step.
+/// uses secrets; `progress` gets each step as (stage, line): `repo`, `database`, `volume` or `archive`.
 pub fn export(
     context: &WorkspaceContext<'_>,
     branch: &str,
     options: ExportOptions,
     passphrase: &dyn Fn() -> Result<String, String>,
-    progress: &dyn Fn(&str),
+    progress: &dyn Fn(&str, &str),
     out: &mut dyn Write,
 ) -> Result<ExportReport, String> {
     let (config, runner) = (context.config, context.runner);
@@ -53,7 +53,7 @@ pub fn export(
         if !pom_layout::is_git_repo(&worktree) {
             continue;
         }
-        progress(&format!("{name}: commits and changes"));
+        progress("repo", &format!("{name}: commits and changes"));
         let alias = if dir.alias.is_empty() {
             name.clone()
         } else {
@@ -87,7 +87,7 @@ pub fn export(
                 warnings.push(format!("{} does not exist; skipped", template.name));
                 continue;
             }
-            progress(&format!("dumping {}", template.name));
+            progress("database", &format!("dumping {}", template.name));
             let relative = format!("db/{}.dump", file_safe(&template.name));
             let bytes = write_file(staging.path(), &relative, |file| {
                 runner
@@ -107,7 +107,7 @@ pub fn export(
         match runner.workspace_volumes(branch) {
             Ok(names) => {
                 for name in names {
-                    progress(&format!("saving volume {name}"));
+                    progress("volume", &format!("saving volume {name}"));
                     let relative = format!("volumes/{}.tar", file_safe(&name));
                     let bytes = write_file(staging.path(), &relative, |file| {
                         runner
@@ -149,7 +149,7 @@ pub fn export(
         service_envs: state.service_envs.clone(),
         secrets,
     };
-    progress("writing the archive");
+    progress("archive", "writing the archive");
     let mut counting = Counting {
         inner: out,
         bytes: 0,

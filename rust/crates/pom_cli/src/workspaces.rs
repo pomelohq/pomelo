@@ -522,6 +522,15 @@ pub(crate) fn stream<T: Send>(
     out: &mut dyn Write,
     work: impl FnOnce(EventSink<'_>) -> T + Send,
 ) -> Result<T, String> {
+    stream_as(out, false, work)
+}
+
+/// `stream`, printing each event as one JSON line instead when `json` is set.
+pub(crate) fn stream_as<T: Send>(
+    out: &mut dyn Write,
+    json: bool,
+    work: impl FnOnce(EventSink<'_>) -> T + Send,
+) -> Result<T, String> {
     let (sender, receiver) = mpsc::channel::<Event>();
     std::thread::scope(|scope| {
         let worker = scope.spawn(move || {
@@ -536,7 +545,11 @@ pub(crate) fn stream<T: Send>(
         let mut printed = Ok(());
         for event in receiver {
             if printed.is_ok() {
-                printed = print_event(out, &mut labels, event);
+                printed = if json {
+                    print_json_event(out, &mut labels, event)
+                } else {
+                    print_event(out, &mut labels, event)
+                };
             }
         }
         let result = worker
@@ -570,6 +583,38 @@ fn print_event(
         Event::StageSkipped { index } => say(out, &format!("    skipped: {}", label(index))),
         Event::Completed { .. } | Event::Failed { .. } => Ok(()),
     }
+}
+
+fn print_json_event(
+    out: &mut dyn Write,
+    labels: &mut Vec<&'static str>,
+    event: Event,
+) -> Result<(), String> {
+    let label = |index: usize| labels.get(index).copied().unwrap_or("");
+    let line = match event {
+        Event::Started { stages, .. } => {
+            let line = serde_json::json!({"event": "started", "stages": stages});
+            *labels = stages;
+            line
+        }
+        Event::StageStarted { index } => serde_json::json!({
+            "event": "stage", "index": index + 1, "of": labels.len(), "stage": label(index),
+        }),
+        Event::Progress { index, detail } => {
+            serde_json::json!({"event": "progress", "stage": label(index), "message": detail})
+        }
+        Event::Warning { index, detail } => {
+            serde_json::json!({"event": "warning", "stage": label(index), "message": detail})
+        }
+        Event::StageCompleted { index } => {
+            serde_json::json!({"event": "stage_done", "stage": label(index)})
+        }
+        Event::StageSkipped { index } => {
+            serde_json::json!({"event": "stage_skipped", "stage": label(index)})
+        }
+        Event::Completed { .. } | Event::Failed { .. } => return Ok(()),
+    };
+    say(out, &line.to_string())
 }
 
 #[cfg(test)]

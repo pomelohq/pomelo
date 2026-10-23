@@ -22,7 +22,8 @@ use crate::permission::{
 use crate::policy::{write_answer, Answer};
 use crate::screen::rendered_lines;
 use crate::sessions::{
-    events, now_ms, read_state, record_event, session_dir, with_lock, SessionEvent, TurnState,
+    events, mark_submitted, now_ms, read_state, record_event, session_dir, with_lock, SessionEvent,
+    TurnState,
 };
 use crate::turns::{turn_meta, turn_spans, turn_was_sent, write_turn_meta, Origin, TurnMeta};
 
@@ -296,6 +297,9 @@ impl Drive {
             loop {
                 let turn = read_state(&self.state, &view.session_id).map_or(before, |record| record.turn);
                 if turn > before {
+                    if let Err(error) = mark_submitted(&self.state, &identity_of(self, view), &view.session_id, turn) {
+                        eprintln!("agent: record turn {turn} of {}: {error}", view.handle);
+                    }
                     log(
                         &self.state,
                         &self.project,

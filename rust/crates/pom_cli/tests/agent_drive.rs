@@ -596,6 +596,58 @@ fn ls_says_whether_a_turn_runs_and_its_phase() {
 }
 
 #[test]
+fn ls_right_after_send_shows_the_turn_running_through_a_late_idle_reminder() {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::Builder::new()
+        .prefix("pomdrvbin")
+        .tempdir_in("/tmp")
+        .expect("bin");
+    let real_agent = bin.path().join("claude");
+    std::fs::write(&real_agent, "#!/bin/sh\ntouch \"$0.ran\"\nexit 97\n").expect("stub");
+    std::fs::set_permissions(&real_agent, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = format!("{}:/usr/bin:/bin", bin.path().display());
+    let fixture = Fixture::with_env(&[("PATH", &path)]);
+
+    let sent = fixture.send("late-reminder", &["--take"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["running"], true, "{reviewer}");
+    assert_eq!(reviewer["phase"], "working", "{reviewer}");
+
+    let log = fixture
+        .temp
+        .path()
+        .join("state/pom/agents/sessions/s1/events.ndjson");
+    fixture.until("the stale idle reminder", |_| {
+        std::fs::read_to_string(&log).is_ok_and(|text| text.contains("\"Notification\""))
+    });
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "thinking", "{reviewer}");
+    assert_eq!(reviewer["running"], true, "{reviewer}");
+
+    fixture.hook("Stop", serde_json::json!({}));
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["state"], "idle", "{reviewer}");
+    assert_eq!(reviewer["reason"], "stop", "{reviewer}");
+    assert_eq!(reviewer["running"], false, "{reviewer}");
+
+    let logged = std::fs::read_to_string(&log).expect("events");
+    assert!(
+        logged.contains("\"SessionStart\"") && logged.contains("\"UserPromptSubmit\""),
+        "the stand-in agent reported: {logged}"
+    );
+    assert!(
+        !bin.path().join("claude.ran").exists(),
+        "the real agent CLI never runs"
+    );
+}
+
+#[test]
 fn turn_end_on_an_idle_session_waits_for_the_next_turn_not_the_last_one() {
     let fixture = Fixture::new();
     fixture.type_as_person("hello");
