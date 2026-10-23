@@ -4,6 +4,32 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2026-10-23
+
+### Added
+- Project search and replace in a remote window: the search runs on the host and results stream in; replace-all writes there and reports files that changed meanwhile. (#322)
+- Jira in a remote window uses the host's own Jira settings and calls Jira from there; Settings > Integrations edits them on the host, and Settings > Project shows the remote project. (#324)
+- The title-bar Claude account chip and today's cost in a remote window show the host's account, limits and cost. (#321)
+- The node_modules Store page in a remote window shows the host's store and runs its actions there. (#325)
+- `pom proxy token [new|rm]` and the `proxy.token_env` / `proxy.allow_unauthenticated` settings. (#329)
+
+### Changed
+- A dev proxy bound beyond loopback no longer starts without a token (or `allow_unauthenticated`); other machines pass it once as `?pom_token=` (kept as a cookie) or in `X-Pom-Token`. (#329)
+- The dev proxy answers only its own host names (421 otherwise), keeps `/_pom/` for itself, and refuses cross-site browser requests to `/_pom/` and the webhook relay. (#329)
+- A workspace on both this machine and a host sends its requests to the host while its service is down here; the 503 page links the `<svc>.<repo>.<ws>.<host>.localhost` address. (#327)
+- `@prisma` and `prisma` are kept in the node_modules store but each workspace gets its own writable copy; `modules_private` names starting with `.` are never stored, others are copied privately, and presets can set it. (#318)
+- With several lockfiles, the node_modules store picks the package manager from the setup's install command, then `packageManager` in package.json. (#318)
+- The remote file tree loads much faster; gitignored folders load when opened. The file tree builds faster locally too. (#319)
+
+### Fixed
+- `prisma generate` no longer fails with EACCES on its second run in a workspace using hard links. (#318)
+- The Agent button, Cmd+? and the Agent menu item open the host's agent in a remote window. (#323)
+- The Store page in a remote window no longer waits forever on "Reading lockfiles". (#325)
+- The Dev Requests list no longer scrolls over its toolbar. (#320)
+- The "reachable here" notice for a host's shared services shows once per window instead of on every workspace switch or reconnect. (#320)
+- `pom -c pom.yml` with a relative path no longer prints "cannot make an empty path absolute". (#326)
+- Settings opened from a remote window no longer edit another window's local project, and quick Jira edits reach the host in order. (#324, #328)
+
 ## [0.9.6] - 2026-10-23
 
 ### Added
