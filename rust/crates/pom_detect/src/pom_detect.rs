@@ -37,3 +37,4 @@ pub struct StackFacts {
 pub fn detect(repo: &Path) -> Option<StackFacts> {
     rules::detect_with(&rules::load_rules(), repo, repo)
 }
+// ci timing probe
