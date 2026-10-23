@@ -133,6 +133,7 @@ fn git_panel(
                     expected_branch: project.active_branch().to_string(),
                     // Kept means on its own branch on purpose, which the panel must not flag.
                     kept: repo.expected != project.active_branch() && repo.branch == repo.expected,
+                    origin: None,
                 })
                 .collect()
         })

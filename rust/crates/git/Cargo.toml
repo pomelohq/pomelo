@@ -10,9 +10,11 @@ path = "src/git.rs"
 
 [dependencies]
 imara-diff = "0.2.0"
+serde.workspace = true
 time = { version = "0.3", features = ["local-offset"] }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+serde_json.workspace = true
 tempfile = "3"
 time = { version = "0.3", features = ["local-offset", "macros"] }

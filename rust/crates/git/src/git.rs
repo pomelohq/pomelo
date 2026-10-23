@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 
 use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
 
+pub mod access;
 mod blame;
 mod branch_changes;
 pub mod conflict;
@@ -19,6 +20,7 @@ pub use branch_changes::{
 };
 pub use line_staging::{index_with_lines, lines_to_stage};
 pub mod history;
+pub mod scan;
 pub mod working_copy;
 
 /// What the buffer is compared against. `None` means the file has no version there (new, or not staged).

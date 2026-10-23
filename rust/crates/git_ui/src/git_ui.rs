@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use commit_area::{CommitArea, CommitTarget, RemoteJob, RemoteRequest};
-use git::history::{self, CommitSummary};
+use git::access::{GitAccess, GitOp, LocalGit};
+use git::history::CommitSummary;
 use git::working_copy::{self, Staging, Upstream};
 use git::{ChangeStatus, FileChange};
 use rows::Row;
@@ -55,17 +56,7 @@ const FIXED_END: u64 = FIXED + 100;
 /// While shown, the panel re-reads git this often (agents keep changing files).
 const REFRESH_EVERY: Duration = Duration::from_secs(4);
 
-/// A repo of the workspace to read.
-#[derive(Clone, Debug)]
-pub struct RepoSource {
-    pub name: String,
-    pub root: PathBuf,
-    pub default_branch: String,
-    /// The workspace's branch, which every repo is expected to have checked out.
-    pub expected_branch: String,
-    /// This repo stays on another branch on purpose, so being off the workspace's branch is not drift.
-    pub kept: bool,
-}
+pub use git::access::RepoSource;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -188,6 +179,7 @@ enum Confirm {
 }
 
 pub struct GitPanel {
+    access: Arc<dyn GitAccess>,
     sources: Arc<Vec<RepoSource>>,
     scan: Arc<Mutex<Arc<Scan>>>,
     scanning: Arc<AtomicBool>,
@@ -222,6 +214,8 @@ pub struct GitPanel {
     /// Repos the user chose to keep on their own branch since the panel opened.
     kept: HashSet<String>,
     opened: Option<OpenedCommit>,
+    /// The pushes of a machine that sends each repo's scan as it changes, while the panel is shown.
+    watching: Arc<Mutex<Option<git::access::Watching>>>,
 }
 
 impl GitPanel {
@@ -236,7 +230,10 @@ impl GitPanel {
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
+        let access: Arc<dyn GitAccess> = Arc::new(LocalGit);
         GitPanel {
+            access: access.clone(),
+            watching: Arc::new(Mutex::new(None)),
             reviews_file,
             reviewed,
             scan: Arc::new(Mutex::new(scan::remembered_scan(&sources))),
@@ -256,7 +253,7 @@ impl GitPanel {
             confirm: None,
             next_tag: 1,
             requests: Vec::new(),
-            commit: CommitArea::new(waker.clone()),
+            commit: CommitArea::new(waker.clone(), access),
             pull_requests: None,
             tab: Tab::Changes,
             tree_view: true,
@@ -268,6 +265,13 @@ impl GitPanel {
             opened: None,
             waker,
         }
+    }
+
+    /// Runs git where `access` says: on the machine of a remote project, instead of here.
+    pub fn with_access(mut self, access: Arc<dyn GitAccess>) -> GitPanel {
+        self.commit.access = access.clone();
+        self.access = access;
+        self
     }
 
     pub fn with_pull_requests(mut self, pull_requests: pull_request_ui::PullRequests) -> GitPanel {
@@ -323,6 +327,7 @@ impl GitPanel {
 
     fn scanner(&self) -> Scanner {
         Scanner {
+            access: self.access.clone(),
             sources: self.sources.clone(),
             scan: self.scan.clone(),
             scanning: self.scanning.clone(),
@@ -344,9 +349,11 @@ impl GitPanel {
         }
     }
 
-    /// Re-reads while the panel keeps being drawn; stops once the panel is dropped.
+    /// Re-reads while the panel keeps being drawn, or follows what the repos' machine pushes then; stops once
+    /// the panel is dropped.
     fn spawn_poller(&self) {
         let (scanner, drawn_at, stop) = (self.scanner(), self.drawn_at.clone(), self.stop.clone());
+        let watching = self.watching.clone();
         let spawned = std::thread::Builder::new()
             .name("git-panel-poll".into())
             .spawn(move || {
@@ -360,9 +367,28 @@ impl GitPanel {
                             .is_some_and(|drawn| {
                                 drawn.elapsed() < REFRESH_EVERY + Duration::from_secs(2)
                             });
-                    if visible && !scanner.scanning.swap(true, Ordering::AcqRel) {
+                    let Ok(mut watch) = watching.lock() else {
+                        return;
+                    };
+                    if !visible {
+                        *watch = None;
+                        continue;
+                    }
+                    if watch.is_some() {
+                        continue;
+                    }
+                    let absorbing = scanner.clone();
+                    *watch = scanner.access.watch(
+                        &scanner.sources,
+                        Arc::new(move |index, repo| absorbing.absorb(index, repo)),
+                    );
+                    drop(watch);
+                    if !scanner.scanning.swap(true, Ordering::AcqRel) {
                         scanner.run();
                     }
+                }
+                if let Ok(mut watch) = watching.lock() {
+                    *watch = None;
                 }
             });
         if let Err(error) = spawned {
@@ -521,6 +547,13 @@ impl GitPanel {
         }
     }
 
+    fn act(&self, repo: usize, op: GitOp) -> Result<(), working_copy::CommandError> {
+        match self.sources.get(repo) {
+            Some(source) => self.access.act(source, op),
+            None => Ok(()),
+        }
+    }
+
     fn report(&mut self, result: Result<(), working_copy::CommandError>) {
         if let Err(error) = result {
             self.requests.push(PanelRequest::Toast(error.message));
@@ -529,9 +562,6 @@ impl GitPanel {
     }
 
     fn stage_file(&mut self, repo: usize, scope: Scope, entry: &FileEntry) {
-        let Some(source) = self.sources.get(repo).cloned() else {
-            return;
-        };
         let mut paths = vec![entry.path.clone()];
         paths.extend(entry.old_path.clone());
         let unstage = match scope {
@@ -539,65 +569,49 @@ impl GitPanel {
             Scope::Unstaged => false,
             _ => entry.staging == Some(Staging::Staged),
         };
-        let result = if unstage {
-            working_copy::unstage(&source.root, &paths)
+        let op = if unstage {
+            GitOp::Unstage { paths }
         } else {
-            working_copy::stage(&source.root, &paths)
+            GitOp::Stage { paths }
         };
+        let result = self.act(repo, op);
         self.report(result);
     }
 
     /// Stages a conflicted file once no conflict markers are left in it, the way `git add` settles a conflict.
     fn mark_resolved(&mut self, repo: usize, path: &str) {
-        let Some(source) = self.sources.get(repo).cloned() else {
-            return;
-        };
-        let text = match std::fs::read_to_string(source.root.join(path)) {
-            Ok(text) => text,
-            Err(error) => {
-                self.requests.push(PanelRequest::Toast(format!(
-                    "Could not read {path}: {error}"
-                )));
-                return;
-            }
-        };
-        let left = git::conflict::conflicts(&text).len();
-        if left > 0 {
-            let noun = if left == 1 { "conflict" } else { "conflicts" };
-            self.requests.push(PanelRequest::Toast(format!(
-                "{path} still has {left} {noun}; resolve them first"
-            )));
-            return;
-        }
-        self.report(working_copy::stage(&source.root, &[path.to_string()]));
+        let result = self.act(
+            repo,
+            GitOp::MarkResolved {
+                path: path.to_string(),
+            },
+        );
+        self.report(result);
     }
 
     fn stage_directory(&mut self, repo: usize, scope: Scope, path: &str, staging: Staging) {
-        let Some(source) = self.sources.get(repo).cloned() else {
-            return;
-        };
         let unstage = match scope {
             Scope::Staged => true,
             Scope::Unstaged => false,
             _ => staging == Staging::Staged,
         };
-        let result = if unstage {
-            working_copy::unstage_directory(&source.root, path)
+        let path = path.to_string();
+        let op = if unstage {
+            GitOp::UnstageDirectory { path }
         } else {
-            working_copy::stage_directory(&source.root, path)
+            GitOp::StageDirectory { path }
         };
+        let result = self.act(repo, op);
         self.report(result);
     }
 
     fn stage_repo(&mut self, repo: usize, stage: bool) {
-        let Some(source) = self.sources.get(repo).cloned() else {
-            return;
-        };
-        let result = if stage {
-            working_copy::stage_all(&source.root)
+        let op = if stage {
+            GitOp::StageAll
         } else {
-            working_copy::unstage_all(&source.root)
+            GitOp::UnstageAll
         };
+        let result = self.act(repo, op);
         self.report(result);
     }
 
@@ -608,11 +622,12 @@ impl GitPanel {
             if repo.status.is_empty() {
                 continue;
             }
-            let result = if stage {
-                working_copy::stage_all(&source.root)
+            let op = if stage {
+                GitOp::StageAll
             } else {
-                working_copy::unstage_all(&source.root)
+                GitOp::UnstageAll
             };
+            let result = self.access.act(source, op);
             if let Err(error) = result {
                 failures.push(format!("{}: {}", source.name, error.message));
             }
@@ -640,12 +655,12 @@ impl GitPanel {
                 if !repo.has_stash {
                     continue;
                 }
-                working_copy::stash_pop(&source.root)
+                self.access.act(source, GitOp::StashPop)
             } else {
                 if repo.status.is_empty() {
                     continue;
                 }
-                working_copy::stash_all(&source.root)
+                self.access.act(source, GitOp::StashAll)
             };
             if let Err(error) = result {
                 failures.push(format!("{}: {}", source.name, error.message));
@@ -685,6 +700,9 @@ impl GitPanel {
                 .push(PanelRequest::Toast(format!("{} was deleted", entry.path)));
             return;
         }
+        let Some(source) = self.sources.get(repo) else {
+            return;
+        };
         let root = state.branch.root.clone();
         let base = match entry.status {
             ChangeStatus::Added => None,
@@ -694,7 +712,7 @@ impl GitPanel {
                     _ => "HEAD",
                 };
                 let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
-                git::file_at(&root, revision, earlier)
+                self.access.file_at(source, revision, earlier)
             }
         };
         self.requests.push(PanelRequest::OpenDiff {
@@ -707,7 +725,7 @@ impl GitPanel {
         let Some(source) = self.sources.get(repo) else {
             return;
         };
-        let files = history::commit_files(&source.root, &commit.sha);
+        let files = self.access.commit_files(source, &commit.sha);
         self.opened = Some(OpenedCommit {
             repo,
             commit,
@@ -724,11 +742,11 @@ impl GitPanel {
         };
         let sha = &opened.commit.sha;
         let text = (entry.status != ChangeStatus::Deleted)
-            .then(|| git::file_at(&source.root, sha, &entry.path))
+            .then(|| self.access.file_at(source, sha, &entry.path))
             .flatten();
-        let base = history::parent_of(&source.root, sha).and_then(|parent| {
+        let base = self.access.parent_of(source, sha).and_then(|parent| {
             let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
-            git::file_at(&source.root, &parent, earlier)
+            self.access.file_at(source, &parent, earlier)
         });
         let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
         self.requests
@@ -761,7 +779,7 @@ impl GitPanel {
                 .filter(|entry| entry.untracked)
                 .map(|entry| entry.path.as_str())
                 .collect();
-            let patch = history::patch(&source.root, against);
+            let patch = self.access.patch(source, against);
             if patch.is_none() && untracked.is_empty() {
                 continue;
             }
@@ -800,7 +818,7 @@ impl GitPanel {
             .filter(|(_, repo)| repo.staged_count() > 0)
             .map(|(source, repo)| CommitTarget {
                 repo: source.name.clone(),
-                root: source.root.clone(),
+                source: source.clone(),
                 staged: repo.staged_count(),
                 conflicts: repo.unstaged_conflicts(),
             })
@@ -855,7 +873,7 @@ impl GitPanel {
         let source = self.sources.get(repo)?;
         Some(CommitTarget {
             repo: source.name.clone(),
-            root: source.root.clone(),
+            source: source.clone(),
             staged: 0,
             conflicts: false,
         })
@@ -896,7 +914,7 @@ impl GitPanel {
     fn toggle_amend(&mut self) {
         let scan = self.current();
         if let Some(target) = self.amend_target(&scan) {
-            self.commit.toggle_amend(&target.root);
+            self.commit.toggle_amend(&target.source);
         } else {
             self.commit.amend = false;
         }
@@ -917,8 +935,8 @@ impl GitPanel {
         let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        let message = working_copy::head_message(&source.root);
-        match working_copy::soft_reset(&source.root) {
+        let message = self.access.head_message(&source);
+        match self.access.act(&source, GitOp::SoftReset) {
             Ok(()) => {
                 if self.commit.editor.text().trim().is_empty() {
                     if let Some(message) = message {
@@ -940,7 +958,8 @@ impl GitPanel {
         let head = self
             .repo_scan(repo)
             .and_then(|state| state.head)
-            .unwrap_or_else(|| working_copy::head_state(&source.root));
+            .or_else(|| self.access.head_state(source))
+            .ok_or_else(|| format!("{}: could not read its branch", source.name))?;
         let remote = if matches!(request, RemoteRequest::Fetch(_)) {
             String::new()
         } else {
@@ -951,7 +970,7 @@ impl GitPanel {
             match head.upstream_ref.clone() {
                 Some((remote, _)) if head.upstream != Upstream::Gone => remote,
                 _ => {
-                    let remotes = working_copy::push_remotes(&source.root, &branch);
+                    let remotes = self.access.push_remotes(source, &branch);
                     remotes
                         .iter()
                         .find(|remote| remote.as_str() == "origin")
@@ -968,7 +987,7 @@ impl GitPanel {
         };
         Ok(RemoteJob {
             repo: source.name.clone(),
-            root: source.root.clone(),
+            source: source.clone(),
             head,
             request,
             remote,
@@ -1078,7 +1097,8 @@ impl GitPanel {
             .repo_scan(repo)
             .and_then(|state| state.branch_name().map(str::to_string));
         let url = branch.and_then(|branch| {
-            working_copy::remote_url(&source.root, "origin")
+            self.access
+                .remote_url(source, "origin")
                 .and_then(|remote| working_copy::create_pull_request_url(&remote, &branch))
         });
         self.requests.push(match url {
@@ -1793,10 +1813,8 @@ impl SidePanelView for GitPanel {
                 let Some(source) = self.sources.get(repo).cloned() else {
                     return;
                 };
-                if let Err(error) = git::discard_uncommitted(&source.root, &path) {
-                    self.requests.push(PanelRequest::Toast(format!(
-                        "Could not discard {path}: {error}"
-                    )));
+                if let Err(error) = self.access.act(&source, GitOp::Discard { path }) {
+                    self.requests.push(PanelRequest::Toast(error.message));
                 }
             }
             Confirm::DiscardTracked => {
@@ -1807,7 +1825,8 @@ impl SidePanelView for GitPanel {
                     .zip(&scan.repos)
                     .filter(|(_, repo)| repo.head_commit.is_some() && !repo.status.is_empty())
                     .filter_map(|(source, _)| {
-                        working_copy::discard_tracked(&source.root)
+                        self.access
+                            .act(source, GitOp::DiscardTracked)
                             .err()
                             .map(|error| format!("{}: {}", source.name, error.message))
                     })

@@ -6,10 +6,12 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 /// Untracked files larger than this are counted as changed without counting their lines.
 const LINE_COUNT_LIMIT: u64 = 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeStatus {
     Added,
     Modified,
@@ -18,7 +20,7 @@ pub enum ChangeStatus {
     Conflicted,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
     /// Relative to the repository root.
     pub path: String,
@@ -31,7 +33,8 @@ pub struct FileChange {
     pub uncommitted: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RepoChanges {
     pub root: PathBuf,
     pub branch: String,

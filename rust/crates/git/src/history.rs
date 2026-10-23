@@ -4,6 +4,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, Ordering};
 
+use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::branch_changes::{numstat, parse_name_status};
@@ -15,7 +16,8 @@ pub const LOG_LIMIT: usize = 200;
 
 const LOG_FORMAT: &str = "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct%x1e";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CommitSummary {
     pub sha: String,
     pub short_sha: String,

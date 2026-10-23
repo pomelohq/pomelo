@@ -2806,6 +2806,7 @@ fn main() -> anyhow::Result<()> {
                 default_branch: "main".into(),
                 expected_branch: std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into()),
                 kept: false,
+                origin: None,
             })
             .collect();
         let roots: Vec<std::path::PathBuf> =
@@ -5717,6 +5718,7 @@ mod tests {
                 default_branch: "main".into(),
                 expected_branch: crate::git_fixture::NARROW_BRANCH.into(),
                 kept: false,
+                origin: None,
             })
             .collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}))

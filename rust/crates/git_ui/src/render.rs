@@ -1400,6 +1400,10 @@ impl GitPanel {
                         format!("Sync {differ} repo{plural}"),
                     )
                 };
+                let summary = match self.commit.remote_progress() {
+                    Some(progress) if self.commit.remote_running().is_some() => progress,
+                    _ => summary,
+                };
                 let split = SplitButton {
                     main: self.fixed(SYNC),
                     menu: self.fixed(SYNC_MENU),
