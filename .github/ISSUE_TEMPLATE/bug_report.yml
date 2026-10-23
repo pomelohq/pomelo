@@ -40,10 +40,11 @@ body:
       required: true
 
   - type: input
-    id: macos
+    id: platform
     attributes:
-      label: macOS version
-      placeholder: "14.5 (Apple Silicon)"
+      label: Platform
+      description: This machine, and the host's OS when it is a remote project.
+      placeholder: "macOS 15.1 (Apple Silicon); host Ubuntu 24.04 x86_64"
     validations:
       required: true
 

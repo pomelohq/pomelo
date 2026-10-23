@@ -1,5 +1,8 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/pomelohq/pomelo/security/advisories/new
+    about: Report privately; do not open a public issue for a vulnerability.
   - name: Documentation
     url: https://pomelohq.app
     about: Install, quick start, config reference, and troubleshooting.
