@@ -250,6 +250,9 @@ pub struct LaunchOptions {
     pub isolated: bool,
     /// Answer the agent's "do you trust this folder" prompt when it shows one at start.
     pub trust: bool,
+    /// Opened by a person from the app, so it runs as their own agent does here: with their MCP servers and
+    /// plugins, not isolated.
+    pub for_person: bool,
 }
 
 impl LaunchOptions {
@@ -727,5 +730,17 @@ mod tests {
     #[test]
     fn the_prompt_is_plain_ascii() {
         assert!(system_prompt().is_ascii());
+    }
+
+    #[test]
+    fn only_an_isolated_session_drops_the_users_mcp_servers() {
+        let isolated = LaunchOptions {
+            isolated: true,
+            ..LaunchOptions::default()
+        };
+        assert!(isolated.flags().contains("--strict-mcp-config"));
+        assert!(!LaunchOptions::default()
+            .flags()
+            .contains("--strict-mcp-config"));
     }
 }

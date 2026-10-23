@@ -364,8 +364,13 @@ impl Drive {
                 "only a person or an orchestrator can trust a folder for an agent".into(),
             ));
         }
+        if options.for_person && gate.caller().is_agent() {
+            return Err(DriveError::Invalid(
+                "only a person can start an agent as their own".into(),
+            ));
+        }
         let options = &LaunchOptions {
-            isolated: true,
+            isolated: !options.for_person,
             ..options.clone()
         };
         let workspace = gate.workspace().clone();
@@ -998,6 +1003,28 @@ mod tests {
             &LaunchOptions::default(),
         );
         assert!(matches!(bad_role, Err(DriveError::Invalid(_))));
+    }
+
+    #[test]
+    fn only_a_person_starts_an_agent_as_their_own() {
+        let temp = tempfile::tempdir().expect("temp");
+        let drive = drive(temp.path());
+        let workspace = Workspace {
+            project: "myproject".into(),
+            branch: "feat-login".into(),
+        };
+        let caller = Caller::Agent {
+            holder: "ws-myproject-feat-login-claude-lead".into(),
+        };
+        let gate = Gate::open(&drive.state, caller, workspace, Limits::AGENT).expect("gate");
+        let options = LaunchOptions {
+            for_person: true,
+            ..LaunchOptions::default()
+        };
+        let refused = drive.start(&gate, temp.path(), false, "reviewer", true, &options);
+        assert!(
+            matches!(refused, Err(DriveError::Invalid(message)) if message.contains("only a person"))
+        );
     }
 
     #[test]

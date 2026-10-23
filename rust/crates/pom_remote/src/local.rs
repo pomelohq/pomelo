@@ -444,7 +444,10 @@ impl LocalSource {
             is_main,
             role,
             fresh,
-            &pom_agent::LaunchOptions::default(),
+            &pom_agent::LaunchOptions {
+                for_person: person,
+                ..pom_agent::LaunchOptions::default()
+            },
         );
         let view = match started {
             Ok(view) => view,
