@@ -21,7 +21,7 @@ use crate::server_api::{
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
     WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, FILES_SEARCH, FILES_WRITE,
-    JOBS, JOB_TASK, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
+    JOBS, JOB_TASK, LIVE_LOGS, MODULE_STORE, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_api::{
     JiraParams, ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams,
@@ -380,6 +380,7 @@ impl Inner {
             files_search: offers(&[FILES_SEARCH]),
             usage: offers(&[method::USAGE_GET]),
             jira: offers(JIRA),
+            module_store: offers(&[MODULE_STORE]) && offers(JOBS),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());

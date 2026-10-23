@@ -10,6 +10,7 @@ path = "src/pom_remote.rs"
 
 [dependencies]
 agent_usage = { path = "../agent_usage" }
+module_store = { path = "../module_store" }
 files = { path = "../files" }
 pom_paths = { path = "../pom_paths" }
 libc = "0.2"

@@ -11,6 +11,7 @@ mod prepare;
 mod repo_branch;
 mod schedule;
 mod sleep;
+mod store_job;
 mod unsaved;
 
 use std::path::Path;
@@ -44,6 +45,9 @@ pub use sleep::now_ms;
 pub use sleep::{
     busy_agents, find_workspace, sleep, wake, wake_at, waker, AgentSession, Agents, DriveAgents,
     SleepError, SleepReport, WakeReport,
+};
+pub use store_job::{
+    run_store_job, store_worktrees, with_node_versions, SizeCache, StoreJob, StoreSink,
 };
 pub use unsaved::{placed_by_pom, unsaved_work};
 

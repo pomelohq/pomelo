@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use pom_remote::server_api::{
     method, AgentListing, BranchArgs, JobRequest, UsageParams, UsageReport, FEATURES, FILES_SEARCH,
-    JOBS, LIVE_LOGS, METHODS, REQUIRED,
+    JOBS, LIVE_LOGS, METHODS, MODULE_STORE, REQUIRED,
 };
 use pom_remote::{ProjectSource, ServerSource, StatusReport, Timing, Watch, WorkspaceList};
 use pom_rpc::pty::{self, AttachParams, Attached, Mode, Request, Target};
@@ -299,6 +299,20 @@ fn jira_goes_through_a_server_that_keeps_its_settings() {
         read.site, "/srv/myproject/pom.yml",
         "asked about this project"
     );
+}
+
+#[test]
+fn only_a_server_that_lists_the_store_runs_its_requests() {
+    let before_store: Vec<String> = current_features()
+        .into_iter()
+        .filter(|name| name != MODULE_STORE)
+        .collect();
+    let (older, _) = source(before_store);
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").module_store);
+    let (current, _) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").module_store);
 }
 
 #[test]

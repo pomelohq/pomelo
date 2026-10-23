@@ -1,9 +1,15 @@
+mod access;
+mod remote;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 
+pub use access::{LocalStore, StoreAccess, Updates};
 use module_store::{format_size, Holding, Overview, RepoState, User, Version};
+pub use module_store::{plan, Request, StoreUpdate};
+pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{paragraph, small_button, status_pill, text_line, ButtonKind, Item, ItemTick};
@@ -51,45 +57,6 @@ fn width_of(text: &str, node: impl FnOnce() -> Node) -> f32 {
     width
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    Refresh,
-    /// Every copy no worktree of this project uses.
-    FreeUnused,
-    FreeOld {
-        repo: String,
-    },
-    FreeOthers,
-    /// Swap a worktree's own install for the stored copy.
-    Relink {
-        repo: String,
-        workspace: String,
-        path: PathBuf,
-    },
-    /// Keep a worktree's own install as the stored copy.
-    Keep {
-        repo: String,
-        path: PathBuf,
-    },
-    /// Everything `plan` lists, one after another.
-    Optimize,
-}
-
-impl Request {
-    /// What the header says while it runs.
-    pub fn working(&self) -> String {
-        match self {
-            Request::Refresh => "Looking at every workspace".into(),
-            Request::FreeUnused => "Removing unused copies".into(),
-            Request::FreeOld { repo } => format!("Removing old {repo} copies"),
-            Request::FreeOthers => "Removing other projects' copies".into(),
-            Request::Relink { workspace, .. } => format!("Swapping {workspace} to the shared copy"),
-            Request::Keep { repo, .. } => format!("Keeping {repo}'s install"),
-            Request::Optimize => "Optimizing".into(),
-        }
-    }
-}
-
 #[derive(Default)]
 pub struct StoreState {
     /// How copies reach project folders here, e.g. "copy-on-write, workspaces take no extra disk".
@@ -121,6 +88,10 @@ pub struct StoreState {
     pub expanded: Vec<String>,
     pub requests: Vec<Request>,
     pub version: u64,
+    /// Why this window cannot show a store, in place of the overview.
+    pub unavailable: Option<String>,
+    /// The store's folder as its source names it, when it is not this machine's.
+    pub root: Option<String>,
 }
 
 pub type Shared = Rc<RefCell<StoreState>>;
@@ -132,7 +103,7 @@ impl StoreState {
 
     /// Something on the page moves: loading, work in flight, or a fading note.
     pub fn animating(&self) -> bool {
-        self.overview.is_none()
+        self.loading()
             || self.measuring > 0
             || self.busy.is_some()
             || self
@@ -143,6 +114,71 @@ impl StoreState {
                 .flash
                 .as_ref()
                 .is_some_and(|(_, at)| self.clock - at < FLASH_FOR)
+    }
+
+    /// Nothing to show yet, and nothing said why.
+    pub fn loading(&self) -> bool {
+        self.overview.is_none() && self.unavailable.is_none()
+    }
+
+    /// Takes in what the running request reports.
+    pub fn apply(&mut self, update: StoreUpdate, now: u64) {
+        match update {
+            StoreUpdate::Place { root, method } => {
+                self.root = Some(root);
+                self.method = method;
+            }
+            StoreUpdate::Overview {
+                overview,
+                running,
+                pending,
+                message,
+                failed,
+                flash,
+            } => {
+                self.overview = Some(overview);
+                self.unavailable = None;
+                self.running = running;
+                self.measuring = pending;
+                self.measure_total = pending;
+                self.progress = None;
+                self.now = now;
+                self.finish(message, failed, flash);
+            }
+            StoreUpdate::Step {
+                request,
+                index,
+                total,
+            } => {
+                self.busy = Some(request);
+                self.progress = Some((index, total));
+            }
+            StoreUpdate::Measured { what, size } => {
+                if let Some(overview) = self.overview.as_mut() {
+                    overview.apply(&what, size);
+                }
+                self.measuring = self.measuring.saturating_sub(1);
+            }
+            StoreUpdate::Failed { message } => {
+                self.measuring = 0;
+                self.progress = None;
+                if self.overview.is_some() {
+                    self.finish(Some(message), true, None);
+                } else {
+                    self.unavailable = Some(message);
+                    self.finish(None, false, None);
+                }
+            }
+        }
+        self.changed();
+    }
+
+    /// The request's work ended, whatever it last said.
+    pub fn ended(&mut self) {
+        self.measuring = 0;
+        self.busy = None;
+        self.progress = None;
+        self.changed();
     }
 
     /// A finished request: its result note and, when it changed a row, that row's highlight.
@@ -172,31 +208,6 @@ pub fn ago(now: u64, then: u64) -> String {
     }
 }
 
-fn own_users(version: &Version) -> impl Iterator<Item = &User> {
-    version
-        .users
-        .iter()
-        .filter(|user| matches!(user.holding, Holding::Own { .. }))
-}
-
-/// A version with no stored copy but an install to keep: main's first, else any workspace's.
-fn keep_request(repo: &str, version: &Version) -> Option<Request> {
-    if version.stored.is_some() {
-        return None;
-    }
-    let installed = |user: &&User| !matches!(user.holding, Holding::NotInstalled);
-    let source = version
-        .users
-        .iter()
-        .filter(installed)
-        .find(|user| user.is_main)
-        .or_else(|| version.users.iter().find(installed))?;
-    Some(Request::Keep {
-        repo: repo.to_string(),
-        path: source.path.clone(),
-    })
-}
-
 /// Every button on the page in render order, so a click id maps back to what it asks for.
 fn actions(state: &StoreState) -> Vec<Request> {
     let mut out = Vec::new();
@@ -208,11 +219,11 @@ fn actions(state: &StoreState) -> Vec<Request> {
             continue;
         };
         for version in versions {
-            if let Some(request) = keep_request(&repo.repo, version) {
+            if let Some(request) = version.keep_request(&repo.repo) {
                 out.push(request);
             }
             if version.stored.is_some() {
-                for user in own_users(version) {
+                for user in version.own_users() {
                     out.push(Request::Relink {
                         repo: repo.repo.clone(),
                         workspace: user.workspace.clone(),
@@ -231,44 +242,6 @@ fn actions(state: &StoreState) -> Vec<Request> {
         out.push(Request::FreeOthers);
     }
     out
-}
-
-/// What Optimize does, in order: keep an install for each lockfile with no stored copy, move every
-/// workspace's own install onto the shared copy, then free the copies no workspace uses.
-pub fn plan(overview: &Overview) -> Vec<Request> {
-    let mut keeps = Vec::new();
-    let mut relinks = Vec::new();
-    for repo in &overview.repos {
-        let RepoState::Versions { versions, .. } = &repo.state else {
-            continue;
-        };
-        for version in versions {
-            let keep = keep_request(&repo.repo, version);
-            let source = match &keep {
-                Some(Request::Keep { path, .. }) => Some(path.clone()),
-                _ => None,
-            };
-            if version.stored.is_none() && keep.is_none() {
-                continue;
-            }
-            keeps.extend(keep);
-            for user in own_users(version) {
-                if source.as_ref() != Some(&user.path) {
-                    relinks.push(Request::Relink {
-                        repo: repo.repo.clone(),
-                        workspace: user.workspace.clone(),
-                        path: user.path.clone(),
-                    });
-                }
-            }
-        }
-    }
-    let mut steps = keeps;
-    steps.extend(relinks);
-    if !overview.unused().is_empty() {
-        steps.push(Request::FreeUnused);
-    }
-    steps
 }
 
 /// Bytes Optimize frees at most: the swapped installs and the unused copies.
@@ -476,7 +449,7 @@ fn more_key(state: &StoreState, index: usize) -> Option<String> {
             }
             next += 1;
             if version.stored.is_some() {
-                next += own_users(version).count();
+                next += version.own_users().count();
             }
         }
     }
@@ -824,7 +797,7 @@ fn version_rows(
     } else {
         format!("Changed on {first_branch}")
     };
-    let keep = keep_request(repo, version);
+    let keep = version.keep_request(repo);
     let detail = match (&version.stored, &keep) {
         (Some(_), _) => version
             .changed
@@ -897,7 +870,7 @@ fn version_rows(
         } else {
             first_branch
         };
-        for user in own_users(version) {
+        for user in version.own_users() {
             let Holding::Own { size } = user.holding else {
                 continue;
             };
@@ -1061,7 +1034,10 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         overview.unused().iter().map(|entry| entry.size).sum()
     });
     let summary = match &state.overview {
-        None => "Reading lockfiles".to_string(),
+        None => state
+            .unavailable
+            .clone()
+            .unwrap_or_else(|| "Reading lockfiles".to_string()),
         Some(_) if state.measuring > 0 => format!(
             "measuring {} of {} - {}",
             state.measure_total - state.measuring,
@@ -1119,7 +1095,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         "Refresh",
         None,
         ButtonKind::Ghost,
-        idle,
+        state.busy.is_none() && !state.loading(),
         hovered,
     ));
     if unused > 0 && state.measuring == 0 {
@@ -1272,7 +1248,9 @@ fn frame(column: ui::Div) -> Node {
 fn click(state: &mut StoreState, id: u64) {
     let idle = state.busy.is_none() && state.overview.is_some();
     match id {
-        REFRESH if idle => state.requests.push(Request::Refresh),
+        REFRESH if state.busy.is_none() && !state.loading() => {
+            state.requests.push(Request::Refresh)
+        }
         FREE_UNUSED if idle => state.requests.push(Request::FreeUnused),
         CANCEL_SWAP => state.confirm = None,
         OPTIMIZE if idle => {
@@ -1462,7 +1440,8 @@ impl Item for StorePage {
         let mut painted = match &self.painted {
             Some((kept, painted)) if *kept == key => painted.clone(),
             _ => {
-                let tree = render(&state, &self.root, body.w / scale, self.hovered);
+                let root = state.root.as_deref().unwrap_or(&self.root);
+                let tree = render(&state, root, body.w / scale, self.hovered);
                 self.content_h = ui::measure(&tree).1 * scale;
                 self.body_h = body.h;
                 self.scroll = self
@@ -1487,7 +1466,7 @@ impl Item for StorePage {
             }
         };
         let loading =
-            state.overview.is_none() || state.measuring > 0 || state.busy == Some(Request::Refresh);
+            state.loading() || state.measuring > 0 || state.busy == Some(Request::Refresh);
         if loading {
             let colors = theme();
             let mut track = colors.text_accent;
@@ -1736,7 +1715,7 @@ pub fn preview_page() -> StorePage {
             },
             RepoOverview {
                 repo: "docs".into(),
-                state: RepoState::SelfManaged("pnpm"),
+                state: RepoState::SelfManaged("pnpm".into()),
             },
         ],
         others: vec![entry("billing", "x1", 0.5, 40)],
@@ -1866,7 +1845,7 @@ pub fn board_page(which: &str) -> StorePage {
             worker,
             RepoOverview {
                 repo: "admin".into(),
-                state: RepoState::SelfManaged("pnpm"),
+                state: RepoState::SelfManaged("pnpm".into()),
             },
             RepoOverview {
                 repo: "api".into(),
