@@ -1727,6 +1727,8 @@ name = "git"
 version = "0.9.7"
 dependencies = [
  "imara-diff",
+ "serde",
+ "serde_json",
  "tempfile",
  "time",
  "workspace_hack",

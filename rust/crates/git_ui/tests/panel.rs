@@ -91,6 +91,7 @@ fn source(name: &str, root: &Path, branch: &str) -> RepoSource {
         default_branch: "main".into(),
         expected_branch: branch.into(),
         kept: false,
+        origin: None,
     }
 }
 

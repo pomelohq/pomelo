@@ -1,11 +1,10 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use git::access::{GitAccess, GitOp, RemoteCommand, RepoSource};
 use git::working_copy::{
-    self, CommandError, CommandOutput, CommitOptions, HeadState, PushMode, Staging, StatusEntry,
-    Upstream,
+    CommandError, CommandOutput, CommitOptions, HeadState, PushMode, Staging, StatusEntry, Upstream,
 };
 use ui::{div, theme, Node};
 use workspace::text_field::TextArea;
@@ -63,7 +62,7 @@ impl RemoteRequest {
 /// One repo's part of a remote operation: where it runs, the branch it acts on, what to do and with which remote.
 pub(crate) struct RemoteJob {
     pub repo: String,
-    pub root: PathBuf,
+    pub source: RepoSource,
     pub head: HeadState,
     pub request: RemoteRequest,
     pub remote: String,
@@ -73,7 +72,7 @@ pub(crate) struct RemoteJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CommitTarget {
     pub repo: String,
-    pub root: PathBuf,
+    pub source: RepoSource,
     pub staged: usize,
     pub conflicts: bool,
 }
@@ -93,6 +92,8 @@ pub(crate) enum Outcome {
     Failed {
         action: &'static str,
         log: String,
+        /// Said instead of "git <action> failed", such as where to fix a refused sign-in.
+        advice: Option<String>,
     },
     Committed,
 }
@@ -100,6 +101,8 @@ pub(crate) enum Outcome {
 struct Running {
     answer: Receiver<Outcome>,
     remote: Option<RemoteKind>,
+    /// What git last said while it talks to the remote.
+    progress: Arc<Mutex<Option<String>>>,
 }
 
 pub(crate) struct CommitArea {
@@ -110,6 +113,7 @@ pub(crate) struct CommitArea {
     pub skip_hooks: bool,
     running: Option<Running>,
     waker: Arc<dyn Fn() + Send + Sync>,
+    pub access: Arc<dyn GitAccess>,
 }
 
 pub(crate) struct CommitPlan {
@@ -123,7 +127,7 @@ pub(crate) struct CommitPlan {
 }
 
 impl CommitArea {
-    pub fn new(waker: Arc<dyn Fn() + Send + Sync>) -> CommitArea {
+    pub fn new(waker: Arc<dyn Fn() + Send + Sync>, access: Arc<dyn GitAccess>) -> CommitArea {
         let mut editor = TextArea::default();
         editor.set_font_size(EDITOR_FONT);
         CommitArea {
@@ -134,6 +138,7 @@ impl CommitArea {
             skip_hooks: false,
             running: None,
             waker,
+            access,
         }
     }
 
@@ -143,6 +148,16 @@ impl CommitArea {
 
     pub fn remote_running(&self) -> Option<RemoteKind> {
         self.running.as_ref().and_then(|running| running.remote)
+    }
+
+    /// The last progress line git printed for the running fetch, pull or push.
+    pub fn remote_progress(&self) -> Option<String> {
+        self.running
+            .as_ref()?
+            .progress
+            .lock()
+            .ok()
+            .and_then(|line| line.clone())
     }
 
     fn editor_rows(&self) -> usize {
@@ -241,11 +256,17 @@ impl CommitArea {
             no_verify: self.skip_hooks,
         };
         let repos = targets.len();
-        self.start(None, move || {
+        let access = self.access.clone();
+        self.start(None, move |_| {
             let failures: Vec<String> = targets
                 .iter()
                 .filter_map(|target| {
-                    working_copy::commit(&target.root, &message, options)
+                    let op = GitOp::Commit {
+                        message: message.clone(),
+                        options,
+                    };
+                    access
+                        .act(&target.source, op)
                         .err()
                         .map(|error| labelled(&target.repo, &error, repos))
                 })
@@ -256,15 +277,16 @@ impl CommitArea {
                 Outcome::Failed {
                     action: "commit",
                     log: failures.join("\n\n"),
+                    advice: None,
                 }
             }
         });
     }
 
-    pub fn toggle_amend(&mut self, root: &std::path::Path) {
+    pub fn toggle_amend(&mut self, source: &RepoSource) {
         self.amend = !self.amend;
         if self.amend && self.editor.text().trim().is_empty() {
-            if let Some(message) = working_copy::head_message(root) {
+            if let Some(message) = self.access.head_message(source) {
                 self.editor.set_text(&message);
             }
         }
@@ -286,19 +308,37 @@ impl CommitArea {
                 }
             })
             .unwrap_or(RemoteKind::Fetch);
-        self.start(Some(kind), move || {
-            if let [job] = jobs.as_slice() {
-                return remote_outcome(&job.root, &job.head, &job.request, &job.remote);
-            }
+        let access = self.access.clone();
+        let waker = self.waker.clone();
+        self.start(Some(kind), move |progress| {
+            let several = jobs.len() > 1;
             let outcomes: Vec<(String, Outcome)> = jobs
                 .iter()
                 .map(|job| {
+                    let tell = |line: &str| {
+                        let line = if several {
+                            format!("{}: {line}", job.repo)
+                        } else {
+                            line.to_string()
+                        };
+                        if let Ok(mut last) = progress.lock() {
+                            *last = Some(line);
+                        }
+                        waker();
+                    };
                     (
                         job.repo.clone(),
-                        remote_outcome(&job.root, &job.head, &job.request, &job.remote),
+                        remote_outcome(access.as_ref(), job, &tell),
                     )
                 })
                 .collect();
+            if let [(_, _)] = outcomes.as_slice() {
+                return outcomes
+                    .into_iter()
+                    .next()
+                    .map(|(_, outcome)| outcome)
+                    .unwrap_or(Outcome::Committed);
+            }
             combine_outcomes(kind, outcomes)
         });
     }
@@ -306,20 +346,28 @@ impl CommitArea {
     fn start(
         &mut self,
         remote: Option<RemoteKind>,
-        work: impl FnOnce() -> Outcome + Send + 'static,
+        work: impl FnOnce(&Mutex<Option<String>>) -> Outcome + Send + 'static,
     ) {
         let (sender, answer) = mpsc::channel();
         let waker = self.waker.clone();
+        let progress = Arc::new(Mutex::new(None));
+        let told = progress.clone();
         let spawned = std::thread::Builder::new()
             .name("git-panel-op".into())
             .spawn(move || {
-                if sender.send(work()).is_err() {
+                if sender.send(work(&told)).is_err() {
                     eprintln!("git panel: the panel closed before its operation finished");
                 }
                 waker();
             });
         match spawned {
-            Ok(_) => self.running = Some(Running { answer, remote }),
+            Ok(_) => {
+                self.running = Some(Running {
+                    answer,
+                    remote,
+                    progress,
+                })
+            }
             Err(error) => eprintln!("git panel: operation thread: {error}"),
         }
     }
@@ -331,6 +379,7 @@ impl CommitArea {
             Err(TryRecvError::Disconnected) => Outcome::Failed {
                 action: "operation",
                 log: "The operation stopped unexpectedly.".into(),
+                advice: None,
             },
         };
         self.running = None;
@@ -404,7 +453,7 @@ pub(crate) fn suggested_message(status: &[StatusEntry]) -> Option<String> {
     Some(format!("{action} {name}"))
 }
 
-fn failed(action: &'static str, error: &CommandError) -> Outcome {
+fn failed(action: &'static str, error: &CommandError, advice: Option<String>) -> Outcome {
     let log = error.output.log();
     Outcome::Failed {
         action,
@@ -413,6 +462,7 @@ fn failed(action: &'static str, error: &CommandError) -> Outcome {
         } else {
             log
         },
+        advice,
     }
 }
 
@@ -431,12 +481,19 @@ fn labelled(repo: &str, error: &CommandError, repos: usize) -> String {
 }
 
 fn remote_outcome(
-    root: &std::path::Path,
-    head: &HeadState,
-    request: &RemoteRequest,
-    remote: &str,
+    access: &dyn GitAccess,
+    job: &RemoteJob,
+    progress: &(dyn Fn(&str) + Sync),
 ) -> Outcome {
+    let (head, request, remote) = (&job.head, &job.request, job.remote.as_str());
     let branch = head.branch.clone().unwrap_or_default();
+    let run = |command: RemoteCommand| access.remote(&job.source, command, progress);
+    let failed = |kind: RemoteKind, error: &CommandError| {
+        let advice = git::access::sign_in_failed(&error.output)
+            .then(|| access.sign_in_advice())
+            .flatten();
+        failed(kind.name(), error, advice)
+    };
     let push = |force: bool| {
         let mode = if force {
             PushMode::ForceWithLease
@@ -450,29 +507,40 @@ fn remote_outcome(
             .as_ref()
             .filter(|(tracked_remote, _)| tracked_remote == remote)
             .map_or(branch.clone(), |(_, name)| name.clone());
-        working_copy::push(root, remote, &branch, &remote_branch, mode)
+        run(RemoteCommand::Push {
+            remote: remote.to_string(),
+            branch: branch.clone(),
+            remote_branch,
+            mode,
+        })
     };
     let pull = |rebase: bool| {
-        let branch_arg = (head.upstream_ref.is_none()).then_some(branch.as_str());
-        working_copy::pull(root, remote, branch_arg, rebase)
+        let branch_arg = (head.upstream_ref.is_none()).then(|| branch.clone());
+        run(RemoteCommand::Pull {
+            remote: remote.to_string(),
+            branch: branch_arg,
+            rebase,
+        })
     };
     match request {
-        RemoteRequest::Fetch(target) => match working_copy::fetch(root, target.as_deref()) {
+        RemoteRequest::Fetch(target) => match run(RemoteCommand::Fetch {
+            remote: target.clone(),
+        }) {
             Ok(output) => format_fetch(target.as_deref(), output),
-            Err(error) => failed(RemoteKind::Fetch.name(), &error),
+            Err(error) => failed(RemoteKind::Fetch, &error),
         },
         RemoteRequest::Pull { rebase } => match pull(*rebase) {
             Ok(output) => format_pull(remote, output),
-            Err(error) => failed(RemoteKind::Pull.name(), &error),
+            Err(error) => failed(RemoteKind::Pull, &error),
         },
         RemoteRequest::Push { force } => match push(*force) {
             Ok(output) => format_push(&branch, remote, output),
-            Err(error) => failed(RemoteKind::Push.name(), &error),
+            Err(error) => failed(RemoteKind::Push, &error),
         },
         RemoteRequest::Sync => {
             let pulled = match pull(false) {
                 Ok(output) => output,
-                Err(error) => return failed(RemoteKind::Pull.name(), &error),
+                Err(error) => return failed(RemoteKind::Pull, &error),
             };
             match push(false) {
                 Ok(pushed) => Outcome::WithLog {
@@ -480,7 +548,7 @@ fn remote_outcome(
                     message: format!("Synced {branch} with {remote}"),
                     log: format!("{}\n{}", pulled.log(), pushed.log()),
                 },
-                Err(error) => failed(RemoteKind::Push.name(), &error),
+                Err(error) => failed(RemoteKind::Push, &error),
             }
         }
     }
@@ -491,6 +559,7 @@ fn combine_outcomes(kind: RemoteKind, outcomes: Vec<(String, Outcome)>) -> Outco
     let mut messages = Vec::new();
     let mut logs = Vec::new();
     let mut failures = Vec::new();
+    let mut advice = None;
     for (repo, outcome) in outcomes {
         match outcome {
             Outcome::Toast(message) => messages.push(format!("{repo}: {message}")),
@@ -499,7 +568,12 @@ fn combine_outcomes(kind: RemoteKind, outcomes: Vec<(String, Outcome)>) -> Outco
                 logs.push(format!("{repo}:\n{log}"));
             }
             Outcome::PullRequest { message, .. } => messages.push(format!("{repo}: {message}")),
-            Outcome::Failed { log, .. } => failures.push(format!("{repo}:\n{log}")),
+            Outcome::Failed {
+                log, advice: said, ..
+            } => {
+                failures.push(format!("{repo}:\n{log}"));
+                advice = advice.or(said);
+            }
             Outcome::Committed => {}
         }
     }
@@ -508,6 +582,7 @@ fn combine_outcomes(kind: RemoteKind, outcomes: Vec<(String, Outcome)>) -> Outco
         return Outcome::Failed {
             action: kind.name(),
             log: failures.join("\n\n"),
+            advice,
         };
     }
     Outcome::WithLog {
@@ -647,8 +722,12 @@ pub(crate) fn outcome_requests(outcome: Outcome) -> Vec<PanelRequest> {
             action: label.into(),
             then: Box::new(PanelRequest::OpenUrl(url)),
         }],
-        Outcome::Failed { action, log } => vec![PanelRequest::ToastAction {
-            message: format!("git {action} failed"),
+        Outcome::Failed {
+            action,
+            log,
+            advice,
+        } => vec![PanelRequest::ToastAction {
+            message: advice.unwrap_or_else(|| format!("git {action} failed")),
             action: "View Log".into(),
             then: Box::new(log_tab(action, log)),
         }],
@@ -714,7 +793,11 @@ mod tests {
     fn target(repo: &str, staged: usize) -> CommitTarget {
         CommitTarget {
             repo: repo.into(),
-            root: PathBuf::from("/tmp").join(repo),
+            source: RepoSource {
+                name: repo.into(),
+                root: std::path::PathBuf::from("/tmp").join(repo),
+                ..RepoSource::default()
+            },
             staged,
             conflicts: false,
         }
@@ -722,7 +805,7 @@ mod tests {
 
     #[test]
     fn the_plan_says_what_a_commit_would_make_or_why_not() {
-        let mut area = CommitArea::new(Arc::new(|| {}));
+        let mut area = CommitArea::new(Arc::new(|| {}), Arc::new(git::access::LocalGit));
         let none = HashSet::new();
         let plan = area.plan(&[], &none, false, None);
         assert!(!plan.enabled);

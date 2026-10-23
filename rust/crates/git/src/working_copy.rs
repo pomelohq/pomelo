@@ -3,17 +3,19 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(300);
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Staging {
     Staged,
     Partial,
     Unstaged,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusEntry {
     pub path: String,
     /// The index and worktree columns of `git status` ('.' when unchanged).
@@ -40,7 +42,8 @@ impl StatusEntry {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum Upstream {
     None,
     /// Configured, but the remote branch no longer exists.
@@ -51,7 +54,7 @@ pub enum Upstream {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HeadState {
     pub branch: Option<String>,
     pub short_sha: Option<String>,
@@ -60,21 +63,24 @@ pub struct HeadState {
     pub upstream_ref: Option<(String, String)>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CommitOptions {
     pub amend: bool,
     pub signoff: bool,
     pub no_verify: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PushMode {
     Normal,
     SetUpstream,
     ForceWithLease,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CommandOutput {
     pub stdout: String,
     pub stderr: String,
@@ -90,7 +96,7 @@ impl CommandOutput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandError {
     pub message: String,
     pub output: CommandOutput,
@@ -100,6 +106,85 @@ pub(crate) fn run(
     root: &Path,
     args: &[&str],
     timeout: Duration,
+) -> Result<CommandOutput, CommandError> {
+    run_with(root, args, timeout, None)
+}
+
+/// Git's progress lines (`Writing objects: 40% (2/5)`), which only `--progress` prints; they are told as they
+/// come and left out of the output, so the output reads as it does without them.
+fn is_progress(line: &str) -> bool {
+    const PROGRESS: &[&str] = &[
+        "Enumerating objects:",
+        "Counting objects:",
+        "Compressing objects:",
+        "Writing objects:",
+        "Receiving objects:",
+        "Resolving deltas:",
+        "Unpacking objects:",
+        "Delta compression",
+        "Total ",
+        "Updating files:",
+        "Checking out files:",
+    ];
+    let line = line.trim_start();
+    let line = line.strip_prefix("remote:").map_or(line, str::trim_start);
+    PROGRESS.iter().any(|prefix| line.starts_with(prefix))
+}
+
+fn read_stderr(mut pipe: impl Read, progress: Option<&(dyn Fn(&str) + Sync)>) -> String {
+    let mut kept = String::new();
+    let mut pending = Vec::new();
+    let mut buffer = [0u8; 4096];
+    let flush = |pending: &mut Vec<u8>, kept: &mut String, ended_line: bool| {
+        let line = String::from_utf8_lossy(pending).into_owned();
+        pending.clear();
+        if let Some(progress) = progress {
+            if !line.trim().is_empty() {
+                progress(line.trim_end());
+            }
+            if is_progress(&line) {
+                return;
+            }
+        }
+        if ended_line {
+            kept.push_str(&line);
+            kept.push('\n');
+        } else if progress.is_none() {
+            kept.push_str(&line);
+        }
+    };
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => {
+                for byte in &buffer[..count] {
+                    match byte {
+                        b'\n' => flush(&mut pending, &mut kept, true),
+                        b'\r' if progress.is_some() => flush(&mut pending, &mut kept, false),
+                        _ => pending.push(*byte),
+                    }
+                }
+            }
+            Err(error) => {
+                kept.push_str(&format!("\n(output cut: {error})"));
+                break;
+            }
+        }
+    }
+    if !pending.is_empty() {
+        let line = String::from_utf8_lossy(&pending).into_owned();
+        if progress.is_none() || !is_progress(&line) {
+            kept.push_str(&line);
+        }
+    }
+    kept
+}
+
+fn run_with(
+    root: &Path,
+    args: &[&str],
+    timeout: Duration,
+    progress: Option<&(dyn Fn(&str) + Sync)>,
 ) -> Result<CommandOutput, CommandError> {
     let failed = |message: String| CommandError {
         message,
@@ -117,62 +202,65 @@ pub(crate) fn run(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| failed(format!("git: {error}")))?;
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    std::thread::scope(|threads| {
+        let stdout = threads.spawn(move || {
             let mut text = String::new();
-            if let Some(mut pipe) = pipe {
+            if let Some(mut pipe) = stdout_pipe {
                 if let Err(error) = pipe.read_to_string(&mut text) {
                     text.push_str(&format!("\n(output cut: {error})"));
                 }
             }
             text
-        })
-    };
-    let stdout = drain(
-        child
-            .stdout
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
-    let stderr = drain(
-        child
-            .stderr
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
-            Ok(None) if Instant::now() >= deadline => {
-                if let Err(error) = child.kill() {
-                    eprintln!("git: kill after timeout: {error}");
+        });
+        let stderr = threads.spawn(move || {
+            stderr_pipe
+                .map(|pipe| read_stderr(pipe, progress))
+                .unwrap_or_default()
+        });
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) if Instant::now() >= deadline => {
+                    if let Err(error) = child.kill() {
+                        eprintln!("git: kill after timeout: {error}");
+                    }
+                    if let Err(error) = child.wait() {
+                        eprintln!("git: reap after timeout: {error}");
+                    }
+                    break None;
                 }
-                if let Err(error) = child.wait() {
-                    eprintln!("git: reap after timeout: {error}");
+                Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+                Err(error) => {
+                    if let Err(error) = child.kill() {
+                        eprintln!("git: kill: {error}");
+                    }
+                    if let Err(error) = child.wait() {
+                        eprintln!("git: reap: {error}");
+                    }
+                    return Err(failed(format!("git: {error}")));
                 }
-                break None;
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
-            Err(error) => return Err(failed(format!("git: {error}"))),
+        };
+        let output = CommandOutput {
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        };
+        match status {
+            Some(status) if status.success() => Ok(output),
+            Some(_) => Err(CommandError {
+                message: first_error_line(&output.stderr)
+                    .unwrap_or_else(|| format!("git {} failed", args.first().unwrap_or(&""))),
+                output,
+            }),
+            None => Err(CommandError {
+                message: format!("git {} timed out", args.first().unwrap_or(&"")),
+                output,
+            }),
         }
-    };
-    let output = CommandOutput {
-        stdout: stdout.join().unwrap_or_default(),
-        stderr: stderr.join().unwrap_or_default(),
-    };
-    match status {
-        Some(status) if status.success() => Ok(output),
-        Some(_) => Err(CommandError {
-            message: first_error_line(&output.stderr)
-                .unwrap_or_else(|| format!("git {} failed", args.first().unwrap_or(&""))),
-            output,
-        }),
-        None => Err(CommandError {
-            message: format!("git {} timed out", args.first().unwrap_or(&"")),
-            output,
-        }),
-    }
+    })
 }
 
 fn first_error_line(stderr: &str) -> Option<String> {
@@ -470,15 +558,30 @@ pub fn push(
     remote_branch: &str,
     mode: PushMode,
 ) -> Result<CommandOutput, CommandError> {
+    push_with(root, remote, branch, remote_branch, mode, None)
+}
+
+/// [`push`], telling git's progress to `progress` as it comes.
+pub fn push_with(
+    root: &Path,
+    remote: &str,
+    branch: &str,
+    remote_branch: &str,
+    mode: PushMode,
+    progress: Option<&(dyn Fn(&str) + Sync)>,
+) -> Result<CommandOutput, CommandError> {
     let refspec = format!("{branch}:{remote_branch}");
     let mut args = vec!["push"];
+    if progress.is_some() {
+        args.push("--progress");
+    }
     match mode {
         PushMode::Normal => {}
         PushMode::SetUpstream => args.push("--set-upstream"),
         PushMode::ForceWithLease => args.push("--force-with-lease"),
     }
     args.extend([remote, refspec.as_str()]);
-    run(root, &args, NETWORK_TIMEOUT)
+    run_with(root, &args, NETWORK_TIMEOUT, progress)
 }
 
 /// Pulls the tracked branch; `branch` names it only when the branch tracks nothing yet.
@@ -488,18 +591,47 @@ pub fn pull(
     branch: Option<&str>,
     rebase: bool,
 ) -> Result<CommandOutput, CommandError> {
+    pull_with(root, remote, branch, rebase, None)
+}
+
+pub fn pull_with(
+    root: &Path,
+    remote: &str,
+    branch: Option<&str>,
+    rebase: bool,
+    progress: Option<&(dyn Fn(&str) + Sync)>,
+) -> Result<CommandOutput, CommandError> {
     let mut args = vec!["pull"];
+    if progress.is_some() {
+        args.push("--progress");
+    }
     if rebase {
         args.push("--rebase");
     }
     args.push(remote);
     args.extend(branch);
-    run(root, &args, NETWORK_TIMEOUT)
+    run_with(root, &args, NETWORK_TIMEOUT, progress)
 }
 
 /// Fetches `remote`, or every remote when `None`.
 pub fn fetch(root: &Path, remote: Option<&str>) -> Result<CommandOutput, CommandError> {
-    run(root, &["fetch", remote.unwrap_or("--all")], NETWORK_TIMEOUT)
+    fetch_with(root, remote, None)
+}
+
+pub fn fetch_with(
+    root: &Path,
+    remote: Option<&str>,
+    progress: Option<&(dyn Fn(&str) + Sync)>,
+) -> Result<CommandOutput, CommandError> {
+    let mut args = vec!["fetch"];
+    if progress.is_some() {
+        args.push("--progress");
+    }
+    match remote {
+        Some(remote) => args.push(remote),
+        None => args.push("--all"),
+    }
+    run_with(root, &args, NETWORK_TIMEOUT, progress)
 }
 
 pub fn parse_github_remote(url: &str) -> Option<(String, String, String)> {
