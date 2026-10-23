@@ -4,6 +4,25 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2026-10-23
+
+### Added
+- Files on a remote project: the host's file tree updates live, files open and save there with conflicts caught instead of overwritten, tree changes (create, rename, copy, delete, trash), saves that wait for the connection, and unsaved edits kept across restarts. (#299, #301, #307)
+- Ports for a remote project: the local dev proxy forwards a host's workspace addresses, so `svc.repo.ws.localhost:8767` opens here as it does locally; the shown workspace's shared services are forwarded too, with a Ports tab and `pom -H <host> forward` / `pom host ports`. (#305, #306)
+- A remote project's Services panel and service tab are the same as a local one's, in the left dock. (#304, #308)
+- `repos.<name>.modules_private` keeps per-workspace folders out of the shared node_modules store; `.prisma` is always kept out. (#316)
+- `pom queue --redis <name>`; queue commands find the shared Redis from the env and Bull v4 queues without a meta key. (#302)
+
+### Changed
+- `pom queue counts` and `wait-idle` count only due work: repeatable jobs and delayed jobs not yet due no longer keep a service busy. Their JSON is now `pom.queue/v2`. (#302)
+- `pom proxy fault add`, `rm` and `clear` return once the running proxy has applied the change, with `applied` in `--json`. (#303)
+- `--json` transfers (`ws export|import`, `project export|import`) print one JSON document on stdout, also on errors, with progress as JSON lines on stderr. (#303)
+- Projects created or used from the CLI appear in `pom project ls` and Connect to host. (#302)
+
+### Fixed
+- `pom agent send` never presses its retry Enter into a dialog the agent drew meanwhile, so it cannot approve a tool by accident. (#315)
+- `pom agent ls` shows a turn as running right after `send`, and `agent wait` no longer sees a stale state after a prompt is answered. (#303, #309)
+
 ## [0.9.5] - 2026-10-23
 
 ### Added
