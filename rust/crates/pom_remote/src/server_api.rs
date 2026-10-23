@@ -54,6 +54,13 @@ pub mod method {
     pub const SEARCH_START: &str = "search.start";
     pub const SEARCH_CANCEL: &str = "search.cancel";
     pub const USAGE_GET: &str = "usage.get";
+    pub const JIRA_SETTINGS: &str = "jira.settings";
+    pub const JIRA_SAVE: &str = "jira.save";
+    pub const JIRA_TEST: &str = "jira.test";
+    pub const JIRA_SEARCH: &str = "jira.search";
+    pub const JIRA_ISSUE: &str = "jira.issue";
+    pub const JIRA_BOARDS: &str = "jira.boards";
+    pub const JIRA_LIST: &str = "jira.list";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -111,6 +118,13 @@ pub const METHODS: &[&str] = &[
     method::SEARCH_START,
     method::SEARCH_CANCEL,
     method::USAGE_GET,
+    method::JIRA_SETTINGS,
+    method::JIRA_SAVE,
+    method::JIRA_TEST,
+    method::JIRA_SEARCH,
+    method::JIRA_ISSUE,
+    method::JIRA_BOARDS,
+    method::JIRA_LIST,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -152,6 +166,17 @@ pub const LIVE_LOGS: &[&str] = &[method::LOGS_FOLLOW];
 
 /// The methods a server must list for the app to create, sleep, wake and pull workspaces there.
 pub const JOBS: &[&str] = &[method::JOB_START, method::JOB_FOLLOW, method::JOB_CANCEL];
+
+/// The methods a server must list for the app to read Jira with the settings kept on that machine.
+pub const JIRA: &[&str] = &[
+    method::JIRA_SETTINGS,
+    method::JIRA_SAVE,
+    method::JIRA_TEST,
+    method::JIRA_SEARCH,
+    method::JIRA_ISSUE,
+    method::JIRA_BOARDS,
+    method::JIRA_LIST,
+];
 
 /// What a watch pushes, each as its full value whenever it changed.
 pub mod topic {
@@ -928,4 +953,24 @@ pub struct UsageReport {
     /// When the limits shown were read (unix seconds).
     pub limits_at: Option<u64>,
     pub today: Option<agent_usage::DaySummary>,
+}
+
+/// A Jira request about the project `cfg`: `keys` for `jira.search`, `key` for `jira.issue`, `list` (as
+/// [`pom_jira::TicketList`] writes it) for `jira.list`, `change` for `jira.save`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JiraParams {
+    pub cfg: String,
+    pub keys: Vec<String>,
+    pub key: String,
+    pub list: String,
+    pub change: pom_jira::SetupChange,
+}
+
+/// Who the Jira settings sign in as.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JiraAccount {
+    pub name: String,
+    pub email: String,
 }

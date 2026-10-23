@@ -17,6 +17,8 @@ pub enum JiraError {
     Http(u16),
     Transport(String),
     Parse(String),
+    /// What the machine that asked Jira for us said went wrong, already worded.
+    Remote(String),
 }
 
 impl std::fmt::Display for JiraError {
@@ -28,6 +30,7 @@ impl std::fmt::Display for JiraError {
             JiraError::Http(code) => write!(formatter, "jira: HTTP {code}"),
             JiraError::Transport(message) => write!(formatter, "jira: {message}"),
             JiraError::Parse(message) => write!(formatter, "jira: unexpected answer ({message})"),
+            JiraError::Remote(message) => formatter.write_str(message),
         }
     }
 }
@@ -144,13 +147,15 @@ pub struct Issue {
     pub url: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Board {
     pub id: i64,
     pub name: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SprintIssue {
     pub key: String,
     pub summary: String,

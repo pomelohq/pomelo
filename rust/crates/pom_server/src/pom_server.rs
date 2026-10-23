@@ -4,6 +4,7 @@
 pub mod client;
 mod dispatch;
 mod fs;
+mod jira;
 mod jobs;
 mod log;
 mod paths;
@@ -19,6 +20,7 @@ pub use dispatch::{
     check_branch, check_name, check_op_id, registered_config, Dispatcher, Ops, FAILED, OP_MEMORY,
 };
 pub use fs::{FsService, CHUNK_BYTES, CHUNK_ENTRIES, MAX_FS_STREAMS, WATCH_LINGER};
+pub use jira::{JiraService, MakeTransport, ReadEnv};
 pub use jobs::{Jobs, JOB_MEMORY};
 pub use log::{RequestRecord, ServerLog, ROTATE_AT};
 pub use paths::{ensure_private_dir, running_versions, ServerPaths};

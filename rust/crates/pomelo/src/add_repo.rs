@@ -132,17 +132,18 @@ impl App {
 
     /// The Project page's repository rows for the main window Settings works on.
     pub(crate) fn project_page(&self) -> settings_ui::ProjectPage {
-        let Some(project) = self
-            .bundle_window()
-            .and_then(|id| self.mains.get(&id))
-            .and_then(|main| main.project.as_ref())
-        else {
+        let main = self.bundle_window().and_then(|id| self.mains.get(&id));
+        if let Some(remote) = main.and_then(|main| main.remote.as_ref()) {
+            return remote.project_page();
+        }
+        let Some(project) = main.and_then(|main| main.project.as_ref()) else {
             return settings_ui::ProjectPage::default();
         };
         let Some(config) = project.config.as_ref() else {
             return settings_ui::ProjectPage {
                 session: project.session.clone(),
                 repos: Vec::new(),
+                host: None,
             };
         };
         let others: Vec<&pom_layout::Workspace> = project
@@ -169,6 +170,7 @@ impl App {
         settings_ui::ProjectPage {
             session: project.session.clone(),
             repos,
+            host: None,
         }
     }
 

@@ -15,6 +15,7 @@ libc = "0.2"
 pom_agent = { path = "../pom_agent" }
 pom_config = { path = "../pom_config" }
 pom_env = { path = "../pom_env" }
+pom_jira = { path = "../pom_jira" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }

@@ -5,7 +5,7 @@
 //! chips until input handling lands (edit `~/.config/pomelo/settings.json`). Pure — the binary owns display.
 
 mod settings_view;
-pub use settings_view::{SettingsView, SideEffects};
+pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
 use ui::{
@@ -1757,11 +1757,11 @@ pub fn chrome(
     search: &str,
     search_active: bool,
     nav_scroll: f32,
-    project: &str,
+    project: &ProjectPage,
     language: Option<usize>,
 ) -> Chrome {
-    let project_scope =
-        (matches!(selected, PROJECT | INTEGRATIONS) && !project.is_empty()).then_some(project);
+    let project_scope = (matches!(selected, PROJECT | INTEGRATIONS) && !project.session.is_empty())
+        .then_some(project);
     let sub_page = language
         .filter(|_| selected == LANGUAGES_TOOLS)
         .and_then(|index| language_names().get(index).copied());
@@ -1987,7 +1987,11 @@ pub fn page(
             w,
         )
     } else if selected == PROJECT && !state.project.session.is_empty() {
-        render_page(&project_page(&state.project), search, editing, w)
+        let page = match &state.project.host {
+            Some(host) => remote_project_page(&state.project, host),
+            None => project_page(&state.project),
+        };
+        render_page(&page, search, editing, w)
     } else if selected == PROJECT {
         div()
             .col()
@@ -2072,7 +2076,7 @@ pub fn panel(
         search,
         search_active,
         0.0,
-        &state.project.session,
+        &state.project,
         state.language,
     );
     for part in [ch.fixed, ch.nav] {
@@ -2325,12 +2329,21 @@ fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
 /// edge (never pushed off-window); the left group truncates/overlaps under it when space is tight.
 /// The scope the page edits: the user's settings file, or (Project and Integrations) the open project, whose
 /// config the right button then opens.
-fn toolbar(project: Option<&str>) -> Node {
+fn toolbar(project: Option<&ProjectPage>) -> Node {
     let (scope, file) = match project {
-        Some(name) => (name.to_string(), (CTRL_EDIT_PROJECT_CONFIG, "Edit pom.yml")),
+        // A remote project's pom.yml is on its machine: nothing here to open.
+        Some(ProjectPage {
+            session,
+            host: Some(host),
+            ..
+        }) => (format!("{session} on {host}"), None),
+        Some(project) => (
+            project.session.clone(),
+            Some((CTRL_EDIT_PROJECT_CONFIG, "Edit pom.yml")),
+        ),
         None => (
             "User".to_string(),
-            (CTRL_OPEN_JSON, "Edit in settings.json"),
+            Some((CTRL_OPEN_JSON, "Edit in settings.json")),
         ),
     };
     let chip = div()
@@ -2347,12 +2360,10 @@ fn toolbar(project: Option<&str>) -> Node {
         .items_center()
         .justify_between()
         .child(div().row().gap(8.0).items_center().child(chip))
-        .child(small_button(
-            file.0,
-            file.1,
-            false,
-            Some(ui::IconKind::File),
-        ))
+        .child(match file {
+            Some((id, text)) => small_button(id, text, false, Some(ui::IconKind::File)),
+            None => div(),
+        })
         .into()
 }
 
@@ -2793,11 +2804,15 @@ pub struct RepoSummary {
 pub struct ProjectPage {
     pub session: String,
     pub repos: Vec<RepoSummary>,
+    /// The machine a remote project runs on: its config is shown, and changed there.
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IntegrationsPage {
     pub session: String,
+    /// A remote project's settings: the machine they are kept on, and why there.
+    pub kept_on: Option<(String, String)>,
     pub keep_main_fresh: bool,
     pub refresh_minutes: u64,
     pub site: String,
@@ -3864,10 +3879,18 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
     let ready = !jira.site.trim().is_empty()
         && !jira.email.trim().is_empty()
         && jira.token != TokenSource::Missing;
-    Page {
-        title: "Integrations",
-        items: vec![
-            PageItem::Header("Jira"),
+    let mut items = vec![PageItem::Header("Jira")];
+    if let Some((place, why)) = &jira.kept_on {
+        items.push(PageItem::Row(SettingRow {
+            title: "Kept On".into(),
+            description: why.clone().into(),
+            control: Control::Value {
+                text: place.clone(),
+            },
+            reset: None,
+        }));
+    }
+    items.extend(vec![
             PageItem::Row(SettingRow {
                 title: "Site URL".into(),
                 description: "Your Jira Cloud address.".into(),
@@ -3920,6 +3943,10 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: reset_if_changed(CTRL_GROUP_WORKSPACES, s),
             }),
+    ]);
+    // Keeping main fresh runs here; a remote project's main lives on its machine.
+    if jira.kept_on.is_none() {
+        items.extend(vec![
             PageItem::Header("Main Workspace"),
             PageItem::Row(SettingRow {
                 title: "Keep Main Fresh".into(),
@@ -3941,7 +3968,11 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: None,
             }),
-        ],
+        ]);
+    }
+    Page {
+        title: "Integrations",
+        items,
     }
 }
 
@@ -3974,16 +4005,7 @@ fn project_page(project: &ProjectPage) -> Page {
             1 => "1 service".to_string(),
             count => format!("{count} services"),
         };
-        let presence = if !repo.cloned {
-            "not cloned into main".to_string()
-        } else if repo.workspaces == 0 {
-            "in main".to_string()
-        } else {
-            format!(
-                "in {} of {} workspaces besides main",
-                repo.present, repo.workspaces
-            )
-        };
+        let presence = repo_presence(repo);
         items.push(PageItem::Row(SettingRow {
             title: title.into(),
             description: format!("{services} - {presence}").into(),
@@ -3997,6 +4019,65 @@ fn project_page(project: &ProjectPage) -> Page {
     Page {
         title: "Project",
         items: items.into_iter().chain(project_config_items()).collect(),
+    }
+}
+
+fn repo_presence(repo: &RepoSummary) -> String {
+    if !repo.cloned {
+        "not cloned into main".to_string()
+    } else if repo.workspaces == 0 {
+        "in main".to_string()
+    } else {
+        format!(
+            "in {} of {} workspaces besides main",
+            repo.present, repo.workspaces
+        )
+    }
+}
+
+/// A remote project's repositories as its machine reports them; adding, renaming and removing happen there.
+fn remote_project_page(project: &ProjectPage, host: &str) -> Page {
+    let mut items = vec![PageItem::Header("Repositories")];
+    items.extend(project.repos.iter().map(|repo| {
+        PageItem::Row(SettingRow {
+            title: repo.name.clone().into(),
+            description: repo_presence(repo).into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        })
+    }));
+    items.extend([
+        PageItem::Header("Config"),
+        PageItem::Row(SettingRow {
+            title: "Runs On".into(),
+            description: format!("Repositories and pom.yml are changed on {host}.").into(),
+            control: Control::Value {
+                text: host.to_string(),
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Config File".into(),
+            description: "Edit pom.yml from main in the Files panel.".into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Check Out Added Repos".into(),
+            description: format!("Run `pom -H {host} apply <workspace>`.").into(),
+            control: Control::Value {
+                text: String::new(),
+            },
+            reset: None,
+        }),
+    ]);
+    Page {
+        title: "Project",
+        items,
     }
 }
 

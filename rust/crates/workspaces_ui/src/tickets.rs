@@ -5,42 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pom_jira::{Board, IssueCache, SprintIssue};
+pub use pom_jira::TicketList;
+use pom_jira::{Board, Connect, IssueCache, SprintIssue};
 use pom_paths::StateDir;
 
 const REFRESH_EVERY: Duration = Duration::from_secs(60);
-
-/// Which tickets the new-workspace form lists.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TicketList {
-    Sprint(i64),
-    Backlog(i64),
-    Assigned,
-}
-
-impl TicketList {
-    fn encode(self) -> String {
-        match self {
-            TicketList::Sprint(board) => format!("sprint:{board}"),
-            TicketList::Backlog(board) => format!("backlog:{board}"),
-            TicketList::Assigned => "assigned".into(),
-        }
-    }
-
-    fn decode(text: &str) -> Option<TicketList> {
-        let text = text.trim();
-        if text == "assigned" {
-            return Some(TicketList::Assigned);
-        }
-        let (kind, board) = text.split_once(':')?;
-        let board = board.parse().ok()?;
-        match kind {
-            "sprint" => Some(TicketList::Sprint(board)),
-            "backlog" => Some(TicketList::Backlog(board)),
-            _ => None,
-        }
-    }
-}
 
 /// The list the form showed last in a project, opened again next time.
 fn list_file(state: &StateDir, session: &str) -> std::path::PathBuf {
@@ -84,17 +53,39 @@ impl TicketSource {
         board: Option<i64>,
         only_mine: bool,
     ) -> Option<TicketSource> {
-        let client = Arc::new(pom_jira::resolve(state, session)?);
-        let for_issues = client.clone();
-        Some(TicketSource {
-            boards: Arc::new(move || client.boards().map_err(|error| error.to_string())),
+        let client = pom_jira::resolve(state, session)?;
+        let jira: Arc<dyn pom_jira::Jira> = Arc::new(client);
+        Some(TicketSource::reaching(
+            state,
+            session,
+            Arc::new(move || Some(jira.clone())),
+            board,
+            only_mine,
+        ))
+    }
+
+    /// Tickets from whatever `connect` reaches when asked; `session` keeps the list picked last.
+    pub fn reaching(
+        state: &StateDir,
+        session: &str,
+        connect: Connect,
+        board: Option<i64>,
+        only_mine: bool,
+    ) -> TicketSource {
+        let for_issues = connect.clone();
+        let not_set_up = || "Jira is not set up for this project".to_string();
+        TicketSource {
+            boards: Arc::new(move || {
+                connect()
+                    .ok_or_else(not_set_up)?
+                    .boards()
+                    .map_err(|error| error.to_string())
+            }),
             issues: Arc::new(move |list| {
-                match list {
-                    TicketList::Sprint(board) => for_issues.current_sprint_issues(board),
-                    TicketList::Backlog(board) => for_issues.backlog_issues(board),
-                    TicketList::Assigned => for_issues.assigned_issues(),
-                }
-                .map_err(|error| error.to_string())
+                for_issues()
+                    .ok_or_else(not_set_up)?
+                    .issues(list)
+                    .map_err(|error| error.to_string())
             }),
             board,
             start: load_list(state, session),
@@ -103,15 +94,14 @@ impl TicketSource {
                 Arc::new(move |list| save_list(&path, list))
             },
             only_mine,
-        })
+        }
     }
 }
 
 /// Each workspace's ticket status (the key comes from its branch), from the disk cache at once and from Jira
 /// once a minute while asked.
 pub struct TicketStatuses {
-    state: StateDir,
-    session: String,
+    jira: Connect,
     cache: Arc<Mutex<IssueCache>>,
     refreshing: Arc<AtomicBool>,
     /// A refresh brought news the rows have not shown yet.
@@ -128,13 +118,18 @@ impl TicketStatuses {
     ) -> TicketStatuses {
         TicketStatuses {
             cache: Arc::new(Mutex::new(IssueCache::open(&state, session))),
-            state,
-            session: session.to_string(),
+            jira: pom_jira::session_connect(&state, session),
             refreshing: Arc::new(AtomicBool::new(false)),
             changed: Arc::new(AtomicBool::new(false)),
             last: None,
             waker,
         }
+    }
+
+    /// Asks `jira` for the statuses instead of this Mac's settings for the session.
+    pub fn with_jira(mut self, jira: Connect) -> TicketStatuses {
+        self.jira = jira;
+        self
     }
 
     /// The ticket status for a branch, as last fetched.
@@ -174,7 +169,7 @@ impl TicketStatuses {
             .iter()
             .filter_map(|branch| pom_jira::key_for_branch(branch))
             .collect();
-        let (state, session) = (self.state.clone(), self.session.clone());
+        let jira = self.jira.clone();
         let (cache, refreshing, changed, waker) = (
             self.cache.clone(),
             self.refreshing.clone(),
@@ -186,8 +181,8 @@ impl TicketStatuses {
                 .lock()
                 .map(|cache| cache.stale(&keys))
                 .unwrap_or_default();
-            let fetched = match pom_jira::resolve(&state, &session) {
-                Some(client) if !stale.is_empty() => match client.search_by_keys(&stale) {
+            let fetched = match (!stale.is_empty()).then(|| jira()).flatten() {
+                Some(client) => match client.search_by_keys(&stale) {
                     Ok(issues) => cache
                         .lock()
                         .map(|mut cache| cache.record(&stale, issues))
@@ -197,7 +192,7 @@ impl TicketStatuses {
                         false
                     }
                 },
-                _ => false,
+                None => false,
             };
             refreshing.store(false, Ordering::SeqCst);
             if fetched {

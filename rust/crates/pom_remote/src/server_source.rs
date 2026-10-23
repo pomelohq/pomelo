@@ -24,8 +24,8 @@ use crate::server_api::{
     JOBS, JOB_TASK, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_api::{
-    ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams, SharedRunParams,
-    UsageParams, UsageReport,
+    JiraParams, ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams,
+    SharedRunParams, UsageParams, UsageReport, JIRA,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -379,6 +379,7 @@ impl Inner {
             files_write: offers(&[FILES_WRITE]),
             files_search: offers(&[FILES_SEARCH]),
             usage: offers(&[method::USAGE_GET]),
+            jira: offers(JIRA),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -1192,6 +1193,27 @@ impl ProjectSource for ServerSource {
             Route::Server(report) => Ok(Some(report)),
             Route::Fallback => Ok(None),
         }
+    }
+
+    fn jira_request(
+        &self,
+        name: &str,
+        params: JiraParams,
+    ) -> Result<serde_json::Value, SourceError> {
+        if self.inner.offering(|info| info.jira)?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "Jira through {} needs a newer pom there",
+                self.inner.host.name
+            )));
+        }
+        let params = JiraParams {
+            cfg: self.inner.config.clone(),
+            ..params
+        };
+        let route = self
+            .inner
+            .request::<serde_json::Value>(name, params, READ_TIMEOUT)?;
+        self.inner.server_only(route, "Jira")
     }
 
     fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {

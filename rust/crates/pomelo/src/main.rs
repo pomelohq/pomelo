@@ -3058,17 +3058,21 @@ impl App {
         // driven by a `ui::Application`; the binary only pumps draw/input into it.
         let mut app = ui::Application::new();
         let settings = self.settings.clone();
-        let jira_session = self
-            .focused_main
-            .and_then(|id| self.mains.get(&id))
-            .or_else(|| self.mains.values().find(|main| main.project.is_some()))
-            .and_then(|main| main.project.as_ref())
-            .map(|project| (pom_paths::StateDir::from_env(), project.session.clone()));
-        let project_config = self
-            .focused_main
-            .and_then(|id| self.mains.get(&id))
-            .or_else(|| self.mains.values().find(|main| main.project.is_some()))
-            .and_then(|main| main.project.as_ref())
+        let focused = self.focused_main.and_then(|id| self.mains.get(&id));
+        // A remote window's settings are its host project's, never another window's local project.
+        let jira_remote = focused
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.settings_jira());
+        let local = match focused {
+            Some(main) if main.remote.is_some() => None,
+            _ => focused
+                .filter(|main| main.project.is_some())
+                .or_else(|| self.mains.values().find(|main| main.project.is_some()))
+                .and_then(|main| main.project.as_ref()),
+        };
+        let jira_session =
+            local.map(|project| (pom_paths::StateDir::from_env(), project.session.clone()));
+        let project_config = local
             .and_then(|project| project.config.clone())
             .map(Arc::new);
         let (handle, entity) = app.open_raw_window::<settings_ui::SettingsView>(
@@ -3082,6 +3086,9 @@ impl App {
                 let mut view = settings_ui::SettingsView::new(settings);
                 view.set_fonts(fonts);
                 view.set_jira_session(jira_session);
+                if jira_remote.is_some() {
+                    view.set_jira_remote(jira_remote);
+                }
                 view.set_project_config(project_config);
                 view
             },

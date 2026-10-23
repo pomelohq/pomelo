@@ -23,6 +23,7 @@ use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
 use crate::fs::{FsService, WriteScope};
+use crate::jira::JiraService;
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
 use crate::search::SearchService;
@@ -253,6 +254,7 @@ pub struct Dispatcher {
     /// Modes picked for each project's services, kept while the server runs.
     modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
     usage: UsageService,
+    jira: JiraService,
 }
 
 impl Dispatcher {
@@ -269,7 +271,14 @@ impl Dispatcher {
             ops: Ops::new(op_memory),
             modes: Mutex::new(HashMap::new()),
             usage: UsageService::from_env(),
+            jira: JiraService::from_env(),
         }
+    }
+
+    /// Asks Jira through `jira` instead of curl and this process's environment.
+    pub fn with_jira(mut self, jira: JiraService) -> Self {
+        self.jira = jira;
+        self
     }
 
     /// Reads the agents' usage with `usage` instead of this user's home and the real endpoint.
@@ -613,6 +622,14 @@ impl Dispatcher {
                     params.since,
                     agent_usage::unix_now(),
                 ))
+            }
+            name if name.starts_with("jira.") => {
+                let params: pom_remote::server_api::JiraParams = params(raw)?;
+                let config = registered_config(&self.state, &params.cfg)?;
+                let session = pom_config::Config::load(&config)
+                    .map_err(|error| RemoteError::new(FAILED, error.to_string()))?
+                    .session;
+                self.jira.answer(&self.state, &session, name, params)
             }
             method::OP_RESULT => {
                 let params: OpParams = params(raw)?;

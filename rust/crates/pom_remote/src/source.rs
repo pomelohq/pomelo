@@ -185,6 +185,8 @@ pub struct TransportInfo {
     pub files_search: bool,
     /// The server reports the Claude account its agents run under and what they cost.
     pub usage: bool,
+    /// The server reads Jira with the settings kept there.
+    pub jira: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
@@ -426,6 +428,15 @@ pub trait ProjectSource: Send + Sync {
     /// The machine's Claude account, limits and today's cost since `since`; `None` when it cannot say.
     fn usage(&self, _since: u64) -> Result<Option<crate::server_api::UsageReport>, SourceError> {
         Ok(None)
+    }
+
+    /// Asks the machine's own Jira settings: `name` is a `jira.*` method, `params` its fields besides `cfg`.
+    fn jira_request(
+        &self,
+        _name: &str,
+        _params: crate::server_api::JiraParams,
+    ) -> Result<serde_json::Value, SourceError> {
+        Err(unsupported("Jira on the project's machine"))
     }
 
     fn shared_logs(&self, _name: &str, _lines: usize) -> Result<String, SourceError> {
