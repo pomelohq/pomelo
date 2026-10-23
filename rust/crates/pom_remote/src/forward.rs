@@ -120,9 +120,48 @@ pub fn port_free(port: u16) -> bool {
     !answers && port_bindable(port)
 }
 
-/// The port can be bound on 127.0.0.1; false while a forward holds it.
+/// The port can be bound on 127.0.0.1; false while a forward holds it. The probe never listens: a copy of it
+/// that a process spawned meanwhile holds until its exec must not keep ssh (SO_REUSEADDR) from binding the port.
 fn port_bindable(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    // SAFETY: a socket this function owns, given only valid pointers and lengths, and closed before it returns.
+    unsafe {
+        #[cfg(target_os = "linux")]
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+        #[cfg(not(target_os = "linux"))]
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        if fd < 0 {
+            return false;
+        }
+        #[cfg(not(target_os = "linux"))]
+        if libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) != 0 {
+            libc::close(fd);
+            return false;
+        }
+        let reuse: libc::c_int = 1;
+        let reusable = libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_REUSEADDR,
+            (&reuse as *const libc::c_int).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        ) == 0;
+        let mut address: libc::sockaddr_in = std::mem::zeroed();
+        #[cfg(not(target_os = "linux"))]
+        {
+            address.sin_len = std::mem::size_of::<libc::sockaddr_in>() as u8;
+        }
+        address.sin_family = libc::AF_INET as libc::sa_family_t;
+        address.sin_port = port.to_be();
+        address.sin_addr.s_addr = u32::from(Ipv4Addr::LOCALHOST).to_be();
+        let bound = reusable
+            && libc::bind(
+                fd,
+                (&address as *const libc::sockaddr_in).cast(),
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            ) == 0;
+        libc::close(fd);
+        bound
+    }
 }
 
 fn any_free_port() -> Result<u16, String> {
@@ -542,27 +581,8 @@ fn stop_child(child: &mut Child) {
 mod tests {
     use super::*;
     use crate::HostUrl;
-    use std::os::unix::fs::PermissionsExt;
 
-    /// Records each call's argv; `-O check` answers as `FAKE_MASTER` says, `-N` listens on the forward's port.
-    const FAKE_SSH: &str = r#"#!/bin/sh
-for arg in "$@"; do printf '%s ' "$arg"; done >> "$FAKE_SSH_LOG"
-printf '\n' >> "$FAKE_SSH_LOG"
-case "$1" in
-  -O)
-    if [ "$2" = check ]; then exit "${FAKE_MASTER:-0}"; fi
-    exit 0 ;;
-  -N)
-    while [ $# -gt 0 ]; do
-      if [ "$1" = -L ]; then spec=$2; fi
-      shift
-    done
-    port=${spec#127.0.0.1:}
-    port=${port%%:*}
-    exec nc -lk 127.0.0.1 "$port" ;;
-esac
-exit 1
-"#;
+    const FAKE_SSH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-ssh.sh");
 
     struct Fixture {
         _temp: tempfile::TempDir,
@@ -578,15 +598,11 @@ exit 1
                 .prefix("pomf")
                 .tempdir_in("/tmp")
                 .expect("temp");
-            let program = temp.path().join("ssh");
-            std::fs::write(&program, FAKE_SSH).expect("fake ssh");
-            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
-                .expect("chmod");
             Fixture {
                 log: temp.path().join("ssh.log"),
                 control: temp.path().join("control"),
                 records: temp.path().join("records"),
-                program,
+                program: PathBuf::from(FAKE_SSH),
                 _temp: temp,
             }
         }
@@ -637,9 +653,8 @@ exit 1
         }
     }
 
-    /// Each test looks in its own range, so tests running at once never pick the same ports.
     fn free_run(start: u16, length: u16) -> u16 {
-        (start..start + 5000)
+        (start..start + 1500)
             .step_by(37)
             .find(|start| (0..length).all(|step| port_free(start + step)))
             .expect("free ports")
@@ -695,7 +710,7 @@ exit 1
     #[test]
     fn a_taken_port_moves_to_the_next_free_one_and_an_exact_one_fails() {
         let fixture = Fixture::new();
-        let port = free_run(30000, 3);
+        let port = free_run(27000, 3);
         let _taken = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).expect("take");
         let forwarder = fixture.forwarder(true);
         let forward = forwarder
@@ -720,7 +735,7 @@ exit 1
     #[test]
     fn forwards_are_opened_again_after_a_reconnect_and_one_stops_alone() {
         let fixture = Fixture::new();
-        let ports = free_run(35000, 2);
+        let ports = free_run(29000, 2);
         let forwarder = fixture.forwarder(true);
         for port in [ports, ports + 1] {
             forwarder
@@ -747,7 +762,7 @@ exit 1
     #[test]
     fn without_a_shared_connection_a_dedicated_ssh_holds_the_port() {
         let fixture = Fixture::new();
-        let port = free_run(40000, 1);
+        let port = free_run(31000, 1);
         let forwarder = fixture.forwarder(false);
         let forward = forwarder
             .forward(&request(port, LocalPort::Same))
