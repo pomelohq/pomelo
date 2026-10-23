@@ -404,6 +404,14 @@ impl ServicesPanel {
         self.model.status(&self.model.context.holder_name(&target))
     }
 
+    /// Whether a start, stop or restart of `repo`/`service` is still running: its row ignores another meanwhile.
+    pub fn busy(&self, repo: &str, service: &str) -> bool {
+        let target = self.model.context.target(repo, service);
+        self.model
+            .pending(&self.model.context.holder_name(&target))
+            .is_some()
+    }
+
     /// Shows `repo`/`service` in `status` with the given failure, without running anything (snapshots, tests).
     pub fn show_status(
         &mut self,
