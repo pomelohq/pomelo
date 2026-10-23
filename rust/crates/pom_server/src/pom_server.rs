@@ -12,6 +12,7 @@ mod pty;
 mod search;
 mod server;
 mod services;
+mod usage;
 mod watch;
 
 pub use dispatch::{
@@ -28,4 +29,5 @@ pub use server::{
     bind, PeerCheck, Server, ServerHandle, ServerOptions, StartError, DEAD_AFTER,
     DEFAULT_IDLE_EXIT_MINUTES, SOCKET_CHECK_EVERY,
 };
+pub use usage::{FetchLimits, UsageService};
 pub use watch::{Watches, READ_EVERY};

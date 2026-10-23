@@ -4383,6 +4383,7 @@ fn main() -> anyhow::Result<()> {
                         ("main".into(), "$6.23".into()),
                     ],
                 }),
+                hidden: false,
             };
             let (w, h) = (lw * 2.0, lh * 2.0);
             entity.update(app.app_mut(), |view, _| {
@@ -5593,6 +5594,7 @@ fn window_usage() -> workspace::UsageInfo {
             sessions: 6,
             by_workspace: Vec::new(),
         }),
+        hidden: false,
     }
 }
 
