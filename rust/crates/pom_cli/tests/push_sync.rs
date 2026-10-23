@@ -388,13 +388,20 @@ fn a_signed_push_pulls_and_restarts_only_what_it_touched() {
     );
     assert_eq!(status, 200, "{answer}");
     assert!(answer.contains(r#""workspaces":[]"#), "{answer}");
-    std::thread::sleep(Duration::from_secs(7));
+    // A push is journaled and queued before its reply, so one that left no event for feat never syncs it.
+    assert!(
+        fixture
+            .events()
+            .iter()
+            .all(|event| event["workspace"] != "feat"),
+        "{:?}",
+        fixture.events()
+    );
     assert_eq!(
         fixture.head(),
         before,
         "nothing but a signed push of feat moves it"
     );
-    assert!(fixture.results().is_empty(), "{:?}", fixture.events());
     assert_eq!(
         fixture.feat_listing()["remote_ahead"],
         0,
@@ -513,7 +520,6 @@ fn a_burst_of_pushes_syncs_once() {
     assert_eq!(result["deliveries"], serde_json::json!(["b1", "b2", "b3"]));
     assert_eq!(result["commits"], 3);
     assert_eq!(fixture.head(), head);
-    std::thread::sleep(Duration::from_secs(7));
     assert_eq!(fixture.results().len(), 1, "{:?}", fixture.events());
     wait_for("web restarted once", || fixture.starts("web") == 2);
 }

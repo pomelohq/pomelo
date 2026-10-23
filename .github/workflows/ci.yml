@@ -35,9 +35,58 @@ jobs:
             workflows:
               - '.github/workflows/**'
 
-  # The same `make check` run locally: fmt, clippy -D warnings, tests.
+  fmt:
+    name: Rust fmt
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - run: cargo fmt --check
+
+  # Clippy and the tests run side by side from the same restored build; only the test job saves it.
+  rust-clippy:
+    name: Rust clippy
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: rust
+    env:
+      CARGO_INCREMENTAL: 0
+      # Keeps the cached target/ small enough to restore quickly; make's trim drops it past this.
+      POM_TARGET_LIMIT_GB: 8
+    steps:
+      # Full history, to tell which files changed since the commit the cached build came from.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            rust/target/
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
+      - name: Date sources by what changed since the cached build
+        run: scripts/date-sources.sh
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-hakari
+      - run: make hakari-check lint
+
   rust:
-    name: Rust fmt + clippy + test
+    name: Rust test
     needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: macos-15
@@ -51,10 +100,9 @@ jobs:
         working-directory: rust
     env:
       CARGO_INCREMENTAL: 0
-      # Keeps the cached target/ small enough to restore quickly; make check's trim drops it past this.
       POM_TARGET_LIMIT_GB: 8
+      NEXTEST_PROFILE: ci
     steps:
-      # Full history, to tell which files changed since the commit the cached build came from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -72,25 +120,21 @@ jobs:
             rust/target/
           key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
-      # Cargo rebuilds a crate when a source is newer than its last build, and a checkout makes every file new.
-      # Unchanged files get an old time, files changed since the cached build's commit the current one.
       - name: Date sources by what changed since the cached build
-        run: |
-          git ls-files -z | xargs -0 touch -t 200001010000
-          built="$(cat target/.built-from 2>/dev/null || true)"
-          if [ -n "$built" ] && git cat-file -e "$built^{commit}" 2>/dev/null; then
-            echo "cached build is from $built"
-            git diff --name-only --relative "$built" HEAD | while IFS= read -r file; do
-              if [ -e "$file" ]; then touch "$file"; fi
-            done
-          else
-            echo "no usable cached build: everything is new"
-            git ls-files -z | xargs -0 touch
-          fi
+        run: scripts/date-sources.sh
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-hakari
-      - run: make check
+          tool: cargo-nextest
+      - name: Tests (a test that passes only on its retry is listed as flaky)
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Flag flaky tests
+        if: ${{ always() }}
+        run: |
+          grep -E '^\s+FLAKY' "$RUNNER_TEMP/test.log" | sort -u | while IFS= read -r line; do
+            echo "::warning title=Flaky test::$(echo "$line" | sed -E 's/^ +//')"
+          done || true
       # Releases run under the hardened runtime, where a wasm grammar only runs with the app's entitlements:
       # sign the editor tests the same way and parse with a package grammar.
       - name: Load a wasm grammar under the hardened runtime
@@ -99,6 +143,9 @@ jobs:
             | jq -r 'select(.executable != null and .profile.test) | .executable' | head -1)"
           codesign --force --options runtime --entitlements scripts/Pomelo.entitlements --sign - "$tests"
           cd crates/editor && "$tests" a_package_grammar_compiles_off_thread_then_highlights
+      # The clippy job saves nothing, so main's build carries its artifacts too.
+      - if: github.ref == 'refs/heads/main'
+        run: make lint
       - name: Size of the build cache
         run: du -sh target ~/.cargo/registry 2>/dev/null || true
       - if: github.ref == 'refs/heads/main'
@@ -125,19 +172,24 @@ jobs:
             gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
           done
 
-  # The same `make check` on Linux, which ships its own build: platform code there compiles and is tested only here.
+  # Clippy and the tests on Linux, which ships its own build: platform code there compiles and is tested only here.
   rust-linux:
-    name: Rust fmt + clippy + test (Linux)
+    name: Rust clippy + test (Linux)
     needs: changes
     if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      # Only main uses it: to drop older dependency caches.
+      actions: write
     defaults:
       run:
         working-directory: rust
     env:
       CARGO_INCREMENTAL: 0
       POM_TARGET_LIMIT_GB: 8
+      NEXTEST_PROFILE: ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the libraries the window and fonts build against
@@ -156,8 +208,29 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-hakari
-      - run: make check
+          tool: cargo-hakari,cargo-nextest
+      - run: make hakari-check lint
+      - name: Tests (a test that passes only on its retry is listed as flaky)
+        run: |
+          set -o pipefail
+          make test 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Flag flaky tests
+        if: ${{ always() }}
+        run: |
+          grep -E '^\s+FLAKY' "$RUNNER_TEMP/test.log" | sort -u | while IFS= read -r line; do
+            echo "::warning title=Flaky test::$(echo "$line" | sed -E 's/^ +//')"
+          done || true
+      # A changed Cargo.lock starts a new entry while the old ones stay; only the newest is restored. This job's
+      # own entry is saved after it ends, so the one kept here is the previous build.
+      - name: Drop older dependency caches
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "v0-rust-linux-ci-" --sort created_at --order desc \
+            --limit 100 --json id --jq '.[1:][].id' | while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
+          done
 
   # pom alone on a server: it must link no display libraries and work headless in a clean Ubuntu container
   # (workspace create with a Postgres database, start --wait, the dev proxy, an agent session).
@@ -167,6 +240,10 @@ jobs:
     if: ${{ needs.changes.outputs.rust == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    permissions:
+      contents: read
+      # Only main uses it: to drop older dependency caches.
+      actions: write
     defaults:
       run:
         working-directory: rust
@@ -213,6 +290,15 @@ jobs:
               pom --version
               scripts/linux-cli-smoke.sh
             '
+      - name: Drop older dependency caches
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --key "v0-rust-linux-cli-" --sort created_at --order desc \
+            --limit 100 --json id --jq '.[1:][].id' | while read -r id; do
+            gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true
+          done
 
   # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
   # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), pushes and
@@ -311,14 +397,16 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [changes, rust, rust-linux, cli-smoke, pom-server, postgres, actionlint]
+    needs: [changes, fmt, rust-clippy, rust, rust-linux, cli-smoke, pom-server, postgres, actionlint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - run: |
-          echo "changes=${{ needs.changes.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} pom-server=${{ needs.pom-server.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
+          echo "changes=${{ needs.changes.result }} fmt=${{ needs.fmt.result }} rust-clippy=${{ needs.rust-clippy.result }} rust=${{ needs.rust.result }} rust-linux=${{ needs.rust-linux.result }} cli-smoke=${{ needs.cli-smoke.result }} pom-server=${{ needs.pom-server.result }} postgres=${{ needs.postgres.result }} actionlint=${{ needs.actionlint.result }}"
           test "${{ needs.changes.result }}" = "success" || exit 1
-          case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust failed"; exit 1 ;; esac
+          case "${{ needs.fmt.result }}" in success|skipped) ;; *) echo "fmt failed"; exit 1 ;; esac
+          case "${{ needs.rust-clippy.result }}" in success|skipped) ;; *) echo "clippy failed"; exit 1 ;; esac
+          case "${{ needs.rust.result }}" in success|skipped) ;; *) echo "rust tests failed"; exit 1 ;; esac
           case "${{ needs.rust-linux.result }}" in success|skipped) ;; *) echo "rust on Linux failed"; exit 1 ;; esac
           case "${{ needs.cli-smoke.result }}" in success|skipped) ;; *) echo "pom CLI smoke failed"; exit 1 ;; esac
           case "${{ needs.pom-server.result }}" in success|skipped) ;; *) echo "pom server tests failed"; exit 1 ;; esac

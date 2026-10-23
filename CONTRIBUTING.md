@@ -20,10 +20,13 @@ updates) behave like the shipped app.
 ## Build and test
 
 ```bash
-make check    # cargo fmt --check, cargo clippy --all-targets -D warnings, cargo test
+make check          # cargo fmt --check, cargo clippy --all-targets -D warnings, cargo nextest run + doctests
+make check-changed  # the same, but clippy and tests only for the crates changed since origin/main and their dependents
 ```
 
-This is exactly what CI runs; run it before opening a PR. Tests must not start login shells or leave
+The tests run under [cargo-nextest](https://nexte.st) (`brew install cargo-nextest` or
+`cargo install cargo-nextest`); `make test-cargo` runs plain `cargo test` instead. Use `make check-changed`
+while iterating; `make check` is exactly what CI runs, so run it before opening a PR. Tests must not start login shells or leave
 processes behind: terminal tests use a plain `/bin/sh`, service tests kill their holders on drop.
 
 ## Code style

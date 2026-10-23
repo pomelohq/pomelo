@@ -7,6 +7,7 @@ See the [repo README](../README.md) for what Pomelo is, [`CLAUDE.md`](CLAUDE.md)
 ```
 make run      # build + open PomeloDev.app (com.pomelo.app.dev; runs alongside Pomelo.app)
 make prod     # build + open the release Pomelo.app
-make check    # fmt-check + clippy -D warnings + tests: the CI gate
+make check    # fmt-check + clippy -D warnings + tests (cargo-nextest): the CI gate
+make check-changed  # the same for the crates changed since origin/main and their dependents only
 make dmg      # Pomelo.app -> target/Pomelo-<ver>.dmg (signed and notarized when SIGN_ID / NOTARY_PROFILE are set)
 ```

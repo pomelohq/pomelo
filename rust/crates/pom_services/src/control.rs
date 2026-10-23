@@ -114,6 +114,7 @@ pub struct ServiceRunner {
     pub(crate) docker: PathBuf,
     /// `repo~service` -> mode picked for this app run.
     modes: Mutex<HashMap<String, String>>,
+    database_wait: Duration,
 }
 
 impl ServiceRunner {
@@ -134,7 +135,14 @@ impl ServiceRunner {
             binary: options.binary,
             docker: options.docker,
             modes: Mutex::new(HashMap::new()),
+            database_wait: DATABASE_WAIT,
         }
+    }
+
+    /// How long database creation waits for Postgres to answer; tests whose fake docker has no real server pass zero.
+    pub fn with_database_wait(mut self, wait: Duration) -> ServiceRunner {
+        self.database_wait = wait;
+        self
     }
 
     pub fn ports(&self) -> &PortManager {
@@ -217,7 +225,7 @@ impl ServiceRunner {
         if names.is_empty() {
             return Ok(());
         }
-        let deadline = std::time::Instant::now() + DATABASE_WAIT;
+        let deadline = std::time::Instant::now() + self.database_wait;
         let endpoint = self.postgres_endpoint(config);
         let ours = config.shared_services.contains_key("postgres");
         loop {
