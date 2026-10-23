@@ -14,6 +14,7 @@ path = "src/bin/pomelo_pty.rs"
 
 [dependencies]
 libc = "0.2"
+pom_paths = { path = "../pom_paths" }
 sha1 = "0.10"
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 

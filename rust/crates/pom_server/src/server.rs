@@ -17,9 +17,10 @@ use serde_json::Value;
 
 use crate::dispatch::Dispatcher;
 use crate::log::{RequestRecord, ServerLog, ROTATE_AT};
-use crate::paths::{ensure_private_dir, ServerPaths};
+use crate::paths::ServerPaths;
 use crate::peer;
 use crate::pty::Caller;
+use pom_paths::ensure_private_dir;
 
 pub const DEFAULT_IDLE_EXIT_MINUTES: u64 = 30;
 pub const SOCKET_CHECK_EVERY: Duration = Duration::from_secs(30);

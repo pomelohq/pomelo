@@ -1,5 +1,7 @@
 //! Which env files a workspace gets and what goes in them.
 
+use std::os::unix::fs::PermissionsExt;
+
 use pom_config::Config;
 use pom_env::{EnvSources, SlotAllocation};
 use pom_services::WorkspaceEnv;
@@ -33,6 +35,12 @@ fn writes_file_keyed_env_into_existing_env_dirs_and_service_dirs() {
     std::fs::create_dir_all(worktree.join("apps/bare")).expect("apps");
     std::fs::write(worktree.join(".env"), "").expect(".env");
     std::fs::write(worktree.join("apps/admin/.env"), "").expect("admin .env");
+    std::fs::write(worktree.join(".env.local"), "OLD=1\n").expect("stale .env.local");
+    std::fs::set_permissions(
+        worktree.join(".env.local"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .expect("chmod");
     std::fs::write(
         root.join("pom.yml"),
         r#"session: demo
@@ -92,6 +100,13 @@ repos:
         !worker.contains("REDIS_DB"),
         "a service with its own dir only gets the base env: {worker}"
     );
+    for path in [".env.local", "apps/worker/.env.local"] {
+        let mode = std::fs::metadata(worktree.join(path))
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "{path} holds resolved secrets");
+    }
 }
 
 #[test]

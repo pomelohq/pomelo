@@ -75,10 +75,12 @@ fn header_list(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .map(|(name, value)| {
-            (
-                name.as_str().to_string(),
-                String::from_utf8_lossy(value.as_bytes()).into_owned(),
-            )
+            let shown = if crate::sensitive_header(name.as_str()) {
+                crate::REDACTED.to_string()
+            } else {
+                String::from_utf8_lossy(value.as_bytes()).into_owned()
+            };
+            (name.as_str().to_string(), shown)
         })
         .collect()
 }
