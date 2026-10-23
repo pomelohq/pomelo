@@ -3,7 +3,8 @@
 # and only reports its session (the SessionStart hook) once the answer is yes. Like the real one, "No, exit" is
 # highlighted first, the two choices wrap, it probes the terminal right after drawing, and it draws the prompt
 # again with "No, exit" highlighted shortly after the first key. FAKE_TRUST_DOUBLE_ARROW makes every arrow
-# move twice. The confirmed choice goes to FAKE_TRUST_ANSWER.
+# move twice. The confirmed choice goes to FAKE_TRUST_ANSWER. With FAKE_TRUST_READS_CONFIG it skips the prompt
+# for a folder its user config already trusts.
 session=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -33,6 +34,25 @@ redraw() {
 key() {
     dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
 }
+
+started() {
+    stty sane 2>/dev/null
+    printf '\033[2J\033[H'
+    i=0
+    while [ $i -lt 30 ]; do
+        printf 'Try "write a test for <filepath>"\r\n'
+        i=$((i + 1))
+    done
+    printf '{"session_id":"%s","hook_event_name":"SessionStart","cwd":"%s","transcript_path":"%s/%s.jsonl"}' \
+        "$session" "$PWD" "$FAKE_TRANSCRIPTS" "$session" | "$FAKE_POM" claude-hook --session >/dev/null
+    sleep 60
+    exit 0
+}
+
+if [ -n "$FAKE_TRUST_READS_CONFIG" ] &&
+    tr -d ' \n' <"$HOME/.claude.json" 2>/dev/null | grep -qF "\"$(pwd -P)\":{\"hasTrustDialogAccepted\":true"; then
+    started
+fi
 
 printf 'Accessing workspace:\r\n%s\r\n\r\n' "$PWD"
 printf 'Quick safety check: Is this a project you created or one you trust?\r\n\r\n'
@@ -75,13 +95,4 @@ if [ "$yes" = 0 ]; then
     exit 1
 fi
 echo yes >"$answer_file"
-stty sane 2>/dev/null
-printf '\033[2J\033[H'
-i=0
-while [ $i -lt 30 ]; do
-    printf 'Try "write a test for <filepath>"\r\n'
-    i=$((i + 1))
-done
-printf '{"session_id":"%s","hook_event_name":"SessionStart","cwd":"%s","transcript_path":"%s/%s.jsonl"}' \
-    "$session" "$PWD" "$FAKE_TRANSCRIPTS" "$session" | "$FAKE_POM" claude-hook --session >/dev/null
-sleep 60
+started

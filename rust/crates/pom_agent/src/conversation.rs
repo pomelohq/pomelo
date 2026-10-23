@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use crate::caller::Caller;
 use crate::drive::{Drive, DriveError, SessionView};
-use crate::driver::{driver, PermissionDialog};
+use crate::driver::driver;
+use crate::fallback;
 use crate::gate::{ApproveScope, Gate, Refusal};
 use crate::identity::Identity;
 use crate::lease::{log, read_lease, set_lease, Lease, LeaseClass};
@@ -40,6 +41,8 @@ const INTERRUPT_SETTLE: Duration = Duration::from_secs(3);
 const HOOK_TAKE_WAIT: Duration = Duration::from_secs(3);
 const DIALOG_CLOSE_WAIT: Duration = Duration::from_secs(3);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
+/// How much of the screen the fallback log keeps when no dialog was matched.
+const FALLBACK_SEEN_LINES: usize = 6;
 /// How long `send --queue` waits for an operator that gave no timeout.
 pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -351,15 +354,18 @@ impl Drive {
                     return Ok(Ok(turn));
                 }
                 if !retried && started.elapsed() > SUBMIT_RETRY_AFTER {
-                    match self.retry_blocker(view, agent_driver, text, before, sent_ms) {
-                        Some(why) => held_back = Some(why),
-                        None => {
-                            connection.input(b"\r")?;
-                            retried = true;
-                        }
+                    if fallback::person_drives(&lease) {
+                        held_back = Some(fallback::WHY_PERSON_DRIVES);
+                        retried = true;
+                    } else {
+                        held_back = self.retry_enter(view, agent_driver, text, (before, sent_ms), &mut connection)?;
+                        retried = held_back.is_none();
                     }
                 }
                 if started.elapsed() > SUBMIT_GIVE_UP {
+                    if let Some(why) = held_back {
+                        self.record_fallback(view, fallback::SUBMIT_RETRY, &self.screen_tail(view), None, why);
+                    }
                     return Ok(Err(DriveError::NotSubmitted(view.handle.clone(), held_back)));
                 }
                 std::thread::sleep(POLL);
@@ -368,9 +374,59 @@ impl Drive {
         .map_err(|error| DriveError::Failed(format!("could not send to {}: {error}", view.handle)))?
     }
 
+    fn screen_tail(&self, view: &SessionView) -> Vec<String> {
+        self.screen(view)
+            .map(|lines| fallback::tail(&lines, FALLBACK_SEEN_LINES))
+            .unwrap_or_default()
+    }
+
+    /// Presses Enter once more for a prompt still unsent, only while a fresh read right before it still
+    /// finds that safe; otherwise why it held back.
+    fn retry_enter(
+        &self,
+        view: &SessionView,
+        agent_driver: &dyn crate::driver::AgentDriver,
+        text: &str,
+        (before, sent_ms): (u64, u64),
+        connection: &mut pom_ptyhost::HolderConnection,
+    ) -> std::io::Result<Option<&'static str>> {
+        if let Some(why) = self.retry_blocker(view, agent_driver, text, before, sent_ms) {
+            return Ok(Some(why));
+        }
+        let seen = self.screen_tail(view);
+        let still_safe = |lines: &[String]| {
+            (retry_blocker_on_screen(agent_driver, lines, text).is_none()
+                && !turn_began(&self.state, &view.session_id, before, sent_ms))
+            .then_some(())
+        };
+        let outcome = fallback::send_if_unchanged(
+            || self.screen_lines(view),
+            still_safe,
+            &(),
+            || connection.input(b"\r"),
+        )?;
+        Ok(match outcome {
+            fallback::Recheck::Sent => {
+                self.record_fallback(
+                    view,
+                    fallback::SUBMIT_RETRY,
+                    &seen,
+                    Some(fallback::key_names(b"\r")),
+                    "the prompt still sat unsent in the input box",
+                );
+                None
+            }
+            fallback::Recheck::Changed => Some(fallback::WHY_CHANGED),
+            fallback::Recheck::Unreadable(_) => Some(fallback::WHY_UNREADABLE),
+        })
+    }
+
     fn screen(&self, view: &SessionView) -> Option<Vec<String>> {
+        self.screen_lines(view).ok()
+    }
+
+    fn screen_lines(&self, view: &SessionView) -> std::io::Result<Vec<String>> {
         pom_ptyhost::snapshot(&self.holders, &view.holder, SNAPSHOT_TIMEOUT)
-            .ok()
             .map(|output| rendered_lines(&output))
     }
 
@@ -655,7 +711,8 @@ impl Drive {
 
     /// Allows or denies the permission prompt `view`'s session waits on: `id` if given, which must still be the
     /// waiting one. A workspace policy's ask is answered as `approve` does; the agent's own prompt through its
-    /// hook while pom holds it, else by typing into the agent's dialog once it is on screen.
+    /// hook while pom holds it. Once the agent draws its dialog instead, pom only denies it, with Esc, and
+    /// never while a person drives the session: an allow there is refused.
     pub fn answer_permission(
         &self,
         gate: &Gate<'_>,
@@ -712,6 +769,22 @@ impl Drive {
             self.approve(gate, view, &prompt.id, scope)?;
             return Ok(answered(ANSWER_BY_POLICY));
         }
+        if prompt.answer_by != ANSWER_BY_HOOK && allow {
+            self.record_fallback(
+                view,
+                fallback::PERMISSION_ALLOW,
+                &[],
+                None,
+                fallback::WHY_ALLOW_NEEDS_HOOK,
+            );
+            return Err(DriveError::NotTyped {
+                code: "allow_needs_hook",
+                message: format!(
+                    "{} shows its own permission dialog for {}, and pom never types an allow into it: allow it at its terminal (open it in Pomelo, or pom agent takeover), or deny it from here",
+                    view.handle, prompt.id
+                ),
+            });
+        }
         let lease = self.typing_lease(gate, view, send_as)?;
         let failed = |error: std::io::Error| DriveError::Failed(error.to_string());
         if prompt.answer_by == ANSWER_BY_HOOK {
@@ -729,32 +802,28 @@ impl Drive {
                 )));
             }
         } else {
-            self.answer_dialog(view, &prompt, &lease, allow)?;
+            self.deny_dialog(view, &prompt, &lease, &decided_by)?;
             let decision = SessionEvent {
                 session_id: view.session_id.clone(),
                 event: crate::permission::DECISION_EVENT.into(),
-                detail: json!({"request": prompt.id, "allow": allow, "decided_by": decided_by, "via": ANSWER_BY_TERMINAL}),
+                detail: json!({"request": prompt.id, "allow": false, "decided_by": decided_by, "via": ANSWER_BY_TERMINAL}),
                 ..SessionEvent::default()
             };
-            let next = if allow {
-                crate::hooks::AgentState::ToolUse
-            } else {
-                crate::hooks::AgentState::Thinking
-            };
-            if let Err(error) =
-                record_dialog_answer(&self.state, &identity_of(self, view), &decision, next)
-            {
+            if let Err(error) = record_dialog_answer(
+                &self.state,
+                &identity_of(self, view),
+                &decision,
+                crate::hooks::AgentState::Thinking,
+            ) {
                 eprintln!("agent: record {}: {error}", view.handle);
             }
-            if !allow {
-                // The dialog's deny key also stops the turn, and that fires no hook.
-                self.record(
-                    view,
-                    "Interrupted",
-                    Some(crate::hooks::AgentState::Idle),
-                    json!({"stop_reason": "cancelled"}),
-                );
-            }
+            // The dialog's deny key also stops the turn, and that fires no hook.
+            self.record(
+                view,
+                "Interrupted",
+                Some(crate::hooks::AgentState::Idle),
+                json!({"stop_reason": "cancelled"}),
+            );
         }
         log(
             &self.state,
@@ -766,40 +835,81 @@ impl Drive {
         Ok(answered(&prompt.answer_by))
     }
 
-    /// Types an answer into the agent's permission dialog, only while the screen shows it for this very prompt
-    /// with the plain yes highlighted, and checks the dialog closed.
-    fn answer_dialog(
+    fn record_fallback(
+        &self,
+        view: &SessionView,
+        action: &str,
+        seen: &[String],
+        sent: Option<String>,
+        why: &str,
+    ) {
+        fallback::record(
+            &self.state,
+            &self.project,
+            &view.workspace,
+            &fallback::Entry {
+                holder: &view.holder,
+                role: &view.role,
+                session_id: &view.session_id,
+                action,
+                seen,
+                sent,
+                why,
+            },
+        );
+    }
+
+    /// Declines the agent's permission dialog with its own cancel key, only while no person drives the
+    /// session and a fresh read right before the key still shows the dialog for this very prompt; then checks
+    /// the dialog closed.
+    fn deny_dialog(
         &self,
         view: &SessionView,
         prompt: &PermissionPrompt,
         lease: &Lease,
-        allow: bool,
+        decided_by: &str,
     ) -> Result<(), DriveError> {
+        let skip = |seen: &[String], why: &str| {
+            self.record_fallback(view, fallback::PERMISSION_DENY, seen, None, why);
+        };
+        if fallback::person_drives(lease) {
+            skip(&[], fallback::WHY_PERSON_DRIVES);
+            return Err(DriveError::NotTyped {
+                code: "person_drives",
+                message: format!(
+                    "a person drives {}, so pom does not answer its dialog for them; answer it at its terminal",
+                    view.handle
+                ),
+            });
+        }
         let agent_driver = driver(&view.driver).ok_or_else(|| Refusal::NotDrivable {
             role: view.role.clone(),
         })?;
-        let dialog = |what: &str| -> Result<Option<PermissionDialog>, DriveError> {
-            let output = pom_ptyhost::snapshot(&self.holders, &view.holder, SNAPSHOT_TIMEOUT)
-                .map_err(|error| {
-                    DriveError::Failed(format!("could not read the screen of {what}: {error}"))
-                })?;
-            Ok(agent_driver.permission_dialog(&rendered_lines(&output)))
+        let read = || {
+            pom_ptyhost::snapshot(&self.holders, &view.holder, SNAPSHOT_TIMEOUT)
+                .map(|output| rendered_lines(&output))
         };
-        let shown = dialog(&view.handle)?.ok_or_else(|| {
+        let lines = read().map_err(|error| {
+            skip(&[], fallback::WHY_UNREADABLE);
             DriveError::Failed(format!(
-                "{} does not show its permission dialog yet; answer again in a moment",
+                "could not read the screen of {}: {error}",
                 view.handle
             ))
         })?;
-        if allow && !shown.first_choice_selected {
+        let Some(shown) = agent_driver.permission_dialog(&lines) else {
+            skip(
+                &fallback::tail(&lines, FALLBACK_SEEN_LINES),
+                "no permission dialog on screen",
+            );
             return Err(DriveError::Failed(format!(
-                "the dialog of {} has another choice than the plain yes highlighted; answer it in its terminal",
+                "{} does not show its permission dialog yet; answer again in a moment",
                 view.handle
             )));
-        }
+        };
         if pending_permission(&self.state, &view.session_id).map(|now| now.id)
             != Some(prompt.id.clone())
         {
+            skip(&shown.content, "the prompt was answered meanwhile");
             return Err(DriveError::Stale(format!(
                 "permission prompt {} of {} was answered meanwhile",
                 prompt.id, view.handle
@@ -809,21 +919,64 @@ impl Drive {
             pom_ptyhost::connect_writer(&self.holders, &view.holder).map_err(|error| {
                 DriveError::Failed(format!("could not reach {}: {error}", view.handle))
             })?;
-        if lease.class != LeaseClass::Human {
-            connection
-                .claim(&lease.token)
-                .map_err(|error| DriveError::Failed(error.to_string()))?;
-        }
-        for keys in agent_driver.answer_permission(allow) {
-            connection
-                .input(&keys.bytes)
-                .map_err(|error| DriveError::Failed(error.to_string()))?;
-            std::thread::sleep(Duration::from_millis(keys.pause_ms));
+        connection
+            .claim(&lease.token)
+            .map_err(|error| DriveError::Failed(error.to_string()))?;
+        let keys = agent_driver.deny_permission();
+        let typed = keys
+            .iter()
+            .map(|keys| fallback::key_names(&keys.bytes))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let outcome = fallback::send_if_unchanged(
+            read,
+            |lines| agent_driver.permission_dialog(lines),
+            &shown,
+            || -> Result<(), DriveError> {
+                for keys in &keys {
+                    connection
+                        .input(&keys.bytes)
+                        .map_err(|error| DriveError::Failed(error.to_string()))?;
+                    std::thread::sleep(Duration::from_millis(keys.pause_ms));
+                }
+                Ok(())
+            },
+        )?;
+        match outcome {
+            fallback::Recheck::Sent => self.record_fallback(
+                view,
+                fallback::PERMISSION_DENY,
+                &shown.content,
+                Some(typed),
+                &format!("denied by {decided_by}"),
+            ),
+            fallback::Recheck::Changed => {
+                skip(&shown.content, fallback::WHY_CHANGED);
+                return Err(DriveError::Failed(format!(
+                    "the dialog of {} changed before pom typed into it, so nothing was typed; read agent ls and answer again",
+                    view.handle
+                )));
+            }
+            fallback::Recheck::Unreadable(error) => {
+                skip(&shown.content, fallback::WHY_UNREADABLE);
+                return Err(DriveError::Failed(format!(
+                    "could not read the screen of {} again before typing, so nothing was typed: {error}",
+                    view.handle
+                )));
+            }
         }
         let started = Instant::now();
         while started.elapsed() < DIALOG_CLOSE_WAIT {
             std::thread::sleep(POLL);
-            if dialog(&view.handle)?.is_none() {
+            let closed = read()
+                .map(|lines| agent_driver.permission_dialog(&lines).is_none())
+                .map_err(|error| {
+                    DriveError::Failed(format!(
+                        "could not read the screen of {}: {error}",
+                        view.handle
+                    ))
+                })?;
+            if closed {
                 return Ok(());
             }
         }
@@ -1287,5 +1440,110 @@ mod tests {
             drive.typing_lease(&gate, &view, SendAs::LeaseHolder),
             Err(DriveError::Refused(Refusal::LeaseHeld { .. }))
         ));
+    }
+
+    fn ask_at_terminal(drive: &Drive, view: &SessionView) -> String {
+        let asked = SessionEvent {
+            session_id: view.session_id.clone(),
+            event: crate::permission::REQUEST_EVENT.into(),
+            state: Some(AgentState::AwaitingInput),
+            detail: json!({"request": "p1", "call": "c1", "tool": "Bash", "input": {"command": "rm -rf build"}, "answer_by": ANSWER_BY_TERMINAL}),
+            ..SessionEvent::default()
+        };
+        record_event(&drive.state, &identity_of(drive, view), &asked).expect("asked");
+        "p1".into()
+    }
+
+    fn fallback_lines(drive: &Drive) -> Vec<Value> {
+        crate::lease::log_lines(&drive.state, "myproject", "feat-login")
+            .into_iter()
+            .filter(|line| line["event"] == fallback::FALLBACK_LOG_EVENT)
+            .collect()
+    }
+
+    fn hold_lease(drive: &Drive, view: &SessionView, lease: &Lease) {
+        let path = crate::lease::lease_path(&drive.state, &view.holder);
+        std::fs::create_dir_all(path.parent().expect("dir")).expect("leases");
+        pom_paths::write_atomic(&path, &serde_json::to_vec(lease).expect("json"), 0o600)
+            .expect("lease");
+    }
+
+    fn operator_gate(drive: &Drive) -> Gate<'_> {
+        Gate::open(
+            &drive.state,
+            Caller::Operator,
+            crate::gate::Workspace {
+                project: "myproject".into(),
+                branch: "feat-login".into(),
+            },
+            crate::gate::Limits::OPERATOR,
+        )
+        .expect("gate")
+    }
+
+    #[test]
+    fn an_allow_is_never_typed_into_the_agents_dialog() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (drive, view) = live_session(temp.path());
+        let id = ask_at_terminal(&drive, &view);
+        hold_lease(&drive, &view, &Lease::for_caller(&Caller::Operator));
+        let gate = operator_gate(&drive);
+        for send_as in [SendAs::LeaseHolder, SendAs::Person, SendAs::TakeOver] {
+            let refused = drive
+                .answer_permission(&gate, &view, Some(&id), true, "", send_as)
+                .expect_err("refused");
+            assert_eq!(refused.code(), "allow_needs_hook", "{send_as:?}");
+            assert!(refused.to_string().contains("never types an allow"));
+        }
+        let logged = fallback_lines(&drive);
+        assert_eq!(logged.len(), 3);
+        assert_eq!(logged[0]["action"], fallback::PERMISSION_ALLOW);
+        assert_eq!(logged[0]["skipped"], true);
+        assert_eq!(logged[0]["why"], fallback::WHY_ALLOW_NEEDS_HOOK);
+        assert_eq!(
+            pending_permission(&drive.state, &view.session_id).map(|prompt| prompt.id),
+            Some(id),
+            "the prompt still waits"
+        );
+    }
+
+    #[test]
+    fn a_session_a_person_drives_gets_no_keys_only_a_log_line() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (drive, view) = live_session(temp.path());
+        let id = ask_at_terminal(&drive, &view);
+        let gate = operator_gate(&drive);
+        let refused = drive
+            .answer_permission(&gate, &view, Some(&id), false, "", SendAs::Person)
+            .expect_err("refused");
+        assert_eq!(refused.code(), "person_drives");
+        let logged = fallback_lines(&drive);
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0]["action"], fallback::PERMISSION_DENY);
+        assert_eq!(logged[0]["sent"], Value::Null);
+        assert_eq!(logged[0]["why"], fallback::WHY_PERSON_DRIVES);
+        assert!(
+            !crate::lease::log_lines(&drive.state, "myproject", "feat-login")
+                .iter()
+                .any(|line| line["event"] == "permission_answer"),
+            "nothing was answered"
+        );
+    }
+
+    #[test]
+    fn a_deny_that_cannot_read_the_screen_types_nothing_and_says_so() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (drive, view) = live_session(temp.path());
+        let id = ask_at_terminal(&drive, &view);
+        hold_lease(&drive, &view, &Lease::for_caller(&Caller::Operator));
+        let gate = operator_gate(&drive);
+        let failed = drive
+            .answer_permission(&gate, &view, Some(&id), false, "", SendAs::LeaseHolder)
+            .expect_err("no screen");
+        assert_eq!(failed.code(), "failed");
+        let logged = fallback_lines(&drive);
+        assert_eq!(logged.len(), 1);
+        assert_eq!(logged[0]["skipped"], true);
+        assert_eq!(logged[0]["why"], fallback::WHY_UNREADABLE);
     }
 }

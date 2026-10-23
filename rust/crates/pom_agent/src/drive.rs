@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::driver::{driver, Keystrokes, TrustDialog};
+use crate::fallback;
 use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
@@ -42,6 +43,11 @@ pub enum DriveError {
     Timeout(String),
     /// An answer names a permission prompt that no longer waits.
     Stale(String),
+    /// pom will not type this answer into the agent's terminal: `code` says why.
+    NotTyped {
+        code: &'static str,
+        message: String,
+    },
 }
 
 /// `pom agent start` found the agent waiting at its folder trust prompt.
@@ -67,7 +73,8 @@ impl DriveError {
             DriveError::NotFound(_)
             | DriveError::Invalid(_)
             | DriveError::Failed(_)
-            | DriveError::Stale(_) => 1,
+            | DriveError::Stale(_)
+            | DriveError::NotTyped { .. } => 1,
         }
     }
 
@@ -81,6 +88,7 @@ impl DriveError {
             DriveError::NeedsTrust(_) => "needs_trust",
             DriveError::Timeout(_) => "timeout",
             DriveError::Stale(_) => "stale",
+            DriveError::NotTyped { code, .. } => code,
         }
     }
 
@@ -112,7 +120,8 @@ impl std::fmt::Display for DriveError {
             | DriveError::Failed(message)
             | DriveError::NeedsTrust(message)
             | DriveError::Timeout(message)
-            | DriveError::Stale(message) => write!(formatter, "{message}"),
+            | DriveError::Stale(message)
+            | DriveError::NotTyped { message, .. } => write!(formatter, "{message}"),
         }
     }
 }
@@ -395,6 +404,9 @@ impl Drive {
                 )));
             }
         } else {
+            if options.trust {
+                self.pretrust_folder(&launch.cwd, &workspace.branch, &launch.holder);
+            }
             let group = self.holder_group(&workspace.branch);
             pom_ptyhost::spawn_holder(
                 &self.holders,
@@ -554,8 +566,9 @@ impl Drive {
         Ok(())
     }
 
-    /// Answers the trust prompt with yes one key at a time, each chosen from the settled screen.
-    fn answer_trust(&self, holder: &str) -> Result<(), DriveError> {
+    /// Answers the trust prompt with yes one key at a time, each chosen from the settled screen and sent only
+    /// while a fresh read still shows that same prompt and no person drives the session.
+    fn answer_trust(&self, holder: &str, session_id: &str, branch: &str) -> Result<(), DriveError> {
         let agent_driver = driver(crate::identity::CLAUDE_DRIVER)
             .ok_or_else(|| DriveError::Failed("no driver for the agent".into()))?;
         let unanswered = |why: &str| {
@@ -563,12 +576,34 @@ impl Drive {
                 "{holder} waits at the agent's \"trust this folder\" prompt: {why}; open it in Pomelo (or pom agent takeover) and answer it there"
             ))
         };
+        let role =
+            holder_role(holder, &self.project, branch).map_or_else(String::new, |role| role.role);
+        let note = |seen: &[String], sent: Option<String>, why: &str| {
+            fallback::record(
+                &self.state,
+                &self.project,
+                branch,
+                &fallback::Entry {
+                    holder,
+                    role: &role,
+                    session_id,
+                    action: fallback::TRUST,
+                    seen,
+                    sent,
+                    why,
+                },
+            );
+        };
+        let read = || {
+            pom_ptyhost::snapshot(&self.holders, holder, SNAPSHOT_TIMEOUT)
+                .map(|screen| rendered_lines(&screen))
+        };
         let deadline = std::time::Instant::now() + TRUST_ANSWER_WAIT;
         let mut typed = 0;
         let mut still_since: Option<(Option<TrustDialog>, std::time::Instant)> = None;
         while std::time::Instant::now() < deadline {
-            let screen = match pom_ptyhost::snapshot(&self.holders, holder, SNAPSHOT_TIMEOUT) {
-                Ok(screen) => screen,
+            let lines = match read() {
+                Ok(lines) => lines,
                 Err(_) if !self.alive(holder) => return Ok(()),
                 Err(error) => {
                     return Err(DriveError::Failed(format!(
@@ -576,12 +611,12 @@ impl Drive {
                     )))
                 }
             };
-            let dialog = agent_driver.trust_dialog(&rendered_lines(&screen));
+            let dialog = agent_driver.trust_dialog(&lines);
             // The agent keeps animating elsewhere on screen, so only the dialog itself has to hold still.
-            let settled = match still_since {
-                Some((seen, since)) if seen == dialog => since.elapsed() >= TRUST_SETTLE,
+            let settled = match &still_since {
+                Some((seen, since)) if *seen == dialog => since.elapsed() >= TRUST_SETTLE,
                 _ => {
-                    still_since = Some((dialog, std::time::Instant::now()));
+                    still_since = Some((dialog.clone(), std::time::Instant::now()));
                     false
                 }
             };
@@ -595,13 +630,56 @@ impl Drive {
                 if typed == TRUST_KEYS_MAX {
                     return Err(unanswered("its highlight would not stay on yes"));
                 }
-                self.type_keys(holder, &[agent_driver.answer_trust(dialog)])?;
-                typed += 1;
+                if fallback::person_drives(&crate::lease::read_lease(&self.state, holder)) {
+                    note(&dialog.content, None, fallback::WHY_PERSON_DRIVES);
+                    return Err(unanswered("a person drives it"));
+                }
+                let keys = agent_driver.answer_trust(&dialog);
+                let outcome = fallback::send_if_unchanged(
+                    read,
+                    |lines| agent_driver.trust_dialog(lines),
+                    &dialog,
+                    || self.type_keys(holder, std::slice::from_ref(&keys)),
+                )?;
+                match outcome {
+                    fallback::Recheck::Sent => {
+                        note(
+                            &dialog.content,
+                            Some(fallback::key_names(&keys.bytes)),
+                            "started with --trust and the folder was not trusted through the agent's config",
+                        );
+                        typed += 1;
+                    }
+                    fallback::Recheck::Changed => {
+                        note(&dialog.content, None, fallback::WHY_CHANGED)
+                    }
+                    fallback::Recheck::Unreadable(_) => {
+                        note(&dialog.content, None, fallback::WHY_UNREADABLE)
+                    }
+                }
                 still_since = None;
             }
             std::thread::sleep(TRUST_POLL);
         }
         Err(unanswered("it did not settle on an answer in time"))
+    }
+
+    /// Marks the session's folder trusted in the agent's own config before it starts, so it never draws its
+    /// trust prompt; the guarded screen answer stays for when that cannot be written.
+    fn pretrust_folder(&self, cwd: &Path, branch: &str, holder: &str) {
+        let config = crate::claude::user_config_path(&self.home);
+        let line = match crate::claude::accept_folder_trust(&config, cwd) {
+            Ok(folder) => {
+                json!({"event": "folder_trusted", "holder": holder, "folder": folder, "via": "agent_config"})
+            }
+            Err(error) => {
+                eprintln!("agent: could not mark {} trusted: {error}", cwd.display());
+                json!({"event": "folder_trusted", "holder": holder, "folder": cwd, "via": "none", "why": error.to_string()})
+            }
+        };
+        if let Err(error) = crate::lease::log(&self.state, &self.project, branch, line) {
+            eprintln!("agent: log the trust of {holder}: {error}");
+        }
     }
 
     /// Waits for a new session's first hook. The agent asks to trust a folder it has not seen before it runs
@@ -631,7 +709,7 @@ impl Drive {
                         "{holder} waits at the agent's \"trust this folder\" prompt: start it again with --trust to answer yes, or open it in Pomelo (or pom agent takeover) and answer it there"
                     )));
                 }
-                if let Err(error) = self.answer_trust(holder) {
+                if let Err(error) = self.answer_trust(holder, session_id, branch) {
                     if matches!(error, DriveError::NeedsTrust(_)) {
                         self.mark_needs_trust(holder, session_id, branch);
                     }

@@ -28,11 +28,12 @@ pub trait AgentDriver: Send + Sync {
     /// The trust prompt's choices, if the rendered screen shows them with one highlighted.
     fn trust_dialog(&self, lines: &[String]) -> Option<TrustDialog>;
     /// The next write toward a yes: Enter only while yes is highlighted, otherwise a move of the highlight.
-    fn answer_trust(&self, dialog: TrustDialog) -> Keystrokes;
+    fn answer_trust(&self, dialog: &TrustDialog) -> Keystrokes;
     /// The agent's own permission dialog, if the rendered screen shows one.
     fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog>;
-    /// The writes that answer that dialog: its highlighted first choice, or its deny key.
-    fn answer_permission(&self, allow: bool) -> Vec<Keystrokes>;
+    /// The writes that decline that dialog. There is no allow: an allow only ever reaches the agent through
+    /// its hook, never as keys typed from a reading of the screen.
+    fn deny_permission(&self) -> Vec<Keystrokes>;
     /// Whether the rendered screen shows any dialog that Enter would answer, known or not.
     fn shows_choices(&self, lines: &[String]) -> bool;
     /// Whether the agent's input box still holds `text`, typed but not yet submitted.
@@ -40,16 +41,20 @@ pub trait AgentDriver: Send + Sync {
 }
 
 /// The agent's permission dialog as it is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionDialog {
     /// The highlight is on the first choice, a plain yes for this one call.
     pub first_choice_selected: bool,
+    /// Its question and choices as read, to tell it from another dialog drawn in its place.
+    pub content: Vec<String>,
 }
 
 /// The agent's folder trust prompt as it is drawn.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrustDialog {
     pub yes_selected: bool,
+    /// Its two choices as read.
+    pub content: Vec<String>,
 }
 
 /// Terminal output as plain lowercase text without spaces: the UI positions words with cursor moves, so
@@ -149,10 +154,13 @@ impl AgentDriver for ClaudeDriver {
         let question = bottom
             .iter()
             .rposition(|line| line.trim() == DIALOG_QUESTION)?;
-        // The wording of the later choices changes between versions; numbered lines ending in a plain no do not.
-        let choices: Vec<(bool, &str)> = bottom[question + 1..]
+        let block: Vec<&String> = bottom[question + 1..]
             .iter()
             .take_while(|line| !line.trim().is_empty())
+            .collect();
+        // The wording of the later choices changes between versions; numbered lines ending in a plain no do not.
+        let choices: Vec<(bool, &str)> = block
+            .iter()
             .filter_map(|line| {
                 let selected = line.contains(SELECTION_MARK);
                 let text = line.trim().trim_start_matches(SELECTION_MARK).trim_start();
@@ -170,19 +178,20 @@ impl AgentDriver for ClaudeDriver {
             return None;
         }
         let selected_at = choices.iter().position(|(selected, _)| *selected)?;
+        let content = std::iter::once(&bottom[question])
+            .chain(block.iter().copied())
+            .map(|line| line.trim().to_string())
+            .collect();
         Some(PermissionDialog {
             first_choice_selected: selected_at == 0,
+            content,
         })
     }
 
-    fn answer_permission(&self, allow: bool) -> Vec<Keystrokes> {
-        // Enter takes the highlighted choice, checked to be the plain yes; Esc is the dialog's own deny key.
+    fn deny_permission(&self) -> Vec<Keystrokes> {
+        // Esc is the dialog's own cancel: misread, it only interrupts, where a typed "n" could land in a prompt.
         vec![Keystrokes {
-            bytes: if allow {
-                b"\r".to_vec()
-            } else {
-                b"\x1b".to_vec()
-            },
+            bytes: b"\x1b".to_vec(),
             pause_ms: 0,
         }]
     }
@@ -197,16 +206,18 @@ impl AgentDriver for ClaudeDriver {
             return None;
         }
         let yes = &bottom[yes_at];
-        match (no.contains(SELECTION_MARK), yes.contains(SELECTION_MARK)) {
-            (true, false) => Some(TrustDialog {
-                yes_selected: false,
-            }),
-            (false, true) => Some(TrustDialog { yes_selected: true }),
-            _ => None,
-        }
+        let yes_selected = match (no.contains(SELECTION_MARK), yes.contains(SELECTION_MARK)) {
+            (true, false) => false,
+            (false, true) => true,
+            _ => return None,
+        };
+        Some(TrustDialog {
+            yes_selected,
+            content: vec![no.trim().to_string(), yes.trim().to_string()],
+        })
     }
 
-    fn answer_trust(&self, dialog: TrustDialog) -> Keystrokes {
+    fn answer_trust(&self, dialog: &TrustDialog) -> Keystrokes {
         // Alone in its write, or the arrow's leading escape can read as Esc, which exits.
         Keystrokes {
             bytes: if dialog.yes_selected {
@@ -353,22 +364,19 @@ mod tests {
                 "Enter to confirm - Esc to cancel".into(),
             ]
         };
-        let at_no = claude.trust_dialog(&screen(false));
+        let at_no = claude.trust_dialog(&screen(false)).expect("dialog");
+        assert!(!at_no.yes_selected);
         assert_eq!(
-            at_no,
-            Some(TrustDialog {
-                yes_selected: false
-            })
+            at_no.content,
+            ["\u{276F} No, exit", "Yes, I trust this folder"]
         );
-        let step = claude.answer_trust(at_no.expect("dialog"));
+        let step = claude.answer_trust(&at_no);
         assert_eq!(step.bytes, b"\x1b[B".to_vec(), "never Enter on no");
 
-        let at_yes = claude.trust_dialog(&screen(true));
-        assert_eq!(at_yes, Some(TrustDialog { yes_selected: true }));
-        assert_eq!(
-            claude.answer_trust(at_yes.expect("dialog")).bytes,
-            b"\r".to_vec()
-        );
+        let at_yes = claude.trust_dialog(&screen(true)).expect("dialog");
+        assert!(at_yes.yes_selected);
+        assert_ne!(at_yes, at_no, "a moved highlight is another dialog");
+        assert_eq!(claude.answer_trust(&at_yes).bytes, b"\r".to_vec());
 
         let mut unmarked = screen(false);
         unmarked[3] = "  No, exit".into();
@@ -405,17 +413,19 @@ mod tests {
                 .expect("no choice, highlighted");
             assert_eq!(lines[no_at + 1].trim(), "Yes, I trust this folder");
             assert_eq!(
-                claude.trust_dialog(&lines),
-                Some(TrustDialog {
-                    yes_selected: false
-                })
+                claude
+                    .trust_dialog(&lines)
+                    .map(|dialog| dialog.yes_selected),
+                Some(false)
             );
         }
         let mut moved = TRUST_CAPTURE.to_vec();
         moved.extend_from_slice("\x1b[2G \x1b[1B\x1b[2G\u{276F}\x1b[1A".as_bytes());
         assert_eq!(
-            claude.trust_dialog(&rendered_lines(&moved)),
-            Some(TrustDialog { yes_selected: true }),
+            claude
+                .trust_dialog(&rendered_lines(&moved))
+                .map(|dialog| dialog.yes_selected),
+            Some(true),
             "the highlight moved down onto yes"
         );
     }
@@ -430,10 +440,10 @@ mod tests {
             assert!(lines.iter().any(|line| line.trim() == "\u{276F} 1. Yes"));
             assert!(lines.iter().any(|line| line.trim() == "4. No"));
             assert_eq!(
-                claude.permission_dialog(&lines),
-                Some(PermissionDialog {
-                    first_choice_selected: true
-                })
+                claude
+                    .permission_dialog(&lines)
+                    .map(|dialog| dialog.first_choice_selected),
+                Some(true)
             );
         }
     }
@@ -475,17 +485,17 @@ mod tests {
             out.into_bytes()
         };
         assert_eq!(
-            claude.permission_dialog(&rendered_lines(&screen(0))),
-            Some(PermissionDialog {
-                first_choice_selected: true
-            })
+            claude
+                .permission_dialog(&rendered_lines(&screen(0)))
+                .map(|dialog| dialog.first_choice_selected),
+            Some(true)
         );
         for selected in 1..4 {
             assert_eq!(
-                claude.permission_dialog(&rendered_lines(&screen(selected))),
-                Some(PermissionDialog {
-                    first_choice_selected: false
-                }),
+                claude
+                    .permission_dialog(&rendered_lines(&screen(selected)))
+                    .map(|dialog| dialog.first_choice_selected),
+                Some(false),
                 "choice {} is highlighted",
                 selected + 1
             );
@@ -528,29 +538,52 @@ mod tests {
             lines
         };
         assert_eq!(
-            claude.permission_dialog(&screen(0)),
-            Some(PermissionDialog {
-                first_choice_selected: true
-            })
+            claude
+                .permission_dialog(&screen(0))
+                .map(|dialog| dialog.first_choice_selected),
+            Some(true)
         );
         for selected in 1..4 {
             assert_eq!(
-                claude.permission_dialog(&screen(selected)),
-                Some(PermissionDialog {
-                    first_choice_selected: false
-                }),
+                claude
+                    .permission_dialog(&screen(selected))
+                    .map(|dialog| dialog.first_choice_selected),
+                Some(false),
                 "Enter on choice {} would allow more than this call, or decline it",
                 selected + 1
             );
         }
-        assert_eq!(claude.permission_dialog(&["> hello".to_string()]), None);
         assert_eq!(
-            claude.permission_dialog(&screen(0)[..head.len()]),
+            claude
+                .permission_dialog(&["> hello".to_string()])
+                .map(|dialog| dialog.first_choice_selected),
+            None
+        );
+        assert_eq!(
+            claude
+                .permission_dialog(&screen(0)[..head.len()])
+                .map(|dialog| dialog.first_choice_selected),
             None,
             "a question without its choices is no dialog"
         );
-        assert_eq!(claude.answer_permission(true)[0].bytes, b"\r".to_vec());
-        assert_eq!(claude.answer_permission(false)[0].bytes, b"\x1b".to_vec());
+        let deny = claude.deny_permission();
+        assert_eq!(deny.len(), 1);
+        assert_eq!(deny[0].bytes, b"\x1b".to_vec(), "Esc, never a typed choice");
+        assert_eq!(
+            claude
+                .permission_dialog(&screen(0))
+                .expect("dialog")
+                .content,
+            [
+                "Do you want to proceed?",
+                "\u{276F} 1. Yes",
+                "2. Yes, and always allow access to /p/workspace--feat-login from this project",
+                "3. Yes, and switch to auto mode - auto mode handles these prompts for you",
+                "4. No",
+                "Esc to cancel - Tab to amend",
+            ],
+            "the question and every line under it up to a blank"
+        );
     }
 
     #[test]
@@ -563,16 +596,16 @@ mod tests {
             "3. No, and tell Claude what to do differently (esc)",
         ];
         assert_eq!(
-            claude.permission_dialog(&permission_screen(&head, &choices, 0)),
-            Some(PermissionDialog {
-                first_choice_selected: true
-            })
+            claude
+                .permission_dialog(&permission_screen(&head, &choices, 0))
+                .map(|dialog| dialog.first_choice_selected),
+            Some(true)
         );
         assert_eq!(
-            claude.permission_dialog(&permission_screen(&head, &choices, 1)),
-            Some(PermissionDialog {
-                first_choice_selected: false
-            }),
+            claude
+                .permission_dialog(&permission_screen(&head, &choices, 1))
+                .map(|dialog| dialog.first_choice_selected),
+            Some(false),
             "Enter there would allow every later call too"
         );
     }
