@@ -98,15 +98,16 @@ impl SocketDir {
         text.lines().next()?.trim().parse().ok()
     }
 
-    /// Adds the holder's workspace (`project/workspace`) to its pidfile, after its pid and name.
-    pub fn record_group(&self, name: &str, group: &str) -> std::io::Result<()> {
+    pub fn write_pidfile(&self, name: &str, group: Option<&str>) -> std::io::Result<()> {
         let path = self.pidfile(name);
-        let text = std::fs::read_to_string(&path)?;
-        let mut lines = text.lines();
-        let (Some(pid), Some(recorded)) = (lines.next(), lines.next()) else {
-            return Err(std::io::Error::other("pidfile without pid and name"));
-        };
-        std::fs::write(&path, format!("{pid}\n{recorded}\n{group}\n"))
+        let mut text = format!("{}\n{name}\n", std::process::id());
+        if let Some(group) = group {
+            text.push_str(group);
+            text.push('\n');
+        }
+        let staging = path.with_extension(format!("pid.{}", std::process::id()));
+        std::fs::write(&staging, text)?;
+        std::fs::rename(&staging, &path).inspect_err(|_| remove_quietly(&staging))
     }
 
     /// The `project/workspace` the holder was started for, when it was started for one.
@@ -477,8 +478,7 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let dir = SocketDir::new(temp.path());
         std::fs::write(dir.pidfile("ghost"), "999999\nghost\n")?;
-        std::fs::write(dir.pidfile("me"), format!("{}\nme\n", std::process::id()))?;
-        dir.record_group("me", "myproject/feat/login")?;
+        dir.write_pidfile("me", Some("myproject/feat/login"))?;
         assert_eq!(
             dir.holder_group("me"),
             Some(("myproject".into(), "feat/login".into()))
@@ -488,6 +488,31 @@ mod tests {
             vec![("me".to_string(), std::process::id() as i32)]
         );
         assert!(!dir.pidfile("ghost").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_pidfile_being_written_never_reads_as_a_dead_holder() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let dir = std::sync::Arc::new(SocketDir::new(temp.path()));
+        dir.write_pidfile("me", None)?;
+        let writer = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                (0..2000).try_for_each(|_| dir.write_pidfile("me", Some("myproject/feat")))
+            })
+        };
+        let mut misses = 0;
+        while !writer.is_finished() {
+            if !dir.holder_alive("me") {
+                misses += 1;
+            }
+        }
+        assert!(writer.join().is_ok_and(|written| written.is_ok()));
+        assert_eq!(
+            misses, 0,
+            "the holder read as gone while its pidfile was rewritten"
+        );
         Ok(())
     }
 

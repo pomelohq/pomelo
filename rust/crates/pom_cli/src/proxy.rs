@@ -69,18 +69,21 @@ pub(crate) fn serve(state: &StateDir, out: &mut dyn Write) -> Result<(), String>
             binary.clone(),
         )),
     };
-    let proxy = DevProxy::start_on(
-        Box::new(machine),
-        network.clone(),
-        pom_proxy::Serve::default(),
-    )
-    .map_err(|error| error.to_string())?;
     let push = pom_push::PushSync::start(pom_push::Machine {
         state: state.clone(),
         holders,
         binary,
     });
-    proxy.set_github_hook(push.hook());
+    let proxy = DevProxy::start_with(
+        Box::new(machine),
+        network.clone(),
+        pom_proxy::Serve::default(),
+        pom_proxy::Initial {
+            projects: registered_routes(state),
+            github: Some(push.hook()),
+        },
+    )
+    .map_err(|error| error.to_string())?;
     if !proxy.proxy_running() {
         return Err(format!("could not listen on port {}", ports.proxy));
     }

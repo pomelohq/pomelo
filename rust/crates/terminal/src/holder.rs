@@ -114,6 +114,10 @@ impl HolderBackend {
     }
 }
 
+/// macOS can leave a blocked read asleep after the holder half-closes a reader that fell behind; the next read
+/// sees the end, so no read waits longer than this.
+const END_RECHECK: Duration = Duration::from_secs(1);
+
 struct Reading {
     dir: SocketDir,
     name: String,
@@ -132,12 +136,13 @@ fn read_output<L: EventListener>(
     let mut _resumed: Option<HolderConnection> = None;
     loop {
         // A synchronized update holds frames until it ends or times out; wake up in time to end it.
-        let timeout = processor.sync_timeout().sync_timeout().map(|deadline| {
+        let sync_deadline = processor.sync_timeout().sync_timeout();
+        let timeout = sync_deadline.map_or(END_RECHECK, |deadline| {
             deadline
                 .saturating_duration_since(Instant::now())
-                .max(Duration::from_millis(1))
+                .clamp(Duration::from_millis(1), END_RECHECK)
         });
-        if let Err(error) = output.get_ref().set_read_timeout(timeout) {
+        if let Err(error) = output.get_ref().set_read_timeout(Some(timeout)) {
             eprintln!("terminal holder: {error}");
         }
         match output.read(&mut buffer) {
@@ -166,8 +171,10 @@ fn read_output<L: EventListener>(
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) =>
             {
-                processor.stop_sync(&mut *term.lock());
-                listener.send_event(BackendEvent::Wakeup);
+                if sync_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                    processor.stop_sync(&mut *term.lock());
+                    listener.send_event(BackendEvent::Wakeup);
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => break,

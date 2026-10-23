@@ -84,6 +84,12 @@ impl Ports {
     }
 }
 
+#[derive(Default)]
+pub struct Initial {
+    pub projects: Vec<ProjectRoute>,
+    pub github: Option<GithubHook>,
+}
+
 /// Which of the two servers to run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Serve {
@@ -317,6 +323,15 @@ impl DevProxy {
         network: pom_env::DevNetwork,
         serve: Serve,
     ) -> std::io::Result<DevProxy> {
+        DevProxy::start_with(machine, network, serve, Initial::default())
+    }
+
+    pub fn start_with(
+        machine: Box<dyn Machine>,
+        network: pom_env::DevNetwork,
+        serve: Serve,
+        initial: Initial,
+    ) -> std::io::Result<DevProxy> {
         let ports = Ports {
             webhook: network.ports.webhook,
             proxy: network.ports.proxy,
@@ -333,6 +348,10 @@ impl DevProxy {
             log.clone(),
             network.clone(),
         ));
+        router.set_projects(initial.projects);
+        if let Some(hook) = initial.github {
+            shared.set_github(hook);
+        }
         let _entered = runtime.enter();
         let mut proxy_bound = false;
         let proxy_addresses = listen_addresses(network.bind, ports.proxy, true);

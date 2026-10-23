@@ -2312,13 +2312,17 @@ impl App {
                 holders,
                 waker,
             };
-            match pom_proxy::DevProxy::start_on(Box::new(machine), pom_env::dev_network(), serve) {
-                Ok(proxy) => {
-                    if let Some(push) = push {
-                        proxy.set_github_hook(push.hook());
-                    }
-                    self.dev_proxy = Some(proxy);
-                }
+            let initial = pom_proxy::Initial {
+                projects: projects.clone(),
+                github: push.map(|push| push.hook()),
+            };
+            match pom_proxy::DevProxy::start_with(
+                Box::new(machine),
+                pom_env::dev_network(),
+                serve,
+                initial,
+            ) {
+                Ok(proxy) => self.dev_proxy = Some(proxy),
                 Err(error) => eprintln!("dev proxy failed to start: {error}"),
             }
         }
