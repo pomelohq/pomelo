@@ -742,6 +742,7 @@ pub(crate) fn doctor(
     {
         let config = config.clone();
         let config_path = config_path.clone();
+        let root = root.clone();
         checks.push((
             "config",
             Box::new(move || {
@@ -815,6 +816,34 @@ pub(crate) fn doctor(
             "server",
             Box::new(move || pom_doctor::server_findings(&server::survey(linger))),
         ));
+        if let Some(config) = config.clone() {
+            checks.push((
+                "git",
+                Box::new(move || {
+                    let default_branch = config.global_default_branch();
+                    let probes = std::thread::scope(|threads| {
+                        let handles: Vec<_> = config
+                            .repos
+                            .keys()
+                            .map(|name| {
+                                let checkout =
+                                    pom_layout::repo_worktree(&root, name, default_branch, true);
+                                threads.spawn(move || {
+                                    checkout
+                                        .is_dir()
+                                        .then(|| pom_doctor::probe_origin(name, &checkout, path))
+                                })
+                            })
+                            .collect();
+                        handles
+                            .into_iter()
+                            .filter_map(|handle| handle.join().ok().flatten())
+                            .collect::<Vec<_>>()
+                    });
+                    pom_doctor::git_auth_findings(&probes)
+                }),
+            ));
+        }
     }
     let timeout = if quick {
         QUICK_CHECK_TIMEOUT
