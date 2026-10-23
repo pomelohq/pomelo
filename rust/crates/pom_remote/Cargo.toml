@@ -12,6 +12,7 @@ path = "src/pom_remote.rs"
 agent_usage = { path = "../agent_usage" }
 module_store = { path = "../module_store" }
 files = { path = "../files" }
+git = { path = "../git" }
 pom_paths = { path = "../pom_paths" }
 libc = "0.2"
 pom_agent = { path = "../pom_agent" }

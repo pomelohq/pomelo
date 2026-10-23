@@ -3862,6 +3862,7 @@ version = "0.9.7"
 dependencies = [
  "agent_usage",
  "files",
+ "git",
  "libc",
  "module_store",
  "pom_agent",
@@ -3909,6 +3910,7 @@ version = "0.9.7"
 dependencies = [
  "agent_usage",
  "files",
+ "git",
  "libc",
  "module_store",
  "pom_agent",

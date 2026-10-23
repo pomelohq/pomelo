@@ -189,6 +189,8 @@ pub struct TransportInfo {
     pub jira: bool,
     /// The server runs the node_modules Store page's requests.
     pub module_store: bool,
+    /// The server reads and changes the workspace's repos for the Git panel, and runs their fetch, pull and push.
+    pub git: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
@@ -341,6 +343,14 @@ pub trait ProjectSource: Send + Sync {
     /// The files of workspace `branch`, read where they are; `None` when the machine cannot serve them.
     fn files(&self, _branch: &str) -> Option<Arc<dyn files::ProjectFs>> {
         None
+    }
+    /// The repos of workspace `branch` for the Git panel, run where they are; `None` when the machine cannot.
+    fn git(&self, _branch: &str) -> Option<Arc<dyn git::access::GitAccess>> {
+        None
+    }
+    /// The repos of workspace `branch` as the Git panel lists them.
+    fn git_repos(&self, _branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
+        Err(unsupported("The Git panel"))
     }
     /// The dev proxy port on the machine, when it says; its workspace addresses are forwarded there.
     fn dev_proxy_port(&self) -> Option<u16> {

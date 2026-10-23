@@ -359,6 +359,26 @@ impl LocalSource {
             .ok_or_else(|| SourceError::Failed(format!("no workspace {branch}")))
     }
 
+    /// The repos of workspace `branch` as the Git panel lists them, with their `origin`; read even while
+    /// pom.yml is broken.
+    pub fn git_repos(&self, branch: &str) -> Result<Vec<git::access::RepoSource>, SourceError> {
+        let project = Project::open(&self.config_path, &self.state);
+        if !project
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.branch == branch)
+        {
+            return Err(SourceError::Failed(format!("no workspace {branch}")));
+        }
+        Ok(crate::repo_sources(&project, branch)
+            .into_iter()
+            .map(|repo| git::access::RepoSource {
+                origin: git::working_copy::remote_url(&repo.root, "origin"),
+                ..repo
+            })
+            .collect())
+    }
+
     /// The holder of `service` (`repo/name`, `name`, or `_ws/name` for a workspace-level one).
     pub fn service_holder(&self, branch: &str, service: &str) -> Result<String, SourceError> {
         let opened = self.open_project()?;
