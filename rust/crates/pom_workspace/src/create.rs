@@ -6,8 +6,8 @@ use pom_layout::WorkspaceState;
 
 use crate::repo_branch::checked_out_message;
 use crate::{
-    git, node_version, repo_alias, run_shell, EventSink, Operation, Outcome, PipelineError, Run,
-    StageResult, StageScope, WorkspaceContext,
+    git, modules_rules, node_version, repo_alias, run_shell, EventSink, Operation, Outcome,
+    PipelineError, Run, StageResult, StageScope, WorkspaceContext,
 };
 
 pub const CREATE_STAGES: [&str; 8] = [
@@ -455,16 +455,13 @@ impl<'a> Creation<'a> {
             for repo in self.repos.iter().filter(|repo| repo.worktree.is_dir()) {
                 let repo_env = env.repo_env(&repo.name);
                 threads.spawn(move || {
+                    let rules = modules_rules(config, &repo.name);
                     let node = matches!(
-                        module_store::detect(&repo.worktree),
+                        module_store::detect(&repo.worktree, &rules.setup),
                         module_store::Detection::Store { .. }
                     )
                     .then(|| node_version(&repo.worktree, &repo_env))
                     .flatten();
-                    let private = config
-                        .repos
-                        .get(&repo.name)
-                        .map_or(&[][..], |dir| dir.modules_private.as_slice());
                     let restored = store
                         .restore(
                             &repo.name,
@@ -472,7 +469,7 @@ impl<'a> Creation<'a> {
                             &repo.main,
                             node.as_deref(),
                             store_options,
-                            private,
+                            &rules,
                         )
                         .unwrap_or_else(|error| {
                             scope.warn(format!("{}: shared node_modules ({error})", repo.name));
@@ -507,7 +504,7 @@ impl<'a> Creation<'a> {
                                     &repo.worktree,
                                     node.as_deref(),
                                     store_options,
-                                    private,
+                                    &rules,
                                 ) {
                                     eprintln!(
                                         "workspace: keep node_modules for {}: {error}",

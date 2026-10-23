@@ -32,7 +32,7 @@ fn a_workspace_matching_main_gets_mains_modules_without_its_cache() {
             &main,
             Some("v20.1.0"),
             &options(Fallback::Copy),
-            &[],
+            &RepoRules::default(),
         )
         .unwrap();
     assert!(matches!(restored, Restored::FromStore(_)), "{restored:?}");
@@ -62,26 +62,47 @@ fn a_different_lockfile_or_node_major_installs_and_then_is_kept() {
     let copy = options(Fallback::Copy);
     assert_eq!(
         store
-            .restore("api", &worktree, &main, Some("v20"), &copy, &[])
+            .restore(
+                "api",
+                &worktree,
+                &main,
+                Some("v20"),
+                &copy,
+                &RepoRules::default()
+            )
             .unwrap(),
         Restored::Install
     );
     let other_node = repo_with(&dir.path().join("other"), "v1", false);
     assert_eq!(
         store
-            .restore("api", &other_node, &main, Some("v22"), &copy, &[])
+            .restore(
+                "api",
+                &other_node,
+                &main,
+                Some("v22"),
+                &copy,
+                &RepoRules::default()
+            )
             .unwrap(),
         Restored::FromStore(store.supported_method(dir.path()).max_copy()),
         "a new node major fills its own copy from main when main's key matches too"
     );
     repo_with(&worktree, "v2", true);
     store
-        .snapshot("api", &worktree, Some("v20"), &copy, &[])
+        .snapshot("api", &worktree, Some("v20"), &copy, &RepoRules::default())
         .unwrap();
     let next = repo_with(&dir.path().join("next"), "v2", false);
     assert!(matches!(
         store
-            .restore("api", &next, &main, Some("v20"), &copy, &[])
+            .restore(
+                "api",
+                &next,
+                &main,
+                Some("v20"),
+                &copy,
+                &RepoRules::default()
+            )
             .unwrap(),
         Restored::FromStore(_)
     ));
@@ -110,7 +131,7 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
     };
     assert_eq!(
         store
-            .restore("api", &worktree, &main, None, &off, &[])
+            .restore("api", &worktree, &main, None, &off, &RepoRules::default())
             .unwrap(),
         Restored::Install
     );
@@ -123,7 +144,7 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
                     &main,
                     None,
                     &options(Fallback::Install),
-                    &[]
+                    &RepoRules::default()
                 )
                 .unwrap(),
             Restored::Install
@@ -132,7 +153,14 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
     fs::write(worktree.join("pnpm-lock.yaml"), "").unwrap();
     assert_eq!(
         store
-            .restore("api", &worktree, &main, None, &Options::default(), &[])
+            .restore(
+                "api",
+                &worktree,
+                &main,
+                None,
+                &Options::default(),
+                &RepoRules::default()
+            )
             .unwrap(),
         Restored::SelfManaged("pnpm")
     );
@@ -146,11 +174,11 @@ fn the_outlook_tells_instant_from_installing_before_create() {
     let bare = repo_with(&dir.path().join("web"), "v1", false);
     let on = options(Fallback::Copy);
     assert_eq!(
-        store.outlook("api", &installed, None, &on),
+        store.outlook("api", &installed, None, &on, &RepoRules::default()),
         Outlook::FromStore
     );
     assert_eq!(
-        store.outlook("web", &bare, None, &on),
+        store.outlook("web", &bare, None, &on, &RepoRules::default()),
         Outlook::InstallsOnce
     );
     let off = Options {
@@ -158,17 +186,20 @@ fn the_outlook_tells_instant_from_installing_before_create() {
         ..on
     };
     assert_eq!(
-        store.outlook("api", &installed, None, &off),
+        store.outlook("api", &installed, None, &off, &RepoRules::default()),
         Outlook::Installs
     );
     fs::write(bare.join("pnpm-lock.yaml"), "").unwrap();
     assert_eq!(
-        store.outlook("web", &bare, None, &on),
+        store.outlook("web", &bare, None, &on, &RepoRules::default()),
         Outlook::SelfManaged("pnpm")
     );
     let empty = dir.path().join("docs");
     fs::create_dir_all(&empty).unwrap();
-    assert_eq!(store.outlook("docs", &empty, None, &on), Outlook::NotNode);
+    assert_eq!(
+        store.outlook("docs", &empty, None, &on, &RepoRules::default()),
+        Outlook::NotNode
+    );
 }
 
 #[test]
@@ -372,7 +403,9 @@ fn generated_client_folders_are_never_stored_or_linked() {
     let source = repo_with(&dir.path().join("source"), "v1", true);
     with_generated_client(&source);
     let hard = options(Fallback::HardLink);
-    store.snapshot("api", &source, None, &hard, &[]).unwrap();
+    store
+        .snapshot("api", &source, None, &hard, &RepoRules::default())
+        .unwrap();
     let key = store.list().unwrap()[0].key.clone();
     let stored = store.entry_dir("api", &key);
     assert!(stored.join("left-pad/index.js").is_file());
@@ -386,7 +419,7 @@ fn generated_client_folders_are_never_stored_or_linked() {
     let second = repo_with(&dir.path().join("second"), "v1", false);
     for worktree in [&first, &second] {
         let restored = store
-            .restore("api", worktree, &main, None, &hard, &[])
+            .restore("api", worktree, &main, None, &hard, &RepoRules::default())
             .unwrap();
         assert!(matches!(restored, Restored::FromStore(_)), "{restored:?}");
         assert_eq!(
@@ -417,7 +450,10 @@ fn a_repos_modules_private_folders_stay_out_of_the_store() {
             &main,
             None,
             &options(Fallback::Copy),
-            &private,
+            &RepoRules {
+                private,
+                setup: Vec::new(),
+            },
         )
         .unwrap();
     let key = store.list().unwrap()[0].key.clone();
@@ -440,7 +476,13 @@ fn a_copy_stored_before_a_folder_was_private_restores_without_it() {
     let main = repo_with(&dir.path().join("main"), "v1", false);
     let source = repo_with(&dir.path().join("source"), "v1", true);
     store
-        .snapshot("api", &source, None, &options(Fallback::Copy), &[])
+        .snapshot(
+            "api",
+            &source,
+            None,
+            &options(Fallback::Copy),
+            &RepoRules::default(),
+        )
         .unwrap();
     let key = store.list().unwrap()[0].key.clone();
     let stored = store.entry_dir("api", &key);
@@ -449,11 +491,14 @@ fn a_copy_stored_before_a_folder_was_private_restores_without_it() {
     fs::create_dir_all(stored.join(".generated")).unwrap();
 
     let worktree = repo_with(&dir.path().join("feat"), "v1", false);
-    let private = vec![".generated".to_string()];
+    let rules = RepoRules {
+        private: vec![".generated".to_string()],
+        setup: Vec::new(),
+    };
     for fallback in [Fallback::HardLink, Fallback::Copy] {
         remove_tree(&worktree.join("node_modules")).unwrap();
         store
-            .restore("api", &worktree, &main, None, &options(fallback), &private)
+            .restore("api", &worktree, &main, None, &options(fallback), &rules)
             .unwrap();
         assert!(worktree.join("node_modules/left-pad/index.js").is_file());
         assert!(
@@ -465,4 +510,101 @@ fn a_copy_stored_before_a_folder_was_private_restores_without_it() {
             "{fallback:?}"
         );
     }
+}
+
+fn inode(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).unwrap().ino()
+}
+
+fn read_only(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o222 == 0
+}
+
+#[test]
+fn private_packages_are_writable_copies_in_a_hard_linked_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let source = repo_with(&dir.path().join("source"), "v1", true);
+    let modules = source.join("node_modules");
+    for package in ["@prisma/client/runtime", "prisma/build", "sdk"] {
+        fs::create_dir_all(modules.join(package)).unwrap();
+    }
+    fs::write(modules.join("@prisma/client/runtime/library.js"), "runtime").unwrap();
+    fs::write(modules.join("prisma/build/index.js"), "cli").unwrap();
+    fs::write(modules.join("sdk/index.js"), "sdk").unwrap();
+    let private = vec!["sdk".to_string()];
+    store
+        .fill(
+            "api",
+            "k",
+            Manager::Npm,
+            &modules,
+            Method::HardLink,
+            &private,
+        )
+        .unwrap();
+    let stored = store.entry_dir("api", "k");
+    let stored_runtime = stored.join("@prisma/client/runtime/library.js");
+    assert!(read_only(&stored_runtime));
+    assert_eq!(
+        inode(&modules.join("left-pad/index.js")),
+        inode(&stored.join("left-pad/index.js"))
+    );
+    assert_ne!(
+        inode(&modules.join("@prisma/client/runtime/library.js")),
+        inode(&stored_runtime),
+        "the installing workspace keeps its own prisma"
+    );
+    assert!(!read_only(
+        &modules.join("@prisma/client/runtime/library.js")
+    ));
+
+    let target = dir.path().join("feat/node_modules");
+    restore_into(&stored, &target, Method::HardLink, &private).unwrap();
+    assert_eq!(
+        inode(&target.join("left-pad/index.js")),
+        inode(&stored.join("left-pad/index.js"))
+    );
+    for file in [
+        "@prisma/client/runtime/library.js",
+        "prisma/build/index.js",
+        "sdk/index.js",
+    ] {
+        assert_ne!(
+            inode(&target.join(file)),
+            inode(&stored.join(file)),
+            "{file}"
+        );
+        assert!(!read_only(&target.join(file)), "{file}");
+    }
+
+    let runtime = target.join("@prisma/client/runtime/library.js");
+    let generated = target.join(".prisma/client");
+    fs::create_dir_all(&generated).unwrap();
+    for round in 0..3 {
+        let copied = generated.join("library.js");
+        fs::copy(&runtime, &copied).unwrap_or_else(|error| panic!("generate {round}: {error}"));
+        fs::set_permissions(&copied, fs::metadata(&runtime).unwrap().permissions()).unwrap();
+    }
+    fs::write(&runtime, "patched in the workspace").unwrap();
+    assert_eq!(fs::read_to_string(&stored_runtime).unwrap(), "runtime");
+    assert!(read_only(&stored_runtime));
+    assert!(!stored.join(".prisma").exists());
+}
+
+#[test]
+fn private_folders_starting_with_a_dot_are_never_stored_and_others_are() {
+    let names = vec![
+        ".generated".to_string(),
+        "sdk".to_string(),
+        "../up".to_string(),
+    ];
+    assert_eq!(unshared(&names), [".cache", ".prisma", ".generated"]);
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["@prisma", "sdk", ".generated"] {
+        fs::create_dir_all(dir.path().join(name)).unwrap();
+    }
+    assert_eq!(private_copies(dir.path(), &names), ["@prisma", "sdk"]);
 }

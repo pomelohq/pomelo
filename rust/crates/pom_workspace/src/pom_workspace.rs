@@ -335,6 +335,19 @@ impl Run<'_> {
     }
 }
 
+/// What the node_modules store reads from a repo's config.
+pub fn modules_rules(config: &pom_config::Config, repo: &str) -> module_store::RepoRules {
+    config
+        .repos
+        .get(repo)
+        .map_or_else(module_store::RepoRules::default, |dir| {
+            module_store::RepoRules {
+                private: dir.modules_private.clone(),
+                setup: dir.effective_setup(),
+            }
+        })
+}
+
 /// Runs a shell command in `cwd` with the tool PATH and `env`; on failure, the tail of its output.
 /// `node --version` as the workspace's login shell resolves it (nvm, volta, asdf...).
 pub fn node_version(cwd: &Path, env: &[(String, String)]) -> Option<String> {

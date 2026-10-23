@@ -27,7 +27,9 @@ const TEMP_DIR: &str = ".tmp";
 const MODULES: &str = "node_modules";
 /// Build caches tools write under node_modules; each workspace keeps its own.
 const UNSHARED: [&str; 1] = [".cache"];
-pub const DEFAULT_PRIVATE: [&str; 1] = [".prisma"];
+/// Kept private in every workspace: `.prisma` is generated there, and `prisma generate` copies files out of
+/// the two packages keeping their mode, so a read-only shared copy would make the next generate fail.
+pub const DEFAULT_PRIVATE: [&str; 3] = [".prisma", "@prisma", "prisma"];
 const STALE_TEMP: Duration = Duration::from_secs(3600);
 const DAY: u64 = 86_400;
 
@@ -231,14 +233,80 @@ impl Drop for Lock {
     }
 }
 
-fn unshared(private: &[String]) -> Vec<&str> {
-    UNSHARED
+/// What the store needs from a repo's pom.yml.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RepoRules {
+    /// `modules_private`, the repo's and its presets'.
+    pub private: Vec<String>,
+    /// The setup steps, which tell the package manager apart when a repo has several lockfiles.
+    pub setup: Vec<String>,
+}
+
+fn private_names(private: &[String]) -> impl Iterator<Item = &str> {
+    DEFAULT_PRIVATE
         .iter()
-        .chain(DEFAULT_PRIVATE.iter())
         .copied()
         .chain(private.iter().map(String::as_str))
         .filter(|name| !name.is_empty() && *name != "." && *name != ".." && !name.contains('/'))
+}
+
+/// Never stored: build caches and private folders whose name starts with `.`, which no npm package can
+/// have, so they are generated in each workspace.
+fn unshared(private: &[String]) -> Vec<&str> {
+    UNSHARED
+        .iter()
+        .copied()
+        .chain(private_names(private).filter(|name| name.starts_with('.')))
         .collect()
+}
+
+/// Private packages present in `source`: stored, but every workspace gets its own writable copy.
+fn private_copies<'a>(source: &Path, private: &'a [String]) -> Vec<&'a str> {
+    let mut names: Vec<&str> = Vec::new();
+    for name in private_names(private).filter(|name| !name.starts_with('.')) {
+        let is_dir = fs::symlink_metadata(source.join(name)).is_ok_and(|meta| meta.is_dir());
+        if is_dir && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// `import::import`, but the private packages are copied where the rest is hard-linked, so neither side
+/// shares their files; returns the private copies made under `target`.
+fn import_modules(
+    source: &Path,
+    target: &Path,
+    method: Method,
+    private: &[String],
+) -> io::Result<Vec<PathBuf>> {
+    let copies = private_copies(source, private);
+    let mut skip = unshared(private);
+    if method == Method::HardLink {
+        skip.extend(&copies);
+    }
+    import::import(source, target, method, &skip)?;
+    let mut made = Vec::new();
+    for name in copies {
+        if method == Method::HardLink {
+            import::import(&source.join(name), &target.join(name), Method::Copy, &[])?;
+        }
+        made.push(target.join(name));
+    }
+    Ok(made)
+}
+
+/// A stored copy as a workspace's `node_modules`, its private packages writable again.
+fn restore_into(
+    stored: &Path,
+    target: &Path,
+    method: Method,
+    private: &[String],
+) -> io::Result<()> {
+    for copy in import_modules(stored, target, method, private)? {
+        import::make_writable(&copy)?;
+    }
+    Ok(())
 }
 
 fn now() -> u64 {
@@ -363,13 +431,12 @@ impl Store {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_nanos())
         ));
-        let built = import::import(source, &temp.join(MODULES), method, &unshared(private))
-            .and_then(|()| {
-                if method == Method::HardLink {
-                    import::protect(&temp.join(MODULES))?;
-                }
-                Ok(())
-            });
+        let built = import_modules(source, &temp.join(MODULES), method, private).and_then(|_| {
+            if method == Method::HardLink {
+                import::protect(&temp.join(MODULES))?;
+            }
+            Ok(())
+        });
         if let Err(error) = built {
             remove_tree(&temp)?;
             return Err(error);
@@ -419,8 +486,13 @@ impl Store {
         })
     }
 
-    fn key_for(&self, worktree: &Path, node: Option<&str>) -> Result<(Manager, String), Restored> {
-        match detect(worktree) {
+    fn key_for(
+        &self,
+        worktree: &Path,
+        node: Option<&str>,
+        setup: &[String],
+    ) -> Result<(Manager, String), Restored> {
+        match detect(worktree, setup) {
             Detection::SelfManaged(name) => Err(Restored::SelfManaged(name)),
             Detection::None => Err(Restored::Install),
             Detection::Store { manager, lockfile } => {
@@ -440,13 +512,13 @@ impl Store {
         main: &Path,
         node: Option<&str>,
         options: &Options,
-        private: &[String],
+        rules: &RepoRules,
     ) -> io::Result<Restored> {
         let target = worktree.join(MODULES);
         if !options.enabled || target.exists() {
             return Ok(Restored::Install);
         }
-        let (manager, key) = match self.key_for(worktree, node) {
+        let (manager, key) = match self.key_for(worktree, node, &rules.setup) {
             Ok(found) => found,
             Err(restored) => return Ok(restored),
         };
@@ -458,7 +530,7 @@ impl Store {
             let main_modules = main.join(MODULES);
             let main_matches = main_modules.is_dir()
                 && self
-                    .key_for(main, node)
+                    .key_for(main, node, &rules.setup)
                     .is_ok_and(|(_, main_key)| main_key == key);
             if !main_matches {
                 return Ok(Restored::Install);
@@ -468,12 +540,19 @@ impl Store {
                 Method::Clone => Method::Clone,
                 _ => Method::Copy,
             };
-            self.fill(repo, &key, manager, &main_modules, from_main, private)?;
+            self.fill(
+                repo,
+                &key,
+                manager,
+                &main_modules,
+                from_main,
+                &rules.private,
+            )?;
         }
         if method == Method::HardLink {
             import::protect(&stored)?;
         }
-        import::import(&stored, &target, method, &unshared(private))?;
+        restore_into(&stored, &target, method, &rules.private)?;
         self.touch(repo, &key, worktree)?;
         Ok(Restored::FromStore(method))
     }
@@ -485,8 +564,9 @@ impl Store {
         main: &Path,
         node: Option<&str>,
         options: &Options,
+        rules: &RepoRules,
     ) -> Outlook {
-        let key = match self.key_for(main, node) {
+        let key = match self.key_for(main, node, &rules.setup) {
             Ok((_, key)) => key,
             Err(Restored::SelfManaged(name)) => return Outlook::SelfManaged(name),
             Err(_) => return Outlook::NotNode,
@@ -508,19 +588,19 @@ impl Store {
         worktree: &Path,
         node: Option<&str>,
         options: &Options,
-        private: &[String],
+        rules: &RepoRules,
     ) -> io::Result<()> {
         let source = worktree.join(MODULES);
         if !options.enabled || !source.is_dir() {
             return Ok(());
         }
-        let Ok((manager, key)) = self.key_for(worktree, node) else {
+        let Ok((manager, key)) = self.key_for(worktree, node, &rules.setup) else {
             return Ok(());
         };
         let Some(method) = options.method(probe(&self.root, worktree)) else {
             return Ok(());
         };
-        self.fill(repo, &key, manager, &source, method, private)?;
+        self.fill(repo, &key, manager, &source, method, &rules.private)?;
         self.touch(repo, &key, worktree)
     }
 

@@ -94,6 +94,11 @@ fn apply_preset(dir: &mut Dir, preset: &Preset) {
         dir.pre_start = preset.pre_start.clone();
     }
     fill(&mut dir.copy, &preset.copy);
+    for name in &preset.modules_private {
+        if !dir.modules_private.contains(name) {
+            dir.modules_private.push(name.clone());
+        }
+    }
     dir.seed_from_main |= preset.seed_from_main;
     fill(&mut dir.shortcuts, &preset.shortcuts);
     fill(&mut dir.migrate, &preset.migrate);

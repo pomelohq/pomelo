@@ -89,6 +89,7 @@ pub struct Preset {
     pub pre_delete: Vec<String>,
     pub pre_start: String,
     pub copy: Vec<String>,
+    pub modules_private: Vec<String>,
     pub seed_from_main: bool,
     pub shortcuts: Vec<Shortcut>,
     pub services: IndexMap<String, Service>,
@@ -458,6 +459,7 @@ impl Preset {
         preset.pre_delete = decoder.strings(field("pre_delete"));
         preset.pre_start = decoder.string(field("pre_start"));
         preset.copy = decoder.strings(field("copy"));
+        preset.modules_private = decoder.string_list(field("modules_private"));
         preset.seed_from_main = decoder.bool(field("seed_from_main"));
         preset.shortcuts = decode_shortcuts(decoder, tasks_node(node, Section::Preset));
         preset.services = decoder.map(field("services"), "map[string]Service", Service::decode);
