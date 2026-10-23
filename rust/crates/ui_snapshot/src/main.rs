@@ -369,24 +369,59 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "git-pr-none" => (0, &[("PRFIXTURE", "none")]),
         "git-pr-error" => (0, &[("PRFIXTURE", "error")]),
         "git-pr-empty" => (0, &[("PRFIXTURE", "empty")]),
-        // A project on another machine from a stand-in source; REMOTEVIEW names the state.
+        // A project on another machine from a stand-in source; REMOTEVIEW names the state. The window is laid
+        // out at the boards' 1440x900 and cropped to the part a board is about.
         "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
-        "remote-disconnected" => (0, &[("REMOTEVIEW", "disconnected")]),
-        "remote-reconnecting" => (0, &[("REMOTEVIEW", "reconnecting")]),
-        "remote-terminal-disconnected" => (0, &[("REMOTEVIEW", "terminal-disconnected")]),
-        "remote-restarted" => (0, &[("REMOTEVIEW", "restarted")]),
-        "remote-version" => (0, &[("REMOTEVIEW", "version")]),
-        "remote-version-commands" => (0, &[("REMOTEVIEW", "version-commands")]),
-        "remote-version-updating" => (0, &[("REMOTEVIEW", "version-updating")]),
-        "remote-logs" => (0, &[("REMOTEVIEW", "logs")]),
-        "remote-create" => (0, &[("REMOTEVIEW", "create")]),
-        "remote-terminal" => (0, &[("REMOTEVIEW", "terminal")]),
-        "remote-agents" => (0, &[("REMOTEVIEW", "agents")]),
-        "remote-connect" => (0, &[("REMOTEVIEW", "connect")]),
-        "remote-connect-projects" => (0, &[("REMOTEVIEW", "connect-projects")]),
+        "remote-logs" => (0, &[("REMOTEVIEW", "logs"), ("CROP", REMOTE_CENTER)]),
+        "remote-disconnected" => (
+            0,
+            &[("REMOTEVIEW", "disconnected"), ("CROP", REMOTE_CENTER)],
+        ),
+        "remote-version" => (0, &[("REMOTEVIEW", "version"), ("CROP", REMOTE_CENTER)]),
+        "remote-version-commands" => (
+            0,
+            &[("REMOTEVIEW", "version-commands"), ("CROP", REMOTE_CENTER)],
+        ),
+        "remote-version-updating" => (
+            0,
+            &[("REMOTEVIEW", "version-updating"), ("CROP", REMOTE_CENTER)],
+        ),
+        "remote-reconnecting" => (
+            0,
+            &[("REMOTEVIEW", "reconnecting"), ("CROP", REMOTE_CENTER)],
+        ),
+        "remote-terminal-disconnected" => (
+            0,
+            &[
+                ("REMOTEVIEW", "terminal-disconnected"),
+                ("CROP", REMOTE_CENTER),
+            ],
+        ),
+        "remote-terminal" => (
+            0,
+            &[("REMOTEVIEW", "terminal"), ("CROP", "256,512,1178,360")],
+        ),
+        "remote-agents" => (0, &[("REMOTEVIEW", "agents"), ("CROP", "1054,40,380,832")]),
+        "remote-create" => (0, &[("REMOTEVIEW", "create"), ("CROP", "0,40,256,860")]),
+        "remote-restarted" => (
+            0,
+            &[("REMOTEVIEW", "restarted"), ("CROP", "496,814,449,52")],
+        ),
+        // Connect to Host alone at its width, in the step a board shows.
+        "remote-connect" => (0, &[("MODAL", "connect-hosts")]),
+        "remote-connect-empty" => (0, &[("MODAL", "connect-empty")]),
+        "remote-connect-loading" => (0, &[("MODAL", "connect-loading")]),
+        "remote-connect-error" => (0, &[("MODAL", "connect-error")]),
+        "remote-connect-projects" => (0, &[("MODAL", "connect-projects")]),
+        "remote-welcome" => (0, &[("WELCOME", "remote")]),
+        // Every state of the title bar's host stacked, as one alone is too short to score.
+        "remote-host-states" => (0, &[("HOSTSTATES", "1")]),
         _ => return None,
     })
 }
+
+/// The center pane of a remote window at the boards' size, with the terminal dock when one is open.
+const REMOTE_CENTER: &str = "256,40,1178,832";
 
 /// `--scene <id> <out.png> [--theme dark|light] [--size WxH]`: sets the switches the rest of `main` reads and
 /// returns the output path and category.
@@ -2826,6 +2861,7 @@ fn main() -> anyhow::Result<()> {
     let crop = window_crop();
     let (lw, lh) = match (scene_size, std::env::var("MAINVIEW")) {
         (Some(_), Ok(_)) if crop.is_some() => (1440.0, 900.0),
+        (Some(_), _) if crop.is_some() && std::env::var("REMOTEVIEW").is_ok() => (1440.0, 900.0),
         (Some(size), _) => size,
         (None, Ok(_)) => (
             std::env::var("SNAPW")
@@ -3120,6 +3156,75 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if std::env::var("HOSTSTATES").is_ok() {
+        if let Ok(name) = std::env::var("THEME") {
+            ui::set_theme(ui::by_name(&name));
+        }
+        let colors = ui::theme();
+        let states = [
+            (workspace::HostLink::Connecting, "Connecting to: dev"),
+            (workspace::HostLink::Connected, "Connected to: dev"),
+            (
+                workspace::HostLink::Reconnecting,
+                "Lost connection to dev. Reconnecting...",
+            ),
+            (workspace::HostLink::Disconnected, "Disconnected from dev"),
+        ];
+        let mut sheet = ui::div()
+            .col()
+            .w_px(lw)
+            .px(12.0)
+            .py(8.0)
+            .bg(colors.title_bar_background);
+        for (link, meta) in states {
+            sheet = sheet.child(
+                ui::div()
+                    .row()
+                    .items_center()
+                    .gap(2.0)
+                    .h_px(40.0)
+                    .child(workspace::host_indicator(
+                        "dev",
+                        link,
+                        false,
+                        colors.title_bar_background,
+                    ))
+                    .child(
+                        ui::div()
+                            .row()
+                            .items_center()
+                            .h_px(24.0)
+                            .px(8.0)
+                            .child(ui::label("myproject").size(13.0).color(colors.text)),
+                    )
+                    .child(ui::div().row().flex(1.0))
+                    .child(ui::label(meta).size(11.0).color(colors.text_placeholder)),
+            );
+        }
+        let painted = ui::render(
+            &sheet.into(),
+            ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
+        );
+        r.render_frame(
+            colors.title_bar_background,
+            &[(
+                painted.rects.as_slice(),
+                painted.tris.as_slice(),
+                painted.texts.as_slice(),
+                painted.icons.as_slice(),
+                None,
+            )],
+        )?;
+        let (w, h, rgba) = r.read_rgba()?;
+        let file = std::fs::File::create(&out)?;
+        let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgba)?;
+        println!("wrote {out} ({w}x{h})");
+        return Ok(());
+    }
+
     if let Ok(which) = std::env::var("WELCOME") {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
@@ -3129,7 +3234,7 @@ fn main() -> anyhow::Result<()> {
             "cmd-o".into(),
         )]);
         let home = std::env::var("HOME").unwrap_or_default();
-        let sessions: Vec<workspace::Session> = ["myproject", "storefront", "billing"]
+        let mut sessions: Vec<workspace::Session> = ["myproject", "storefront", "billing"]
             .into_iter()
             .map(|name| workspace::Session {
                 name: name.into(),
@@ -3139,6 +3244,12 @@ fn main() -> anyhow::Result<()> {
                 host: None,
             })
             .collect();
+        let remote = which == "remote";
+        if remote {
+            sessions.truncate(2);
+            sessions[0].host = Some("dev".into());
+            sessions[0].path = "/home/dev/pom/myproject".into();
+        }
         let docker = which != "docker";
         let checks = vec![
             workspace::MachineCheck {
@@ -3162,7 +3273,11 @@ fn main() -> anyhow::Result<()> {
             &sessions,
             &checks,
             lw,
-            Some(workspace::WELCOME_NEW_PROJECT_CARD),
+            Some(if remote {
+                workspace::WELCOME_CONNECT_HOST
+            } else {
+                workspace::WELCOME_NEW_PROJECT_CARD
+            }),
         );
         let painted = ui::render(
             &page,
@@ -3539,7 +3654,7 @@ fn main() -> anyhow::Result<()> {
         if let Ok(name) = std::env::var("THEME") {
             ui::set_theme(ui::by_name(&name));
         }
-        return remote_fixture::render(&mode, &out, (lw, lh), scale, &mut r);
+        return remote_fixture::render(&mode, &out, (lw, lh), scale, &mut r, crop);
     }
     if let Ok(mode) = std::env::var("MAINVIEW") {
         if let Ok(name) = std::env::var("THEME") {
@@ -4617,24 +4732,7 @@ fn main() -> anyhow::Result<()> {
         let frame = app.draw(handle).expect("frame");
         // The OS draws the window buttons; a scene stands in for them where the app pins them.
         let lights: Vec<ui::Rect> = if scene_size.is_some() {
-            [
-                (0.996, 0.373, 0.341),
-                (0.996, 0.737, 0.18),
-                (0.157, 0.784, 0.251),
-            ]
-            .iter()
-            .enumerate()
-            .map(|(index, (r, g, b))| ui::Rect {
-                radius: 6.0,
-                ..ui::Rect::new(
-                    20.0 + index as f32 * 20.0,
-                    (workspace::TOP_BAR_H - 12.0) / 2.0,
-                    12.0,
-                    12.0,
-                    ui::Rgba::new(*r, *g, *b, 1.0),
-                )
-            })
-            .collect()
+            scene_lights()
         } else {
             Vec::new()
         };
@@ -5376,6 +5474,28 @@ fn window_project() -> workspace::ProjectInfo {
         missing: Vec::new(),
         repo_branches: Vec::new(),
     }
+}
+
+/// The window buttons the OS draws, which a scene stands in for where the app pins them.
+fn scene_lights() -> Vec<ui::Rect> {
+    [
+        (0.996, 0.373, 0.341),
+        (0.996, 0.737, 0.18),
+        (0.157, 0.784, 0.251),
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, (r, g, b))| ui::Rect {
+        radius: 6.0,
+        ..ui::Rect::new(
+            20.0 + index as f32 * 20.0,
+            (workspace::TOP_BAR_H - 12.0) / 2.0,
+            12.0,
+            12.0,
+            ui::Rgba::new(*r, *g, *b, 1.0),
+        )
+    })
+    .collect()
 }
 
 fn window_usage() -> workspace::UsageInfo {

@@ -2694,6 +2694,7 @@ impl App {
             workspace::SessionRequest::FixMachine(index) => self.fix_machine(index),
             workspace::SessionRequest::ConnectHost => self.open_connect_host(id),
             workspace::SessionRequest::NoticeAction(index) => self.remote_notice_action(id, index),
+            workspace::SessionRequest::HostProjects => self.open_host_projects(id),
         }
     }
 

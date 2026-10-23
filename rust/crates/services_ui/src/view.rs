@@ -279,7 +279,7 @@ pub(crate) fn inset(node: Node) -> Node {
 }
 
 /// "just now", "2m ago", "3h ago", "2d ago".
-pub(crate) fn ago(at: std::time::SystemTime) -> String {
+pub fn ago(at: std::time::SystemTime) -> String {
     let seconds = at.elapsed().map_or(0, |elapsed| elapsed.as_secs());
     match seconds {
         0..=59 => "just now".to_string(),

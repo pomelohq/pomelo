@@ -42,10 +42,11 @@ pub use usage::{
     USAGE_OPEN, USAGE_REFRESH, USAGE_STATUS,
 };
 pub use welcome::{
-    is_welcome_id, notice_page, welcome_page, CenterNotice, MachineCheck, NoticeTone,
-    NOTICE_ACTION_BASE, NOTICE_ACTION_END, WELCOME_CONNECT_HOST, WELCOME_FIX_BASE,
-    WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT, WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT,
-    WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE, WELCOME_RECHECK,
+    is_welcome_id, notice_page, welcome_page, CenterNotice, MachineCheck, NoticeBanner,
+    NoticeButton, NoticeFact, NoticeTone, NOTICE_ACTION_BASE, NOTICE_ACTION_END,
+    WELCOME_CONNECT_HOST, WELCOME_FIX_BASE, WELCOME_IMPORT_BUNDLE, WELCOME_NEW_PROJECT,
+    WELCOME_NEW_PROJECT_CARD, WELCOME_OPEN_PROJECT, WELCOME_OPEN_SETTINGS, WELCOME_RECENT_BASE,
+    WELCOME_RECHECK,
 };
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
@@ -617,6 +618,8 @@ pub const SESSION_EDIT_CONFIG: u64 = 16;
 pub const SESSION_NEW: u64 = 17;
 /// The session menu's "Connect to host..." row.
 pub const SESSION_CONNECT_HOST: u64 = 28;
+/// The title bar's host of a remote project: lists that host's projects.
+pub const HOST_INDICATOR: u64 = 29;
 /// A workspace operation card: base + position * stride + part.
 pub const WORKSPACE_OP_BASE: u64 = 3000;
 pub const WORKSPACE_OP_END: u64 = 4000;
@@ -1123,7 +1126,56 @@ const MENU_ITEM_H: f32 = 32.0;
 const MENU_ACTION_H: f32 = 32.0;
 const MENU_MAX_LIST: f32 = 300.0; // list region caps here, then scrolls
 
+/// The session to a remote project's host, as the title bar's host shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HostLink {
+    Connecting,
+    #[default]
+    Connected,
+    Reconnecting,
+    Disconnected,
+}
+
+/// The title bar's host of a remote project: the machine's icon wearing the session's dot, then its name.
+pub fn host_indicator(host: &str, link: HostLink, hot: bool, ring: Rgba) -> Node {
+    let colors = theme();
+    let (glyph, dot) = match link {
+        HostLink::Connecting => (colors.text_accent, colors.text_accent),
+        HostLink::Connected => (colors.text_muted, colors.success),
+        HostLink::Reconnecting => (colors.warning, colors.warning),
+        HostLink::Disconnected => (colors.error, colors.error),
+    };
+    let marker = div()
+        .w_px(6.0)
+        .h_px(6.0)
+        .rounded(3.0)
+        .bg(dot)
+        .ring(1.5, ring);
+    let glyph = div()
+        .row()
+        .w_px(14.0)
+        .h_px(14.0)
+        .child(ui::icon(ui::IconKind::Server).size(14.0).color(glyph))
+        .pin(ui::Corner::BottomRight, 1.0, 1.0, 6.0, 6.0, marker);
+    let mut button = div()
+        .row()
+        .items_center()
+        .gap(6.0)
+        .h_px(24.0)
+        .px(6.0)
+        .rounded(6.0)
+        .on_click(HOST_INDICATOR)
+        .child(glyph)
+        .child(label(host.to_string()).size(12.0).color(text_c()));
+    if hot {
+        button = button.bg(theme().ghost_element_hover);
+    }
+    button.into()
+}
+
 pub struct Layout {
+    /// The session to the project's host, for a project on another machine.
+    pub host_link: HostLink,
     /// Roughly how many tokens each side agent start would begin with (Auto, Fork, Compacted, Fresh), for
     /// the "+" menu; `None` where it is not known.
     pub side_agent_sizes: [Option<usize>; 4],
@@ -2295,6 +2347,7 @@ pub struct SessionMenu {
 impl Default for Layout {
     fn default() -> Self {
         Self {
+            host_link: HostLink::default(),
             side_agent_sizes: [None; 4],
             main_agent_tokens: None,
             archived_agents: Vec::new(),
@@ -2902,6 +2955,18 @@ impl Layout {
             trigger = trigger.bg(theme().ghost_element_hover);
         }
         let mut bar_row = div().row().items_center().gap(2.0).h_px(TOP_BAR_H);
+        if let Some(host) = self
+            .project
+            .as_ref()
+            .and_then(|project| project.host.as_ref())
+        {
+            bar_row = bar_row.child(host_indicator(
+                host,
+                self.host_link,
+                hovered == Some(HOST_INDICATOR),
+                theme().title_bar_background,
+            ));
+        }
         if ui::chrome().session_name {
             bar_row = bar_row.child(trigger);
         }
@@ -4202,5 +4267,31 @@ mod tab_menu_id_tests {
         ];
         let distinct: std::collections::HashSet<u64> = ids.iter().copied().collect();
         assert_eq!(distinct.len(), ids.len());
+    }
+}
+
+#[cfg(test)]
+mod host_indicator_tests {
+    use super::*;
+
+    #[test]
+    fn only_a_remote_project_shows_its_host_in_the_title_bar() {
+        let hits = |host: Option<&str>| {
+            let layout = Layout {
+                project: Some(ProjectInfo {
+                    name: "myproject".into(),
+                    host: host.map(str::to_string),
+                    ..ProjectInfo::default()
+                }),
+                ..Layout::default()
+            };
+            layout
+                .header(1200.0, None)
+                .hits
+                .iter()
+                .any(|(_, id)| *id == HOST_INDICATOR)
+        };
+        assert!(hits(Some("dev")));
+        assert!(!hits(None));
     }
 }

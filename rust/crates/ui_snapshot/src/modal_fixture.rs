@@ -149,6 +149,10 @@ fn create(existing: &[&str]) -> CreateWorkspaceModal {
 
 /// The modal a scene draws: `create`, `create-branch`, `create-taken`, `rename`, `add-repo`, `use-branch`.
 pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
+    if let Some(step) = name.strip_prefix("connect-") {
+        return crate::remote_fixture::connect_modal(step)
+            .map(|modal| Box::new(modal) as Box<dyn WindowModal>);
+    }
     Some(match name {
         "create" => {
             let mut modal = create(&[]);
