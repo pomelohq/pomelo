@@ -117,27 +117,7 @@ fn git_panel(
     project: &pom_core::Project,
     pull_requests: Option<&pull_request_ui::PullRequests>,
 ) -> Box<dyn workspace::SidePanelView> {
-    let sources = project
-        .active_workspace()
-        .map(|workspace| {
-            workspace
-                .repos
-                .iter()
-                .map(|repo| git_ui::RepoSource {
-                    name: repo.name.clone(),
-                    root: repo.path.clone(),
-                    default_branch: project.config.as_ref().map_or_else(
-                        || "main".to_string(),
-                        |config| config.default_branch_for(&repo.name).to_string(),
-                    ),
-                    expected_branch: project.active_branch().to_string(),
-                    // Kept means on its own branch on purpose, which the panel must not flag.
-                    kept: repo.expected != project.active_branch() && repo.branch == repo.expected,
-                    origin: None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let sources = pom_remote::repo_sources(project, project.active_branch());
     let reviews = pom_paths::StateDir::from_env().path(format!(
         "reviews/{}-{}.json",
         pom_env::branch_safe(&project.session),
@@ -3552,6 +3532,13 @@ impl App {
 
     /// Carries out a repo branch change the Git panel's branch menu asked for.
     fn apply_branch_request(&mut self, id: WindowId, request: workspace::PanelRequest) {
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            return self.apply_remote_branch_request(id, request);
+        }
         let Some((folder, workspace)) = self
             .mains
             .get(&id)

@@ -636,6 +636,20 @@ impl WorkspaceView {
         }
     }
 
+    /// Puts `panel` in place of the side panel of its kind, or adds it.
+    pub fn set_side_panel(&mut self, panel: Box<dyn crate::SidePanelView>) {
+        let kind = panel.kind();
+        match self
+            .layout
+            .side_panels
+            .iter_mut()
+            .find(|shown| shown.kind() == kind)
+        {
+            Some(shown) => *shown = panel,
+            None => self.layout.side_panels.push(panel),
+        }
+    }
+
     fn show_function(&mut self, kind: PaneKind) {
         let Some(index) = PaneKind::ALL.iter().position(|each| *each == kind) else {
             return;

@@ -2535,6 +2535,17 @@ impl Layout {
         }
         // A remote project's files open once its server reads them; its services then leave the page too.
         if self.is_remote() {
+            if PaneKind::ALL.get(i) == Some(&PaneKind::Git) {
+                let on_main = self
+                    .project
+                    .as_ref()
+                    .is_some_and(|project| project.branch == project.active);
+                return !on_main
+                    && self
+                        .side_panels
+                        .iter()
+                        .any(|panel| panel.kind() == PaneKind::Git);
+            }
             return self.files_view.is_some()
                 && matches!(
                     PaneKind::ALL.get(i),

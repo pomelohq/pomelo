@@ -1266,6 +1266,28 @@ impl FileItem {
         item
     }
 
+    /// [`FileItem::branch_diff`] for a file read through `fs`, such as one on another machine.
+    fn branch_diff_in(
+        fs: SharedFs,
+        root: PathBuf,
+        path: &str,
+        read: Option<files::FileResult>,
+        base: Option<String>,
+    ) -> Self {
+        let stat = read.as_ref().map(stat_of);
+        let mut item = FileItem::in_fs(fs, root, path, read.and_then(|read| read.text));
+        item.saved_stat = stat;
+        item.git = git_diff::GitDiff::with_bases(
+            item.root.join(path),
+            git::DiffBases {
+                head: base.clone(),
+                index: base,
+            },
+        );
+        item.branch_diff = true;
+        item
+    }
+
     /// Takes a newer read of the file from another machine: a clean tab shows it, an edited one is in conflict.
     /// While a save is on its way the change may be that save, which answers for itself.
     fn take_fresh_read(&mut self, read: files::FileResult) -> bool {
@@ -10483,6 +10505,25 @@ impl FunctionView for FilesView {
 
     fn open_diff(&mut self, path: &Path, base: Option<String>) {
         if self.is_remote() {
+            let Ok(relative) = path.strip_prefix(&self.root) else {
+                return;
+            };
+            let relative = relative.to_string_lossy().into_owned();
+            let (fs, root) = (self.fs.clone(), self.root.clone());
+            self.track_nav(|view| {
+                let Some(pane) = view.panes.active_pane_mut() else {
+                    return;
+                };
+                let id = format!("{DIFF_ID_PREFIX}{relative}");
+                if let Some(index) = pane.index_of_id(&id) {
+                    pane.activate_user(index);
+                    return;
+                }
+                let read = fs.read(&relative).ok();
+                pane.add_item(Box::new(FileItem::branch_diff_in(
+                    fs, root, &relative, read, base,
+                )));
+            });
             return;
         }
         let path = path.to_path_buf();

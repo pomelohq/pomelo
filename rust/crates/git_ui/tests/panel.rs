@@ -841,3 +841,24 @@ fn a_conflicted_file_is_marked_resolved_only_without_markers() {
     assert!(git_out(&root, &["diff", "--name-only", "--diff-filter=U"]).is_empty());
     assert_eq!(staged(&root), "job.rb");
 }
+
+#[test]
+fn a_host_that_cannot_serve_git_says_why_instead_of_listing_repos() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = RepoSource {
+        name: "api".into(),
+        root: dir.path().to_path_buf(),
+        default_branch: "main".into(),
+        expected_branch: "feat-login".into(),
+        ..RepoSource::default()
+    };
+    let reason =
+        "pom 0.9.6 on dev cannot show its repos here. Update pom there to use Git in this window.";
+    let mut panel = GitPanel::new(vec![source], None, Arc::new(|| {}))
+        .with_access(Arc::new(git::access::UnservedGit::new(reason)));
+    panel.render(WIDTH, HEIGHT);
+    panel.wait_for_scan();
+    let shown = texts(&mut panel);
+    assert!(shown.contains("cannot show its repos here"), "{shown}");
+    assert!(!shown.contains("Commit"), "{shown}");
+}

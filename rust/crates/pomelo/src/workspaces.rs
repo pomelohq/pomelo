@@ -929,6 +929,13 @@ impl App {
 
     /// Opens the form that picks the branch `repo` uses in the active workspace.
     pub(crate) fn open_use_branch(&mut self, id: WindowId, repo: &str) {
+        if self
+            .mains
+            .get(&id)
+            .is_some_and(|main| main.remote.is_some())
+        {
+            return self.open_remote_use_branch(id, repo);
+        }
         let Some(project) = self.mains.get(&id).and_then(|main| main.project.as_ref()) else {
             return;
         };
@@ -986,6 +993,9 @@ impl App {
                 view.show_toast("Another branch checkout is still running", None)
             });
             return;
+        }
+        if main.remote.is_some() {
+            return self.start_remote_use_branch(id, choice);
         }
         let Some((folder, workspace_branch)) = main.project.as_ref().and_then(|project| {
             let active = project.active_workspace()?;

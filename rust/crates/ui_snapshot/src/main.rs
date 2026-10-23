@@ -18,6 +18,48 @@ const SERVICES_YML: &str = "session: myproject\nshared_services:\n  postgres:\n 
 mod terminal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
+/// Local git whose scans and answers go through JSON, as a remote window receives them.
+struct WireGit;
+
+fn over_wire<T: serde::Serialize + serde::de::DeserializeOwned>(value: T) -> T {
+    serde_json::to_value(&value)
+        .and_then(serde_json::from_value)
+        .unwrap_or(value)
+}
+
+impl git::access::GitAccess for WireGit {
+    fn scan(&self, repo: &git::access::RepoSource) -> git::scan::RepoScan {
+        over_wire(git::access::LocalGit.scan(repo))
+    }
+
+    fn act(
+        &self,
+        repo: &git::access::RepoSource,
+        op: git::access::GitOp,
+    ) -> Result<(), git::working_copy::CommandError> {
+        git::access::LocalGit.act(repo, over_wire(op))
+    }
+
+    fn read(
+        &self,
+        repo: &git::access::RepoSource,
+        query: git::access::GitRead,
+    ) -> Result<git::access::GitAnswer, String> {
+        git::access::LocalGit
+            .read(repo, over_wire(query))
+            .map(over_wire)
+    }
+
+    fn remote(
+        &self,
+        repo: &git::access::RepoSource,
+        command: git::access::RemoteCommand,
+        progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
+        git::access::LocalGit.remote(repo, over_wire(command), progress)
+    }
+}
+
 fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
     Some(match id {
         "settings-appearance" => (settings_ui::APPEARANCE, &[]),
@@ -306,6 +348,25 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "components-tabs" => (0, &[("TABBAR", "sample")]),
         // The Git panel over scratch repos in the board's state; GITVIEW=tree|ungrouped, GITAMEND=1, GITSELECT=<rows down>.
         "git-changes" => (0, &[("GITFIXTURE", "unstaged"), ("GITSELECT", "2")]),
+        // The same board read as a remote window does: every scan crosses the wire as JSON first.
+        "git-changes-remote" => (
+            0,
+            &[
+                ("GITFIXTURE", "unstaged"),
+                ("GITSELECT", "2"),
+                ("GITWIRE", "1"),
+            ],
+        ),
+        "git-unserved" => (
+            0,
+            &[
+                ("GITFIXTURE", "unstaged"),
+                (
+                    "GITUNSERVED",
+                    "pom 0.9.6 on dev cannot show its repos here. Update pom there to use Git in this window.",
+                ),
+            ],
+        ),
         "git-staged" => (0, &[("GITFIXTURE", "staged")]),
         "git-staged-all" => (0, &[("GITFIXTURE", "staged-all")]),
         "git-committed" => (0, &[("GITFIXTURE", "committed")]),
@@ -2812,6 +2873,11 @@ fn main() -> anyhow::Result<()> {
         let roots: Vec<std::path::PathBuf> =
             sources.iter().map(|source| source.root.clone()).collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}));
+        if let Ok(reason) = std::env::var("GITUNSERVED") {
+            panel = panel.with_access(std::sync::Arc::new(git::access::UnservedGit::new(reason)));
+        } else if std::env::var("GITWIRE").is_ok() {
+            panel = panel.with_access(std::sync::Arc::new(WireGit));
+        }
         if std::env::var("GITPRS").is_ok() {
             let branch = std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into());
             panel = panel.with_pull_requests(board_pull_requests(&roots, &branch)?);

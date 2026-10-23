@@ -113,6 +113,22 @@ impl GitPanel {
 
     pub(crate) fn render_panel(&mut self, width: f32, height: f32) -> Node {
         let scan = self.current();
+        if let Some(reason) = self.access.refusal() {
+            self.rows.clear();
+            return div()
+                .col()
+                .w_px(width)
+                .h_px(height)
+                .child(self.render_tab_bar(width, &scan))
+                .child(div().col().w_px(width).p(12.0).child(workspace::paragraph(
+                    &reason,
+                    12.0,
+                    18.0,
+                    (width - 24.0).max(40.0),
+                    theme().text_muted,
+                )))
+                .into();
+        }
         self.rows = self.build_rows(&scan);
         self.settle_selection();
         let (footer, footer_h) = self.render_footer(width, &scan);
