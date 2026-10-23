@@ -1,0 +1,19 @@
+name: Task
+description: Planned work (refactor, release, docs, tooling) that is neither a bug nor a feature
+labels: ["type:task"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What is done when this is done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: Steps or sub-issues, and anything to decide first.
+    validations:
+      required: false
