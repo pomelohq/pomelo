@@ -164,14 +164,6 @@ fn port_bindable(port: u16) -> bool {
     }
 }
 
-fn port_listening(port: u16) -> bool {
-    TcpStream::connect_timeout(
-        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
-        PROBE_TIMEOUT,
-    )
-    .is_ok()
-}
-
 fn any_free_port() -> Result<u16, String> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map_err(|error| format!("no free port on this machine: {error}"))?;
@@ -400,7 +392,7 @@ impl Forwarder {
                         .to_string();
                     return Err(format!("ssh -L {spec} exited ({status}): {reason}"));
                 }
-                Ok(None) if port_listening(local) => return Ok(Carrier::Tunnel(child)),
+                Ok(None) if !port_bindable(local) => return Ok(Carrier::Tunnel(child)),
                 Ok(None) if started.elapsed() >= TUNNEL_START => {
                     stop_child(&mut child);
                     return Err(format!(
