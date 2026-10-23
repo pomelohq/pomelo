@@ -29,6 +29,9 @@ pub struct FileEntry {
     #[serde(rename = "dir")]
     pub is_dir: bool,
     pub size: u64,
+    /// A gitignored folder listed without its contents, which come once it is opened.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lazy: bool,
 }
 
 /// A node in the tree the UI renders: a name plus children (empty for files). `path` is the full
@@ -74,6 +77,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<FileEntry>) {
             path: rel,
             is_dir,
             size: if is_dir { 0 } else { meta.len() },
+            lazy: false,
         });
         if is_dir {
             walk(root, &full, out);
@@ -238,6 +242,7 @@ fn scan_worker(root: &Path, shared: &SharedScan) {
                     path,
                     is_dir,
                     size: if is_dir { 0 } else { meta.len() },
+                    lazy: false,
                 });
                 if is_dir {
                     subdirs.push(full);
@@ -310,8 +315,11 @@ fn rel_path(root: &Path, full: &Path) -> Option<String> {
 /// Build the nested tree from a flat entry list, mirroring the Swift `WFileTreeBuilder`: split each path on
 /// `/`, create intermediate directory nodes, and sort each level directories-first then by name.
 pub fn build_tree(entries: &[FileEntry]) -> Vec<FileNode> {
+    let mut ordered: Vec<&FileEntry> = entries.iter().collect();
+    // Component order keeps each folder's entries together, so a name already placed is always its level's last.
+    ordered.sort_by(|a, b| a.path.split('/').cmp(b.path.split('/')));
     let mut roots: Vec<FileNode> = Vec::new();
-    for e in entries {
+    for e in ordered {
         insert(&mut roots, "", &e.path, e.is_dir);
     }
     sort_level(&mut roots);
@@ -331,31 +339,26 @@ fn insert(level: &mut Vec<FileNode>, prefix: &str, rel: &str, is_dir_leaf: bool)
     } else {
         format!("{prefix}/{head}")
     };
-    let idx = match level.iter().position(|n| n.name == head) {
-        Some(i) => i,
-        None => {
-            level.push(FileNode {
-                name: head.to_string(),
-                path: path.clone(),
-                // A node with children (or a non-leaf segment) is a directory.
-                is_dir: tail.is_some() || is_dir_leaf,
-                children: Vec::new(),
-            });
-            level.len() - 1
-        }
+    if level.last().is_none_or(|last| last.name != head) {
+        level.push(FileNode {
+            name: head.to_string(),
+            path: path.clone(),
+            // A node with children (or a non-leaf segment) is a directory.
+            is_dir: tail.is_some() || is_dir_leaf,
+            children: Vec::new(),
+        });
+    }
+    let Some(node) = level.last_mut() else {
+        return;
     };
     if let Some(rest) = tail {
-        level[idx].is_dir = true;
-        insert(&mut level[idx].children, &path, rest, is_dir_leaf);
+        node.is_dir = true;
+        insert(&mut node.children, &path, rest, is_dir_leaf);
     }
 }
 
 fn sort_level(level: &mut [FileNode]) {
-    level.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir) // directories first
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    level.sort_by_cached_key(|node| (!node.is_dir, node.name.to_lowercase()));
     for node in level.iter_mut() {
         sort_level(&mut node.children);
     }
@@ -591,6 +594,35 @@ mod tests {
         assert_eq!(tree[0].name, "src");
         assert!(tree[0].is_dir);
         assert_eq!(tree[0].children[0].path, "src/main.rs");
+    }
+
+    #[test]
+    fn builds_the_same_tree_from_any_order() {
+        let entry = |path: &str, is_dir: bool| FileEntry {
+            path: path.into(),
+            is_dir,
+            ..FileEntry::default()
+        };
+        let entries = vec![
+            entry("a-b", false),
+            entry("a/z.rs", false),
+            entry("b", true),
+            entry("a", true),
+            entry("a/x", true),
+            entry("a/x/y.rs", false),
+            entry("A.md", false),
+            entry("c/d/e.rs", false),
+        ];
+        let mut reversed = entries.clone();
+        reversed.reverse();
+        let tree = build_tree(&entries);
+        assert_eq!(tree, build_tree(&reversed));
+        let names: Vec<&str> = tree.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c", "a-b", "A.md"]);
+        let inside: Vec<&str> = tree[0].children.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(inside, ["a/x", "a/z.rs"]);
+        assert_eq!(tree[2].children[0].children[0].path, "c/d/e.rs");
+        assert!(tree[2].children[0].is_dir);
     }
 
     #[test]

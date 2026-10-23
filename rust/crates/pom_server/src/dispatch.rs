@@ -311,7 +311,7 @@ impl Dispatcher {
                 let publisher = connection
                     .publisher(params.channel)
                     .map_err(|error| invalid(format!("channel {}: {error}", params.channel)))?;
-                self.files.watch(&root, publisher)?;
+                self.files.watch(&root, params.lazy_ignored, publisher)?;
                 to_value(FsWatched { root })
             }),
             method::FS_READ => params::<FsReadParams>(raw).and_then(|params| {
@@ -321,6 +321,11 @@ impl Dispatcher {
             method::FS_STAT => params::<FsPathParams>(raw).and_then(|params| {
                 let root = self.workspace_root(&params.cfg, &params.branch)?;
                 to_value(self.files.stat(&root, &params.path)?)
+            }),
+            method::FS_EXPAND => params::<FsPathParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                self.files.expand(&root, &params.path)?;
+                Ok(Value::Null)
             }),
             method::FS_FILES => params::<FsFilesParams>(raw).and_then(|params| {
                 let root = self.workspace_root(&params.cfg, &params.branch)?;
