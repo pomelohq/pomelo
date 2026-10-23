@@ -10,6 +10,8 @@ use pom_config::Config;
 use pom_services::{ServiceRunner, ServiceTarget};
 
 use crate::access::{LocalServices, ServicesAccess};
+#[cfg(test)]
+pub(crate) use pom_services::{strip_terminal_codes as strip_ansi, telling_line};
 
 /// The project's config, replaced in place when `pom.yml` changes so every panel sees the new one.
 pub type SharedConfig = Arc<RwLock<Option<Arc<Config>>>>;
@@ -220,7 +222,8 @@ pub struct Shared {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TabRequest {
     Fix(ServiceTarget),
-    OpenUrl(String),
+    /// Open the service in the browser, as the panel opens it.
+    OpenUrl(ServiceTarget),
     Copy(String),
     OpenFile(std::path::PathBuf),
     /// The service's menu, under the tab's "..." button.
@@ -520,69 +523,9 @@ fn refresh(context: &Context, shared: &Mutex<Shared>) -> bool {
 
 /// A crash as its holder recorded it: the header naming how it exited, and the output it left.
 pub(crate) fn crash_from(header: &str, output: &[u8], at: Option<std::time::SystemTime>) -> Crash {
-    let detail = header
-        .split_once(" - ")
-        .map_or(header, |(_, detail)| detail)
-        .trim();
-    let exit = match detail.rsplit_once("exit status: ") {
-        Some((_, code)) => format!("exit {}", code.trim()),
-        None => detail.trim_start_matches("exited: ").to_string(),
-    };
     Crash {
-        line: telling_line(&strip_ansi(&String::from_utf8_lossy(output))),
-        exit,
+        line: pom_services::crash_line(output),
+        exit: pom_services::crash_exit(header),
         at,
     }
-}
-
-/// The last output line that names an error, else the last line with anything on it.
-pub(crate) fn telling_line(output: &str) -> Option<String> {
-    let lines: Vec<&str> = output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let named = lines.iter().rev().find(|line| {
-        let lower = line.to_ascii_lowercase();
-        ["error", "exception", "panic", "fatal", "failed"]
-            .iter()
-            .any(|word| lower.contains(word))
-    });
-    named.or(lines.last()).map(|line| line.to_string())
-}
-
-/// Terminal output without its escape sequences (colors, cursor moves, titles).
-pub(crate) fn strip_ansi(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '\u{1b}' {
-            if c != '\r' {
-                out.push(c);
-            }
-            continue;
-        }
-        match chars.next() {
-            Some('[') => {
-                for next in chars.by_ref() {
-                    if ('@'..='~').contains(&next) {
-                        break;
-                    }
-                }
-            }
-            Some(']') => {
-                while let Some(next) = chars.next() {
-                    if next == '\u{7}' {
-                        break;
-                    }
-                    if next == '\u{1b}' && chars.peek() == Some(&'\\') {
-                        chars.next();
-                        break;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
 }

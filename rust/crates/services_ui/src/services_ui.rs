@@ -24,7 +24,7 @@ pub use access::{
 };
 use model::{shared_key, Context, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
 pub use model::{Action, Crash, ServicesContext, SharedConfig, Status, WorkspaceInfo};
-pub use remote::RemoteServicesPanel;
+pub use remote::{LineStream, RemoteServices};
 pub use remote_agents::{
     agent_item_id, next_agent_role, remote_agent_item, restore_agent_tabs, RemoteAgentTabs,
     RemoteLease,
@@ -991,6 +991,12 @@ impl ServicesPanel {
                     (State::Busy(text), _) => {
                         label(*text).size(11.0).color(colors.text_accent).into()
                     }
+                    (_, true) if !self.offers(access::ServiceControl::Shared) => div()
+                        .row()
+                        .gap(2.0)
+                        .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
+                        .child(self.more_button(index))
+                        .into(),
                     (State::Running, true) => div()
                         .row()
                         .gap(2.0)
@@ -1238,7 +1244,7 @@ impl ServicesPanel {
             action_button(id, kind, text, tone, self.hot(id))
         };
         let mut buttons = Vec::new();
-        if port_conflict {
+        if port_conflict && self.offers(access::ServiceControl::Relocate) {
             buttons.push(button(
                 CardAction::NewPort,
                 Some(IconKind::ArrowUpRight),
@@ -1252,12 +1258,14 @@ impl ServicesPanel {
             "View logs",
             Tone::Plain,
         ));
-        buttons.push(button(
-            CardAction::Fix,
-            Some(IconKind::Sparkle),
-            "Fix with Claude",
-            Tone::Agent,
-        ));
+        if self.offers(access::ServiceControl::SideAgents) {
+            buttons.push(button(
+                CardAction::Fix,
+                Some(IconKind::Sparkle),
+                "Fix with Claude",
+                Tone::Agent,
+            ));
+        }
         if !port_conflict {
             buttons.push(button(
                 CardAction::Restart,
@@ -1386,10 +1394,10 @@ impl ServicesPanel {
         if !tree.is_empty() {
             push(view::section("This workspace", None));
         } else {
-            let text = if self.filtering() {
-                "No services match"
-            } else {
-                "No services in pom.yml"
+            let text = match self.model.context.access.unavailable() {
+                Some(reason) => reason,
+                None if self.filtering() => "No services match".to_string(),
+                None => "No services in pom.yml".to_string(),
             };
             push(
                 div()
@@ -1494,6 +1502,27 @@ impl ServicesPanel {
     fn url(&self, target: &ServiceTarget) -> Option<String> {
         let config = self.model.context.config()?;
         self.model.context.access.url(&config, target)
+    }
+
+    /// Whether the source offers `control`; one that does not hides it.
+    fn offers(&self, control: access::ServiceControl) -> bool {
+        self.model.context.access.missing(control).is_none()
+    }
+
+    /// Opens the service in the browser here, or says why it cannot be.
+    fn open_in_browser(&mut self, target: &ServiceTarget) {
+        let Some(config) = self.model.context.config() else {
+            return;
+        };
+        if self.url(target).is_none() {
+            return;
+        }
+        self.requests.push(
+            match self.model.context.access.browser_url(&config, target) {
+                Ok(url) => PanelRequest::OpenUrl(url),
+                Err(reason) => PanelRequest::Toast(reason),
+            },
+        );
     }
 
     fn row_targets(&self, row: usize) -> Vec<ServiceTarget> {
@@ -1646,7 +1675,9 @@ impl ServicesPanel {
                     .get(&target.service)
                     .map(|service| (dir, service))
             });
-        if service.is_some_and(|(_, service)| service.has_port()) {
+        if service.is_some_and(|(_, service)| service.has_port())
+            && self.offers(access::ServiceControl::Relocate)
+        {
             menu.item(
                 "Use a New Port...",
                 MenuAction::Run(Action::Relocate),
@@ -1665,7 +1696,7 @@ impl ServicesPanel {
             profiles = dir.env_profiles(Some(service));
             let current_profile = context.access.env_profile(config, target);
             menu.sep();
-            if modes.len() > 1 {
+            if modes.len() > 1 && self.offers(access::ServiceControl::Mode) {
                 let mut sub = MenuBuilder::new(self.base + MENU_BASE + 100);
                 for (index, mode) in modes.iter().enumerate() {
                     let item = sub.push(mode.clone(), MenuAction::Mode(index), None, None, false);
@@ -1685,7 +1716,7 @@ impl ServicesPanel {
                 );
                 submenus.push((workspace::MENU_SUBMENU_BASE, sub.items));
             }
-            if profiles.len() > 1 {
+            if profiles.len() > 1 && self.offers(access::ServiceControl::EnvProfile) {
                 let mut sub = MenuBuilder::new(self.base + MENU_BASE + 200);
                 for (index, profile) in profiles.iter().enumerate() {
                     let item = sub.push(
@@ -1725,16 +1756,18 @@ impl ServicesPanel {
                 None,
             );
         }
-        menu.sep();
-        if state.needs_attention() {
-            menu.item("Fix with Claude", MenuAction::Fix, IconKind::Sparkle, None);
-        } else {
-            menu.item(
-                "Ask Claude About This Service",
-                MenuAction::Ask,
-                IconKind::Sparkle,
-                None,
-            );
+        if self.offers(access::ServiceControl::SideAgents) {
+            menu.sep();
+            if state.needs_attention() {
+                menu.item("Fix with Claude", MenuAction::Fix, IconKind::Sparkle, None);
+            } else {
+                menu.item(
+                    "Ask Claude About This Service",
+                    MenuAction::Ask,
+                    IconKind::Sparkle,
+                    None,
+                );
+            }
         }
         OpenMenu {
             subject: MenuSubject::Service {
@@ -1787,7 +1820,7 @@ impl ServicesPanel {
             IconKind::RotateCw,
             Some("R"),
         );
-        let commands = if key == WORKSPACE_GROUP {
+        let commands = if key == WORKSPACE_GROUP || !self.offers(access::ServiceControl::Tasks) {
             Vec::new()
         } else {
             self.repo_commands(Some(key))
@@ -1866,19 +1899,22 @@ impl ServicesPanel {
             IconKind::File,
             Some("Enter"),
         );
+        let controls = self.offers(access::ServiceControl::Shared);
         if running {
-            menu.item(
-                "Restart",
+            menu.push(
+                "Restart".into(),
                 MenuAction::Shared(Action::Restart),
-                IconKind::RotateCw,
+                Some(IconKind::RotateCw),
                 Some("R"),
+                !controls,
             );
         } else {
-            menu.item(
-                "Start",
+            menu.push(
+                "Start".into(),
                 MenuAction::Shared(Action::Start),
-                IconKind::Play,
+                Some(IconKind::Play),
                 Some("S"),
+                !controls,
             );
         }
         let stop = menu.push(
@@ -1886,7 +1922,7 @@ impl ServicesPanel {
             MenuAction::Shared(Action::Stop),
             Some(IconKind::Stop),
             Some("S"),
-            !running,
+            !running || !controls,
         );
         stop.danger = true;
         menu.item(
@@ -1995,9 +2031,7 @@ impl ServicesPanel {
                 }
             }
             (MenuSubject::Service { target, .. }, MenuAction::OpenUrl) => {
-                if let Some(url) = self.url(target) {
-                    self.requests.push(PanelRequest::OpenUrl(url));
-                }
+                self.open_in_browser(target)
             }
             (MenuSubject::Service { target, .. }, MenuAction::CopyUrl) => {
                 if let Some(url) = self.url(target) {
@@ -2065,17 +2099,10 @@ impl ServicesPanel {
                 dir.effective_shortcuts()
                     .into_iter()
                     .filter(|shortcut| !shortcut.cmd.trim().is_empty())
-                    .map(|shortcut| {
-                        let label = [&shortcut.desc, &shortcut.key, &shortcut.cmd]
-                            .into_iter()
-                            .find(|text| !text.trim().is_empty())
-                            .cloned()
-                            .unwrap_or_default();
-                        RepoCommand {
-                            repo: name.clone(),
-                            label,
-                            cmd: shortcut.cmd,
-                        }
+                    .map(|shortcut| RepoCommand {
+                        repo: name.clone(),
+                        label: shortcut.label(),
+                        cmd: shortcut.cmd,
                     })
             })
             .collect()
@@ -2181,11 +2208,7 @@ impl SidePanelView for ServicesPanel {
             match base {
                 PALETTE_RESTART_BASE => self.model.run(Action::Restart, target),
                 PALETTE_LOGS_BASE => self.open_tab(&target, &holder, false),
-                PALETTE_OPEN_BASE => {
-                    if let Some(url) = self.url(&target) {
-                        self.requests.push(PanelRequest::OpenUrl(url));
-                    }
-                }
+                PALETTE_OPEN_BASE => self.open_in_browser(&target),
                 _ => {}
             }
             return;
@@ -2367,11 +2390,7 @@ impl SidePanelView for ServicesPanel {
             (_, Control::More) if self.open_menu_for(index) => {
                 self.requests.push(PanelRequest::OpenMenu);
             }
-            (Row::Service { target, .. }, Control::OpenUrl) => {
-                if let Some(url) = self.url(&target) {
-                    self.requests.push(PanelRequest::OpenUrl(url));
-                }
-            }
+            (Row::Service { target, .. }, Control::OpenUrl) => self.open_in_browser(&target),
             (Row::Shared { name }, Control::Row) => self.open_shared_logs(&name),
             (Row::Shared { name }, Control::Start | Control::Stop | Control::Restart) => {
                 let action = match control {
@@ -2512,7 +2531,7 @@ impl SidePanelView for ServicesPanel {
                     };
                     self.fix_with_agent(&card);
                 }
-                model::TabRequest::OpenUrl(url) => self.requests.push(PanelRequest::OpenUrl(url)),
+                model::TabRequest::OpenUrl(target) => self.open_in_browser(&target),
                 model::TabRequest::Copy(text) => self.requests.push(PanelRequest::Copy(text)),
                 model::TabRequest::OpenFile(path) => {
                     self.requests.push(PanelRequest::OpenFile(path))
@@ -2534,6 +2553,7 @@ impl SidePanelView for ServicesPanel {
             self.model
                 .take_toasts()
                 .into_iter()
+                .chain(self.model.context.access.take_notes())
                 .map(PanelRequest::Toast),
         );
         requests

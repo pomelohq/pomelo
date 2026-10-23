@@ -4027,6 +4027,7 @@ dependencies = [
  "desktop",
  "dev_services_ui",
  "environment_ui",
+ "files",
  "files_ui",
  "git_ui",
  "grammars",

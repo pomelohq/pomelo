@@ -146,13 +146,7 @@ impl ServiceRunner {
     }
 
     pub fn holder_name(&self, target: &ServiceTarget) -> String {
-        let session = pom_env::branch_safe(&self.session);
-        let branch = pom_env::branch_safe(&target.branch);
-        if target.is_workspace_level() {
-            format!("ws-{session}-{branch}-{}", target.service)
-        } else {
-            format!("svc-{session}-{branch}-{}-{}", target.repo, target.service)
-        }
+        service_holder_name(&self.session, target)
     }
 
     /// Running service holders of this project, in every workspace.
@@ -694,6 +688,17 @@ impl ServiceRunner {
         self.acquire_workspace_ports(config, &ws_key);
         self.workspace_env(config, branch).write_env_files()?;
         Ok(())
+    }
+}
+
+/// The holder a service of project `session` runs in.
+pub fn service_holder_name(session: &str, target: &ServiceTarget) -> String {
+    let session = pom_env::branch_safe(session);
+    let branch = pom_env::branch_safe(&target.branch);
+    if target.is_workspace_level() {
+        format!("ws-{session}-{branch}-{}", target.service)
+    } else {
+        format!("svc-{session}-{branch}-{}-{}", target.repo, target.service)
     }
 }
 

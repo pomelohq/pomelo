@@ -10,6 +10,7 @@ pub mod search;
 mod watch;
 pub use fs::{
     ChangedFile, FileResult, FileStat, LocalFs, ProjectFs, TreeEvent, TreeFeed, TreePatch,
+    UnservedFs,
 };
 pub use watch::TreeWatcher;
 

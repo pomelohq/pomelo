@@ -15,6 +15,9 @@ use pom_remote::server_api::{
     OpResult, ProjectParams, TurnParams, WatchBranchParams, WatchChannel, WatchParams,
     WorkspaceParams,
 };
+use pom_remote::server_api::{
+    ServiceChoiceParams, ServiceRunParams, SharedLogsParams, SharedRunParams,
+};
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
@@ -236,6 +239,8 @@ pub struct Dispatcher {
     watches: Watches,
     jobs: Jobs,
     files: FsService,
+    /// Modes picked for each project's services, kept while the server runs.
+    modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
 }
 
 impl Dispatcher {
@@ -249,6 +254,7 @@ impl Dispatcher {
             holders,
             binary,
             ops: Ops::new(op_memory),
+            modes: Mutex::new(HashMap::new()),
         }
     }
 
@@ -385,12 +391,21 @@ impl Dispatcher {
     }
 
     fn source(&self, cfg: &str) -> Result<LocalSource, RemoteError> {
+        let config = registered_config(&self.state, cfg)?;
+        let modes = self
+            .modes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(config.clone())
+            .or_default()
+            .clone();
         Ok(LocalSource::new(
-            registered_config(&self.state, cfg)?,
+            config,
             self.state.clone(),
             self.holders.clone(),
             self.binary.clone(),
-        ))
+        )
+        .with_modes(modes))
     }
 
     fn workspace_source(&self, params: &WorkspaceParams) -> Result<LocalSource, RemoteError> {
@@ -492,6 +507,35 @@ impl Dispatcher {
                     )
                     .map_err(failed)?;
                 Ok(Value::Null)
+            }
+            method::SVC_FACTS => {
+                let params: WorkspaceParams = params(raw)?;
+                crate::services::facts(&self.source(&params.cfg)?, &params)
+            }
+            method::SVC_RUN => {
+                let params: ServiceRunParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                crate::services::run(&source, &self.ops, params)
+            }
+            method::SVC_SHARED => {
+                let params: SharedRunParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                crate::services::run_shared(&source, &self.ops, params)
+            }
+            method::SVC_MODE => {
+                let params: ServiceChoiceParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                crate::services::mode(&source, params)
+            }
+            method::SVC_ENV_PROFILE => {
+                let params: ServiceChoiceParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                crate::services::env_profile(&source, params)
+            }
+            method::SVC_SHARED_LOGS => {
+                let params: SharedLogsParams = params(raw)?;
+                let source = self.source(&params.cfg)?;
+                crate::services::shared_logs(&source, params)
             }
             method::OP_RESULT => {
                 let params: OpParams = params(raw)?;

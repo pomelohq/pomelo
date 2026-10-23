@@ -60,21 +60,24 @@ pub struct Console {
     pub shell: Option<terminal_ui::TerminalItem>,
 }
 
-/// A tab's output: a terminal that runs off screen.
+/// A tab's output: a terminal that runs off screen, or lines streamed from another machine.
 pub enum LogLines {
-    Terminal(terminal::Terminal),
+    Terminal(Box<terminal::Terminal>),
+    Stream(crate::remote::LineStream),
 }
 
 impl LogLines {
     pub fn output_lines(&self) -> Vec<String> {
         match self {
             LogLines::Terminal(terminal) => terminal.output_lines(),
+            LogLines::Stream(stream) => stream.lines(),
         }
     }
 
     pub fn clear(&mut self) {
         match self {
             LogLines::Terminal(terminal) => terminal.clear(),
+            LogLines::Stream(stream) => stream.clear(),
         }
     }
 
@@ -85,6 +88,7 @@ impl LogLines {
                 let outcome = terminal.sync(host);
                 outcome.changed || outcome.title_changed
             }
+            LogLines::Stream(stream) => stream.take_changed(),
         }
     }
 }
@@ -148,6 +152,10 @@ pub trait ServicesAccess: Send + Sync {
     /// Why nothing can be shown yet, when nothing can.
     fn unavailable(&self) -> Option<String> {
         None
+    }
+    /// What went wrong since the last call, to say as toasts.
+    fn take_notes(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 
@@ -350,7 +358,7 @@ impl ServicesAccess for LocalServices {
                     width: 8.0 * 240.0,
                     height: 16.0 * 60.0,
                 });
-                Some(LogLines::Terminal(terminal))
+                Some(LogLines::Terminal(Box::new(terminal)))
             }
             Err(error) => {
                 eprintln!("services: console: {error}");

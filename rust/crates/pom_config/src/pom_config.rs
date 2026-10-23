@@ -46,8 +46,23 @@ impl Config {
     /// Validation is separate so callers can still show a config that fails it.
     pub fn load(path: &Path) -> Result<Config, LoadError> {
         let root = document(path)?;
+        Self::from_document(&root, path)
+    }
+
+    /// Parses `text` as the pom.yml at `path` (another machine's, read there), without touching any file.
+    pub fn from_text(text: &str, path: &Path) -> Result<Config, LoadError> {
+        let root = yaml_node::parse(text)
+            .map_err(|e| LoadError {
+                path: path.to_path_buf(),
+                message: format!("parse failed: {e}"),
+            })?
+            .unwrap_or_else(Node::empty_mapping);
+        Self::from_document(&root, path)
+    }
+
+    fn from_document(root: &Node, path: &Path) -> Result<Config, LoadError> {
         let mut decoder = decode::Decoder::default();
-        let mut config = Config::decode(&root, &mut decoder);
+        let mut config = Config::decode(root, &mut decoder);
         if !decoder.errors.is_empty() {
             return Err(LoadError {
                 path: path.to_path_buf(),

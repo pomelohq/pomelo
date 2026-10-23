@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use pom_layout::Workspace;
 use pom_remote::server_api::{
     job_op, progress_kind, BranchArgs, CreateArgs, JobFollowParams, JobFollowed, JobParams,
-    JobStartParams, JobStarted, Progress, StartWaitArgs, EXIT_CANCELLED, PROGRESS_TOPIC,
+    JobStartParams, JobStarted, Progress, StartWaitArgs, TaskArgs, EXIT_CANCELLED, PROGRESS_TOPIC,
 };
 use pom_remote::{LocalSource, OpenedProject, ProjectSource, ServiceAction};
 use pom_rpc::{error_code, Connection, ConnectionState, Publisher, RemoteError};
@@ -169,6 +169,15 @@ pub struct Jobs {
     entries: Mutex<Entries>,
     memory: Mutex<Duration>,
     next: AtomicU64,
+    /// What runs a task's script in place of the user's login shell (tests).
+    task_shell: Mutex<Option<Vec<String>>>,
+}
+
+/// A repo command to run: where, with which env, and the argv that runs it.
+struct Task {
+    label: String,
+    argv: Vec<String>,
+    cwd: std::path::PathBuf,
 }
 
 /// What a job does, its arguments checked.
@@ -178,6 +187,7 @@ enum Work {
     Sleep(Workspace, bool),
     StartWait(Workspace, String, Duration),
     Sync(Workspace),
+    Task(Task),
 }
 
 impl Jobs {
@@ -186,7 +196,13 @@ impl Jobs {
             entries: Mutex::new(Entries::default()),
             memory: Mutex::new(memory),
             next: AtomicU64::new(1),
+            task_shell: Mutex::new(None),
         }
+    }
+
+    /// Runs tasks as `argv` followed by their script instead of through the user's login shell.
+    pub fn set_task_shell(&self, argv: Vec<String>) {
+        *locked(&self.task_shell) = Some(argv);
     }
 
     pub fn set_memory(&self, memory: Duration) {
@@ -230,7 +246,8 @@ impl Jobs {
                 existing: true,
             });
         }
-        let work = checked_work(&source, &params.op, &params.args)?;
+        let task_shell = locked(&self.task_shell).clone();
+        let work = checked_work(&source, &params.op, &params.args, task_shell)?;
         let mut entries = self.entries();
         if let Some(id) = entries.by_op_id.get(&params.op_id) {
             return Ok(JobStarted {
@@ -334,7 +351,12 @@ fn workspace_of(opened: &OpenedProject, branch: &str) -> Result<Workspace, Remot
 }
 
 /// Checks a job's arguments the way the methods check theirs, before anything runs.
-fn checked_work(source: &LocalSource, op: &str, args: &Value) -> Result<Work, RemoteError> {
+fn checked_work(
+    source: &LocalSource,
+    op: &str,
+    args: &Value,
+    task_shell: Option<Vec<String>>,
+) -> Result<Work, RemoteError> {
     let opened = source
         .open_project()
         .map_err(|error| RemoteError::new(FAILED, error.to_string()))?;
@@ -401,8 +423,76 @@ fn checked_work(source: &LocalSource, op: &str, args: &Value) -> Result<Work, Re
                 Duration::from_secs(seconds),
             ))
         }
+        job_op::TASK => {
+            let args: TaskArgs = parsed(args)?;
+            check_branch(&args.branch)?;
+            check_name("repo", &args.repo)?;
+            let workspace = workspace_of(&opened, &args.branch)?;
+            checked_task(&opened, &workspace, &args, task_shell).map(Work::Task)
+        }
         other => Err(invalid(format!("no job {other}"))),
     }
+}
+
+/// The task is one of the repo's commands in the config, in a repo the workspace has checked out.
+fn checked_task(
+    opened: &OpenedProject,
+    workspace: &Workspace,
+    args: &TaskArgs,
+    task_shell: Option<Vec<String>>,
+) -> Result<Task, RemoteError> {
+    let dir = opened
+        .config
+        .repos
+        .get(&args.repo)
+        .ok_or_else(|| RemoteError::new(FAILED, format!("no repo {}", args.repo)))?;
+    let shortcut = dir
+        .effective_shortcuts()
+        .into_iter()
+        .filter(|shortcut| !shortcut.cmd.trim().is_empty())
+        .find(|shortcut| shortcut.label() == args.label)
+        .ok_or_else(|| {
+            RemoteError::new(
+                FAILED,
+                format!("{} has no command {:?}", args.repo, args.label),
+            )
+        })?;
+    let worktree = workspace.path.join(&args.repo);
+    if !worktree.is_dir() {
+        return Err(RemoteError::new(
+            FAILED,
+            format!("{} is not checked out in {}", args.repo, workspace.branch),
+        ));
+    }
+    let env = opened
+        .runner
+        .workspace_env(&opened.config, &workspace.branch);
+    if let Err(error) = env.write_env_files() {
+        eprintln!("pom server: task env files: {error}");
+    }
+    let exports: String = env
+        .repo_env(&args.repo)
+        .into_iter()
+        .map(|(key, value)| format!("export {key}={}; ", pom_services::shell_quote(&value)))
+        .collect();
+    let script = format!(
+        "exec 2>&1; export PATH={path}; {exports}cd {dir} && {cmd}",
+        path = pom_services::shell_quote(pom_services::tool_path()),
+        dir = pom_services::shell_quote(&worktree.to_string_lossy()),
+        cmd = shortcut.cmd,
+    );
+    let argv = match task_shell {
+        Some(mut argv) => {
+            argv.push(script);
+            argv
+        }
+        None => pom_shell::Shell::user().login_argv(&script),
+    };
+    Ok(Task {
+        label: format!("{}: {}", args.repo, args.label),
+        argv,
+        cwd: worktree,
+    })
 }
 
 fn run(job: &Job, source: &LocalSource, work: Work) {
@@ -426,6 +516,7 @@ fn run(job: &Job, source: &LocalSource, work: Work) {
             start_wait(job, source, &opened, &workspace, &target, timeout)
         }
         Work::Sync(workspace) => sync(job, source, &opened, &workspace),
+        Work::Task(task) => run_task(job, &task),
     }
 }
 
@@ -672,5 +763,81 @@ fn sync(job: &Job, source: &LocalSource, opened: &OpenedProject, workspace: &Wor
             job.finish(0);
         }
         count => job.fail(0, format!("{count} repo(s) could not pull"), EXIT_FAILED),
+    }
+}
+
+/// Runs the task's script, each line it prints a step of its one stage; a cancel kills it.
+fn run_task(job: &Job, task: &Task) {
+    use std::io::BufRead;
+    job.stages(&[task.label.as_str()]);
+    if job.cancelled_at(0) {
+        return;
+    }
+    job.push(progress_kind::STAGE_STARTED, Some(0), "");
+    let Some((program, args)) = task.argv.split_first() else {
+        return job.fail(0, "nothing to run", EXIT_FAILED);
+    };
+    let spawned = std::process::Command::new(program)
+        .args(args)
+        .current_dir(&task.cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => return job.fail(0, format!("could not run it: {error}"), EXIT_FAILED),
+    };
+    let reader = child.stdout.take().map(|stdout| {
+        let lines = std::sync::mpsc::channel::<String>();
+        let (sender, receiver) = lines;
+        let thread = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout)
+                .lines()
+                .map_while(Result::ok)
+            {
+                if sender.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        (receiver, thread)
+    });
+    let status = loop {
+        if let Some((receiver, _)) = &reader {
+            while let Ok(line) = receiver.try_recv() {
+                job.push(progress_kind::LINE, Some(0), line);
+            }
+        }
+        if job.stopped() {
+            if let Err(error) = child.kill() {
+                eprintln!("pom server: stopping a task: {error}");
+            }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => break Err(error),
+        }
+    };
+    if let Some((receiver, thread)) = reader {
+        if thread.join().is_err() {
+            eprintln!("pom server: a task's reader panicked");
+        }
+        for line in receiver.try_iter() {
+            job.push(progress_kind::LINE, Some(0), line);
+        }
+    }
+    match status {
+        _ if job.stopped() => job.fail(0, pom_workspace::CANCELLED, EXIT_CANCELLED),
+        Ok(status) if status.success() => {
+            job.push(progress_kind::STAGE_DONE, Some(0), "");
+            job.finish(0);
+        }
+        Ok(status) => {
+            let code = status.code().unwrap_or(EXIT_FAILED);
+            job.fail(0, format!("exited with {code}"), code);
+        }
+        Err(error) => job.fail(0, error.to_string(), EXIT_FAILED),
     }
 }

@@ -264,6 +264,11 @@ pub(crate) fn uptime(pidfile: &std::path::Path) -> Option<String> {
     let started = std::fs::metadata(pidfile)
         .and_then(|meta| meta.modified())
         .ok()?;
+    uptime_since(started)
+}
+
+/// How long something started at `started` has been running: "41m 58s", "2h 5m".
+pub(crate) fn uptime_since(started: std::time::SystemTime) -> Option<String> {
     let seconds = started.elapsed().ok()?.as_secs();
     Some(match seconds {
         0..=59 => format!("{seconds}s"),

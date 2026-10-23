@@ -10,6 +10,7 @@ mod paths;
 mod peer;
 mod pty;
 mod server;
+mod services;
 mod watch;
 
 pub use dispatch::{
