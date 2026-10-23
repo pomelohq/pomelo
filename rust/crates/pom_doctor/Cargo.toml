@@ -9,6 +9,7 @@ description = "What keeps a project from running: config errors, missing tools, 
 path = "src/pom_doctor.rs"
 
 [dependencies]
+git = { path = "../git" }
 pom_config = { path = "../pom_config" }
 pom_layout = { path = "../pom_layout" }
 serde.workspace = true

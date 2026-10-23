@@ -3694,6 +3694,7 @@ dependencies = [
 name = "pom_doctor"
 version = "0.9.7"
 dependencies = [
+ "git",
  "pom_config",
  "pom_layout",
  "serde",
