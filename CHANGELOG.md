@@ -4,6 +4,29 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-10-23
+
+### Added
+- `pom agent allow` / `deny <handle> <id>` answer the agent's own permission prompts from another client; `pom agent ls --json` shows the waiting prompt (`pending_permission`: tool, input, id). (#293, #297, #298)
+- `pom agent watch --live` and `pom agent read --live` stream the reply the agent is writing. (#293)
+- `--as-person` on `agent send`, `ask`, `interrupt`, `allow` and `deny` lets the person's other client (web, phone) act for them without changing who drives the session. (#291)
+- `pom agent ls --json` adds `running` and `phase`, with the full list of states and reasons documented. (#291)
+- `pom commands -o json` lists every declared command, and `pom run <name>` runs any of them, picking the repo that declares it. (#292)
+- `pom ws ls --json` adds `last_activity_at` and `last_activity_source`. (#292)
+- `pom ps --orphans [--kill]` finds sessions whose workspace is gone; `pom doctor` reports them. (#294)
+- `pom doctor --quick`, and `pom doctor` warns when another `pom` earlier on the PATH shadows this one. (#294)
+
+### Changed
+- A remote project shows its host in the title bar and a compact page with one place for the connection status. (#295)
+- `pom doctor` runs its checks side by side with a time limit each and reports how long each took. (#294)
+- `agent wait --until turn-end` waits for the turn after the call, not one that already ended; `--turn n` waits for exactly turn n. (#291)
+- Self-built `pom` reports `<version>-dev+<commit>`. (#294)
+
+### Fixed
+- Deleting a workspace stops every agent session in it, not just the main one. (#294)
+- `pom run` found custom commands declared in a repo other than the first, and ones sharing a command with another name. (#292)
+- `pom agent start --trust` no longer answers No when the agent redraws its trust prompt, and reads the prompt and permission dialogs of current agent versions. (#297, #298)
+
 ## [0.9.4] - 2026-10-23
 
 ### Added
