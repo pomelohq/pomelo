@@ -2,12 +2,14 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Account {
     pub name: String,
     pub email: String,
@@ -16,7 +18,8 @@ pub struct Account {
     pub plan: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Window {
     /// 0 to 100.
     pub used: f32,
@@ -24,13 +27,15 @@ pub struct Window {
     pub resets_at: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Limits {
     pub session: Window,
     pub weekly: Window,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LimitsError {
     SignedOut,
     /// Asked too often; try again later.
@@ -166,6 +171,16 @@ fn request(token: &str) -> Result<String, Option<u16>> {
         Ok(status) => Err(Some(status)),
         Err(_) => Err(None),
     }
+}
+
+/// The limits an agent's status line last wrote to `path` (`{"at": <unix>, ...}`), and when.
+pub fn reported_limits(path: &Path) -> Option<(Limits, u64)> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let at = serde_json::from_str::<Value>(&text)
+        .ok()?
+        .get("at")?
+        .as_u64()?;
+    Some((parse_limits(&text).ok()?, at))
 }
 
 pub fn parse_limits(body: &str) -> Result<Limits, LimitsError> {

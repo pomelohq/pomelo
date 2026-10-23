@@ -53,6 +53,7 @@ pub mod method {
     pub const FS_APPEND_GITIGNORE: &str = "fs.append_gitignore";
     pub const SEARCH_START: &str = "search.start";
     pub const SEARCH_CANCEL: &str = "search.cancel";
+    pub const USAGE_GET: &str = "usage.get";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -109,6 +110,7 @@ pub const METHODS: &[&str] = &[
     method::FS_EXPAND,
     method::SEARCH_START,
     method::SEARCH_CANCEL,
+    method::USAGE_GET,
 ];
 
 /// What the server's HELLO lists beside its methods.
@@ -905,4 +907,25 @@ pub struct SharedLogsParams {
     pub cfg: String,
     pub name: String,
     pub lines: usize,
+}
+
+/// `since`: when the asking app's day began (unix seconds), so "today" is the person's day, not the host's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsageParams {
+    pub cfg: String,
+    pub since: u64,
+}
+
+/// The Claude account the host's agents run under, its plan limits, and what the project's agents cost today
+/// there. Nothing secret: the credentials stay on the host.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UsageReport {
+    pub account: Option<agent_usage::Account>,
+    pub limits: Option<agent_usage::Limits>,
+    pub limits_error: Option<agent_usage::LimitsError>,
+    /// When the limits shown were read (unix seconds).
+    pub limits_at: Option<u64>,
+    pub today: Option<agent_usage::DaySummary>,
 }

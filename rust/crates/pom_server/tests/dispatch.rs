@@ -362,3 +362,42 @@ fn file_methods_refuse_paths_and_projects_outside_what_the_server_knows() {
         "a channel the client never opened"
     );
 }
+
+#[test]
+fn usage_reads_the_host_account_for_a_known_project_only() {
+    let project = Project::new();
+    let home = project.temp.path().join("home");
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::write(
+        home.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"dev@example.com","displayName":"vm-dev"}}"#,
+    )
+    .expect("account");
+    let fetch: pom_server::FetchLimits = Arc::new(|_: &std::path::Path| {
+        agent_usage::parse_limits(r#"{"seven_day":{"utilization":40.0}}"#)
+    });
+    let dispatcher = project
+        .dispatcher()
+        .with_usage(pom_server::UsageService::new(home, fetch));
+    let report: pom_remote::server_api::UsageReport = serde_json::from_value(
+        dispatcher
+            .dispatch(&request(
+                method::USAGE_GET,
+                json!({ "cfg": project.config(), "since": 0 }),
+            ))
+            .expect("usage.get"),
+    )
+    .expect("report");
+    assert_eq!(
+        report.account.map(|account| account.name),
+        Some("vm-dev".to_string())
+    );
+    assert_eq!(report.limits.map(|limits| limits.weekly.used), Some(40.0));
+    let refused = dispatcher
+        .dispatch(&request(
+            method::USAGE_GET,
+            json!({ "cfg": "/etc/pom.yml", "since": 0 }),
+        ))
+        .expect_err("not a project here");
+    assert_eq!(refused.code, error_code::INVALID_PARAMS);
+}

@@ -3077,12 +3077,13 @@ impl Layout {
         if let Some(update) = &self.update.button {
             right = right.child(crate::update::button(update, hovered));
         }
-        let mut right = right
-            .child(crate::usage::chip(
+        if !self.usage.hidden {
+            right = right.child(crate::usage::chip(
                 &self.usage,
                 hovered == Some(USAGE_CHIP) || self.usage_card_open,
-            ))
-            .child(chevron);
+            ));
+        }
+        let mut right = right.child(chevron);
         if self.window_controls {
             right = right.child(self.window_buttons(hovered));
         }

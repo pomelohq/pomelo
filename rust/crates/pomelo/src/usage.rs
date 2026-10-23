@@ -18,23 +18,6 @@ use crate::App;
 
 const PERIOD_DAYS: u64 = 60;
 const CHECK_EVERY: Duration = Duration::from_secs(60);
-/// The usage endpoint is only asked when no agent reported limits lately, and rarely: Claude Code asks
-/// it too, and it refuses callers that ask often.
-const ASK_EVERY: Duration = Duration::from_secs(300);
-const BACK_OFF: Duration = Duration::from_secs(900);
-/// Limits a status line reported this recently are current enough to show.
-const REPORTED_FRESH: u64 = 20 * 60;
-
-/// The limits an agent's status line last reported, and when.
-fn reported_limits() -> Option<(Limits, u64)> {
-    let path = pom_paths::StateDir::from_env().path(pom_agent::RATE_LIMITS_FILE);
-    let text = std::fs::read_to_string(path).ok()?;
-    let at = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()?
-        .get("at")?
-        .as_u64()?;
-    Some((agent_usage::parse_limits(&text).ok()?, at))
-}
 
 struct Snapshot {
     turns: Vec<Turn>,
@@ -69,52 +52,24 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
             let home = home();
             let projects = home.join(".claude/projects");
             let mut transcripts = agent_usage::Transcripts::default();
-            let mut kept: Option<(Limits, u64)> = None;
-            // Between asks, what the last ask said still holds.
-            let mut last_error = LimitsError::SignedOut;
-            let mut next_limits = 0_u64;
+            let mut keeper = agent_usage::LimitsKeeper::default();
+            let reported_path = pom_paths::StateDir::from_env().path(pom_agent::RATE_LIMITS_FILE);
             loop {
                 let since = agent_usage::unix_now().saturating_sub(PERIOD_DAYS * 86_400);
                 transcripts.refresh(&projects, since);
                 let account = agent_usage::read_account(&home);
-                let at = agent_usage::unix_now();
-                let reported = reported_limits()
-                    .filter(|(_, reported_at)| at.saturating_sub(*reported_at) < REPORTED_FRESH);
-                if let Some(reported) = reported {
-                    if kept.is_none_or(|(_, kept_at)| reported.1 >= kept_at) {
-                        kept = Some(reported);
-                    }
-                }
-                let mut limits = kept
-                    .map(|(limits, _)| limits)
-                    .ok_or_else(|| last_error.clone());
-                let asked = now.swap(false, Ordering::Relaxed);
-                if account.is_some() && reported.is_none() && (at >= next_limits || asked) {
-                    match agent_usage::fetch_limits(&home) {
-                        Ok(fresh) => {
-                            kept = Some((fresh, at));
-                            limits = Ok(fresh);
-                            next_limits = at + ASK_EVERY.as_secs();
-                        }
-                        Err(error) => {
-                            next_limits = at
-                                + if error == LimitsError::RateLimited {
-                                    BACK_OFF.as_secs()
-                                } else {
-                                    ASK_EVERY.as_secs()
-                                };
-                            last_error = error.clone();
-                            if kept.is_none() {
-                                limits = Err(error);
-                            }
-                        }
-                    }
-                }
+                let limits = keeper.update(
+                    agent_usage::unix_now(),
+                    account.is_some(),
+                    agent_usage::reported_limits(&reported_path),
+                    now.swap(false, Ordering::Relaxed),
+                    || agent_usage::fetch_limits(&home),
+                );
                 let snapshot = Snapshot {
                     turns: transcripts.turns(since).into_iter().cloned().collect(),
                     account,
                     limits,
-                    limits_at: kept.map(|(_, at)| at),
+                    limits_at: keeper.kept_at(),
                 };
                 if sender.send(snapshot).is_err() {
                     return;
@@ -130,6 +85,171 @@ fn start(sender: std::sync::mpsc::Sender<Snapshot>, now: Arc<AtomicBool>) {
         })
         .map_err(|error| eprintln!("agent usage: {error}"))
         .ok();
+}
+
+/// What a remote window shows of its host's agents: nothing until the host says, and nothing at all from a
+/// host whose pom cannot (never this Mac's numbers).
+type HostUsage = Option<pom_remote::server_api::UsageReport>;
+
+const HOST_RETRY: Duration = Duration::from_secs(5);
+
+/// Asks a remote window's host for its usage each minute, on a thread that ends with the window.
+pub(crate) struct RemoteUsage {
+    shared: Arc<std::sync::Mutex<(u64, HostUsage)>>,
+    stop: Arc<AtomicBool>,
+    now: Arc<AtomicBool>,
+    seen: u64,
+}
+
+impl Drop for RemoteUsage {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl RemoteUsage {
+    pub(crate) fn start(source: Arc<dyn pom_remote::ProjectSource>) -> RemoteUsage {
+        let usage = RemoteUsage {
+            shared: Arc::default(),
+            stop: Arc::default(),
+            now: Arc::default(),
+            seen: 0,
+        };
+        let (shared, stop, now) = (usage.shared.clone(), usage.stop.clone(), usage.now.clone());
+        let spawned = std::thread::Builder::new()
+            .name("host-usage".into())
+            .spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let since = agent_usage::local_day_start(agent_usage::unix_now());
+                    let next = match source.usage(since) {
+                        Ok(report) => Some(report),
+                        Err(error) => {
+                            eprintln!("host usage: {error}");
+                            None
+                        }
+                    };
+                    let known = source.transport().is_some();
+                    if let Some(next) = next {
+                        let mut state = shared
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if state.1 != next {
+                            *state = (state.0.wrapping_add(1), next);
+                            ui::wake();
+                        }
+                    }
+                    let wait = if known { CHECK_EVERY } else { HOST_RETRY };
+                    for _ in 0..wait.as_secs() {
+                        if stop.load(Ordering::Relaxed) || now.swap(false, Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("host usage: {error}");
+        }
+        usage
+    }
+
+    fn state(&self) -> HostUsage {
+        self.shared
+            .lock()
+            .map(|state| state.1.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether the host said something new since the last call.
+    fn take_changed(&mut self) -> bool {
+        let version = self.shared.lock().map(|state| state.0).unwrap_or_default();
+        std::mem::replace(&mut self.seen, version) != version
+    }
+
+    fn ask_now(&self) {
+        self.now.store(true, Ordering::Relaxed);
+    }
+}
+
+fn limits_note(
+    error: Option<&LimitsError>,
+    limits_at: Option<u64>,
+    signed_in: bool,
+    place: &str,
+) -> String {
+    match (error, limits_at) {
+        (Some(LimitsError::RateLimited), Some(at)) => {
+            format!("Updated {} - asked too often, trying again soon", ago(at))
+        }
+        (Some(LimitsError::RateLimited), None) => {
+            format!("The limits service is busy; they show once an agent runs {place}")
+        }
+        (Some(LimitsError::SignedOut), _) if signed_in => format!(
+            "Claude Code's saved sign-in did not work; limits show once an agent runs {place}"
+        ),
+        (Some(LimitsError::Failed(error)), _) => format!("Could not read the limits: {error}"),
+        (_, Some(at)) => format!("Updated {}", ago(at)),
+        _ => "Checks every minute".into(),
+    }
+}
+
+fn shown_account(account: &Account) -> workspace::UsageAccount {
+    workspace::UsageAccount {
+        name: account.name.clone(),
+        email: account.email.clone(),
+        plan: account.plan.clone(),
+        organization: account.organization.clone(),
+    }
+}
+
+fn shown_today(summary: agent_usage::DaySummary) -> workspace::UsageToday {
+    workspace::UsageToday {
+        total: agent_usage_ui::format_cost(summary.cost),
+        sessions: summary.sessions,
+        by_workspace: summary
+            .by_workspace
+            .into_iter()
+            .map(|(name, cost)| (name, agent_usage_ui::format_cost(cost)))
+            .collect(),
+    }
+}
+
+fn usage_window(used: f32, resets_at: Option<u64>) -> workspace::UsageWindow {
+    workspace::UsageWindow {
+        used,
+        resets: reset_text(resets_at),
+    }
+}
+
+/// A remote window's chip and today's cost: its host's, as the host reported them.
+fn host_usage_info(usage: &HostUsage, host: &str) -> workspace::UsageInfo {
+    let Some(report) = usage else {
+        return workspace::UsageInfo {
+            hidden: true,
+            ..workspace::UsageInfo::default()
+        };
+    };
+    let place = format!("on {host}");
+    workspace::UsageInfo {
+        account: report.account.as_ref().map(shown_account),
+        session: report
+            .limits
+            .map(|limits| usage_window(limits.session.used, limits.session.resets_at)),
+        weekly: report
+            .limits
+            .map(|limits| usage_window(limits.weekly.used, limits.weekly.resets_at)),
+        note: format!(
+            "{host}: {}",
+            limits_note(
+                report.limits_error.as_ref(),
+                report.limits_at,
+                report.account.is_some(),
+                &place,
+            )
+        ),
+        today: report.today.clone().map(shown_today),
+        hidden: false,
+    }
 }
 
 /// "in 2h 31m" within a day, else the weekday and time.
@@ -224,6 +344,11 @@ impl App {
                 }
             }
         }
+        for main in self.mains.values_mut() {
+            if let Some(remote) = main.remote.as_mut() {
+                changed |= remote.usage.take_changed();
+            }
+        }
         if changed {
             self.push_usage();
         }
@@ -233,90 +358,54 @@ impl App {
         if let Some(now) = self.usage.now.as_ref() {
             now.store(true, Ordering::Relaxed);
         }
+        for main in self.mains.values() {
+            if let Some(remote) = main.remote.as_ref() {
+                remote.usage.ask_now();
+            }
+        }
     }
 
     fn usage_info(&self, id: WindowId) -> workspace::UsageInfo {
+        if let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) {
+            return host_usage_info(&remote.usage.state(), &remote.host);
+        }
         let tracker = &self.usage;
-        let window = |used: f32, resets_at: Option<u64>| workspace::UsageWindow {
-            used,
-            resets: reset_text(resets_at),
-        };
-        let note = match (&tracker.limits_error, tracker.limits_at) {
-            (Some(LimitsError::RateLimited), Some(at)) => {
-                format!("Updated {} - asked too often, trying again soon", ago(at))
-            }
-            (Some(LimitsError::RateLimited), None) => {
-                "The limits service is busy; they show once an agent runs here".into()
-            }
-            (Some(LimitsError::SignedOut), _) if tracker.account.is_some() => {
-                "Claude Code's saved sign-in did not work; limits show once an agent runs here"
-                    .into()
-            }
-            (Some(LimitsError::Failed(error)), _) => format!("Could not read the limits: {error}"),
-            (_, Some(at)) => format!("Updated {}", ago(at)),
-            _ => "Checks every minute".into(),
-        };
+        let note = limits_note(
+            tracker.limits_error.as_ref(),
+            tracker.limits_at,
+            tracker.account.is_some(),
+            "here",
+        );
         let root = self
             .mains
             .get(&id)
             .and_then(|main| main.project.as_ref())
             .map(|project| project.root.clone());
         let today = agent_usage::local_day(agent_usage::unix_now());
-        let todays: Vec<&Turn> = tracker
+        let todays = tracker
             .turns
             .iter()
             .filter(|turn| agent_usage::local_day(turn.at) == today)
             .filter(|turn| {
                 root.as_ref()
                     .is_none_or(|root| branch_of(root, &turn.cwd).is_some())
-            })
-            .collect();
-        let today = (!todays.is_empty()).then(|| {
-            let mut by_workspace: Vec<(String, f64)> = Vec::new();
-            for turn in &todays {
-                let key = root
-                    .as_ref()
-                    .and_then(|root| branch_of(root, &turn.cwd))
-                    .unwrap_or_else(|| "other projects".into());
-                let cost = agent_usage::cost(turn);
-                match by_workspace.iter_mut().find(|entry| entry.0 == key) {
-                    Some(entry) => entry.1 += cost,
-                    None => by_workspace.push((key, cost)),
-                }
-            }
-            by_workspace.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let mut sessions: Vec<&str> = todays.iter().map(|turn| turn.session.as_str()).collect();
-            sessions.sort_unstable();
-            sessions.dedup();
-            workspace::UsageToday {
-                total: agent_usage_ui::format_cost(
-                    todays.iter().map(|turn| agent_usage::cost(turn)).sum(),
-                ),
-                sessions: sessions.len(),
-                by_workspace: by_workspace
-                    .into_iter()
-                    .map(|(name, cost)| (name, agent_usage_ui::format_cost(cost)))
-                    .collect(),
-            }
+            });
+        let today = agent_usage::day_summary(todays, |turn| {
+            root.as_ref()
+                .and_then(|root| branch_of(root, &turn.cwd))
+                .unwrap_or_else(|| "other projects".into())
         });
         workspace::UsageInfo {
-            account: tracker
-                .account
-                .as_ref()
-                .map(|account| workspace::UsageAccount {
-                    name: account.name.clone(),
-                    email: account.email.clone(),
-                    plan: account.plan.clone(),
-                    organization: account.organization.clone(),
-                }),
+            account: tracker.account.as_ref().map(shown_account),
             session: tracker
                 .limits
-                .map(|limits| window(limits.session.used, limits.session.resets_at)),
+                .map(|limits| usage_window(limits.session.used, limits.session.resets_at)),
             weekly: tracker
                 .limits
-                .map(|limits| window(limits.weekly.used, limits.weekly.resets_at)),
+                .map(|limits| usage_window(limits.weekly.used, limits.weekly.resets_at)),
             note,
-            today,
+            today: today.map(shown_today),
+            hidden: false,
         }
     }
 

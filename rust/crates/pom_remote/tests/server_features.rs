@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pom_remote::server_api::{
-    method, AgentListing, BranchArgs, JobRequest, FEATURES, FILES_SEARCH, JOBS, LIVE_LOGS, METHODS,
-    REQUIRED,
+    method, AgentListing, BranchArgs, JobRequest, UsageParams, UsageReport, FEATURES, FILES_SEARCH,
+    JOBS, LIVE_LOGS, METHODS, REQUIRED,
 };
 use pom_remote::{ProjectSource, ServerSource, StatusReport, Timing, Watch, WorkspaceList};
 use pom_rpc::pty::{self, AttachParams, Attached, Mode, Request, Target};
@@ -16,6 +16,7 @@ use pom_rpc::{Connection, Hello, Publisher, RemoteError, RequestContext, StreamS
 #[derive(Default)]
 struct Served {
     listings: AtomicUsize,
+    usage_asks: AtomicUsize,
     logs: AtomicUsize,
     attaches: Mutex<Vec<AttachParams>>,
     streams: Mutex<Vec<StreamSender>>,
@@ -51,6 +52,19 @@ fn answer(
             json(serde_json::to_value(format!("web says {asked}\n")))
         }
         method::AGENT_LIST => json(serde_json::to_value(AgentListing::default())),
+        method::USAGE_GET => {
+            served.usage_asks.fetch_add(1, Ordering::SeqCst);
+            let params: UsageParams = serde_json::from_value(request.params)
+                .map_err(|error| RemoteError::new("invalid_params", error.to_string()))?;
+            json(serde_json::to_value(UsageReport {
+                account: Some(agent_usage::Account {
+                    name: "vm-dev".into(),
+                    ..agent_usage::Account::default()
+                }),
+                limits_at: Some(params.since),
+                ..UsageReport::default()
+            }))
+        }
         method::PTY_ATTACH => {
             let params: AttachParams = serde_json::from_value(request.params)
                 .map_err(|error| RemoteError::new("invalid_params", error.to_string()))?;
@@ -240,6 +254,25 @@ fn a_server_that_reads_files_but_predates_search_says_to_update_it() {
     current.workspaces().expect("connect");
     assert!(current.transport().expect("transport").files_search);
     assert_eq!(current.files("main").expect("files").search_refusal(), None);
+}
+
+#[test]
+fn usage_comes_only_from_a_server_that_reports_it() {
+    let (older, served) = source(older_features());
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").usage);
+    assert_eq!(older.usage(100), Ok(None), "an older server hides the chip");
+    assert_eq!(served.usage_asks.load(Ordering::SeqCst), 0);
+    let (current, served) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").usage);
+    let report = current.usage(100).expect("asked").expect("reported");
+    assert_eq!(
+        report.account.map(|account| account.name),
+        Some("vm-dev".into())
+    );
+    assert_eq!(report.limits_at, Some(100), "the day the app asked for");
+    assert_eq!(served.usage_asks.load(Ordering::SeqCst), 1);
 }
 
 #[test]

@@ -17,7 +17,7 @@ use pom_remote::server_api::{
 };
 use pom_remote::server_api::{
     SearchCancelParams, SearchStartParams, ServiceChoiceParams, ServiceRunParams, SharedLogsParams,
-    SharedRunParams,
+    SharedRunParams, UsageParams,
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
@@ -26,6 +26,7 @@ use crate::fs::{FsService, WriteScope};
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
 use crate::search::SearchService;
+use crate::usage::UsageService;
 use crate::watch::Watches;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -251,6 +252,7 @@ pub struct Dispatcher {
     search: SearchService,
     /// Modes picked for each project's services, kept while the server runs.
     modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
+    usage: UsageService,
 }
 
 impl Dispatcher {
@@ -266,7 +268,14 @@ impl Dispatcher {
             binary,
             ops: Ops::new(op_memory),
             modes: Mutex::new(HashMap::new()),
+            usage: UsageService::from_env(),
         }
+    }
+
+    /// Reads the agents' usage with `usage` instead of this user's home and the real endpoint.
+    pub fn with_usage(mut self, usage: UsageService) -> Self {
+        self.usage = usage;
+        self
     }
 
     pub fn ptys(&self) -> &Ptys {
@@ -593,6 +602,17 @@ impl Dispatcher {
                 let params: SharedLogsParams = params(raw)?;
                 let source = self.source(&params.cfg)?;
                 crate::services::shared_logs(&source, params)
+            }
+            method::USAGE_GET => {
+                let params: UsageParams = params(raw)?;
+                let config = registered_config(&self.state, &params.cfg)?;
+                let root = config.parent().unwrap_or(Path::new("/"));
+                to_value(self.usage.report(
+                    &self.state,
+                    root,
+                    params.since,
+                    agent_usage::unix_now(),
+                ))
             }
             method::OP_RESULT => {
                 let params: OpParams = params(raw)?;

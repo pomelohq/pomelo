@@ -45,6 +45,8 @@ pub struct UsageInfo {
     /// "Updated 12s ago", or why the limits are missing.
     pub note: String,
     pub today: Option<UsageToday>,
+    /// No chip: the machine the window's agents run on cannot say whose account they use.
+    pub hidden: bool,
 }
 
 /// Green, then warning at 70%, error at 90%.

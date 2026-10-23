@@ -68,6 +68,20 @@ pub fn local_day(unix: u64) -> i64 {
     )
 }
 
+/// The unix time the local day of `unix` began at.
+pub fn local_day_start(unix: u64) -> u64 {
+    let seconds = unix as libc::time_t;
+    let mut local: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: localtime_r only writes the struct it is given.
+    let converted = unsafe { !libc::localtime_r(&seconds, &mut local).is_null() };
+    if !converted {
+        return unix - unix % 86_400;
+    }
+    let into_day =
+        i64::from(local.tm_hour) * 3600 + i64::from(local.tm_min) * 60 + i64::from(local.tm_sec);
+    unix.saturating_sub(u64::try_from(into_day).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +98,14 @@ mod tests {
             Some(1_790_577_531)
         );
         assert_eq!(parse_timestamp("yesterday"), None);
+    }
+
+    #[test]
+    fn a_day_starts_at_local_midnight() {
+        let now = 1_790_577_531;
+        let start = local_day_start(now);
+        assert!(start <= now && now - start < 86_400);
+        assert_eq!(local_day(start), local_day(now));
+        assert_eq!(local_day(start - 1), local_day(now) - 1);
     }
 }

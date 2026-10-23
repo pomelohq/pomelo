@@ -34,6 +34,8 @@ pub(crate) struct RemoteWindow {
     /// What of the host is open here: its dev proxy, the shown workspace's shared services, ports asked for.
     pub ports: Option<Arc<pom_remote::RemotePorts>>,
     ports_seen: u64,
+    /// The Claude account and cost of the host's agents, for the chip and the status bar.
+    pub usage: crate::usage::RemoteUsage,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -200,6 +202,7 @@ impl App {
             proxy_port_here: self.proxy_port_here(),
             waker: Arc::new(ui::wake),
         }));
+        let usage = crate::usage::RemoteUsage::start(source.clone());
         let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = None;
@@ -232,6 +235,7 @@ impl App {
                 update_shown: remote_ui::PomUpdate::default(),
                 ports: Some(ports),
                 ports_seen: 0,
+                usage,
             });
         }
         self.install_remote_views(id);

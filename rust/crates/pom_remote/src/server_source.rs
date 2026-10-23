@@ -25,6 +25,7 @@ use crate::server_api::{
 };
 use crate::server_api::{
     ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams, SharedRunParams,
+    UsageParams, UsageReport,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -377,6 +378,7 @@ impl Inner {
             },
             files_write: offers(&[FILES_WRITE]),
             files_search: offers(&[FILES_SEARCH]),
+            usage: offers(&[method::USAGE_GET]),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -1172,6 +1174,24 @@ impl ProjectSource for ServerSource {
         )?;
         self.inner
             .choose(method::SVC_ENV_PROFILE, branch, repo, service, profile)
+    }
+
+    /// A server from before `usage.get`, or plain ssh, cannot say: `None`, never this Mac's numbers.
+    fn usage(&self, since: u64) -> Result<Option<UsageReport>, SourceError> {
+        if self.inner.offering(|info| info.usage)?.is_none() {
+            return Ok(None);
+        }
+        let params = UsageParams {
+            cfg: self.inner.config.clone(),
+            since,
+        };
+        match self
+            .inner
+            .request::<UsageReport>(method::USAGE_GET, params, READ_TIMEOUT)?
+        {
+            Route::Server(report) => Ok(Some(report)),
+            Route::Fallback => Ok(None),
+        }
     }
 
     fn shared_logs(&self, name: &str, lines: usize) -> Result<String, SourceError> {

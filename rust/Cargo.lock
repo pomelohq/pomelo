@@ -73,6 +73,7 @@ name = "agent_usage"
 version = "0.9.6"
 dependencies = [
  "libc",
+ "serde",
  "serde_json",
  "tempfile",
  "workspace_hack",
@@ -3849,6 +3850,7 @@ dependencies = [
 name = "pom_remote"
 version = "0.9.6"
 dependencies = [
+ "agent_usage",
  "files",
  "libc",
  "pom_agent",
@@ -3893,6 +3895,7 @@ dependencies = [
 name = "pom_server"
 version = "0.9.6"
 dependencies = [
+ "agent_usage",
  "files",
  "libc",
  "pom_agent",
