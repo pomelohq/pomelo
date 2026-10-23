@@ -20,5 +20,6 @@ workspace = { path = "../workspace" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+pom_secrets = { path = "../pom_secrets" }
 serde_json.workspace = true
 tempfile = "3"

@@ -45,6 +45,8 @@ pub(crate) struct RemoteWindow {
     pub jira: Arc<pom_remote::RemoteJira>,
     /// Each workspace's ticket status, kept here under `<project>@<host>`.
     tickets: workspaces_ui::TicketStatuses,
+    /// Each workspace's pull requests, from the repos' origins and heads on the host.
+    pull_requests: pull_request_ui::PullRequests,
     /// The workspace whose Git panel is shown.
     git_for: Option<String>,
     /// The repos the host listed for a workspace's Git panel, once it answers.
@@ -191,7 +193,10 @@ fn project_info(remote: &RemoteWindow, snapshot: &pom_remote::Snapshot) -> works
             .iter()
             .map(|ws| remote.tickets.category(&ws.branch).unwrap_or_default())
             .collect(),
-        prs: vec![None; count],
+        prs: workspaces
+            .iter()
+            .map(|ws| remote.pull_requests.summary(&ws.branch))
+            .collect(),
         missing: vec![Vec::new(); count],
         repo_branches: vec![Vec::new(); count],
     }
@@ -308,6 +313,15 @@ impl App {
             Arc::new(ui::wake),
         )
         .with_jira(jira.connect());
+        // A token stored for the project on this Mac serves its remote windows too.
+        let pull_requests = pull_request_ui::PullRequests::with_sessions(
+            state.clone(),
+            vec![
+                pom_remote::remote_jira_session(&picked.name, &picked.host),
+                picked.name.clone(),
+            ],
+            Arc::new(ui::wake),
+        );
         {
             let jira = jira.clone();
             let looked = std::thread::Builder::new()
@@ -354,6 +368,7 @@ impl App {
                 usage,
                 jira,
                 tickets,
+                pull_requests,
                 git_for: None,
                 git_repos: Arc::new(std::sync::Mutex::new(None)),
                 git_asked: None,
@@ -456,8 +471,19 @@ impl App {
             .unwrap_or_default();
         if !branches.is_empty() {
             remote.tickets.refresh_if_due(&branches);
+            if remote
+                .watch
+                .snapshot()
+                .transport
+                .is_some_and(|transport| transport.git)
+            {
+                let source = remote.watch.source();
+                remote.pull_requests.refresh_targets_if_due(move || {
+                    pull_request_targets(source.as_ref(), &branches)
+                });
+            }
         }
-        let tickets_changed = remote.tickets.take_changed();
+        let tickets_changed = remote.tickets.take_changed() | remote.pull_requests.take_changed();
         let generation = remote.watch.generation();
         let update = read_update(&remote.pom_update);
         let ports_version = remote.ports.as_ref().map_or(0, |ports| ports.version());
@@ -949,8 +975,11 @@ impl App {
             ),
             Err(reason) => (Vec::new(), Arc::new(git::access::UnservedGit::new(reason))),
         };
-        let panel =
-            git_ui::GitPanel::new(repos, Some(reviews), Arc::new(ui::wake)).with_access(access);
+        let mut panel = git_ui::GitPanel::new(repos, Some(reviews), Arc::new(ui::wake));
+        if access.refusal().is_none() {
+            panel = panel.with_pull_requests(remote.pull_requests.clone());
+        }
+        let panel = panel.with_access(access);
         self.with_workspace_view(id, |view, _| view.set_side_panel(Box::new(panel)));
         if let Some(main) = self.mains.get_mut(&id) {
             main.dirty = true;
@@ -1515,6 +1544,30 @@ fn git_refusal(transport: &pom_remote::TransportInfo, host: &str) -> Option<Stri
             "pom on {host} cannot show its repos here. Update pom there to use Git in this window."
         ),
     })
+}
+
+/// The GitHub lookups of each workspace's repos: their origin and the branch checked out, as the host reads them.
+fn pull_request_targets(
+    source: &dyn pom_remote::ProjectSource,
+    branches: &[String],
+) -> pull_request_ui::Targets {
+    branches
+        .iter()
+        .filter_map(|branch| {
+            let repos = source.git_repos(branch).ok()?;
+            let access = source.git(branch)?;
+            let found = repos
+                .iter()
+                .filter_map(|repo| {
+                    let head = access.head_state(repo)?.branch?;
+                    let target =
+                        pull_request_ui::target(&repo.name, repo.origin.as_deref()?, &head)?;
+                    Some((repo.root.clone(), target))
+                })
+                .collect();
+            Some((branch.clone(), found))
+        })
+        .collect()
 }
 
 /// Asks the host for the repos of workspace `branch` off the UI thread; the answer lands in `into`.

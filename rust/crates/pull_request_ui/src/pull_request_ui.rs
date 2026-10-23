@@ -21,12 +21,15 @@ pub struct WorkspaceRepos {
     pub repos: Vec<(String, PathBuf)>,
 }
 
+/// Workspace branch -> (checkout folder, GitHub lookup) per repo on GitHub.
+pub type Targets = HashMap<String, Vec<(PathBuf, PrTarget)>>;
+
 struct Shared {
     state: StateDir,
-    session: String,
+    /// Sessions whose `github` secret may hold the token, first one first.
+    sessions: Vec<String>,
     cache: Mutex<PrCache>,
-    /// Workspace branch -> (checkout folder, GitHub lookup) per repo on GitHub.
-    targets: Mutex<HashMap<String, Vec<(PathBuf, PrTarget)>>>,
+    targets: Mutex<Targets>,
     refreshing: AtomicBool,
     changed: AtomicBool,
     last: Mutex<Option<Instant>>,
@@ -40,24 +43,40 @@ pub struct PullRequests {
 }
 
 fn target_for(repo: &str, root: &Path) -> Option<PrTarget> {
-    let (_, owner, name) =
-        git::working_copy::parse_github_remote(&git::working_copy::remote_url(root, "origin")?)?;
-    let head = git::working_copy::head_state(root).branch?;
+    target(
+        repo,
+        &git::working_copy::remote_url(root, "origin")?,
+        &git::working_copy::head_state(root).branch?,
+    )
+}
+
+/// The lookup for `repo` on branch `head` when its `origin` is on GitHub.
+pub fn target(repo: &str, origin: &str, head: &str) -> Option<PrTarget> {
+    let (_, owner, name) = git::working_copy::parse_github_remote(origin)?;
     Some(PrTarget {
         repo: repo.to_string(),
         owner,
         name,
-        head,
+        head: head.to_string(),
     })
 }
 
 impl PullRequests {
     pub fn new(state: StateDir, session: &str, waker: Arc<dyn Fn() + Send + Sync>) -> PullRequests {
+        PullRequests::with_sessions(state, vec![session.to_string()], waker)
+    }
+
+    /// Looks the token up in each of `sessions` in turn.
+    pub fn with_sessions(
+        state: StateDir,
+        sessions: Vec<String>,
+        waker: Arc<dyn Fn() + Send + Sync>,
+    ) -> PullRequests {
         PullRequests {
             shared: Arc::new(Shared {
                 cache: Mutex::new(PrCache::open(&state)),
                 state,
-                session: session.to_string(),
+                sessions,
                 targets: Mutex::new(HashMap::new()),
                 refreshing: AtomicBool::new(false),
                 changed: AtomicBool::new(false),
@@ -72,6 +91,25 @@ impl PullRequests {
     }
 
     pub fn refresh_if_due(&self, workspaces: Vec<WorkspaceRepos>) {
+        self.refresh_targets_if_due(move || {
+            workspaces
+                .into_iter()
+                .map(|workspace| {
+                    let found = workspace
+                        .repos
+                        .iter()
+                        .filter_map(|(repo, root)| {
+                            target_for(repo, root).map(|target| (root.clone(), target))
+                        })
+                        .collect();
+                    (workspace.branch, found)
+                })
+                .collect()
+        });
+    }
+
+    /// Like [`Self::refresh_if_due`], with the lookups found by `find` off the UI thread.
+    pub fn refresh_targets_if_due(&self, find: impl FnOnce() -> Targets + Send + 'static) {
         let due = self
             .shared
             .last
@@ -79,11 +117,26 @@ impl PullRequests {
             .map(|last| last.is_none_or(|at| at.elapsed() >= REFRESH_EVERY))
             .unwrap_or(false);
         if due {
-            self.refresh(workspaces);
+            self.refresh(find);
         }
     }
 
-    fn refresh(&self, workspaces: Vec<WorkspaceRepos>) {
+    /// The session whose token is used: the first that has one.
+    fn token_session(shared: &Shared) -> String {
+        PullRequests::token_session_in(shared, &|name| std::env::var(name).ok())
+    }
+
+    fn token_session_in(shared: &Shared, env: &dyn Fn(&str) -> Option<String>) -> String {
+        shared
+            .sessions
+            .iter()
+            .find(|session| pom_forge::resolve_token(&shared.state, session, env).is_some())
+            .or(shared.sessions.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn refresh(&self, find: impl FnOnce() -> Targets + Send + 'static) {
         if self.shared.refreshing.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -94,19 +147,7 @@ impl PullRequests {
         let spawned = std::thread::Builder::new()
             .name("pull-requests".into())
             .spawn(move || {
-                let targets: HashMap<String, Vec<(PathBuf, PrTarget)>> = workspaces
-                    .into_iter()
-                    .map(|workspace| {
-                        let found = workspace
-                            .repos
-                            .iter()
-                            .filter_map(|(repo, root)| {
-                                target_for(repo, root).map(|target| (root.clone(), target))
-                            })
-                            .collect();
-                        (workspace.branch, found)
-                    })
-                    .collect();
+                let targets = find();
                 let all: Vec<PrTarget> = targets
                     .values()
                     .flatten()
@@ -127,7 +168,9 @@ impl PullRequests {
                     (shared.waker)();
                 }
                 let mut prs_changed = false;
-                if let Some(client) = pom_forge::resolve(&shared.state, &shared.session) {
+                if let Some(client) =
+                    pom_forge::resolve(&shared.state, &PullRequests::token_session(&shared))
+                {
                     // The UI reads the cache every frame, so it is never held across the network call.
                     let due = shared
                         .cache
@@ -254,7 +297,7 @@ impl PullRequests {
             .and_then(|cache| cache.get(&target).flatten().cloned());
         Box::new(PrItem::new(
             self.shared.state.clone(),
-            self.shared.session.clone(),
+            PullRequests::token_session(&self.shared),
             self.shared.waker.clone(),
             target,
             cached,
@@ -352,5 +395,41 @@ mod tests {
         assert_eq!(reason, "api #3 merged");
         assert_eq!(heads.get("api").map(String::as_str), Some("abc123"));
         Ok(())
+    }
+
+    #[test]
+    fn a_remote_window_finds_the_token_stored_for_the_project_here() -> Result<(), String> {
+        let temp = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let state = StateDir::new(temp.path());
+        let prs = PullRequests::with_sessions(
+            state.clone(),
+            vec!["myproject@dev".into(), "myproject".into()],
+            Arc::new(|| {}),
+        );
+        let no_env = |_: &str| None;
+        assert_eq!(
+            PullRequests::token_session_in(&prs.shared, &no_env),
+            "myproject@dev"
+        );
+        pom_secrets::SecretStore::new(state, "myproject")
+            .set("github", "token")
+            .map_err(|error| error.to_string())?;
+        assert_eq!(
+            PullRequests::token_session_in(&prs.shared, &no_env),
+            "myproject"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_github_origin_and_a_head_make_a_lookup() {
+        assert_eq!(
+            super::target("api", "git@github.com:acme/api.git", "feat-login"),
+            Some(target("api"))
+        );
+        assert_eq!(
+            super::target("api", "https://example.com/acme/api.git", "feat-login"),
+            None
+        );
     }
 }
