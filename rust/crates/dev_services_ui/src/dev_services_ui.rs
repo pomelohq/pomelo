@@ -1055,51 +1055,6 @@ fn click(state: &mut DevRequestsState, id: u64) -> Option<String> {
     copied
 }
 
-#[derive(Default)]
-struct Pane {
-    scroll: f32,
-    content_h: f32,
-    view_h: f32,
-    rect: Option<Rect>,
-}
-
-impl Pane {
-    fn paint(&mut self, tree: &Node, area: Rect) -> ui::Painted {
-        let scale = ui::ui_text_scale();
-        self.rect = Some(area);
-        self.content_h = ui::measure(tree).1 * scale;
-        self.view_h = area.h;
-        self.scroll = self
-            .scroll
-            .clamp(0.0, (self.content_h - self.view_h).max(0.0));
-        let shifted = Rect::new(
-            area.x,
-            area.y - self.scroll,
-            area.w,
-            area.h.max(self.content_h),
-            Rgba::TRANSPARENT,
-        );
-        let mut painted = ui::render(tree, shifted);
-        painted
-            .hits
-            .retain(|(rect, _)| rect.y + rect.h > area.y && rect.y < area.y + area.h);
-        painted
-    }
-
-    fn contains(&self, x: f32, y: f32) -> bool {
-        self.rect.is_some_and(|rect| {
-            x >= rect.x && x < rect.x + rect.w && y >= rect.y && y < rect.y + rect.h
-        })
-    }
-
-    fn scroll_by(&mut self, delta: f32) -> bool {
-        let next = (self.scroll - delta).clamp(0.0, (self.content_h - self.view_h).max(0.0));
-        let moved = (next - self.scroll).abs() > 0.01;
-        self.scroll = next;
-        moved
-    }
-}
-
 fn merge(into: &mut ui::Painted, part: ui::Painted) {
     into.rects.extend(part.rects);
     into.tris.extend(part.tris);
@@ -1112,8 +1067,8 @@ pub struct DevRequestsPage {
     shared: Shared,
     hits: Vec<(Rect, u64)>,
     hovered: Option<u64>,
-    list: Pane,
-    side: Pane,
+    list: ui::ScrollPane,
+    side: ui::ScrollPane,
     seen: u64,
     clipboard: Option<String>,
 }
@@ -1124,8 +1079,8 @@ impl DevRequestsPage {
             shared,
             hits: Vec::new(),
             hovered: None,
-            list: Pane::default(),
-            side: Pane::default(),
+            list: ui::ScrollPane::default(),
+            side: ui::ScrollPane::default(),
             seen: u64::MAX,
             clipboard: None,
         }

@@ -2,7 +2,7 @@
 //! workspace addresses to it), the shared services of the open workspace, and ports asked for by hand. One thread
 //! runs the ssh calls, so the window never waits on them; forwards stop when this is dropped or closed.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -41,7 +41,8 @@ struct Look {
     session: String,
     branch: String,
     branches: Vec<String>,
-    shared: Vec<SharedPort>,
+    /// None while the host has not reported its services, which must not read as all of them stopping.
+    shared: Option<Vec<SharedPort>>,
 }
 
 impl Look {
@@ -59,22 +60,18 @@ impl Look {
                         .collect()
                 })
                 .unwrap_or_default(),
-            shared: snapshot
-                .status
-                .as_ref()
-                .map(|status| {
-                    status
-                        .shared
-                        .iter()
-                        .filter(|shared| shared.port > 0)
-                        .map(|shared| SharedPort {
-                            name: shared.name.clone(),
-                            port: shared.port,
-                            ready: shared.ready,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            shared: snapshot.status.as_ref().map(|status| {
+                status
+                    .shared
+                    .iter()
+                    .filter(|shared| shared.port > 0)
+                    .map(|shared| SharedPort {
+                        name: shared.name.clone(),
+                        port: shared.port,
+                        ready: shared.ready,
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -94,8 +91,8 @@ struct State {
     branches: Vec<String>,
     /// Remote ports of shared services already tried, so one that failed is not tried on every look.
     tried: HashSet<u16>,
-    /// Whether each forwarded shared service answered at the last look.
-    ready: BTreeMap<u16, bool>,
+    /// Shared services already announced in this window; a health check that flaps must not repeat it.
+    announced: HashSet<u16>,
     notices: Vec<String>,
     last_sync: Option<Look>,
 }
@@ -363,7 +360,9 @@ impl Inner {
             }
             self.changed();
         }
-        self.follow_shared(&sync.shared);
+        if let Some(shared) = &sync.shared {
+            self.follow_shared(shared);
+        }
     }
 
     /// Forwards the shared services that run and stops those that went; says which became reachable here.
@@ -374,7 +373,6 @@ impl Inner {
                 self.forwarder.stop(forward.remote_port);
                 let mut state = locked(&self.state);
                 state.tried.remove(&forward.remote_port);
-                state.ready.remove(&forward.remote_port);
                 drop(state);
                 self.changed();
             }
@@ -400,11 +398,7 @@ impl Inner {
             let Some(local) = self.forwarder.local_port(service.port) else {
                 continue;
             };
-            let was_ready = locked(&self.state)
-                .ready
-                .insert(service.port, service.ready)
-                .unwrap_or(false);
-            if service.ready && !was_ready {
+            if service.ready && locked(&self.state).announced.insert(service.port) {
                 reachable.push((service.name.clone(), local));
             }
         }
@@ -633,6 +627,26 @@ mod tests {
                 "postgres on dev is reachable here at 127.0.0.1:{postgres}"
             )]
         );
+
+        let mut unreported = snapshot(Connection::Connected, &[]);
+        unreported.status = None;
+        ports.sync(&unreported);
+        for ready in [false, true] {
+            ports.sync(&snapshot(
+                Connection::Connected,
+                &[("postgres", postgres, ready)],
+            ));
+        }
+        ports.sync(&snapshot(
+            Connection::Connected,
+            &[("postgres", postgres, true)],
+        ));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            ports.local_port(postgres).is_some(),
+            "kept while unreported"
+        );
+        assert!(ports.take_notices().is_empty(), "announced once per window");
 
         let before = calls(&log, "forward").len();
         ports.sync(&snapshot(
