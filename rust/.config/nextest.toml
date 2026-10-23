@@ -37,7 +37,7 @@ slow-timeout = { period = "180s", terminate-after = 1 }
 
 # Latency budgets, and a stalled client that must fall behind a flood within seconds, need a quiet machine.
 [[profile.default.overrides]]
-filter = 'binary_id(pom_server::pty_perf)'
+filter = 'binary_id(pom_server::pty_perf) | (binary_id(pom_server::files) & test(a_large_tree_arrives_quickly))'
 threads-required = 'num-test-threads'
 # First, while nothing else runs yet, so the run never drains to make room for them.
 priority = 100

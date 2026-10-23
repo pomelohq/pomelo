@@ -27,6 +27,9 @@ jobs:
       run_tests: ${{ steps.plan.outputs.run_tests }}
       run_action_checks: ${{ steps.plan.outputs.run_action_checks }}
       filterset: ${{ steps.plan.outputs.filterset }}
+      run_pom_server: ${{ steps.plan.outputs.run_pom_server }}
+      run_cli_smoke: ${{ steps.plan.outputs.run_cli_smoke }}
+      run_postgres: ${{ steps.plan.outputs.run_postgres }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,10 +38,28 @@ jobs:
         working-directory: rust
         run: |
           if [ -z "$GITHUB_BASE_REF" ]; then
-            printf 'run_tests=true\nrun_action_checks=true\nfilterset=\n' | tee -a "$GITHUB_OUTPUT"
+            plan="$(printf 'run_tests=true\nrun_action_checks=true\nfilterset=\naffected=\n')"
           else
-            scripts/changed-crates.sh "$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" | tee -a "$GITHUB_OUTPUT"
+            plan="$(scripts/changed-crates.sh "$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)")"
           fi
+          echo "$plan" | tee -a "$GITHUB_OUTPUT"
+          run_tests="$(sed -n 's/^run_tests=//p' <<<"$plan")"
+          affected="$(sed -n 's/^affected=//p' <<<"$plan")"
+          # The real-host jobs run only when a crate they test is affected (an empty set means every crate is).
+          touches() {
+            local crate
+            if [ "$run_tests" != true ]; then echo false; return; fi
+            if [ -z "${affected// /}" ]; then echo true; return; fi
+            for crate in "$@"; do
+              if [[ "$affected" == *" $crate "* ]]; then echo true; return; fi
+            done
+            echo false
+          }
+          {
+            echo "run_pom_server=$(touches pom_server pom_rpc pom_ptyhost pom_remote pom_cli)"
+            echo "run_cli_smoke=$(touches pom_cli pom_ptyhost)"
+            echo "run_postgres=$(touches pom_services pom_cli)"
+          } | tee -a "$GITHUB_OUTPUT"
 
   check_style:
     name: Style
@@ -68,7 +89,8 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
-  # Clippy and the tests run side by side from the same restored build; only the test job saves it.
+  # Clippy builds cold: it still finishes before the tests, and one cache restore per OS keeps the cache download
+  # (throttled per account) small.
   clippy_mac:
     name: Clippy (macOS)
     needs: orchestrate
@@ -80,25 +102,9 @@ jobs:
         working-directory: rust
     env:
       CARGO_INCREMENTAL: 0
-      # Keeps the cached target/ small enough to restore quickly; make's trim drops it past this.
-      POM_TARGET_LIMIT_GB: 8
     steps:
-      # Full history, to tell which files changed since the commit the cached build came from.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
       - run: rustup show
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            rust/target/
-          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
-      - name: Date sources by what changed since the cached build
-        run: scripts/date-sources.sh
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-hakari
@@ -163,9 +169,6 @@ jobs:
             | jq -r 'select(.executable != null and .profile.test) | .executable' | head -1)"
           codesign --force --options runtime --entitlements scripts/Pomelo.entitlements --sign - "$tests"
           cd crates/editor && "$tests" a_package_grammar_compiles_off_thread_then_highlights
-      # The clippy job saves nothing, so main's build carries its artifacts too.
-      - if: github.ref == 'refs/heads/main'
-        run: make lint
       - name: Size of the build cache
         run: du -sh target ~/.cargo/registry 2>/dev/null || true
       - if: github.ref == 'refs/heads/main'
@@ -204,17 +207,11 @@ jobs:
         working-directory: rust
     env:
       CARGO_INCREMENTAL: 0
-      POM_TARGET_LIMIT_GB: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the libraries the window and fonts build against
         run: scripts/install-linux-build-deps.sh
       - run: rustup show
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: rust
-          shared-key: linux-ci
-          save-if: false
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-hakari
@@ -263,9 +260,6 @@ jobs:
           grep -E '^\s+FLAKY' "$RUNNER_TEMP/test.log" | sort -u | while IFS= read -r line; do
             echo "::warning title=Flaky test::$(echo "$line" | sed -E 's/^ +//')"
           done || true
-      # The clippy job saves nothing, so main's dependency cache carries what clippy builds too.
-      - if: github.ref == 'refs/heads/main'
-        run: make lint
       # A changed Cargo.lock starts a new entry while the old ones stay; only the newest is restored. This job's
       # own entry is saved after it ends, so the one kept here is the previous build.
       - name: Drop older dependency caches
@@ -283,7 +277,7 @@ jobs:
   cli-smoke:
     name: pom CLI headless smoke (Linux)
     needs: orchestrate
-    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+    if: ${{ needs.orchestrate.outputs.run_cli_smoke == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -353,7 +347,7 @@ jobs:
   pom-server:
     name: pom server (Linux)
     needs: orchestrate
-    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+    if: ${{ needs.orchestrate.outputs.run_pom_server == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -400,7 +394,7 @@ jobs:
   postgres:
     name: Real Postgres tests (Linux)
     needs: orchestrate
-    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+    if: ${{ needs.orchestrate.outputs.run_postgres == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
