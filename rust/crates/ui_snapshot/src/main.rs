@@ -4964,10 +4964,19 @@ fn main() -> anyhow::Result<()> {
             .collect(),
         None => vec![true; settings_ui::CATEGORY_COUNT],
     };
-    // JIRA=1: the Integrations page as a configured project sees it.
+    // JIRA=1: the Integrations page as a configured project sees it; REMOTE=1: opened from the window of a
+    // project on the host `dev`, whose settings are kept there.
+    let remote = std::env::var("REMOTE").is_ok();
     let jira = if std::env::var("JIRA").is_ok() {
         settings_ui::IntegrationsPage {
             session: "myproject".into(),
+            kept_on: remote.then(|| {
+                (
+                    "dev".to_string(),
+                    "Jira is read on dev with these settings; the token never leaves it."
+                        .to_string(),
+                )
+            }),
             keep_main_fresh: true,
             refresh_minutes: 30,
             site: "https://acme.atlassian.net".into(),
@@ -5002,6 +5011,7 @@ fn main() -> anyhow::Result<()> {
                     workspaces: 4,
                 },
             ],
+            host: remote.then(|| "dev".to_string()),
         },
         agent: if live {
             settings_ui::AgentPage {
@@ -5080,7 +5090,7 @@ fn main() -> anyhow::Result<()> {
             &search,
             false,
             0.0,
-            "myproject",
+            &state.project,
             state.language,
         );
         let mut chrome = parts.fixed;

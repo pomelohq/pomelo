@@ -68,6 +68,25 @@ pub struct SideEffects {
     pub remove_repo: Option<String>,
 }
 
+/// The project of a remote window, whose Jira settings the Integrations page edits.
+#[derive(Clone)]
+pub struct RemoteJira {
+    pub host: String,
+    /// `<project>@<host>`: what this Mac keeps for it.
+    pub session: String,
+    pub state: StateDir,
+    /// The settings on the host; `None` when its pom cannot keep them, so they are kept here under `session`.
+    pub store: Option<std::sync::Arc<dyn pom_jira::SetupStore>>,
+}
+
+fn token_source(origin: Option<pom_jira::TokenOrigin>) -> TokenSource {
+    match origin {
+        Some(pom_jira::TokenOrigin::Secret) => TokenSource::Secret,
+        Some(pom_jira::TokenOrigin::Environment) => TokenSource::Environment,
+        None => TokenSource::Missing,
+    }
+}
+
 /// Innermost hit id under `(x, y)` (regions pushed outer-first, inner-last), like `ui::Window::hit_at`.
 fn hit_test(hits: &[(Rect, u64)], x: f32, y: f32) -> Option<u64> {
     hits.iter()
@@ -110,6 +129,10 @@ pub struct SettingsView {
     pending: SideEffects,
     /// The state folder and session whose Jira settings the Integrations page edits.
     jira_session: Option<(StateDir, String)>,
+    /// A remote project's Jira settings, kept on its machine or (an older pom there) here.
+    jira_remote: Option<RemoteJira>,
+    /// The remote machine's settings on their way back from a read or a change.
+    jira_load: Option<Receiver<Result<pom_jira::JiraSetup, String>>>,
     pages: settings_ui::PageState,
     jira_test: Option<Receiver<Result<String, String>>>,
     /// The project's `pom.yml`, whose `sync:` applies until this window sets refresh-main.
@@ -151,6 +174,8 @@ impl SettingsView {
             viewport: (0.0, 0.0),
             pending: SideEffects::default(),
             jira_session: None,
+            jira_remote: None,
+            jira_load: None,
             pages: settings_ui::PageState::default(),
             jira_test: None,
             project_config: None,
@@ -272,11 +297,78 @@ impl SettingsView {
             return;
         }
         self.jira_session = session;
+        self.jira_remote = None;
+        self.jira_load = None;
         self.jira_test = None;
         self.reload_jira(ConnectionStatus::Untested);
     }
 
+    /// A remote window's project: the Integrations page edits its settings where they are kept.
+    pub fn set_jira_remote(&mut self, remote: Option<RemoteJira>) {
+        self.jira_test = None;
+        self.jira_load = None;
+        self.jira_session = remote
+            .as_ref()
+            .filter(|remote| remote.store.is_none())
+            .map(|remote| (remote.state.clone(), remote.session.clone()));
+        self.jira_remote = remote;
+        self.reload_jira(ConnectionStatus::Untested);
+    }
+
+    fn host_store(&self) -> Option<std::sync::Arc<dyn pom_jira::SetupStore>> {
+        self.jira_remote.as_ref()?.store.clone()
+    }
+
+    /// Where a remote project's settings are kept, and why there.
+    fn kept_on(&self) -> Option<(String, String)> {
+        let remote = self.jira_remote.as_ref()?;
+        Some(match remote.store {
+            Some(_) => (
+                remote.host.clone(),
+                format!("Jira is read on {} with these settings; the token never leaves it.", remote.host),
+            ),
+            None => (
+                "This Mac".into(),
+                format!("The pom on {} cannot keep Jira settings yet; update it there to keep them on {}.", remote.host, remote.host),
+            ),
+        })
+    }
+
+    /// Runs `ask` on the host off this thread; its answer fills the page on a later tick.
+    fn ask_host(
+        &mut self,
+        ask: impl FnOnce(&dyn pom_jira::SetupStore) -> Result<pom_jira::JiraSetup, String>
+            + Send
+            + 'static,
+    ) {
+        let Some(store) = self.host_store() else {
+            return;
+        };
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            if sender.send(ask(&*store)).is_err() {
+                eprintln!("settings: a Jira answer arrived after the page moved on");
+            }
+        });
+        self.jira_load = Some(receiver);
+    }
+
     fn reload_jira(&mut self, status: ConnectionStatus) {
+        if let Some(remote) = self
+            .jira_remote
+            .clone()
+            .filter(|remote| remote.store.is_some())
+        {
+            let previous = std::mem::take(&mut self.pages.jira);
+            self.pages.jira = IntegrationsPage {
+                session: remote.session,
+                kept_on: self.kept_on(),
+                status,
+                ..previous
+            };
+            self.ask_host(|store| store.read());
+            return;
+        }
         let Some((state, session)) = &self.jira_session else {
             self.pages.jira = IntegrationsPage::default();
             return;
@@ -292,6 +384,7 @@ impl SettingsView {
         let refresh = pom_sync::refresh_schedule(state, session, self.project_config.as_deref());
         self.pages.jira = IntegrationsPage {
             session: session.clone(),
+            kept_on: self.kept_on(),
             keep_main_fresh: refresh.enabled,
             refresh_minutes: (refresh.interval_seconds / 60).max(settings_ui::REFRESH_MINUTES_MIN),
             site: stored.site,
@@ -303,10 +396,30 @@ impl SettingsView {
 
     /// Saves a typed Jira field: site and email into the session's integrations file, the token into its secrets.
     fn commit_jira(&mut self, id: u64, text: &str) {
+        let text = text.trim();
+        if self.host_store().is_some() {
+            let change = match id {
+                settings_ui::CTRL_JIRA_TOKEN if text.is_empty() => return,
+                settings_ui::CTRL_JIRA_TOKEN => pom_jira::SetupChange {
+                    token: Some(text.to_string()),
+                    ..pom_jira::SetupChange::default()
+                },
+                settings_ui::CTRL_JIRA_SITE => pom_jira::SetupChange {
+                    site: Some(text.to_string()),
+                    ..pom_jira::SetupChange::default()
+                },
+                _ => pom_jira::SetupChange {
+                    email: Some(text.to_string()),
+                    ..pom_jira::SetupChange::default()
+                },
+            };
+            self.pages.jira.status = ConnectionStatus::Untested;
+            self.ask_host(move |store| store.change(&change));
+            return;
+        }
         let Some((state, session)) = self.jira_session.clone() else {
             return;
         };
-        let text = text.trim();
         let saved = if id == settings_ui::CTRL_JIRA_TOKEN {
             if text.is_empty() {
                 return;
@@ -330,6 +443,17 @@ impl SettingsView {
     }
 
     fn test_jira(&mut self) {
+        if let Some(store) = self.host_store() {
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                if sender.send(store.test()).is_err() {
+                    eprintln!("settings: the Jira check finished after the window closed");
+                }
+            });
+            self.jira_test = Some(receiver);
+            self.pages.jira.status = ConnectionStatus::Testing;
+            return;
+        }
         let Some((state, session)) = self.jira_session.clone() else {
             return;
         };
@@ -352,8 +476,9 @@ impl SettingsView {
 
     /// Picks up a finished connection check; returns whether the page changed.
     pub fn tick(&mut self) -> bool {
+        let loaded = self.tick_host();
         let Some(receiver) = &self.jira_test else {
-            return false;
+            return loaded;
         };
         let status = match receiver.try_recv() {
             Ok(Ok(who)) => ConnectionStatus::SignedIn(who),
@@ -366,8 +491,30 @@ impl SettingsView {
         true
     }
 
+    /// Picks up the host's settings after a read or a change; returns whether the page changed.
+    fn tick_host(&mut self) -> bool {
+        let Some(receiver) = &self.jira_load else {
+            return false;
+        };
+        let answer = match receiver.try_recv() {
+            Ok(answer) => answer,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err("the host did not answer".into()),
+        };
+        self.jira_load = None;
+        match answer {
+            Ok(setup) => {
+                self.pages.jira.site = setup.site;
+                self.pages.jira.email = setup.email;
+                self.pages.jira.token = token_source(setup.token);
+            }
+            Err(error) => self.pages.jira.status = ConnectionStatus::Failed(error),
+        }
+        true
+    }
+
     pub fn busy(&self) -> bool {
-        self.jira_test.is_some()
+        self.jira_test.is_some() || self.jira_load.is_some()
     }
 
     /// Pastes into the field being edited (one line; newlines dropped).
@@ -607,7 +754,7 @@ impl SettingsView {
             &self.search_query,
             self.search_active(),
             self.nav_scroll,
-            &self.pages.project.session,
+            &self.pages.project,
             self.pages.language,
         );
         self.nav_clip = chrome.nav_clip;
@@ -1284,6 +1431,15 @@ impl SettingsView {
             };
             self.editing = Some((id, seed));
             self.close_popover();
+        } else if id == settings_ui::CTRL_JIRA_RESET_TOKEN && self.host_store().is_some() {
+            self.commit_edit();
+            self.pages.jira.status = ConnectionStatus::Untested;
+            self.ask_host(|store| {
+                store.change(&pom_jira::SetupChange {
+                    clear_token: true,
+                    ..pom_jira::SetupChange::default()
+                })
+            });
         } else if id == settings_ui::CTRL_JIRA_RESET_TOKEN {
             self.commit_edit();
             if let Some((state, session)) = self.jira_session.clone() {
@@ -1674,5 +1830,121 @@ mod tests {
             "escape leaves the controls before closing anything"
         );
         assert_eq!(view.key_focus, None);
+    }
+
+    /// Jira settings kept in memory, as a host's pom keeps them.
+    #[derive(Default)]
+    struct HostSettings {
+        setup: std::sync::Mutex<pom_jira::JiraSetup>,
+    }
+
+    impl pom_jira::SetupStore for HostSettings {
+        fn read(&self) -> Result<pom_jira::JiraSetup, String> {
+            self.setup
+                .lock()
+                .map(|setup| setup.clone())
+                .map_err(|error| error.to_string())
+        }
+
+        fn change(&self, change: &pom_jira::SetupChange) -> Result<pom_jira::JiraSetup, String> {
+            let mut setup = self.setup.lock().map_err(|error| error.to_string())?;
+            if let Some(site) = &change.site {
+                setup.site = site.clone();
+            }
+            if let Some(email) = &change.email {
+                setup.email = email.clone();
+            }
+            if change.token.is_some() {
+                setup.token = Some(pom_jira::TokenOrigin::Secret);
+            } else if change.clear_token {
+                setup.token = None;
+            }
+            Ok(setup.clone())
+        }
+
+        fn test(&self) -> Result<String, String> {
+            Ok("Dev (you@example.com)".into())
+        }
+    }
+
+    fn settle(view: &mut SettingsView) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while view.busy() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the host never answered"
+            );
+            view.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_remote_project_edits_the_settings_on_its_host() {
+        let temp = tempfile::tempdir().expect("temp");
+        let host = std::sync::Arc::new(HostSettings::default());
+        let mut view = SettingsView::new(Settings::default());
+        view.set_jira_remote(Some(RemoteJira {
+            host: "dev".into(),
+            session: "myproject@dev".into(),
+            state: StateDir::new(temp.path()),
+            store: Some(host.clone()),
+        }));
+        settle(&mut view);
+        assert_eq!(view.pages.jira.session, "myproject@dev");
+        assert_eq!(
+            view.pages.jira.kept_on.as_ref().map(|kept| kept.0.as_str()),
+            Some("dev")
+        );
+        assert_eq!(view.pages.jira.token, TokenSource::Missing);
+
+        view.click(settings_ui::CTRL_JIRA_SITE);
+        view.key_text("example.atlassian.net");
+        view.key_enter();
+        view.editing = Some((settings_ui::CTRL_JIRA_TOKEN, String::new()));
+        assert!(view.key_paste("tok"));
+        view.key_enter();
+        settle(&mut view);
+        assert_eq!(view.pages.jira.site, "example.atlassian.net");
+        assert_eq!(view.pages.jira.token, TokenSource::Secret);
+        assert_eq!(
+            pom_jira::JiraSettings::load(&StateDir::new(temp.path()), "myproject@dev"),
+            pom_jira::JiraSettings::default(),
+            "nothing kept on this Mac"
+        );
+
+        view.click(settings_ui::CTRL_JIRA_TEST);
+        settle(&mut view);
+        assert_eq!(
+            view.pages.jira.status,
+            ConnectionStatus::SignedIn("Dev (you@example.com)".into())
+        );
+        view.click(settings_ui::CTRL_JIRA_RESET_TOKEN);
+        settle(&mut view);
+        assert_eq!(view.pages.jira.token, TokenSource::Missing);
+    }
+
+    #[test]
+    fn an_older_host_keeps_the_settings_here_under_its_project() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = StateDir::new(temp.path());
+        let mut view = SettingsView::new(Settings::default());
+        view.set_jira_remote(Some(RemoteJira {
+            host: "dev".into(),
+            session: "myproject@dev".into(),
+            state: state.clone(),
+            store: None,
+        }));
+        assert_eq!(
+            view.pages.jira.kept_on.as_ref().map(|kept| kept.0.as_str()),
+            Some("This Mac")
+        );
+        view.click(settings_ui::CTRL_JIRA_EMAIL);
+        view.key_text("you@example.com");
+        view.key_enter();
+        assert_eq!(
+            pom_jira::JiraSettings::load(&state, "myproject@dev").email,
+            "you@example.com"
+        );
     }
 }

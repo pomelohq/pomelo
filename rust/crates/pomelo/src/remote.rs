@@ -36,6 +36,10 @@ pub(crate) struct RemoteWindow {
     ports_seen: u64,
     /// The Claude account and cost of the host's agents, for the chip and the status bar.
     pub usage: crate::usage::RemoteUsage,
+    /// Jira with the host's settings, else this Mac's for the project.
+    pub jira: Arc<pom_remote::RemoteJira>,
+    /// Each workspace's ticket status, kept here under `<project>@<host>`.
+    tickets: workspaces_ui::TicketStatuses,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -65,6 +69,67 @@ impl Drop for RemoteWindow {
 impl RemoteWindow {
     fn matches(&self, host: &str, project: &str) -> bool {
         self.host == host && self.project == project
+    }
+
+    /// What Settings edits for this project's Jira: the host's own settings when its pom keeps them (or is not
+    /// reached yet), else this Mac's under `<project>@<host>`.
+    pub fn settings_jira(&self) -> settings_ui::RemoteJira {
+        let older = self
+            .watch
+            .snapshot()
+            .transport
+            .is_some_and(|transport| !transport.jira);
+        settings_ui::RemoteJira {
+            host: self.host.clone(),
+            session: self.jira_session(),
+            state: pom_paths::StateDir::from_env(),
+            store: (!older).then(|| self.jira.host_store()),
+        }
+    }
+
+    /// The Project page: the repositories main has on the host and how many workspaces have each.
+    pub fn project_page(&self) -> settings_ui::ProjectPage {
+        let workspaces = self
+            .watch
+            .snapshot()
+            .workspaces
+            .map(|list| list.workspaces)
+            .unwrap_or_default();
+        let main = workspaces.iter().find(|workspace| workspace.is_main);
+        let others: Vec<_> = workspaces
+            .iter()
+            .filter(|workspace| !workspace.is_main)
+            .collect();
+        let mut names: Vec<String> = main.map(|main| main.repos.clone()).unwrap_or_default();
+        for workspace in &others {
+            for repo in &workspace.repos {
+                if !names.contains(repo) {
+                    names.push(repo.clone());
+                }
+            }
+        }
+        settings_ui::ProjectPage {
+            session: self.project.clone(),
+            repos: names
+                .into_iter()
+                .map(|name| settings_ui::RepoSummary {
+                    cloned: main.is_some_and(|main| main.repos.contains(&name)),
+                    present: others
+                        .iter()
+                        .filter(|workspace| workspace.repos.contains(&name))
+                        .count(),
+                    workspaces: others.len(),
+                    name,
+                    ..settings_ui::RepoSummary::default()
+                })
+                .collect(),
+            host: Some(self.host.clone()),
+        }
+    }
+
+    /// The key this Mac keeps the project's Jira cache under.
+    pub fn jira_session(&self) -> String {
+        pom_remote::remote_jira_session(&self.project, &self.host)
     }
 }
 
@@ -96,8 +161,14 @@ fn project_info(remote: &RemoteWindow, snapshot: &pom_remote::Snapshot) -> works
         active: remote.active.clone(),
         labels: workspaces.iter().map(|ws| ws.name.clone()).collect(),
         running: workspaces.iter().map(|ws| ws.running).collect(),
-        tickets: vec![String::new(); count],
-        ticket_categories: vec![String::new(); count],
+        tickets: workspaces
+            .iter()
+            .map(|ws| remote.tickets.status(&ws.branch).unwrap_or_default())
+            .collect(),
+        ticket_categories: workspaces
+            .iter()
+            .map(|ws| remote.tickets.category(&ws.branch).unwrap_or_default())
+            .collect(),
         prs: vec![None; count],
         missing: vec![Vec::new(); count],
         repo_branches: vec![Vec::new(); count],
@@ -203,6 +274,27 @@ impl App {
             waker: Arc::new(ui::wake),
         }));
         let usage = crate::usage::RemoteUsage::start(source.clone());
+        let jira = Arc::new(pom_remote::RemoteJira::new(
+            source.clone(),
+            state.clone(),
+            &picked.name,
+            &picked.host,
+        ));
+        let tickets = workspaces_ui::TicketStatuses::new(
+            state.clone(),
+            &pom_remote::remote_jira_session(&picked.name, &picked.host),
+            Arc::new(ui::wake),
+        )
+        .with_jira(jira.connect());
+        {
+            let jira = jira.clone();
+            let looked = std::thread::Builder::new()
+                .name("remote-jira".into())
+                .spawn(move || jira.place());
+            if let Err(error) = looked {
+                eprintln!("remote jira: {error}");
+            }
+        }
         let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = None;
@@ -236,6 +328,8 @@ impl App {
                 ports: Some(ports),
                 ports_seen: 0,
                 usage,
+                jira,
+                tickets,
             });
         }
         self.install_remote_views(id);
@@ -322,12 +416,23 @@ impl App {
             return;
         };
         remote.watch.set_visible(!hidden);
+        let branches: Vec<String> = remote
+            .watch
+            .snapshot()
+            .workspaces
+            .map(|list| list.workspaces.into_iter().map(|ws| ws.branch).collect())
+            .unwrap_or_default();
+        if !branches.is_empty() {
+            remote.tickets.refresh_if_due(&branches);
+        }
+        let tickets_changed = remote.tickets.take_changed();
         let generation = remote.watch.generation();
         let update = read_update(&remote.pom_update);
         let ports_version = remote.ports.as_ref().map_or(0, |ports| ports.version());
         if generation == remote.seen
             && update == remote.update_shown
             && ports_version == remote.ports_seen
+            && !tickets_changed
         {
             return;
         }
@@ -868,9 +973,48 @@ impl App {
             .iter()
             .map(|workspace| workspace.branch.clone())
             .collect();
-        let modal =
+        let mut modal =
             workspaces_ui::CreateWorkspaceModal::new(repos, existing, crate::workspaces::namer());
+        if matches!(remote.jira.known(), Some(Some(_))) {
+            let board = (self.settings.jira_board != 0).then_some(self.settings.jira_board);
+            modal = modal.with_tickets(workspaces_ui::TicketSource::reaching(
+                &pom_paths::StateDir::from_env(),
+                &remote.jira_session(),
+                remote.jira.connect(),
+                board,
+                self.settings.jira_only_mine,
+            ));
+        }
         self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
+    }
+
+    /// The ticket a remote workspace's branch names, read with the host's Jira settings when it keeps them.
+    fn open_remote_ticket(&mut self, id: WindowId, branch: &str) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let Some(key) = pom_jira::key_for_branch(branch) else {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast(format!("{branch} names no Jira ticket"), None)
+            });
+            return;
+        };
+        let (session, connect) = (remote.jira_session(), remote.jira.connect());
+        let item_id = jira_ui::item_id(&key);
+        self.with_workspace_view(id, |view, _| {
+            view.reveal_center_item(&item_id, || {
+                Some(Box::new(jira_ui::TicketItem::reaching(
+                    pom_paths::StateDir::from_env(),
+                    session,
+                    key,
+                    Arc::new(ui::wake),
+                    connect,
+                )))
+            })
+        });
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
     }
 
     /// A remote workspace's menu: sleep, wake and pull run on the host as jobs; the rest stays there.
@@ -907,6 +1051,13 @@ impl App {
             workspace::RowAction::Sleep => (JobRequest::Sleep(branch), format!("Sleeping {label}")),
             workspace::RowAction::Wake => (JobRequest::Wake(branch), format!("Waking {label}")),
             workspace::RowAction::Pull => (JobRequest::Sync(branch), format!("Pulling {label}")),
+            workspace::RowAction::OpenTicket => {
+                // A ticket opens in its own workspace, as it does here.
+                if workspace.branch != remote.active {
+                    self.activate_remote_workspace(id, index);
+                }
+                return self.open_remote_ticket(id, &workspace.branch);
+            }
             _ => {
                 self.remote_only_on_host(id, "Changing a workspace");
                 return;

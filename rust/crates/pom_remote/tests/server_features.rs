@@ -52,6 +52,14 @@ fn answer(
             json(serde_json::to_value(format!("web says {asked}\n")))
         }
         method::AGENT_LIST => json(serde_json::to_value(AgentListing::default())),
+        method::JIRA_SETTINGS => {
+            let params: pom_remote::server_api::JiraParams = serde_json::from_value(request.params)
+                .map_err(|error| RemoteError::new("invalid_params", error.to_string()))?;
+            json(serde_json::to_value(pom_jira::JiraSetup {
+                site: params.cfg,
+                ..pom_jira::JiraSetup::default()
+            }))
+        }
         method::USAGE_GET => {
             served.usage_asks.fetch_add(1, Ordering::SeqCst);
             let params: UsageParams = serde_json::from_value(request.params)
@@ -273,6 +281,24 @@ fn usage_comes_only_from_a_server_that_reports_it() {
     );
     assert_eq!(report.limits_at, Some(100), "the day the app asked for");
     assert_eq!(served.usage_asks.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn jira_goes_through_a_server_that_keeps_its_settings() {
+    let (older, _) = source(older_features());
+    older.workspaces().expect("connect");
+    assert!(!older.transport().expect("transport").jira);
+    let refused = older.jira_request(method::JIRA_SETTINGS, Default::default());
+    assert!(matches!(refused, Err(pom_remote::SourceError::Failed(_))));
+    let (current, _) = source(current_features());
+    current.workspaces().expect("connect");
+    assert!(current.transport().expect("transport").jira);
+    let setup = pom_remote::HostJira::new(Arc::new(current));
+    let read = pom_jira::SetupStore::read(&setup).expect("settings");
+    assert_eq!(
+        read.site, "/srv/myproject/pom.yml",
+        "asked about this project"
+    );
 }
 
 #[test]

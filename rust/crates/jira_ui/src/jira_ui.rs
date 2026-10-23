@@ -32,6 +32,7 @@ type Waker = Arc<dyn Fn() + Send + Sync>;
 pub struct TicketItem {
     state: StateDir,
     session: String,
+    jira: pom_jira::Connect,
     key: String,
     waker: Waker,
     detail: Option<IssueDetail>,
@@ -52,6 +53,18 @@ pub struct TicketItem {
 
 impl TicketItem {
     pub fn new(state: StateDir, session: String, key: String, waker: Waker) -> TicketItem {
+        let jira = pom_jira::session_connect(&state, &session);
+        TicketItem::reaching(state, session, key, waker, jira)
+    }
+
+    /// The ticket from whatever `jira` reaches; `session` names the cache it is kept in here.
+    pub fn reaching(
+        state: StateDir,
+        session: String,
+        key: String,
+        waker: Waker,
+        jira: pom_jira::Connect,
+    ) -> TicketItem {
         let cache = IssueCache::open(&state, &session);
         let category = cache
             .issue(&key)
@@ -61,6 +74,7 @@ impl TicketItem {
         let mut item = TicketItem {
             state,
             session,
+            jira,
             key,
             waker,
             detail: None,
@@ -88,16 +102,17 @@ impl TicketItem {
             return;
         }
         let (sender, receiver) = mpsc::channel();
-        let (state, session, key, waker) = (
+        let (state, session, key, waker, jira) = (
             self.state.clone(),
             self.session.clone(),
             self.key.clone(),
             self.waker.clone(),
+            self.jira.clone(),
         );
         let spawned = std::thread::Builder::new()
             .name("jira-ticket".into())
             .spawn(move || {
-                let answer = match pom_jira::resolve(&state, &session) {
+                let answer = match jira() {
                     Some(client) => client.issue_detail(&key).map_err(|error| error.to_string()),
                     None => Err("Jira is not set up: add the site, email and token in Settings > Integrations".into()),
                 };

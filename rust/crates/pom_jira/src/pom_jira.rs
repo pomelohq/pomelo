@@ -2,6 +2,7 @@
 //! previous core) and the API token in the session's secrets (`__jira_token`), else `JIRA_API_TOKEN`. Nothing goes
 //! into `pom.yml`. Without all three the feature is off and callers hide it.
 
+mod access;
 mod adf;
 mod cache;
 mod client;
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 use pom_paths::StateDir;
 use serde::{Deserialize, Serialize};
 
+pub use access::{session_connect, Connect, Jira, JiraSetup, SetupChange, SetupStore, TicketList};
 pub use adf::adf_markdown;
 pub use cache::IssueCache;
 pub use client::{
@@ -73,7 +75,8 @@ pub fn normalize_site(site: &str) -> String {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TokenOrigin {
     Secret,
     Environment,
@@ -115,17 +118,37 @@ pub fn save_token(state: &StateDir, session: &str, token: &str) -> Result<(), St
 
 /// A client for the session, or `None` while site, email or token is missing.
 pub fn resolve(state: &StateDir, session: &str) -> Option<Client> {
+    resolve_with(
+        state,
+        session,
+        &|name| std::env::var(name).ok(),
+        Box::new(CurlTransport::default()),
+    )
+}
+
+/// [`resolve`] reading the environment through `env` and asking Jira through `transport`.
+pub fn resolve_with(
+    state: &StateDir,
+    session: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+    transport: Box<dyn Transport>,
+) -> Option<Client> {
     let settings = JiraSettings::load(state, session);
     if settings.site.trim().is_empty() || settings.email.trim().is_empty() {
         return None;
     }
-    let (token, _) = resolve_token(state, session, &settings, &|name| std::env::var(name).ok())?;
+    let (token, _) = resolve_token(state, session, &settings, env)?;
     Some(Client::new(
         &settings.site,
         settings.email.trim(),
         &token,
-        Box::new(CurlTransport::default()),
+        transport,
     ))
+}
+
+/// A ticket key as Jira writes it (`PROJ-101`): safe to put in a URL path or a JQL list.
+pub fn valid_key(key: &str) -> bool {
+    key.len() <= 64 && key_for_branch(key).is_some_and(|found| found == key)
 }
 
 /// The ticket a branch names: a leading `abc-123` (case-insensitive), uppercased.
@@ -169,6 +192,21 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(key_for_branch(branch).as_deref(), key, "{branch}");
+        }
+    }
+
+    #[test]
+    fn only_plain_ticket_keys_are_valid() {
+        assert!(valid_key("PROJ-101"));
+        for key in [
+            "proj-101",
+            "PROJ-101/remotelink",
+            "../myself",
+            "PROJ-",
+            "",
+            "PROJ-1 OR 1=1",
+        ] {
+            assert!(!valid_key(key), "{key}");
         }
     }
 
