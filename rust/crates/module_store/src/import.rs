@@ -192,6 +192,29 @@ pub fn protect(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Gives the owner write access to every file under `root` again (a copy of protected files keeps their mode).
+pub fn make_writable(root: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut pending: Vec<PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                pending.push(entry.path());
+            } else if kind.is_file() {
+                let path = entry.path();
+                let mut permissions = fs::metadata(&path)?.permissions();
+                if permissions.mode() & 0o200 == 0 {
+                    permissions.set_mode(permissions.mode() | 0o200);
+                    fs::set_permissions(&path, permissions)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

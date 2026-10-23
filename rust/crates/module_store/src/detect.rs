@@ -31,43 +31,127 @@ pub enum Detection {
     None,
 }
 
-pub fn detect(worktree: &Path) -> Detection {
-    if worktree.join("pnpm-lock.yaml").is_file() {
-        return Detection::SelfManaged("pnpm");
-    }
-    let yarn_lock = worktree.join("yarn.lock");
-    if yarn_lock.is_file() {
-        if let Ok(rc) = std::fs::read_to_string(worktree.join(".yarnrc.yml")) {
-            let setting = |key: &str| {
-                rc.lines().find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    (name.trim() == key).then(|| value.trim().trim_matches(['"', '\'']).to_string())
-                })
-            };
-            // Yarn 2+ installs Plug'n'Play (no node_modules) unless told otherwise.
-            if setting("nodeLinker").as_deref() != Some("node-modules") {
-                return Detection::SelfManaged("yarn plug'n'play");
-            }
-            if setting("nmMode").is_some_and(|mode| mode.starts_with("hardlinks")) {
-                return Detection::SelfManaged("yarn hard links");
-            }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Installer {
+    Pnpm,
+    Yarn,
+    Npm,
+    Bun,
+}
+
+impl Installer {
+    const ORDER: [Installer; 4] = [
+        Installer::Pnpm,
+        Installer::Yarn,
+        Installer::Npm,
+        Installer::Bun,
+    ];
+
+    fn from_name(name: &str) -> Option<Installer> {
+        match name {
+            "pnpm" => Some(Installer::Pnpm),
+            "yarn" => Some(Installer::Yarn),
+            "npm" => Some(Installer::Npm),
+            "bun" => Some(Installer::Bun),
+            _ => None,
         }
-        return Detection::Store {
-            manager: Manager::Yarn,
-            lockfile: yarn_lock,
+    }
+
+    fn lockfile(self, worktree: &Path) -> Option<PathBuf> {
+        let names: &[&str] = match self {
+            Installer::Pnpm => &["pnpm-lock.yaml"],
+            Installer::Yarn => &["yarn.lock"],
+            Installer::Npm => &["package-lock.json"],
+            Installer::Bun => &["bun.lock", "bun.lockb"],
         };
+        names
+            .iter()
+            .map(|name| worktree.join(name))
+            .find(|path| path.is_file())
     }
-    for (name, manager) in [
-        ("package-lock.json", Manager::Npm),
-        ("bun.lock", Manager::Bun),
-        ("bun.lockb", Manager::Bun),
-    ] {
-        let lockfile = worktree.join(name);
-        if lockfile.is_file() {
-            return Detection::Store { manager, lockfile };
+
+    fn installs_with(self, argument: Option<&str>) -> bool {
+        match (self, argument) {
+            (Installer::Yarn, None | Some("install")) => true,
+            (Installer::Yarn, Some(flag)) => flag.starts_with('-'),
+            (Installer::Npm, Some(command)) => matches!(command, "ci" | "install" | "i"),
+            (Installer::Pnpm | Installer::Bun, Some(command)) => {
+                matches!(command, "install" | "i")
+            }
+            _ => false,
         }
     }
-    Detection::None
+}
+
+/// The package manager the first install command in `setup` runs (`yarn`, `npm ci`, `pnpm i`...).
+fn setup_installer(setup: &[String]) -> Option<Installer> {
+    setup.iter().find_map(|step| {
+        step.split(['&', '|', ';', '\n', '(', ')'])
+            .find_map(|command| {
+                let mut words = command.split_whitespace();
+                let installer = Installer::from_name(words.next()?)?;
+                installer.installs_with(words.next()).then_some(installer)
+            })
+    })
+}
+
+/// `"packageManager": "yarn@1.22.19"` in package.json.
+fn declared_installer(worktree: &Path) -> Option<Installer> {
+    let bytes = std::fs::read(worktree.join("package.json")).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let declared = manifest.get("packageManager")?.as_str()?;
+    Installer::from_name(declared.split('@').next()?.trim())
+}
+
+/// Which manager owns `worktree`'s node_modules. With more than one lockfile, the install command in the
+/// repo's `setup` steps decides, then `packageManager` in package.json, then pnpm, Yarn, npm, Bun.
+pub fn detect(worktree: &Path, setup: &[String]) -> Detection {
+    let present: Vec<(Installer, PathBuf)> = Installer::ORDER
+        .into_iter()
+        .filter_map(|installer| Some((installer, installer.lockfile(worktree)?)))
+        .collect();
+    let preferred = || {
+        let wanted = setup_installer(setup)
+            .filter(|wanted| present.iter().any(|(installer, _)| installer == wanted));
+        let wanted = wanted.or_else(|| {
+            declared_installer(worktree)
+                .filter(|wanted| present.iter().any(|(installer, _)| installer == wanted))
+        })?;
+        present.iter().find(|(installer, _)| *installer == wanted)
+    };
+    let chosen = if present.len() > 1 { preferred() } else { None };
+    let Some((installer, lockfile)) = chosen.or(present.first()).cloned() else {
+        return Detection::None;
+    };
+    let manager = match installer {
+        Installer::Pnpm => return Detection::SelfManaged("pnpm"),
+        Installer::Yarn => return yarn(worktree, lockfile),
+        Installer::Npm => Manager::Npm,
+        Installer::Bun => Manager::Bun,
+    };
+    Detection::Store { manager, lockfile }
+}
+
+fn yarn(worktree: &Path, lockfile: PathBuf) -> Detection {
+    if let Ok(rc) = std::fs::read_to_string(worktree.join(".yarnrc.yml")) {
+        let setting = |key: &str| {
+            rc.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                (name.trim() == key).then(|| value.trim().trim_matches(['"', '\'']).to_string())
+            })
+        };
+        // Yarn 2+ installs Plug'n'Play (no node_modules) unless told otherwise.
+        if setting("nodeLinker").as_deref() != Some("node-modules") {
+            return Detection::SelfManaged("yarn plug'n'play");
+        }
+        if setting("nmMode").is_some_and(|mode| mode.starts_with("hardlinks")) {
+            return Detection::SelfManaged("yarn hard links");
+        }
+    }
+    Detection::Store {
+        manager: Manager::Yarn,
+        lockfile,
+    }
 }
 
 /// Same lockfile, patches, package manager, Node major version and platform -> the same `node_modules`,
@@ -137,10 +221,10 @@ mod tests {
     fn detects_managers_and_leaves_self_sharing_ones_alone() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        assert_eq!(detect(root), Detection::None);
+        assert_eq!(detect(root, &[]), Detection::None);
         std::fs::write(root.join("package-lock.json"), "{}").unwrap();
         assert!(matches!(
-            detect(root),
+            detect(root, &[]),
             Detection::Store {
                 manager: Manager::Npm,
                 ..
@@ -148,7 +232,7 @@ mod tests {
         ));
         std::fs::write(root.join("yarn.lock"), "").unwrap();
         assert!(matches!(
-            detect(root),
+            detect(root, &[]),
             Detection::Store {
                 manager: Manager::Yarn,
                 ..
@@ -159,17 +243,58 @@ mod tests {
             "yarnPath: .yarn/releases/yarn.cjs\n",
         )
         .unwrap();
-        assert_eq!(detect(root), Detection::SelfManaged("yarn plug'n'play"));
+        assert_eq!(
+            detect(root, &[]),
+            Detection::SelfManaged("yarn plug'n'play")
+        );
         std::fs::write(root.join(".yarnrc.yml"), "nodeLinker: node-modules\n").unwrap();
-        assert!(matches!(detect(root), Detection::Store { .. }));
+        assert!(matches!(detect(root, &[]), Detection::Store { .. }));
         std::fs::write(
             root.join(".yarnrc.yml"),
             "nodeLinker: \"node-modules\"\nnmMode: hardlinks-global\n",
         )
         .unwrap();
-        assert_eq!(detect(root), Detection::SelfManaged("yarn hard links"));
+        assert_eq!(detect(root, &[]), Detection::SelfManaged("yarn hard links"));
         std::fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
-        assert_eq!(detect(root), Detection::SelfManaged("pnpm"));
+        assert_eq!(detect(root, &[]), Detection::SelfManaged("pnpm"));
+    }
+
+    #[test]
+    fn with_several_lockfiles_the_setup_install_command_then_package_json_decides() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::write(root.join("yarn.lock"), "").unwrap();
+        std::fs::write(root.join("package-lock.json"), "{}").unwrap();
+        let steps = |steps: &[&str]| {
+            steps
+                .iter()
+                .map(|step| step.to_string())
+                .collect::<Vec<_>>()
+        };
+        let manager = |setup: &[String]| match detect(root, setup) {
+            Detection::Store { manager, .. } => manager.label(),
+            Detection::SelfManaged(name) => name,
+            Detection::None => "none",
+        };
+        assert_eq!(manager(&[]), "pnpm");
+        assert_eq!(manager(&steps(&["yarn install --frozen-lockfile"])), "yarn");
+        assert_eq!(manager(&steps(&["cd web && yarn", "yarn build"])), "yarn");
+        assert_eq!(manager(&steps(&["yarn build", "npm ci"])), "npm");
+        assert_eq!(manager(&steps(&["npm run build; pnpm i"])), "pnpm");
+        assert_eq!(manager(&steps(&["bun install"])), "pnpm", "no bun lockfile");
+
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"name": "web", "packageManager": "yarn@1.22.19"}"#,
+        )
+        .unwrap();
+        assert_eq!(manager(&[]), "yarn");
+        assert_eq!(manager(&steps(&["npm install"])), "npm");
+
+        std::fs::remove_file(root.join("pnpm-lock.yaml")).unwrap();
+        std::fs::remove_file(root.join("yarn.lock")).unwrap();
+        assert_eq!(manager(&steps(&["yarn"])), "npm", "a single lockfile wins");
     }
 
     #[test]

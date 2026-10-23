@@ -451,6 +451,26 @@ fn composed_presets_fill_defaults() {
 }
 
 #[test]
+fn preset_modules_private_adds_to_the_repos_list() {
+    let config = load(concat!(
+        "presets:\n",
+        "  orm:\n    modules_private: [\"@myorg\", .generated]\n",
+        "  web:\n    preset: [orm]\n    modules_private: [sdk]\n",
+        "repos:\n",
+        "  api:\n    preset: web\n    modules_private: [.generated, .client]\n",
+        "  docs:\n    preset: orm\n",
+    ));
+    assert_eq!(
+        config.repos["api"].modules_private,
+        [".generated", ".client", "@myorg", "sdk"]
+    );
+    assert_eq!(
+        config.repos["docs"].modules_private,
+        ["@myorg", ".generated"]
+    );
+}
+
+#[test]
 fn repo_lifecycle_wins_over_composed_presets() {
     let config = load(concat!(
         "presets:\n",

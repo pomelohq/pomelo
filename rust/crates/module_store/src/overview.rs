@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::{
-    detect, import, key, node_major, tree_size, Detection, Entry, Manager, Method, Store, MODULES,
+    detect, import, key, node_major, tree_size, Detection, Entry, Manager, Method, RepoRules,
+    Store, MODULES,
 };
 
 /// Something whose size is not known yet.
@@ -69,6 +70,7 @@ pub struct RepoWorktrees {
     pub worktrees: Vec<Worktree>,
     /// `node --version` as the repo's shell reports it.
     pub node: Option<String>,
+    pub setup: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,8 +166,12 @@ fn modified(path: &Path) -> Option<u64> {
         .map(|elapsed| elapsed.as_secs())
 }
 
-fn worktree_key(path: &Path, node: Option<&str>) -> Option<(Manager, String, PathBuf)> {
-    let Detection::Store { manager, lockfile } = detect(path) else {
+fn worktree_key(
+    path: &Path,
+    node: Option<&str>,
+    setup: &[String],
+) -> Option<(Manager, String, PathBuf)> {
+    let Detection::Store { manager, lockfile } = detect(path, setup) else {
         return None;
     };
     let bytes = fs::read(&lockfile).ok()?;
@@ -200,14 +206,17 @@ impl Store {
     fn repo_state(&self, input: &RepoWorktrees, entries: &[Entry]) -> RepoState {
         let main = input.worktrees.iter().find(|worktree| worktree.is_main);
         let probe = main.or(input.worktrees.first());
-        if let Some(Detection::SelfManaged(name)) = probe.map(|worktree| detect(&worktree.path)) {
+        if let Some(Detection::SelfManaged(name)) =
+            probe.map(|worktree| detect(&worktree.path, &input.setup))
+        {
             return RepoState::SelfManaged(name);
         }
         let node = input.node.as_deref();
         let mut manager = None;
         let mut versions: BTreeMap<String, Version> = BTreeMap::new();
         for worktree in &input.worktrees {
-            let Some((found, key, lockfile)) = worktree_key(&worktree.path, node) else {
+            let Some((found, key, lockfile)) = worktree_key(&worktree.path, node, &input.setup)
+            else {
                 continue;
             };
             manager.get_or_insert(found);
@@ -270,9 +279,9 @@ impl Store {
         repo: &str,
         worktree: &Path,
         node: Option<&str>,
-        private: &[String],
+        rules: &RepoRules,
     ) -> io::Result<u64> {
-        let Some((_, key, _)) = worktree_key(worktree, node) else {
+        let Some((_, key, _)) = worktree_key(worktree, node, &rules.setup) else {
             return Err(io::Error::other("no lockfile the store keeps"));
         };
         let stored = self.entry_dir(repo, &key);
@@ -293,8 +302,8 @@ impl Store {
             }
             Method::Copy => Method::Copy,
         };
-        let skipped = crate::unshared(private);
-        if let Err(error) = import::import(&stored, &target, method, &skipped) {
+        let skipped = crate::unshared(&rules.private);
+        if let Err(error) = crate::restore_into(&stored, &target, method, &rules.private) {
             if target.exists() {
                 fs::remove_dir_all(&target)?;
             }
@@ -323,9 +332,9 @@ impl Store {
         repo: &str,
         worktree: &Path,
         node: Option<&str>,
-        private: &[String],
+        rules: &RepoRules,
     ) -> io::Result<()> {
-        let Some((manager, key, _)) = worktree_key(worktree, node) else {
+        let Some((manager, key, _)) = worktree_key(worktree, node, &rules.setup) else {
             return Err(io::Error::other("no lockfile the store keeps"));
         };
         let source = worktree.join(MODULES);
@@ -336,7 +345,7 @@ impl Store {
             Method::Clone => Method::Clone,
             _ => Method::Copy,
         };
-        self.fill(repo, &key, manager, &source, method, private)?;
+        self.fill(repo, &key, manager, &source, method, &rules.private)?;
         self.touch(repo, &key, worktree)
     }
 
@@ -431,7 +440,14 @@ mod tests {
         let main = worktree(dir.path(), "main", "v1", true);
         let login = worktree(dir.path(), "feat-login", "v1", false);
         store
-            .restore("api", &login.path, &main.path, None, &options, &[])
+            .restore(
+                "api",
+                &login.path,
+                &main.path,
+                None,
+                &options,
+                &RepoRules::default(),
+            )
             .unwrap();
         let own = worktree(dir.path(), "feat-pay", "v1", true);
         let react = worktree(dir.path(), "feat-react", "v2", false);
@@ -449,6 +465,7 @@ mod tests {
                 repo: "api".into(),
                 worktrees: vec![main.clone(), login.clone(), own.clone(), react.clone()],
                 node: None,
+                setup: Vec::new(),
             }])
             .unwrap();
         let RepoState::Versions { versions, old, .. } = &overview.repos[0].state else {
@@ -492,11 +509,18 @@ mod tests {
         assert_eq!(overview.others.len(), 1);
         assert_eq!(overview.unused().len(), 2);
 
-        assert_eq!(store.relink("api", &own.path, None, &[]).unwrap(), 3);
+        assert_eq!(
+            store
+                .relink("api", &own.path, None, &RepoRules::default())
+                .unwrap(),
+            3
+        );
         let client = own.path.join("node_modules/.prisma/client");
         fs::create_dir_all(&client).unwrap();
         fs::write(client.join("index.js"), "own client").unwrap();
-        store.relink("api", &own.path, None, &[]).unwrap();
+        store
+            .relink("api", &own.path, None, &RepoRules::default())
+            .unwrap();
         assert_eq!(
             fs::read_to_string(client.join("index.js")).unwrap(),
             "own client",
@@ -507,6 +531,7 @@ mod tests {
                 repo: "api".into(),
                 worktrees: vec![own.clone()],
                 node: None,
+                setup: Vec::new(),
             }])
             .unwrap();
         let RepoState::Versions { versions, .. } = &after.repos[0].state else {
@@ -526,12 +551,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("store"));
         let main = worktree(dir.path(), "main", "v1", true);
-        store.keep("api", &main.path, None, &[]).unwrap();
+        store
+            .keep("api", &main.path, None, &RepoRules::default())
+            .unwrap();
         let entries = store.list().unwrap();
         assert_eq!(entries.len(), 1);
         assert!(fs::write(main.path.join("node_modules/pad/index.js"), "mine").is_ok());
         assert!(store
-            .relink("api", &dir.path().join("nowhere"), None, &[])
+            .relink(
+                "api",
+                &dir.path().join("nowhere"),
+                None,
+                &RepoRules::default()
+            )
             .is_err());
         assert_eq!(
             store

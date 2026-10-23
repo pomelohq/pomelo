@@ -209,11 +209,15 @@ impl App {
             .filter(|(_, dir)| dir.seed_from_main)
             .map(|(name, _)| name.clone())
             .collect();
+        let modules_rules: std::collections::HashMap<String, module_store::RepoRules> = repos
+            .iter()
+            .map(|repo| (repo.clone(), pom_workspace::modules_rules(config, repo)))
+            .collect();
         let main_checkouts = Arc::new(main_checkouts);
         let mut modal = CreateWorkspaceModal::new(repos, existing, namer())
             .with_branches(branch_source(main_checkouts.clone()))
             .with_options(environments, seeded_from_main)
-            .with_modules(modules_outlook(main_checkouts));
+            .with_modules(modules_outlook(main_checkouts, modules_rules));
         let board = (self.settings.jira_board != 0).then_some(self.settings.jira_board);
         if let Some(source) = workspaces_ui::TicketSource::for_session(
             &pom_paths::StateDir::from_env(),
@@ -1083,6 +1087,7 @@ impl App {
 /// Whether each repo's new worktree gets its node_modules from the shared store, judged from main's checkout.
 fn modules_outlook(
     main_checkouts: Arc<std::collections::HashMap<String, std::path::PathBuf>>,
+    rules: std::collections::HashMap<String, module_store::RepoRules>,
 ) -> workspaces_ui::ModulesOutlook {
     let store = module_store::Store::new(&pom_paths::StateDir::from_env());
     let options = module_store::Options::from_settings_file();
@@ -1090,13 +1095,14 @@ fn modules_outlook(
         let Some(main) = main_checkouts.get(repo) else {
             return module_store::Outlook::NotNode;
         };
+        let rules = rules.get(repo).cloned().unwrap_or_default();
         let node = matches!(
-            module_store::detect(main),
+            module_store::detect(main, &rules.setup),
             module_store::Detection::Store { .. }
         )
         .then(|| pom_workspace::node_version(main, &[]))
         .flatten();
-        store.outlook(repo, main, node.as_deref(), &options)
+        store.outlook(repo, main, node.as_deref(), &options, &rules)
     })
 }
 

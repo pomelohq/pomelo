@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use module_store::{
-    format_size, Holding, Measure, Method, Options, Overview, RepoState, RepoWorktrees, Store,
-    Worktree,
+    format_size, Holding, Measure, Method, Options, Overview, RepoRules, RepoState, RepoWorktrees,
+    Store, Worktree,
 };
 use module_store_ui::{Request, StorePage, StoreState};
 use pom_services::{ServiceRunner, ServiceTarget};
@@ -94,6 +94,7 @@ fn project_worktrees(project: &pom_core::Project) -> Vec<RepoWorktrees> {
                 })
                 .collect(),
             node: None,
+            setup: pom_workspace::modules_rules(config, repo).setup,
         })
         .collect()
 }
@@ -131,11 +132,12 @@ fn node_for(repos: &[RepoWorktrees], repo: &str) -> Option<String> {
         .and_then(|found| found.node.clone())
 }
 
-fn private_for(job: &Job, repo: &str) -> Vec<String> {
+fn rules_for(job: &Job, repo: &str) -> RepoRules {
     job.services
         .as_ref()
-        .and_then(|(_, config)| config.repos.get(repo))
-        .map_or_else(Vec::new, |dir| dir.modules_private.clone())
+        .map_or_else(RepoRules::default, |(_, config)| {
+            pom_workspace::modules_rules(config, repo)
+        })
 }
 
 fn repo_targets(
@@ -234,7 +236,7 @@ fn relink(
         repo,
         path,
         node_for(&job.repos, repo).as_deref(),
-        &private_for(job, repo),
+        &rules_for(job, repo),
     );
     if let Some((runner, config)) = &job.services {
         for target in &stopped {
@@ -277,7 +279,7 @@ fn perform(
                 repo,
                 path,
                 node_for(&job.repos, repo).as_deref(),
-                &private_for(job, repo),
+                &rules_for(job, repo),
             )
             .map(|()| Some(format!("Kept {repo}'s install; new workspaces get it now"))),
         Request::Optimize => Ok(None),
@@ -317,7 +319,7 @@ fn optimize(store: &Store, job: &Job, sender: &Sender<Update>) -> std::io::Resul
                     repo,
                     path,
                     node_for(&job.repos, repo).as_deref(),
-                    &private_for(job, repo),
+                    &rules_for(job, repo),
                 )
                 .map(|()| kept += 1),
             Request::FreeUnused => store
