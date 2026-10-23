@@ -206,9 +206,11 @@ fn files_open_only_through_a_server_that_reads_them() {
         older.files("main").is_none(),
         "an older server keeps the page"
     );
+    assert!(!older.transport().expect("transport").files_write);
     let (current, _) = source(current_features());
     current.workspaces().expect("connect");
     assert!(current.transport().expect("transport").files);
+    assert!(current.transport().expect("transport").files_write);
     assert!(current.files("main").is_some());
 }
 

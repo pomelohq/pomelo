@@ -3484,6 +3484,8 @@ impl FileItem {
         let mut text = format!("{}:{}", line + 1, column + 1);
         if self.read_only && self.scratch.is_none() {
             text = format!("Read only  {text}");
+        } else if self.saving.is_some() && self.offline {
+            text = format!("Will save when reconnected  {text}");
         }
         let (mut lines, mut characters) = (0usize, 0usize);
         for s in b.selections() {
@@ -5191,10 +5193,9 @@ impl Item for FileItem {
 
     fn tab_detail(&self) -> Option<String> {
         self.saving.as_ref()?;
-        Some(if self.offline {
-            "Will save when reconnected".to_string()
-        } else {
-            "Saving...".to_string()
+        Some(match self.fs.host().filter(|_| self.offline) {
+            Some(host) => format!("Waiting for {host}"),
+            None => "Saving...".to_string(),
         })
     }
 
@@ -7579,10 +7580,12 @@ impl FilesView {
             self.save_prompt = Some(workspace::Prompt {
                 token,
                 message: format!(
-                    "`{}` has changed on {host} since you started editing it. Do you want to overwrite it?",
+                    "{} changed on {host}",
                     path.rsplit('/').next().unwrap_or(&path)
                 ),
-                detail: None,
+                detail: Some(format!(
+                    "It has changed on {host} since you started editing it. Do you want to overwrite it?"
+                )),
                 buttons: vec![
                     "Overwrite".to_string(),
                     "Discard Edits".to_string(),
@@ -13814,7 +13817,10 @@ mod remote_files_tests {
         view.editor_text("// a\n");
         assert!(matches!(view.editor_save(), Some(Ok(()))));
         view.tick_items(&|| None);
-        assert_eq!(detail(&view).as_deref(), Some("Will save when reconnected"));
+        assert_eq!(detail(&view).as_deref(), Some("Waiting for dev"));
+        assert!(view
+            .cursor_position()
+            .is_some_and(|status| status.starts_with("Will save when reconnected")));
         assert!(view.offline_notice_shown());
         elsewhere
             .offline

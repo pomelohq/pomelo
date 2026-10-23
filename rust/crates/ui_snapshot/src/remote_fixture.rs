@@ -42,12 +42,29 @@ struct Board {
 const WORKTREE: &str = "/home/dev/pom/myproject/workspace--feat-login";
 const CONTROLLER: &str = "api/app/controllers/users_controller.rb";
 
-/// The boards' files in a scratch folder, read as if they were on the host; `partial` stops the tree's walk
-/// after its first folders, as a large tree still being read.
+/// What the host's files do in a board.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HostFilesMode {
+    /// The tree stops after its first folders, as a large one still being read.
+    Partial,
+    Whole,
+    /// A save never answers, as one still on its way.
+    Saving,
+    /// The host does not answer; a save waits for it.
+    Offline,
+    /// The file changed on the host since it was opened.
+    Changed,
+    /// The log is past what opens here.
+    TooLarge,
+}
+
+/// The boards' files in a scratch folder, read as if they were on the host.
 struct HostFiles {
     local: files::LocalFs,
-    partial: bool,
+    mode: HostFilesMode,
 }
+
+const LOG: &str = "api/log/development.log";
 
 struct PartialFeed {
     entries: Option<Vec<files::FileEntry>>,
@@ -75,7 +92,7 @@ impl files::ProjectFs for HostFiles {
         let Some(root) = files::ProjectFs::local_root(&self.local) else {
             return Box::new(PartialFeed { entries: None });
         };
-        if self.partial {
+        if self.mode == HostFilesMode::Partial {
             let entries = files::list(root)
                 .into_iter()
                 .filter(|entry| {
@@ -94,6 +111,12 @@ impl files::ProjectFs for HostFiles {
     }
 
     fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+        if self.mode == HostFilesMode::TooLarge && path == LOG {
+            return Err(files::fs::too_large(
+                118 * 1024 * 1024,
+                files::fs::READ_LIMIT,
+            ));
+        }
         self.local.read(path)
     }
 
@@ -104,23 +127,81 @@ impl files::ProjectFs for HostFiles {
     fn project_files(&self, include_ignored: bool) -> std::io::Result<Vec<String>> {
         self.local.project_files(include_ignored)
     }
+
+    fn write(
+        &self,
+        _path: &str,
+        _text: &str,
+        expect: Option<&files::FileStat>,
+    ) -> Result<files::FileStat, files::WriteError> {
+        match self.mode {
+            HostFilesMode::Saving | HostFilesMode::Offline => loop {
+                std::thread::sleep(Duration::from_secs(3600));
+            },
+            _ => Err(files::WriteError::Conflict(files::FileStat {
+                mtime_ns: expect.map_or(1, |stat| stat.mtime_ns + 1),
+                ..files::FileStat::default()
+            })),
+        }
+    }
+
+    fn online(&self) -> bool {
+        self.mode != HostFilesMode::Offline
+    }
+
+    fn host(&self) -> Option<&str> {
+        Some("dev")
+    }
 }
 
-/// The file tree and editor of the host's workspace, with the controller open when the tree is whole.
-fn host_files(partial: bool) -> anyhow::Result<files_ui::FilesView> {
-    host_files_opening(partial, !partial)
+/// The question a save that found its file changed on the host asks.
+pub fn conflict_prompt() -> Option<workspace::Prompt> {
+    let mut files = host_files(HostFilesMode::Changed).ok()?;
+    workspace::ItemInput::editor_text(&mut files, "# frozen_string_literal: true\n");
+    workspace::ItemInput::editor_save(&mut files)?.ok()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        workspace::FunctionView::tick_items(&mut files, &|| None);
+        if let Some(prompt) = workspace::FunctionView::take_prompt(&mut files) {
+            return Some(prompt);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    None
 }
 
-/// The host's files, `open` with the controller open, else with no tab.
-fn host_files_opening(partial: bool, open: bool) -> anyhow::Result<files_ui::FilesView> {
+/// The file tree and editor of the host's workspace, with the controller open when the tree is whole (the
+/// log when it is too large to open), read only in the board of a file merely open.
+fn host_files(mode: HostFilesMode) -> anyhow::Result<files_ui::FilesView> {
+    host_files_opening(mode, mode != HostFilesMode::Partial)
+}
+
+/// The host's files, `open` with that file open, else with no tab.
+fn host_files_opening(mode: HostFilesMode, open: bool) -> anyhow::Result<files_ui::FilesView> {
     let root = crate::fixture_dir().join("remote");
     crate::editor_fixture::create(&root)?;
+    if mode == HostFilesMode::TooLarge {
+        let log = root.join(LOG);
+        if let Some(folder) = log.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        std::fs::write(&log, "Started GET /users\n")?;
+    }
     let fs = Arc::new(HostFiles {
         local: files::LocalFs::new(root),
-        partial,
+        mode,
     });
-    let mut files = files_ui::FilesView::new(fs, WORKTREE.into()).read_only(true);
-    let file = std::path::Path::new(WORKTREE).join(CONTROLLER);
+    let partial = mode == HostFilesMode::Partial;
+    let mut files = files_ui::FilesView::new(fs, WORKTREE.into()).read_only(matches!(
+        mode,
+        HostFilesMode::Partial | HostFilesMode::Whole
+    ));
+    let shown = if mode == HostFilesMode::TooLarge {
+        LOG
+    } else {
+        CONTROLLER
+    };
+    let file = std::path::Path::new(WORKTREE).join(shown);
     if open {
         workspace::FunctionView::open_file_at(&mut files, &file, None, None);
     }
@@ -138,12 +219,19 @@ fn host_files_opening(partial: bool, open: bool) -> anyhow::Result<files_ui::Fil
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    let shown = if partial {
+    let revealed = if partial {
         std::path::Path::new(WORKTREE).join("api/README.md")
     } else {
         file
     };
-    workspace::FunctionView::reveal_in_tree(&mut files, &shown);
+    workspace::FunctionView::reveal_in_tree(&mut files, &revealed);
+    if matches!(mode, HostFilesMode::Saving | HostFilesMode::Offline) {
+        workspace::ItemInput::editor_text(&mut files, "# frozen_string_literal: true\n");
+        if let Some(Err(error)) = workspace::ItemInput::editor_save(&mut files) {
+            anyhow::bail!("the board's save: {error}");
+        }
+        workspace::FunctionView::tick_items(&mut files, &|| None);
+    }
     Ok(files)
 }
 
@@ -595,7 +683,7 @@ pub fn render(
 ) -> anyhow::Result<()> {
     let agents = mode == "agents";
     let dropped = match mode {
-        "reconnecting" => Some(pom_rpc::pty::LinkState::Reconnecting {
+        "reconnecting" | "files-offline" => Some(pom_rpc::pty::LinkState::Reconnecting {
             attempt: 3,
             next_in: Duration::from_secs(2),
         }),
@@ -605,7 +693,8 @@ pub fn render(
         }),
         _ => None,
     };
-    let terminal = matches!(mode, "terminal" | "restarted") || dropped.is_some();
+    let terminal = matches!(mode, "terminal" | "restarted")
+        || (dropped.is_some() && !mode.starts_with("files"));
     let link = SharedLink::default();
     let shell = (terminal || agents)
         .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
@@ -661,9 +750,12 @@ pub fn render(
     }
     let snapshot = watch.snapshot();
     let mut files_view = match mode {
-        "files-scanning" => Some(host_files(true)?),
-        "files-open" => Some(host_files(false)?),
-        "connected" => Some(host_files_opening(false, false)?),
+        "files-scanning" => Some(host_files(HostFilesMode::Partial)?),
+        "files-open" => Some(host_files(HostFilesMode::Whole)?),
+        "connected" => Some(host_files_opening(HostFilesMode::Whole, false)?),
+        "files-saving" => Some(host_files(HostFilesMode::Saving)?),
+        "files-offline" => Some(host_files(HostFilesMode::Offline)?),
+        "files-too-large" => Some(host_files(HostFilesMode::TooLarge)?),
         _ => None,
     };
     let sessions = vec![
