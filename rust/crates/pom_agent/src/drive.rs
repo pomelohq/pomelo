@@ -9,7 +9,7 @@ use pom_ptyhost::{SocketDir, SpawnRequest};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::driver::{driver, Keystrokes};
+use crate::driver::{driver, Keystrokes, TrustDialog};
 use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
@@ -23,8 +23,8 @@ use crate::turns::{read_turns, settle_transcript, RecordedTurn, SETTLE_CAP, SETT
 
 /// A working state no event refreshed for this long is reported stale.
 const STALE_AFTER_MS: u64 = 15 * 60 * 1000;
-const HOLDER_COLS: u16 = 160;
-const HOLDER_ROWS: u16 = 48;
+pub(crate) const HOLDER_COLS: u16 = 160;
+pub(crate) const HOLDER_ROWS: u16 = 48;
 const MCP_SERVER: &str = "pom";
 const WORKSPACE_LOG_KEY: &str = "\u{0}workspace";
 
@@ -561,31 +561,33 @@ impl Drive {
         };
         let deadline = std::time::Instant::now() + TRUST_ANSWER_WAIT;
         let mut typed = 0;
-        let mut still_since: Option<(u64, std::time::Instant)> = None;
+        let mut still_since: Option<(Option<TrustDialog>, std::time::Instant)> = None;
         while std::time::Instant::now() < deadline {
-            let (screen, end) =
-                match pom_ptyhost::read_since(&self.holders, holder, 0, SNAPSHOT_TIMEOUT) {
-                    Ok(read) => read,
-                    Err(_) if !self.alive(holder) => return Ok(()),
-                    Err(error) => {
-                        return Err(DriveError::Failed(format!(
-                            "could not read the screen of {holder}: {error}"
-                        )))
-                    }
-                };
+            let screen = match pom_ptyhost::snapshot(&self.holders, holder, SNAPSHOT_TIMEOUT) {
+                Ok(screen) => screen,
+                Err(_) if !self.alive(holder) => return Ok(()),
+                Err(error) => {
+                    return Err(DriveError::Failed(format!(
+                        "could not read the screen of {holder}: {error}"
+                    )))
+                }
+            };
             let dialog = agent_driver.trust_dialog(&rendered_lines(&screen));
-            if dialog.is_none() && typed > 0 {
-                return Ok(());
-            }
+            // The agent keeps animating elsewhere on screen, so only the dialog itself has to hold still.
             let settled = match still_since {
-                Some((seen, since)) if seen == end => since.elapsed() >= TRUST_SETTLE,
+                Some((seen, since)) if seen == dialog => since.elapsed() >= TRUST_SETTLE,
                 _ => {
-                    still_since = Some((end, std::time::Instant::now()));
+                    still_since = Some((dialog, std::time::Instant::now()));
                     false
                 }
             };
             if settled {
-                let dialog = dialog.ok_or_else(|| unanswered("its choices could not be read"))?;
+                let Some(dialog) = dialog else {
+                    if typed > 0 {
+                        return Ok(());
+                    }
+                    return Err(unanswered("its choices could not be read"));
+                };
                 if typed == TRUST_KEYS_MAX {
                     return Err(unanswered("its highlight would not stay on yes"));
                 }
