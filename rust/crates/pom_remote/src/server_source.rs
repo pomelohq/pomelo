@@ -383,6 +383,7 @@ impl Inner {
             module_store: offers(&[MODULE_STORE]) && offers(JOBS),
             paste: offers(&[method::PASTE_PUT]),
             git: offers(GIT) && offers(&[GIT_REMOTE]) && offers(JOBS),
+            host_settings: offers(&[method::SETTINGS_GET, method::SETTINGS_SET]),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -732,6 +733,27 @@ impl Inner {
                 self.host.name
             ))),
         }
+    }
+
+    fn host_settings_request(
+        self: &Arc<Self>,
+        name: &str,
+        params: serde_json::Value,
+    ) -> Result<crate::server_api::HostSettings, SourceError> {
+        if self.connection()?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "The settings of {} need pom server there; it is read over plain ssh",
+                self.host.name
+            )));
+        }
+        if self.offering(|info| info.host_settings)?.is_none() {
+            return Err(SourceError::Failed(format!(
+                "Changing the settings of {0} needs a newer pom on {0}; update it there",
+                self.host.name
+            )));
+        }
+        let route = self.request(name, params, READ_TIMEOUT)?;
+        self.server_only(route, "The host's settings")
     }
 
     /// The open connection when the server offers `wanted`.
@@ -1388,6 +1410,22 @@ impl ProjectSource for ServerSource {
         self.inner
             .server_only(route, "Answering an agent")
             .map(|_| ())
+    }
+
+    fn host_settings(&self) -> Result<crate::server_api::HostSettings, SourceError> {
+        self.inner
+            .host_settings_request(method::SETTINGS_GET, serde_json::Value::Null)
+    }
+
+    fn set_host_settings(
+        &self,
+        values: serde_json::Value,
+    ) -> Result<crate::server_api::HostSettings, SourceError> {
+        let params = crate::server_api::SettingsSetParams { values };
+        let params =
+            serde_json::to_value(params).map_err(|error| SourceError::Failed(error.to_string()))?;
+        self.inner
+            .host_settings_request(method::SETTINGS_SET, params)
     }
 }
 

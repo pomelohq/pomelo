@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use pom_remote::server_api::PasteParams;
 use pom_remote::server_api::{
     method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
     AgentStartParams, AgentStarted, FollowLogsParams, FsChangeParams, FsFilesParams, FsPathParams,
@@ -17,6 +16,7 @@ use pom_remote::server_api::{
     WatchChannel, WatchParams, WorkspaceParams,
 };
 use pom_remote::server_api::{GitActParams, GitReadParams, GitRepoParams, GitWatchParams};
+use pom_remote::server_api::{PasteParams, SettingsSetParams};
 use pom_remote::server_api::{
     SearchCancelParams, SearchStartParams, ServiceChoiceParams, ServiceRunParams, SharedLogsParams,
     SharedRunParams, UsageParams,
@@ -31,6 +31,7 @@ use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::paste::PasteService;
 use crate::pty::{Caller, Ptys};
 use crate::search::SearchService;
+use crate::settings::SettingsService;
 use crate::usage::UsageService;
 use crate::watch::Watches;
 use serde::de::DeserializeOwned;
@@ -261,12 +262,14 @@ pub struct Dispatcher {
     jira: JiraService,
     paste: PasteService,
     git: GitService,
+    settings: SettingsService,
 }
 
 impl Dispatcher {
     pub fn new(state: StateDir, holders: SocketDir, binary: PathBuf, op_memory: Duration) -> Self {
         Dispatcher {
             ptys: Ptys::new(holders.clone(), binary.clone()),
+            settings: SettingsService::from_env(holders.clone()),
             watches: Watches::new(state.clone()),
             jobs: Jobs::new(JOB_MEMORY),
             files: FsService::new(),
@@ -281,6 +284,35 @@ impl Dispatcher {
             jira: JiraService::from_env(),
             git: GitService::new(),
         }
+    }
+
+    /// Keeps the host's settings in `settings` instead of this user's settings.json.
+    pub fn with_settings(mut self, settings: SettingsService) -> Self {
+        self.settings = settings;
+        self
+    }
+
+    /// `settings.get` and `settings.set`: who asks matters, since only a person may change them.
+    pub fn dispatch_settings(
+        &self,
+        request: &Request,
+        caller: &Caller<'_>,
+    ) -> Option<Result<Value, RemoteError>> {
+        Some(match request.method.as_str() {
+            method::SETTINGS_GET => self.settings.get().and_then(to_value),
+            method::SETTINGS_SET => {
+                params::<SettingsSetParams>(&request.params).and_then(|params| {
+                    let answer = self.settings.set(caller.peer_pid, params)?;
+                    let minutes = answer.values["server"]["reconnect_retention_minutes"].as_u64();
+                    if let Some(minutes) = minutes {
+                        self.ptys
+                            .set_retention(Duration::from_secs(minutes.saturating_mul(60)));
+                    }
+                    to_value(answer)
+                })
+            }
+            _ => return None,
+        })
     }
 
     /// Asks Jira through `jira` instead of curl and this process's environment.

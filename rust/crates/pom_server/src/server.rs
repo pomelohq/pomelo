@@ -146,6 +146,9 @@ impl Shared {
         if let Some(answer) = self.dispatcher.dispatch_fs(request, caller) {
             return answer;
         }
+        if let Some(answer) = self.dispatcher.dispatch_settings(request, caller) {
+            return answer;
+        }
         match request.method.as_str() {
             method::SERVER_INFO => serde_json::to_value(self.info()).map_err(|error| {
                 RemoteError::new(pom_rpc::error_code::INTERNAL, error.to_string())
@@ -162,6 +165,7 @@ impl Shared {
         &self,
         connection: u64,
         client: &str,
+        peer_pid: Option<i32>,
         request: Request,
         context: &RequestContext,
     ) -> Result<Value, RemoteError> {
@@ -173,6 +177,7 @@ impl Shared {
             connection,
             client,
             context,
+            peer_pid,
         };
         let result = self.answer(&request, &caller);
         let bytes_out = match &result {
@@ -214,6 +219,14 @@ impl Shared {
                 return;
             }
         }
+        let peer_pid = match peer::peer_pid(&stream) {
+            Ok(pid) => Some(pid),
+            Err(error) => {
+                self.log
+                    .line(&format!("conn={id} peer process unknown ({error})"));
+                None
+            }
+        };
         let transport = match Transport::unix(stream) {
             Ok(transport) => transport,
             Err(error) => {
@@ -226,7 +239,7 @@ impl Shared {
             let (shared, client_id) = (self.clone(), client_id.clone());
             move |request: Request, context: &RequestContext| {
                 let client = locked(&client_id).clone();
-                shared.handle(id, &client, request, context)
+                shared.handle(id, &client, peer_pid, request, context)
             }
         };
         let config = Config {

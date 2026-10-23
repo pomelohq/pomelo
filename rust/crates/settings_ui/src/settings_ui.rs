@@ -342,9 +342,7 @@ pub const CTRL_APPLY_CONFIG: u64 = 281;
 pub const CTRL_REPO_RENAME_BASE: u64 = 20_000;
 pub const CTRL_REPO_REMOVE_BASE: u64 = 21_000;
 pub const CTRL_REPO_LIMIT: u64 = 1_000;
-pub const PORT_MIN: u16 = 1024;
-pub const MODULES_LIMIT_MAX_GB: u64 = 1024;
-pub const MODULES_DAYS_MAX: u64 = 365;
+pub use settings::{MODULES_DAYS_MAX, MODULES_LIMIT_MAX_GB, PORT_MIN};
 /// When the pointer hides until the mouse moves, as (setting value, label).
 /// What closing an agent's tab does, as (setting value, label).
 const AGENT_TAB_CLOSE: [(&str, &str); 2] =
@@ -4763,6 +4761,12 @@ fn step_seg(kind: ui::IconKind, id: u64) -> Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_fallback_choices_are_the_ones_a_host_takes() {
+        let values: Vec<&str> = MODULES_FALLBACKS.iter().map(|(value, _)| *value).collect();
+        assert_eq!(values, settings::MODULES_FALLBACK_VALUES);
+    }
 
     #[test]
     fn a_language_page_sets_its_own_values_and_reset_hands_them_back() {

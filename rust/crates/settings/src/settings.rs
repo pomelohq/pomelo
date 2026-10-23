@@ -6,7 +6,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+mod host;
 mod proxy;
+pub use host::{
+    apply_host_change, host_values, read_host_settings, validate as validate_host_setting,
+    write_host_settings, HostSettingsError, HOST_KEYS, MODULES_DAYS_MAX, MODULES_FALLBACK_VALUES,
+    MODULES_LIMIT_MAX_GB, PORT_MIN,
+};
 pub use proxy::{
     parse_bind, parse_domain, parse_env_name, parse_scheme, Cidr, ProxySettings,
     DEFAULT_PROXY_BIND, DEFAULT_PROXY_TOKEN_ENV, LOCAL_DOMAIN,

@@ -672,6 +672,8 @@ pub struct Caller<'a> {
     pub connection: u64,
     pub client: &'a str,
     pub context: &'a RequestContext,
+    /// The process at the other end of the socket, when the system says.
+    pub peer_pid: Option<i32>,
 }
 
 fn params<T: serde::de::DeserializeOwned + Default>(value: &Value) -> Result<T, RemoteError> {
