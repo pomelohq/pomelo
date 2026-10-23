@@ -13,6 +13,7 @@ use crate::driver::{driver, Keystrokes};
 use crate::gate::{Gate, Refusal};
 use crate::identity::{holder_role, workspace_prefix};
 use crate::launch::{claude_launch_with, fresh_launch, LaunchContext, LaunchOptions};
+use crate::screen::rendered_lines;
 use crate::sessions::{
     events, now_ms, phase, read_state, record_event, turn_running, workspace_sessions, EventLine,
     SessionEvent, SessionState, TurnState, LAUNCHED_EVENT, NEEDS_TRUST_EVENT, NEEDS_TRUST_STATE,
@@ -50,6 +51,11 @@ const FIRST_HOOK_WAIT: Duration = Duration::from_secs(12);
 /// A starting session older than this whose terminal shows the trust prompt is reported as waiting on it.
 const TRUST_CHECK_AFTER_S: u64 = 2;
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
+/// The agent redraws the trust prompt with "No, exit" highlighted again soon after showing it.
+const TRUST_SETTLE: Duration = Duration::from_millis(300);
+const TRUST_POLL: Duration = Duration::from_millis(50);
+const TRUST_ANSWER_WAIT: Duration = Duration::from_secs(10);
+const TRUST_KEYS_MAX: usize = 6;
 
 impl DriveError {
     pub fn exit_code(&self) -> i32 {
@@ -544,6 +550,54 @@ impl Drive {
         Ok(())
     }
 
+    /// Answers the trust prompt with yes one key at a time, each chosen from the settled screen.
+    fn answer_trust(&self, holder: &str) -> Result<(), DriveError> {
+        let agent_driver = driver(crate::identity::CLAUDE_DRIVER)
+            .ok_or_else(|| DriveError::Failed("no driver for the agent".into()))?;
+        let unanswered = |why: &str| {
+            DriveError::NeedsTrust(format!(
+                "{holder} waits at the agent's \"trust this folder\" prompt: {why}; open it in Pomelo (or pom agent takeover) and answer it there"
+            ))
+        };
+        let deadline = std::time::Instant::now() + TRUST_ANSWER_WAIT;
+        let mut typed = 0;
+        let mut still_since: Option<(u64, std::time::Instant)> = None;
+        while std::time::Instant::now() < deadline {
+            let (screen, end) =
+                match pom_ptyhost::read_since(&self.holders, holder, 0, SNAPSHOT_TIMEOUT) {
+                    Ok(read) => read,
+                    Err(_) if !self.alive(holder) => return Ok(()),
+                    Err(error) => {
+                        return Err(DriveError::Failed(format!(
+                            "could not read the screen of {holder}: {error}"
+                        )))
+                    }
+                };
+            let dialog = agent_driver.trust_dialog(&rendered_lines(&screen));
+            if dialog.is_none() && typed > 0 {
+                return Ok(());
+            }
+            let settled = match still_since {
+                Some((seen, since)) if seen == end => since.elapsed() >= TRUST_SETTLE,
+                _ => {
+                    still_since = Some((end, std::time::Instant::now()));
+                    false
+                }
+            };
+            if settled {
+                let dialog = dialog.ok_or_else(|| unanswered("its choices could not be read"))?;
+                if typed == TRUST_KEYS_MAX {
+                    return Err(unanswered("its highlight would not stay on yes"));
+                }
+                self.type_keys(holder, &[agent_driver.answer_trust(dialog)])?;
+                typed += 1;
+                still_since = None;
+            }
+            std::thread::sleep(TRUST_POLL);
+        }
+        Err(unanswered("it did not settle on an answer in time"))
+    }
+
     /// Waits for a new session's first hook. The agent asks to trust a folder it has not seen before it runs
     /// any: `trust` answers yes, otherwise the session is reported as waiting on it.
     fn await_first_hook(
@@ -571,9 +625,12 @@ impl Drive {
                         "{holder} waits at the agent's \"trust this folder\" prompt: start it again with --trust to answer yes, or open it in Pomelo (or pom agent takeover) and answer it there"
                     )));
                 }
-                let agent_driver = driver(crate::identity::CLAUDE_DRIVER)
-                    .ok_or_else(|| DriveError::Failed("no driver for the agent".into()))?;
-                self.type_keys(holder, &agent_driver.accept_trust())?;
+                if let Err(error) = self.answer_trust(holder) {
+                    if matches!(error, DriveError::NeedsTrust(_)) {
+                        self.mark_needs_trust(holder, session_id, branch);
+                    }
+                    return Err(error);
+                }
                 answered = true;
             }
             std::thread::sleep(Duration::from_millis(200));

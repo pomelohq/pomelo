@@ -25,8 +25,10 @@ pub trait AgentDriver: Send + Sync {
     fn turns(&self, text: &str) -> Vec<TurnContent>;
     /// Whether the terminal shows the agent's prompt to trust the folder, which it asks before anything else.
     fn waits_for_trust(&self, screen: &[u8]) -> bool;
-    /// The writes that answer that prompt with yes.
-    fn accept_trust(&self) -> Vec<Keystrokes>;
+    /// The trust prompt's choices, if the rendered screen shows them with one highlighted.
+    fn trust_dialog(&self, lines: &[String]) -> Option<TrustDialog>;
+    /// The next write toward a yes: Enter only while yes is highlighted, otherwise a move of the highlight.
+    fn answer_trust(&self, dialog: TrustDialog) -> Keystrokes;
     /// The agent's own permission dialog, if the rendered screen shows one.
     fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog>;
     /// The writes that answer that dialog: its highlighted first choice, or its deny key.
@@ -38,6 +40,12 @@ pub trait AgentDriver: Send + Sync {
 pub struct PermissionDialog {
     /// The highlight is on the first choice, a plain yes for this one call.
     pub first_choice_selected: bool,
+}
+
+/// The agent's folder trust prompt as it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrustDialog {
+    pub yes_selected: bool,
 }
 
 /// Terminal output as plain lowercase text without spaces: the UI positions words with cursor moves, so
@@ -164,19 +172,29 @@ impl AgentDriver for ClaudeDriver {
         }]
     }
 
-    fn accept_trust(&self) -> Vec<Keystrokes> {
-        // "No, exit" is preselected; one step down is "Yes, I trust this folder". Separate writes, or the
-        // escape that starts the arrow key reads as Esc, which cancels the prompt and exits.
-        vec![
-            Keystrokes {
-                bytes: b"\x1b[B".to_vec(),
-                pause_ms: TRUST_PAUSE_MS,
+    fn trust_dialog(&self, lines: &[String]) -> Option<TrustDialog> {
+        let bottom = &lines[lines.len().saturating_sub(DIALOG_TAIL_LINES)..];
+        let yes_at = bottom
+            .iter()
+            .rposition(|line| line.contains(TRUST_YES_CHOICE))?;
+        let choices = &bottom
+            [yes_at.saturating_sub(TRUST_CHOICES - 1)..(yes_at + TRUST_CHOICES).min(bottom.len())];
+        let selected = choices.iter().find(|line| line.contains(SELECTION_MARK))?;
+        Some(TrustDialog {
+            yes_selected: selected.contains(TRUST_YES_CHOICE),
+        })
+    }
+
+    fn answer_trust(&self, dialog: TrustDialog) -> Keystrokes {
+        // Alone in its write, or the arrow's leading escape can read as Esc, which exits.
+        Keystrokes {
+            bytes: if dialog.yes_selected {
+                b"\r".to_vec()
+            } else {
+                b"\x1b[B".to_vec()
             },
-            Keystrokes {
-                bytes: b"\r".to_vec(),
-                pause_ms: 0,
-            },
-        ]
+            pause_ms: 0,
+        }
     }
 }
 
@@ -188,7 +206,8 @@ const DIALOG_CHOICES_MAX: usize = 4;
 
 /// How much of the end of the screen text the trust prompt check reads.
 const TRUST_TAIL: usize = 600;
-const TRUST_PAUSE_MS: u64 = 300;
+const TRUST_YES_CHOICE: &str = "Yes, I trust this folder";
+const TRUST_CHOICES: usize = 2;
 
 static CLAUDE: ClaudeDriver = ClaudeDriver;
 
@@ -225,7 +244,7 @@ mod tests {
     const TRUST_SCREEN: &[u8] = b"\x1b[2J\x1b[1;1HAccessing\x1b[1Cworkspace:\r\n/private/tmp/myproject/workspace--feat-login\r\nQuick\x1b[1Csafety\x1b[1Ccheck:\x1b[1CIs\x1b[1Cthis\x1b[1Ca\x1b[1Cproject\x1b[1Cyou\x1b[1Ccreated\x1b[1Cor\x1b[1Cone\x1b[1Cyou\x1b[1Ctrust?\r\n\x1b[38;5;153m\xe2\x9d\xaf 1. No, exit\x1b[39m\r\n  2. Yes, I trust this folder\r\n\x1b[2mEnter to confirm \xc2\xb7 Esc to cancel\x1b[22m\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\";
 
     #[test]
-    fn the_trust_prompt_is_recognized_and_answered_with_down_then_enter() {
+    fn the_trust_prompt_is_recognized_only_on_the_latest_screen() {
         let claude = driver("claude").expect("claude");
         assert!(claude.waits_for_trust(TRUST_SCREEN));
         let mut answered = TRUST_SCREEN.to_vec();
@@ -238,11 +257,51 @@ mod tests {
             !claude.waits_for_trust(&answered),
             "a prompt answered earlier in the scrollback does not count"
         );
-        let keys = claude.accept_trust();
-        assert_eq!(keys.len(), 2);
-        assert_eq!(keys[0].bytes, b"\x1b[B".to_vec());
-        assert!(keys[0].pause_ms > 0);
-        assert_eq!(keys[1].bytes, b"\r".to_vec());
+    }
+
+    #[test]
+    fn enter_answers_the_trust_prompt_only_while_yes_is_highlighted() {
+        let claude = driver("claude").expect("claude");
+        let screen = |yes: bool| -> Vec<String> {
+            let mark = |on: bool| if on { "\u{276F}" } else { " " };
+            vec![
+                "Accessing workspace:".to_string(),
+                "/private/tmp/myproject/workspace--feat-login".into(),
+                "Quick safety check: Is this a project you created or one you trust?".into(),
+                format!("{} No, exit", mark(!yes)),
+                format!("{} Yes, I trust this folder", mark(yes)),
+                String::new(),
+                "Enter to confirm - Esc to cancel".into(),
+            ]
+        };
+        let at_no = claude.trust_dialog(&screen(false));
+        assert_eq!(
+            at_no,
+            Some(TrustDialog {
+                yes_selected: false
+            })
+        );
+        let step = claude.answer_trust(at_no.expect("dialog"));
+        assert_eq!(step.bytes, b"\x1b[B".to_vec(), "never Enter on no");
+
+        let at_yes = claude.trust_dialog(&screen(true));
+        assert_eq!(at_yes, Some(TrustDialog { yes_selected: true }));
+        assert_eq!(
+            claude.answer_trust(at_yes.expect("dialog")).bytes,
+            b"\r".to_vec()
+        );
+
+        let mut unmarked = screen(false);
+        unmarked[3] = "  No, exit".into();
+        assert_eq!(
+            claude.trust_dialog(&unmarked),
+            None,
+            "no highlight drawn yet, so nothing to answer"
+        );
+        assert_eq!(
+            claude.trust_dialog(&["> Try \"write a test\"".to_string()]),
+            None
+        );
     }
 
     #[test]

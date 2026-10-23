@@ -44,6 +44,10 @@ impl Fixture {
     }
 
     fn pom(&self, args: &[&str]) -> Output {
+        self.pom_with(args, &[])
+    }
+
+    fn pom_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let path = format!(
             "{}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             self.temp.path().join("bin").display()
@@ -64,9 +68,15 @@ impl Fixture {
             .env("CLAUDECODE", "1")
             .env("CLAUDE_CODE_CHILD_SESSION", "1")
             .env("CLAUDE_CODE_MESSAGING_TOKEN", "parent-token")
+            .env("FAKE_TRUST_ANSWER", self.trust_answer())
+            .envs(env.iter().copied())
             .env_remove("POM_AGENT_HOLDER")
             .output()
             .expect("pom")
+    }
+
+    fn trust_answer(&self) -> PathBuf {
+        self.temp.path().join("trust-answer.txt")
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -161,6 +171,11 @@ fn trust_answers_the_prompt_and_the_session_comes_up_without_the_parent_agent_ma
         fixture.reviewer()["state"] == "idle"
     });
     assert_eq!(fixture.reviewer()["last_event"], "SessionStart");
+    assert_eq!(
+        std::fs::read_to_string(fixture.trust_answer()).unwrap_or_default(),
+        "yes\n",
+        "the stand-in, which draws the prompt again with no highlighted after the first key, took a yes"
+    );
 
     let env = std::fs::read_to_string(fixture.temp.path().join("env.txt")).expect("env dump");
     for marker in [
@@ -174,4 +189,27 @@ fn trust_answers_the_prompt_and_the_session_comes_up_without_the_parent_agent_ma
         );
     }
     assert!(env.lines().any(|line| line == "POM_AGENT_ROLE=reviewer"));
+}
+
+#[test]
+fn trust_never_confirms_no_when_every_arrow_lands_twice() {
+    let fixture = Fixture::new();
+    let started = fixture.pom_with(
+        &[
+            "agent", "start", "feat", "--fresh", "--role", "reviewer", "--trust", "--json",
+        ],
+        &[("FAKE_TRUST_DOUBLE_ARROW", "1")],
+    );
+    assert!(
+        fixture.temp.path().join("env.txt").exists(),
+        "the stand-in agent ran"
+    );
+    assert_eq!(started.status.code(), Some(7), "{started:?}");
+    let error: Value = serde_json::from_slice(&started.stderr).unwrap_or(Value::Null);
+    assert_eq!(error["error"], "needs_trust", "{error}");
+    assert!(
+        !fixture.trust_answer().exists(),
+        "Enter was pressed with no highlighted"
+    );
+    assert_eq!(fixture.reviewer()["state"], "needs_trust");
 }
