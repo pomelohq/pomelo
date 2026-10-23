@@ -23,7 +23,7 @@ pub use fs::{FsService, CHUNK_BYTES, CHUNK_ENTRIES, MAX_FS_STREAMS, WATCH_LINGER
 pub use jira::{JiraService, MakeTransport, ReadEnv};
 pub use jobs::{Jobs, JOB_MEMORY};
 pub use log::{RequestRecord, ServerLog, ROTATE_AT};
-pub use paths::{ensure_private_dir, running_versions, ServerPaths};
+pub use paths::{running_versions, ServerPaths};
 pub use peer::{current_uid, peer_uid};
 pub use pty::{check_cwd, check_holder, check_size, Caller, Ptys, ShellCommand, RETENTION};
 pub use search::{SearchService, LINE_BYTES, PUSH_BYTES};

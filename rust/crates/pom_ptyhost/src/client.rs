@@ -54,9 +54,14 @@ impl HolderConnection {
     }
 }
 
+fn connect(dir: &SocketDir, name: &str) -> io::Result<UnixStream> {
+    dir.check_private()?;
+    UnixStream::connect(dir.socket(name))
+}
+
 /// Connects to holder `name` and reads its snapshot from offset `since` (0 for everything).
 pub fn attach(dir: &SocketDir, name: &str, since: u64) -> io::Result<Attached> {
-    let mut stream = UnixStream::connect(dir.socket(name))?;
+    let mut stream = connect(dir, name)?;
     frame::write_resume(&mut stream, since)?;
     let mut output = BufReader::new(stream.try_clone()?);
     let (snapshot, end) = read_snapshot(&mut output)?;
@@ -70,7 +75,7 @@ pub fn attach(dir: &SocketDir, name: &str, since: u64) -> io::Result<Attached> {
 
 /// A connection that only writes: no scrollback is replayed to it.
 pub fn connect_writer(dir: &SocketDir, name: &str) -> io::Result<HolderConnection> {
-    let mut stream = UnixStream::connect(dir.socket(name))?;
+    let mut stream = connect(dir, name)?;
     frame::write_resume(&mut stream, frame::NO_SNAPSHOT)?;
     let mut output = BufReader::new(stream.try_clone()?);
     read_snapshot(&mut output)?;
@@ -96,7 +101,7 @@ pub fn read_since(
     since: u64,
     timeout: Duration,
 ) -> io::Result<(Vec<u8>, u64)> {
-    let mut stream = UnixStream::connect(dir.socket(name))?;
+    let mut stream = connect(dir, name)?;
     stream.set_read_timeout(Some(timeout))?;
     frame::write_resume(&mut stream, since)?;
     let mut reader = BufReader::new(stream);
@@ -110,7 +115,7 @@ pub fn output_end(dir: &SocketDir, name: &str, timeout: Duration) -> io::Result<
 
 /// The holder's current scrollback, without staying attached (a log peek).
 pub fn snapshot(dir: &SocketDir, name: &str, timeout: Duration) -> io::Result<Vec<u8>> {
-    let mut stream = UnixStream::connect(dir.socket(name))?;
+    let mut stream = connect(dir, name)?;
     stream.set_read_timeout(Some(timeout))?;
     frame::write_resume(&mut stream, 0)?;
     let mut reader = BufReader::new(stream);
@@ -140,7 +145,7 @@ fn read_snapshot(reader: &mut BufReader<UnixStream>) -> io::Result<(Vec<u8>, u64
 pub fn wait_for_holder(dir: &SocketDir, name: &str, timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        match UnixStream::connect(dir.socket(name)) {
+        match connect(dir, name) {
             Ok(_) => return Ok(()),
             Err(error) if Instant::now() >= deadline => return Err(error),
             Err(_) => std::thread::sleep(Duration::from_millis(25)),

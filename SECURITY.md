@@ -71,8 +71,11 @@ Gaps and non-goals:
   needs no token, including other users of a shared host and anything behind a reverse proxy or tunnel on
   the same machine. A reverse proxy in front of pom must do its own authentication.
 - The token cookie holds the raw token. Rotate with `pom proxy token new`.
-- The in-memory request log (shown in the app) keeps request headers as sent, including your app's own
-  `Authorization` or session cookies. It is not written to disk.
+- The in-memory request log (shown in the app) keeps request headers, but replaces the values of credential
+  headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, and names containing `token`,
+  `secret`, `password`, `api-key` or `session`) with `[redacted]` (`pom_proxy/src/pom_proxy.rs`,
+  `sensitive_header`). Bodies are kept as sent. The log is not written to disk; the forwarded request is
+  unchanged.
 
 ## Webhook relay
 
@@ -116,8 +119,10 @@ drive them (`pom agent ...`, the MCP tools in `pom_mcp`).
   (`caller.rs`). An agent may only reach sessions of its own workspace, with rate limits, a depth limit and
   a wait cap; people and orchestrators are not limited by default.
 - **MCP server.** `pom mcp` is a stdio server started by the agent itself; it opens no port. Its tools act
-  on the agent's own workspace. `secrets_list` returns names only. `run_in_env` and `config_set` run
-  commands and rewrite `pom.yml`, which an agent with a shell could do anyway.
+  on the agent's own workspace. `secrets_list` returns names only. `run_in_env` runs commands and
+  `config_set` rewrites `pom.yml`, which an agent with a shell could do anyway; `config_set` refuses any
+  change to the `agents` section, and refuses to overwrite a `pom.yml` it cannot read, since the policy is
+  read from it (`pom_mcp/src/config_files.rs`).
 - **Screen fallback.** When the hook cannot carry an answer (a person took the session over, or the wait
   ran out), the answer is typed into the agent's dialog after the rendered screen is checked to show it
   (Enter on a highlighted plain "yes", Esc to deny), and the folder-trust prompt shown at a session's
@@ -127,8 +132,9 @@ drive them (`pom agent ...`, the MCP tools in `pom_mcp`).
 Trust boundary: these controls keep a well-behaved agent inside its workspace and keep mistakes from
 spreading. They are not a sandbox. Everything runs as your user, and approvals, leases and policy answers
 are files in your state folder, so a process that is determined to escape (for example by detaching from
-its holder's process tree, or by writing those files directly) can. Policy authors should also deny the
-agent's own edits to `pom.yml` (directly or through `config_set`), since the policy is read from it. Run
+its holder's process tree, or by writing those files directly) can. `config_set` will not touch the
+`agents` section, but an agent with a shell can still edit `pom.yml` or the policy script directly, so policy
+authors should deny those edits too. Run
 agents you do not trust in a VM or container.
 
 ## Remote hosts (`pom server`)
@@ -163,7 +169,8 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
   `{{secret.NAME}}`; agents and the MCP server only ever see names.
 - Values are injected into a service's environment at spawn, and also written into the generated env files
   (`.env.local` and the like) inside each worktree, as plain text, so apps that read a file find them
-  (`pom_services/src/env_files.rs`). Treat a worktree like a directory holding a `.env`.
+  (`pom_services/src/env_files.rs`). They are written `0600` through a temp file and rename, so a file left
+  more open is replaced. Treat a worktree like a directory holding a `.env`.
 - `pom ws export` (`.pomws`) and `pom project export` (`.pomproj`) carry only the secrets the config uses,
   decrypted and re-sealed with a passphrase (scrypt, then AES-256-GCM; `pom_bundle`). The machine key never
   travels. The archive's strength is the passphrase's, so use a long one and send it separately.
@@ -193,11 +200,14 @@ yet.
 
 - Every service, shell and agent runs in a PTY holder process behind a Unix socket in
   `$XDG_RUNTIME_DIR/pom-pty` or `/tmp/pom-pty-<uid>`. The folder is created `0700` and each socket is set
-  to `0600` (`pom_ptyhost/src/server.rs`); anyone who can open a socket can type into that terminal.
+  to `0600` (`pom_ptyhost/src/server.rs`); anyone who can open a socket can type into that terminal. Before
+  a holder listens or a client connects, the folder must be a real directory (not a symlink) owned by your
+  user; a looser mode is tightened to `0700`, and a folder another user owns is refused, the same check
+  `pom server` makes for its own socket folder (`pom_paths`, `ensure_private_dir`).
 - ssh connection sharing uses control sockets in `$XDG_RUNTIME_DIR/pom-ssh` or `~/.ssh/pom`.
 - Commands run as separate arguments, never as a shell string built from user input, and network calls have
   timeouts.
 
-Gap: the PTY socket folder is created with `0700` only when it does not exist yet; an existing folder is used
-as is, without the owner check `pom server` makes. On a shared Linux host without `XDG_RUNTIME_DIR`, another
-user could create `/tmp/pom-pty-<uid>` first.
+Gap: on a shared Linux host without `XDG_RUNTIME_DIR`, another user can still create `/tmp/pom-pty-<uid>`
+first. Pomelo then refuses to start or reach terminals there instead of using it; remove the folder or set
+`XDG_RUNTIME_DIR`.

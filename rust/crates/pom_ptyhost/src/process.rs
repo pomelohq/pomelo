@@ -11,6 +11,11 @@ pub struct SocketDir {
     root: PathBuf,
 }
 
+fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions.
+    unsafe { libc::getuid() }
+}
+
 const TERM_GRACE: Duration = Duration::from_secs(4);
 const QUICK_GRACE: Duration = Duration::from_millis(300);
 
@@ -26,13 +31,21 @@ impl SocketDir {
         if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
             return SocketDir::new(PathBuf::from(runtime).join("pom-pty"));
         }
-        // SAFETY: getuid has no preconditions.
-        let uid = unsafe { libc::getuid() };
-        SocketDir::new(format!("/tmp/pom-pty-{uid}"))
+        SocketDir::new(format!("/tmp/pom-pty-{}", current_uid()))
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Creates the folder 0700 if missing; refuses one another user owns or a symlink.
+    pub fn ensure_private(&self) -> std::io::Result<()> {
+        pom_paths::ensure_private_dir(&self.root, current_uid())
+    }
+
+    /// Refuses to reach holders through a folder another user owns or could have planted sockets in.
+    pub fn check_private(&self) -> std::io::Result<()> {
+        pom_paths::check_private_dir(&self.root, current_uid())
     }
 
     /// Hashed so long holder names stay under the 104-byte Unix socket path limit.
@@ -69,7 +82,7 @@ impl SocketDir {
             Some(token) => {
                 use std::io::Write;
                 use std::os::unix::fs::OpenOptionsExt;
-                std::fs::create_dir_all(&self.root)?;
+                self.ensure_private()?;
                 let staged =
                     self.root
                         .join(format!("{}.lease.{}", Self::stem(name), std::process::id()));

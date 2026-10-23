@@ -30,6 +30,22 @@ pub use routing::{
 };
 
 const LOG_CAPACITY: usize = 300;
+/// Stands in for a credential header's value in the request log.
+pub const REDACTED: &str = "[redacted]";
+
+/// Headers that carry credentials: their values never reach the request log.
+pub fn sensitive_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+    ) || [
+        "token", "secret", "password", "api-key", "apikey", "session",
+    ]
+    .iter()
+    .any(|part| name.contains(part))
+}
+
 pub const BODY_CAP: usize = 256 * 1024;
 const BODY_BUDGET: usize = 64 << 20;
 
@@ -510,6 +526,22 @@ fn bind(address: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_headers_are_sensitive_and_signatures_are_not() {
+        for name in [
+            "Authorization",
+            "Cookie",
+            "set-cookie",
+            "x-api-key",
+            "X-Auth-Token",
+        ] {
+            assert!(sensitive_header(name), "{name}");
+        }
+        for name in ["stripe-signature", "content-type", "x-hub-signature-256"] {
+            assert!(!sensitive_header(name), "{name}");
+        }
+    }
 
     #[test]
     fn loopback_binds_as_before_and_other_addresses_add_to_it() {

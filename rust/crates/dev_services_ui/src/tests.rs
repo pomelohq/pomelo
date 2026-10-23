@@ -25,16 +25,11 @@ fn filters_narrow_the_list() {
 }
 
 #[test]
-fn the_side_shows_the_body_and_hides_credentials_until_shown() {
+fn the_side_shows_the_body_and_the_fan_out() {
     let mut page = preview_page();
     let shown = texts(&mut page);
     assert!(shown.concat().contains("\"type\": \"invoice.paid\""));
-    assert!(shown.iter().any(|text| text == MASK));
-    assert!(!shown.iter().any(|text| text.contains("sk_test_secret")));
-    page.click(REVEAL);
-    assert!(texts(&mut page)
-        .iter()
-        .any(|text| text.contains("sk_test_secret")));
+    assert!(shown.iter().any(|text| text == pom_proxy::REDACTED));
     page.click(TAB_BASE + 1);
     let fan_out = texts(&mut page);
     assert!(fan_out.iter().any(|text| text == "feat-login"));
@@ -42,7 +37,6 @@ fn the_side_shows_the_body_and_hides_credentials_until_shown() {
     assert!(fan_out.iter().any(|text| text == "1 of 2 failed"));
     page.click(ROW_BASE + 6);
     let state = page.shared.borrow();
-    assert!(!state.revealed, "a new selection hides credentials again");
     assert_eq!(
         state.tab,
         DetailTab::Request,
@@ -95,8 +89,6 @@ fn bodies_render_by_kind() {
         ..json
     };
     assert_eq!(body_text(&binary, &[]), None);
-    assert!(sensitive("Authorization") && sensitive("x-api-key") && sensitive("X-Auth-Token"));
-    assert!(!sensitive("stripe-signature") && !sensitive("content-type"));
 }
 
 #[test]
