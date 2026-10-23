@@ -242,12 +242,6 @@ pub trait PtyProvider: Send + Sync {
     fn link(&self) -> LinkState {
         LinkState::Connected
     }
-    /// The machine's name, for the bar that says the connection dropped.
-    fn host(&self) -> String {
-        String::new()
-    }
-    /// Tries to reconnect now rather than at the next scheduled attempt.
-    fn reconnect_now(&self) {}
     /// Bytes of typed input kept until the server has surely written them, to send again after a drop.
     fn unconfirmed_input_limit(&self) -> usize {
         UNCONFIRMED_INPUT_LIMIT

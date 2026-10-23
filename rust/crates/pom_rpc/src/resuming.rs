@@ -125,10 +125,6 @@ impl ResumingTerminal {
         &self.shared.holder
     }
 
-    pub fn provider(&self) -> &Arc<dyn PtyProvider> {
-        &self.shared.provider
-    }
-
     /// Sends `bytes` at once; refused while the connection is down, so nothing waits to be typed later.
     pub fn input(&self, bytes: &[u8]) -> Result<(), String> {
         if self.shared.provider.link() != LinkState::Connected {

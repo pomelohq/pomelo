@@ -137,10 +137,6 @@ impl pom_rpc::pty::PtyProvider for Shell {
     fn link(&self) -> pom_rpc::pty::LinkState {
         link_of(&self.link)
     }
-
-    fn host(&self) -> String {
-        "dev".into()
-    }
 }
 
 impl Board {
@@ -518,7 +514,6 @@ pub fn render(
             matches!(snapshot.connection, Connection::Disconnected { .. })
         });
     }
-    let connect = matches!(mode, "connect" | "connect-projects");
     let snapshot = watch.snapshot();
     let sessions = vec![
         workspace::Session {
@@ -545,7 +540,7 @@ pub fn render(
         },
         |_| {
             let mut layout = workspace::Layout {
-                project: (!connect).then(|| project_info(&snapshot)),
+                project: Some(project_info(&snapshot)),
                 ..Default::default()
             };
             layout.left.width = 256.0;
@@ -556,20 +551,9 @@ pub fn render(
         },
     );
     entity.update(app.app_mut(), |view, _| {
-        view.set_sessions(sessions, (!connect).then_some(0));
+        view.set_sessions(sessions, Some(0));
         view.set_usage(crate::window_usage());
         view.set_host_link(remote_ui::host_link(&snapshot.connection));
-        if connect {
-            let step = if mode == "connect" {
-                "hosts"
-            } else {
-                "projects"
-            };
-            if let Some(modal) = connect_modal(step) {
-                view.open_window_modal(Box::new(modal));
-            }
-            return;
-        }
         if mode == "create" {
             view.set_workspace_ops(vec![creating_on_host()]);
         }
