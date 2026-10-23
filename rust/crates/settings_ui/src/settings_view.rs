@@ -133,6 +133,8 @@ pub struct SettingsView {
     jira_remote: Option<RemoteJira>,
     /// The remote machine's settings on their way back from a read or a change.
     jira_load: Option<Receiver<Result<pom_jira::JiraSetup, String>>>,
+    /// The host request before this one: a change must not overtake an earlier one, or its answer drops that edit.
+    jira_host_last: Option<std::thread::JoinHandle<()>>,
     pages: settings_ui::PageState,
     jira_test: Option<Receiver<Result<String, String>>>,
     /// The project's `pom.yml`, whose `sync:` applies until this window sets refresh-main.
@@ -176,6 +178,7 @@ impl SettingsView {
             jira_session: None,
             jira_remote: None,
             jira_load: None,
+            jira_host_last: None,
             pages: settings_ui::PageState::default(),
             jira_test: None,
             project_config: None,
@@ -345,11 +348,17 @@ impl SettingsView {
             return;
         };
         let (sender, receiver) = mpsc::channel();
-        std::thread::spawn(move || {
+        let previous = self.jira_host_last.take();
+        self.jira_host_last = Some(std::thread::spawn(move || {
+            if let Some(previous) = previous {
+                if previous.join().is_err() {
+                    eprintln!("settings: an earlier Jira request to the host failed");
+                }
+            }
             if sender.send(ask(&*store)).is_err() {
                 eprintln!("settings: a Jira answer arrived after the page moved on");
             }
-        });
+        }));
         self.jira_load = Some(receiver);
     }
 
