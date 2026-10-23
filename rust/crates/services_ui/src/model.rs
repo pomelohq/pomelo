@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use pom_config::Config;
-use pom_services::{ServiceRunner, ServiceTarget, SharedAction};
+use pom_services::{ServiceRunner, ServiceTarget};
+
+use crate::access::{LocalServices, ServicesAccess};
 
 /// The project's config, replaced in place when `pom.yml` changes so every panel sees the new one.
 pub type SharedConfig = Arc<RwLock<Option<Arc<Config>>>>;
@@ -56,7 +58,7 @@ impl Action {
     }
 }
 
-/// One workspace of one project: where its services live and how they run.
+/// One workspace of one project on this machine: where its services live and how they run.
 pub struct ServicesContext {
     pub runner: Arc<ServiceRunner>,
     pub config: SharedConfig,
@@ -73,40 +75,131 @@ impl ServicesContext {
     }
 
     pub fn target(&self, repo: &str, service: &str) -> ServiceTarget {
-        ServiceTarget {
-            branch: self.branch.clone(),
-            is_main: self.is_main,
-            repo: repo.to_string(),
-            service: service.to_string(),
-        }
+        target(&self.branch, self.is_main, repo, service)
     }
 
     /// Every service of the workspace: workspace-level ones first, then each repo's in config order.
     pub fn targets(&self, config: &Config) -> Vec<ServiceTarget> {
-        let workspace = config
-            .workspace_services
-            .iter()
-            .filter(|(_, service)| !service.cmd.is_empty())
-            .map(|(name, _)| self.target(WORKSPACE_GROUP, name));
-        let repos = config.repos.iter().flat_map(|(repo, dir)| {
-            dir.services
-                .keys()
-                .map(move |service| self.target(repo, service))
-        });
-        workspace.chain(repos).collect()
+        targets(&self.branch, self.is_main, config)
     }
 
     pub fn status_of(&self, target: &ServiceTarget) -> Status {
-        let holders = self.runner.holders();
-        let name = self.runner.holder_name(target);
-        if holders.holder_alive(&name) {
-            Status::Running
-        } else if holders.crash_info(&name).is_some_and(|info| info.crashed) {
-            Status::Crashed
-        } else {
-            Status::Stopped
+        self.local().status_of(target)
+    }
+
+    fn local(&self) -> LocalServices {
+        LocalServices {
+            runner: self.runner.clone(),
+            config: self.config.clone(),
         }
     }
+}
+
+/// The workspace a panel shows, and where its facts come from.
+pub struct WorkspaceInfo {
+    pub branch: String,
+    /// The ticket the workspace's branch names, empty when it names none.
+    pub ticket: String,
+    pub is_main: bool,
+}
+
+/// What the panel and its tabs share: the workspace, its source and how to ask for a redraw.
+pub struct Context {
+    pub access: Arc<dyn ServicesAccess>,
+    pub branch: String,
+    pub ticket: String,
+    pub is_main: bool,
+    pub waker: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Context {
+    pub fn new(
+        access: Arc<dyn ServicesAccess>,
+        workspace: WorkspaceInfo,
+        waker: Arc<dyn Fn() + Send + Sync>,
+    ) -> Context {
+        Context {
+            access,
+            branch: workspace.branch,
+            ticket: workspace.ticket,
+            is_main: workspace.is_main,
+            waker,
+        }
+    }
+
+    pub fn config(&self) -> Option<Arc<Config>> {
+        self.access.config()
+    }
+
+    pub fn target(&self, repo: &str, service: &str) -> ServiceTarget {
+        target(&self.branch, self.is_main, repo, service)
+    }
+
+    pub fn targets(&self, config: &Config) -> Vec<ServiceTarget> {
+        targets(&self.branch, self.is_main, config)
+    }
+
+    pub fn holder_name(&self, target: &ServiceTarget) -> String {
+        self.access.holder_name(target)
+    }
+}
+
+impl From<ServicesContext> for Context {
+    fn from(context: ServicesContext) -> Context {
+        Context {
+            access: Arc::new(context.local()),
+            branch: context.branch,
+            ticket: context.ticket,
+            is_main: context.is_main,
+            waker: context.waker,
+        }
+    }
+}
+
+/// Anything a tab or panel can be built from: the shared context, or a local one of its own (tests).
+pub(crate) trait IntoContext {
+    fn into_context(self) -> Arc<Context>;
+}
+
+impl IntoContext for Arc<Context> {
+    fn into_context(self) -> Arc<Context> {
+        self
+    }
+}
+
+impl IntoContext for Arc<ServicesContext> {
+    fn into_context(self) -> Arc<Context> {
+        Arc::new(Context {
+            access: Arc::new(self.local()),
+            branch: self.branch.clone(),
+            ticket: self.ticket.clone(),
+            is_main: self.is_main,
+            waker: self.waker.clone(),
+        })
+    }
+}
+
+fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
+    ServiceTarget {
+        branch: branch.to_string(),
+        is_main,
+        repo: repo.to_string(),
+        service: service.to_string(),
+    }
+}
+
+fn targets(branch: &str, is_main: bool, config: &Config) -> Vec<ServiceTarget> {
+    let workspace = config
+        .workspace_services
+        .iter()
+        .filter(|(_, service)| !service.cmd.is_empty())
+        .map(|(name, _)| target(branch, is_main, WORKSPACE_GROUP, name));
+    let repos = config.repos.iter().flat_map(|(repo, dir)| {
+        dir.services
+            .keys()
+            .map(move |service| target(branch, is_main, repo, service))
+    });
+    workspace.chain(repos).collect()
 }
 
 /// State shared between the panel, its poller and its action threads, keyed by holder name.
@@ -158,13 +251,13 @@ impl Shared {
 }
 
 pub struct Model {
-    pub context: Arc<ServicesContext>,
+    pub context: Arc<Context>,
     pub shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
 }
 
 impl Model {
-    pub fn new(context: ServicesContext) -> Model {
+    pub fn new(context: Context) -> Model {
         let model = Model {
             context: Arc::new(context),
             shared: Arc::new(Mutex::new(Shared::default())),
@@ -278,21 +371,12 @@ impl Model {
         let spawned = std::thread::Builder::new()
             .name("services-shared".into())
             .spawn(move || {
-                let runner = &context.runner;
-                let result = match (run.name.as_str(), run.action) {
-                    (ALL_SHARED, Action::Stop) => runner.stop_shared(),
-                    (ALL_SHARED, _) => runner.ensure_shared(&config),
-                    (name, Action::Stop) => runner.shared_action(&config, name, SharedAction::Stop),
-                    (name, Action::Start) => {
-                        runner.shared_action(&config, name, SharedAction::Start)
-                    }
-                    (name, _) => runner.shared_action(&config, name, SharedAction::Restart),
-                };
+                let result = context.access.run_shared(&config, &run.name, run.action);
                 refresh_shared(&context, &shared);
                 if let Ok(mut shared) = shared.lock() {
                     shared.pending.remove(&key);
                     if let Err(error) = result {
-                        shared.errors.insert(key, error.to_string());
+                        shared.errors.insert(key, error);
                     }
                 }
                 (context.waker)();
@@ -318,7 +402,7 @@ impl Model {
 /// Runs `action` on a background thread (stopping waits for the process tree to exit); the row shows progress
 /// until it finishes. A second action on a busy service is ignored.
 pub(crate) fn run_action(
-    context: &Arc<ServicesContext>,
+    context: &Arc<Context>,
     state: &Arc<Mutex<Shared>>,
     action: Action,
     target: ServiceTarget,
@@ -326,7 +410,7 @@ pub(crate) fn run_action(
     let Some(config) = context.config() else {
         return;
     };
-    let holder = context.runner.holder_name(&target);
+    let holder = context.holder_name(&target);
     {
         let Ok(mut shared) = state.lock() else {
             return;
@@ -343,19 +427,13 @@ pub(crate) fn run_action(
     let spawned = std::thread::Builder::new()
         .name("services-action".into())
         .spawn(move || {
-            let runner = &context.runner;
-            let result = match action {
-                Action::Start => runner.start(&config, &target).map(|_| ()),
-                Action::Restart => runner.restart(&config, &target).map(|_| ()),
-                Action::Relocate => runner.relocate(&config, &target).map(|_| ()),
-                Action::Stop => runner.stop(&target).map_err(Into::into),
-            };
-            let status = context.status_of(&target);
+            let result = context.access.run(&config, action, &target);
+            let status = context.access.status_of(&target);
             if let Ok(mut shared) = shared.lock() {
                 shared.pending.remove(&holder);
                 shared.status.insert(holder.clone(), status);
                 if let Err(error) = result {
-                    shared.errors.insert(holder, error.to_string());
+                    shared.errors.insert(holder, error);
                 }
             }
             (context.waker)();
@@ -376,14 +454,14 @@ impl Drop for Model {
     }
 }
 
-fn refresh_shared(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
+fn refresh_shared(context: &Context, shared: &Mutex<Shared>) -> bool {
     let has_shared = context
         .config()
         .is_some_and(|config| !config.shared_services.is_empty());
     if !has_shared {
         return false;
     }
-    let running = context.runner.shared_running();
+    let running = context.access.shared_running();
     let Ok(mut shared) = shared.lock() else {
         return false;
     };
@@ -394,7 +472,7 @@ fn refresh_shared(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
     true
 }
 
-fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
+fn refresh(context: &Context, shared: &Mutex<Shared>) -> bool {
     let Some(config) = context.config() else {
         return false;
     };
@@ -403,8 +481,8 @@ fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
         .iter()
         .map(|target| {
             (
-                context.runner.holder_name(target),
-                context.status_of(target),
+                context.access.holder_name(target),
+                context.access.status_of(target),
             )
         })
         .collect();
@@ -431,7 +509,7 @@ fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
     shared.crashes.retain(|holder, _| crashed.contains(holder));
     for holder in crashed {
         if let std::collections::hash_map::Entry::Vacant(slot) = shared.crashes.entry(holder) {
-            if let Some(crash) = read_crash(context, slot.key()) {
+            if let Some(crash) = context.access.crash(slot.key()) {
                 slot.insert(crash);
             }
         }
@@ -440,26 +518,21 @@ fn refresh(context: &ServicesContext, shared: &Mutex<Shared>) -> bool {
     true
 }
 
-fn read_crash(context: &ServicesContext, holder: &str) -> Option<Crash> {
-    let holders = context.runner.holders();
-    let info = holders.crash_info(holder).filter(|info| info.crashed)?;
-    let detail = info
-        .header
+/// A crash as its holder recorded it: the header naming how it exited, and the output it left.
+pub(crate) fn crash_from(header: &str, output: &[u8], at: Option<std::time::SystemTime>) -> Crash {
+    let detail = header
         .split_once(" - ")
-        .map_or(info.header.as_str(), |(_, detail)| detail)
+        .map_or(header, |(_, detail)| detail)
         .trim();
     let exit = match detail.rsplit_once("exit status: ") {
         Some((_, code)) => format!("exit {}", code.trim()),
         None => detail.trim_start_matches("exited: ").to_string(),
     };
-    let at = std::fs::metadata(holders.crash_log(holder))
-        .and_then(|meta| meta.modified())
-        .ok();
-    Some(Crash {
-        line: telling_line(&strip_ansi(&String::from_utf8_lossy(&info.output))),
+    Crash {
+        line: telling_line(&strip_ansi(&String::from_utf8_lossy(output))),
         exit,
         at,
-    })
+    }
 }
 
 /// The last output line that names an error, else the last line with anything on it.

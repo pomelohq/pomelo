@@ -6,15 +6,20 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
-use terminal::{HolderOptions, Keystroke, Modifiers, TerminalOptions, Waker};
+use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
+use crate::access::{ConsoleRequest, LogLines};
 use crate::model::{
-    run_action, shared_key, Action, Crash, ServicesContext, Shared, SharedRun, Status, TabRequest,
+    run_action, shared_key, Action, Context, Crash, IntoContext, Shared, SharedRun, Status,
+    TabRequest,
 };
 use crate::view::{self, action_button, State, Tone};
+
+#[cfg(test)]
+use crate::model::ServicesContext;
 
 const START: u64 = 0;
 const STOP: u64 = 1;
@@ -48,7 +53,7 @@ enum Showing {
 }
 
 pub(crate) struct ServiceItem {
-    context: Arc<ServicesContext>,
+    context: Arc<Context>,
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     holder: String,
@@ -58,7 +63,7 @@ pub(crate) struct ServiceItem {
     base: u64,
     showing: Showing,
     /// Follows the service's output off screen; its lines are what the tab lists.
-    terminal: Option<terminal::Terminal>,
+    terminal: Option<LogLines>,
     console: Option<terminal_ui::TerminalItem>,
     /// Where the log list (or the console) starts, from the top of the tab, in logical px.
     console_top: f32,
@@ -101,7 +106,7 @@ pub(crate) fn shared_tab_id(name: &str) -> String {
 
 /// A shared container's tab: the same header, facts and logs as a service's, over `docker compose logs`.
 pub(crate) fn open_shared_tab(
-    context: Arc<ServicesContext>,
+    context: Arc<Context>,
     shared: Arc<Mutex<Shared>>,
     name: String,
     root: PathBuf,
@@ -113,7 +118,7 @@ pub(crate) fn open_shared_tab(
 
 /// The shared container's tab as it draws with `lines` of output (snapshots).
 pub(crate) fn shared_preview(
-    context: Arc<ServicesContext>,
+    context: Arc<Context>,
     shared: Arc<Mutex<Shared>>,
     name: &str,
     root: PathBuf,
@@ -134,7 +139,7 @@ pub(crate) fn shared_preview(
 
 /// The service's tab, following what the service is doing now.
 pub(crate) fn open_tab(
-    context: Arc<ServicesContext>,
+    context: Arc<Context>,
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     root: PathBuf,
@@ -147,7 +152,7 @@ pub(crate) fn open_tab(
 /// The tab as it draws with `lines` of output, `width` x `height` (snapshots).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn preview(
-    context: Arc<ServicesContext>,
+    context: Arc<Context>,
     shared: Arc<Mutex<Shared>>,
     target: ServiceTarget,
     root: PathBuf,
@@ -171,12 +176,13 @@ pub(crate) fn preview(
 
 impl ServiceItem {
     fn new(
-        context: Arc<ServicesContext>,
+        context: impl IntoContext,
         shared: Arc<Mutex<Shared>>,
         target: ServiceTarget,
         root: PathBuf,
     ) -> ServiceItem {
-        let holder = context.runner.holder_name(&target);
+        let context = context.into_context();
+        let holder = context.holder_name(&target);
         ServiceItem {
             base: workspace::toolbar_ids(IDS_PER_TAB),
             showing: Showing::Leftover,
@@ -213,7 +219,7 @@ impl ServiceItem {
     }
 
     fn shared_container(
-        context: Arc<ServicesContext>,
+        context: Arc<Context>,
         shared: Arc<Mutex<Shared>>,
         name: String,
         root: PathBuf,
@@ -241,33 +247,23 @@ impl ServiceItem {
             return;
         }
         self.showing = wanted;
-        let (options, waker) = self.console(wanted);
-        self.console = match (&wanted, &options.holder) {
-            (Showing::Live, Some(holder)) => terminal_ui::TerminalItem::service_console(
-                self.base + CONSOLE,
-                self.root.clone(),
-                self.holder.clone(),
-                self.target.service.clone(),
-                holder.clone(),
-                waker.clone(),
-            )
-            .map_err(|error| eprintln!("services: console: {error}"))
-            .ok(),
-            _ => None,
-        };
-        match terminal::Terminal::spawn(options, waker) {
-            Ok(mut terminal) => {
-                terminal.set_size(terminal::TerminalBounds {
-                    cell_width: 8.0,
-                    line_height: 16.0,
-                    width: 8.0 * 240.0,
-                    height: 16.0 * 60.0,
-                });
-                self.terminal = Some(terminal);
-                self.lines.clear();
-                self.top = 0;
-            }
-            Err(error) => eprintln!("services: console: {error}"),
+        let process = self.process_holder();
+        let container = self.container.clone().filter(|_| !self.command_shared());
+        let console = self.context.access.console(ConsoleRequest {
+            target: &self.target,
+            process_holder: &process,
+            item_id: &self.holder,
+            container: container.as_deref(),
+            live: wanted == Showing::Live,
+            root: &self.root,
+            console_id: self.base + CONSOLE,
+            waker: self.context.waker.clone(),
+        });
+        self.console = console.shell;
+        if let Some(lines) = console.lines {
+            self.terminal = Some(lines);
+            self.lines.clear();
+            self.top = 0;
         }
     }
 
@@ -480,71 +476,6 @@ impl ServiceItem {
 }
 
 impl ServiceItem {
-    fn console(&self, showing: Showing) -> (TerminalOptions, Waker) {
-        let runner = &self.context.runner;
-        if let Some(name) = self.container.as_ref().filter(|_| !self.command_shared()) {
-            let mut args = vec![
-                format!("PATH={}", pom_services::tool_path()),
-                "docker".to_string(),
-                "compose".to_string(),
-                "-f".to_string(),
-                runner.compose_file().to_string_lossy().into_owned(),
-                "-p".to_string(),
-                runner.compose_project(),
-                "logs".to_string(),
-            ];
-            if showing == Showing::Live {
-                args.push("-f".to_string());
-            }
-            args.extend(["--tail".to_string(), "200".to_string(), name.clone()]);
-            let options = TerminalOptions {
-                shell: Some(("/usr/bin/env".to_string(), args)),
-                working_directory: Some(self.root.clone()),
-                ..TerminalOptions::default()
-            };
-            return (options, self.context.waker.clone());
-        }
-        let holders = runner.holders().clone();
-        let process = self.process_holder();
-        let options = match showing {
-            Showing::Live => TerminalOptions {
-                working_directory: Some(self.root.clone()),
-                holder: Some(HolderOptions {
-                    dir: holders,
-                    name: process.clone(),
-                    binary: std::env::current_exe().unwrap_or_default(),
-                    attach_only: true,
-                    group: None,
-                }),
-                ..TerminalOptions::default()
-            },
-            Showing::Leftover => {
-                let log = holders.crash_log(&process);
-                let shell = if log.is_file() {
-                    (
-                        "/usr/bin/tail".to_string(),
-                        vec![
-                            "-n".to_string(),
-                            "+2".to_string(),
-                            log.to_string_lossy().into_owned(),
-                        ],
-                    )
-                } else {
-                    (
-                        "/bin/echo".to_string(),
-                        vec!["Not running. Start it to follow its output here.".to_string()],
-                    )
-                };
-                TerminalOptions {
-                    shell: Some(shell),
-                    working_directory: Some(self.root.clone()),
-                    ..TerminalOptions::default()
-                }
-            }
-        };
-        (options, self.context.waker.clone())
-    }
-
     fn state(&self) -> (State, Option<Crash>, Option<String>) {
         let Ok(shared) = self.shared.lock() else {
             return (State::Stopped, None, None);
@@ -597,7 +528,7 @@ impl ServiceItem {
             return None;
         }
         let config = self.context.config()?;
-        self.context.runner.proxy_url(&config, &self.target)
+        self.context.access.url(&config, &self.target)
     }
 
     /// What `{{shared.<name>.url}}` gives this workspace for the shared container.
@@ -605,9 +536,8 @@ impl ServiceItem {
         let name = self.container.as_ref()?;
         let config = self.context.config()?;
         self.context
-            .runner
-            .workspace_env(&config, &self.target.branch)
-            .shared_url(name)
+            .access
+            .shared_connection(&config, &self.target.branch, name)
     }
 
     fn run(&self, action: Action) {
@@ -737,19 +667,13 @@ impl ServiceItem {
     /// The holder whose process this tab follows: the service's own, or a command shared service's.
     fn process_holder(&self) -> String {
         match &self.container {
-            Some(name) if self.command_shared() => self.context.runner.shared_holder(name),
+            Some(name) if self.command_shared() => self.context.access.shared_holder(name),
             _ => self.holder.clone(),
         }
     }
 
     fn uptime(&self) -> Option<String> {
-        let pidfile = self
-            .context
-            .runner
-            .holders()
-            .pidfile(&self.process_holder());
-        // The same wording as the dock's rows ("12m", "2h 5m"), so a service reads alike in both places.
-        view::uptime(&pidfile)
+        self.context.access.uptime(&self.process_holder())
     }
 
     fn header(&self, state: &State) -> Node {
@@ -795,11 +719,7 @@ impl ServiceItem {
         };
         if let Some(mode) = self
             .service()
-            .map(|(_, service)| {
-                self.context
-                    .runner
-                    .mode(&self.target.repo, &self.target.service, &service)
-            })
+            .map(|(_, service)| self.context.access.mode(&self.target, &service))
             .filter(|mode| !mode.is_empty())
         {
             title = title.child(view::tag(&mode));
@@ -966,12 +886,7 @@ impl ServiceItem {
         };
         let mut facts = vec![Self::fact("Status", status)];
         if *state == State::Running {
-            if let Some(pid) = self
-                .context
-                .runner
-                .holders()
-                .holder_pid(&self.process_holder())
-            {
+            if let Some(pid) = self.context.access.pid(&self.process_holder()) {
                 facts.push(Self::fact(
                     "PID",
                     label(pid.to_string()).size(12.0).color(colors.text).into(),
@@ -994,7 +909,7 @@ impl ServiceItem {
             facts.extend(self.shared_facts(name));
         }
         if let Some((config, service)) = self.service() {
-            if let Some(port) = self.context.runner.port(&config, &self.target) {
+            if let Some(port) = self.context.access.port(&config, &self.target) {
                 facts.push(Self::fact(
                     "Port",
                     div()
@@ -1012,10 +927,7 @@ impl ServiceItem {
                 ));
             }
             let modes = service.mode_names();
-            let current_mode =
-                self.context
-                    .runner
-                    .mode(&self.target.repo, &self.target.service, &service);
+            let current_mode = self.context.access.mode(&self.target, &service);
             // How it runs follows where it is reached and what it reads: the mode comes after the env facts.
             let mode_fact = if modes.len() > 1 {
                 Some(Self::fact(
@@ -1029,7 +941,7 @@ impl ServiceItem {
             };
             if let Some(dir) = config.repos.get(&self.target.repo) {
                 let profiles = dir.env_profiles(Some(&service));
-                let current = self.context.runner.env_profile(&config, &self.target);
+                let current = self.context.access.env_profile(&config, &self.target);
                 if profiles.len() > 1 {
                     facts.push(Self::fact(
                         "Env profile",
@@ -1053,10 +965,7 @@ impl ServiceItem {
                 }
             }
             facts.extend(mode_fact);
-            let mode = self
-                .context
-                .runner
-                .mode(&self.target.repo, &self.target.service, &service);
+            let mode = self.context.access.mode(&self.target, &service);
             let command = service.active_cmd(&mode).trim().to_string();
             if !command.is_empty() {
                 facts.push(Self::fact(
@@ -1178,19 +1087,13 @@ impl ServiceItem {
                 "Command",
                 Self::command_block(def.cmd.clone(), self.base + COPY_COMMAND),
             ));
-            let folder = self.context.runner.shared_command_dir(config, def);
-            let shown = folder
-                .strip_prefix(self.context.runner.project_root())
-                .ok()
-                .map(|relative| relative.to_string_lossy().into_owned())
-                .filter(|relative| !relative.is_empty())
-                .unwrap_or_else(|| "project folder".to_string());
+            let shown = self.context.access.shared_folder(config, def);
             facts.push(Self::fact(
                 "Folder",
                 label(shown).size(12.0).color(colors.text).into(),
             ));
         }
-        let port = self.context.runner.shared_host_port(name);
+        let port = self.context.access.shared_host_port(name);
         if port > 0 {
             facts.push(Self::fact(
                 "Port",
@@ -1283,10 +1186,7 @@ impl ServiceItem {
             }
             COPY_COMMAND => {
                 if let Some((_, service)) = self.service() {
-                    let mode =
-                        self.context
-                            .runner
-                            .mode(&self.target.repo, &self.target.service, &service);
+                    let mode = self.context.access.mode(&self.target, &service);
                     self.ask(TabRequest::Copy(
                         service.active_cmd(&mode).trim().to_string(),
                     ));
@@ -1605,10 +1505,10 @@ impl Item for ServiceItem {
         let host = LogHost {
             palette: terminal_ui::palette(&theme()),
         };
-        let synced = self.terminal.as_mut().is_some_and(|terminal| {
-            let outcome = terminal.sync(&host);
-            outcome.changed || outcome.title_changed
-        });
+        let synced = self
+            .terminal
+            .as_mut()
+            .is_some_and(|terminal| terminal.sync(&host));
         let changed = synced && self.refresh_lines();
         ItemTick {
             changed: changed || shell_changed || self.state().0 == State::Running,
@@ -1794,13 +1694,9 @@ impl ServiceItem {
         let Some(mode) = service.mode_names().get(index).cloned() else {
             return;
         };
-        match self
-            .context
-            .runner
-            .set_mode(&config, &self.target.repo, &self.target.service, &mode)
-        {
+        match self.context.access.set_mode(&config, &self.target, &mode) {
             Ok(()) => self.restart_if_running(),
-            Err(error) => self.toast(error.to_string()),
+            Err(error) => self.toast(error),
         }
     }
 
@@ -1816,11 +1712,11 @@ impl ServiceItem {
         };
         match self
             .context
-            .runner
+            .access
             .set_env_profile(&config, &self.target, &profile)
         {
             Ok(()) => self.restart_if_running(),
-            Err(error) => self.toast(error.to_string()),
+            Err(error) => self.toast(error),
         }
     }
 
