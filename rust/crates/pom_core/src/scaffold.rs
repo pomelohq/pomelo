@@ -535,6 +535,8 @@ pub fn scaffold_session_with(
         sessions
             .save(state)
             .map_err(|error| format!("register the session: {error}"))?;
+        pom_sessions::Projects::register(state, name, &session_dir)
+            .map_err(|error| format!("register the project: {error}"))?;
         Ok(session_dir.clone())
     })();
     if result.is_err() {

@@ -325,6 +325,40 @@ pub fn forget_remote_session(state: &StateDir, name: &str, host: &str) -> std::i
     sessions.save(state)
 }
 
+/// Lists a project in `sessions.json` and `registry.json` when it is missing there, or its entry points at a
+/// folder without a `pom.yml`; never moves a live entry or changes the current session. Writes nothing when
+/// both already know it, so every command can call it.
+pub fn ensure_registered(
+    state: &StateDir,
+    session: &str,
+    root: &Path,
+    now: i64,
+) -> std::io::Result<()> {
+    if session.is_empty() {
+        return Ok(());
+    }
+    let root = std::path::absolute(root)?;
+    let root_text = root.to_string_lossy();
+    let live = |path: &Path| path == root || config_in(path).is_some();
+    let mut sessions = Sessions::load(state);
+    if !sessions
+        .get(session)
+        .is_some_and(|known| live(Path::new(&known.path)))
+    {
+        let current = sessions.current.clone();
+        sessions.touch(session, &root_text, now);
+        sessions.current = current;
+        sessions.save(state)?;
+    }
+    if !Projects::load(state)
+        .project_dir(session)
+        .is_some_and(|dir| live(&dir))
+    {
+        Projects::register(state, session, &root)?;
+    }
+    Ok(())
+}
+
 pub fn record_remote_open(
     state: &StateDir,
     name: &str,
@@ -548,6 +582,53 @@ mod tests {
         forget_session(&fixture.state, "alpha").expect("forget");
         assert_eq!(session_entries(&fixture.state).len(), 1);
         assert_eq!(Projects::load(&fixture.state).project_dir("alpha"), None);
+    }
+
+    #[test]
+    fn a_project_is_registered_once_without_taking_over() {
+        let fixture = Fixture::new();
+        let alpha = fixture.project("alpha", "session: alpha\n");
+        let beta = fixture.project("beta", "session: beta\n");
+        let alpha_root = alpha.parent().expect("root");
+        let beta_root = beta.parent().expect("root");
+        Project::open(&alpha, &fixture.state)
+            .record_open(&fixture.state, 5)
+            .expect("record alpha");
+
+        ensure_registered(&fixture.state, "beta", beta_root, 7).expect("register");
+        let sessions = Sessions::load(&fixture.state);
+        assert_eq!(sessions.current, "alpha", "the current project stays");
+        assert_eq!(sessions.get("beta").map(|entry| entry.last_used), Some(7));
+        assert_eq!(
+            Projects::load(&fixture.state).project_dir("beta"),
+            Some(beta_root.to_path_buf())
+        );
+
+        ensure_registered(&fixture.state, "beta", beta_root, 99).expect("again");
+        assert_eq!(
+            Sessions::load(&fixture.state)
+                .get("beta")
+                .map(|entry| entry.last_used),
+            Some(7),
+            "nothing is rewritten when it is known"
+        );
+
+        ensure_registered(&fixture.state, "alpha", beta_root, 11).expect("other copy");
+        assert_eq!(
+            Sessions::load(&fixture.state)
+                .get("alpha")
+                .map(|entry| PathBuf::from(&entry.path)),
+            Some(alpha_root.to_path_buf()),
+            "a live entry elsewhere is kept"
+        );
+
+        std::fs::remove_file(&alpha).expect("remove alpha config");
+        ensure_registered(&fixture.state, "alpha", beta_root, 12).expect("moved");
+        assert_eq!(
+            Projects::load(&fixture.state).project_dir("alpha"),
+            Some(beta_root.to_path_buf()),
+            "a stale entry follows the project"
+        );
     }
 
     #[test]

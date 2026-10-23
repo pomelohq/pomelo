@@ -68,7 +68,7 @@ fn a_real_queue_is_counted_and_waited_on_until_it_drains() {
     std::fs::write(
         root.join("pom.yml"),
         format!(
-            "session: {SESSION}\nshared_services:\n  redis:\n    image: redis:7-alpine\n    ports: [\"{PORT}:6379\"]\nrepos:\n  api:\n    shared_services: [redis]\n    services:\n      worker:\n        cmd: run\n        queue: {{ kind: sidekiq }}\n      mailer:\n        cmd: run\n        queue: {{ kind: bullmq }}\n"
+            "session: {SESSION}\nshared_services:\n  redis:\n    image: redis:7-alpine\n    ports: [\"{PORT}:6379\"]\nrepos:\n  api:\n    env:\n      REDIS_URL: \"redis://{{{{shared.redis.host}}}}:{{{{shared.redis.port}}}}/0\"\n    services:\n      worker:\n        cmd: run\n        queue: {{ kind: sidekiq }}\n      mailer:\n        cmd: run\n        queue: {{ kind: bullmq }}\n"
         ),
     )
     .expect("pom.yml");
@@ -87,12 +87,13 @@ fn a_real_queue_is_counted_and_waited_on_until_it_drains() {
     redis(&["SADD", "queues", "default"]);
     redis(&["LPUSH", "queue:default", "a", "b", "c"]);
     let counts = runner
-        .queue_counts(&config, &target("worker"))
-        .expect("counts");
+        .queue_snapshot(&config, &target("worker"), None)
+        .expect("counts")
+        .counts;
     assert_eq!(counts.waiting["default"], 3, "{counts:?}");
 
     let still_busy = runner
-        .wait_queue_idle(&config, &target("worker"), Duration::from_secs(1))
+        .wait_queue_idle(&config, &target("worker"), None, Duration::from_secs(1))
         .expect("wait");
     assert!(still_busy.is_err(), "three jobs are still waiting");
 
@@ -101,15 +102,33 @@ fn a_real_queue_is_counted_and_waited_on_until_it_drains() {
         redis(&["DEL", "queue:default"]);
     });
     let idle = runner
-        .wait_queue_idle(&config, &target("worker"), Duration::from_secs(20))
+        .wait_queue_idle(&config, &target("worker"), None, Duration::from_secs(20))
         .expect("wait");
     assert!(idle.is_ok(), "{idle:?}");
     assert!(drain.join().is_ok());
 
-    redis(&["SET", "bull:emails:meta", "x"]);
-    redis(&["LPUSH", "bull:emails:wait", "1"]);
-    let counts = runner
-        .queue_counts(&config, &target("mailer"))
+    redis(&["SET", "bull:legacy:id", "1"]);
+    redis(&["LPUSH", "bull:legacy:wait", "1"]);
+    redis(&["ZADD", "bull:emails:repeat", "99999999999999", "daily"]);
+    redis(&[
+        "ZADD",
+        "bull:emails:delayed",
+        "409599999999995904",
+        "repeat:daily:99999999999999",
+    ]);
+    let snapshot = runner
+        .queue_snapshot(&config, &target("mailer"), None)
         .expect("counts");
-    assert_eq!(counts.waiting["emails"], 1, "{counts:?}");
+    assert_eq!(snapshot.redis.name, "redis");
+    assert_eq!(snapshot.redis.reason, "env REDIS_URL");
+    let counts = snapshot.counts;
+    assert_eq!(
+        counts.waiting["legacy"], 1,
+        "a Bull v4 queue has no meta key: {counts:?}"
+    );
+    assert_eq!(
+        (counts.repeat_scheduled, counts.total()),
+        (1, 1),
+        "{counts:?}"
+    );
 }

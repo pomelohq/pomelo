@@ -52,10 +52,12 @@ services
                      recent output of a service, or only what it printed since a mark
   logs --mark <name> record where every service's output has got to
   mark <name> [-w b] one mark for a test step: log offsets and query counters
-  queue wait-idle <service> [--timeout 60s] [-o json]
-                     wait until the service's Sidekiq/BullMQ queue (pom.yml `queue:`) has no work:
+  queue wait-idle <service> [--timeout 60s] [--redis <name>] [-o json]
+                     wait until the service's Sidekiq/Bull/BullMQ queue (pom.yml `queue:`) has no
+                     waiting, active, due or prioritized job (crons and later delays do not count):
                      exit 0 idle, 2 still busy
-  queue counts <service> [-o json]   the queue's waiting, active, due and delayed jobs
+  queue counts <service> [--redis <name>] [-o json]
+                     the queue's jobs by kind, and the shared Redis it was read from
   attach <service>   attach this terminal to a running service (detach: close the terminal)
   ports              every leased port
   url <service>      where a service with a port listens, directly and through the dev proxy
@@ -443,6 +445,8 @@ struct QueueArgs {
     wait: bool,
     timeout: Option<std::time::Duration>,
     json: bool,
+    /// The shared Redis to look in, when the config and env leave it ambiguous.
+    redis: Option<String>,
 }
 
 const DEFAULT_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -460,8 +464,8 @@ fn parse_queue(rest: &[&str]) -> Result<QueueArgs, String> {
             ))
         }
     };
-    let args = args::Args::parse(rest, &["--timeout", "-o", "--output"])?;
-    args.allow(&["--timeout", "-o", "--output"])?;
+    let args = args::Args::parse(rest, &["--timeout", "--redis", "-o", "--output"])?;
+    args.allow(&["--timeout", "--redis", "-o", "--output"])?;
     let [service] = args.positional.as_slice() else {
         return Err(format!("queue {verb} needs one service"));
     };
@@ -477,6 +481,7 @@ fn parse_queue(rest: &[&str]) -> Result<QueueArgs, String> {
         wait,
         timeout,
         json: args.json()?,
+        redis: args.value(&["--redis"]),
     })
 }
 
@@ -857,6 +862,16 @@ fn path_shadow_finding(tool_path: &str) -> Option<pom_doctor::Finding> {
     pom_doctor::path_shadow(&path_env, &own, VERSION, &pom_doctor::pom_version)
 }
 
+/// A project only ever used from the CLI must still show in `project ls` and the app's host picker.
+pub(crate) fn register_project(state: &StateDir, session: &str, root: &Path) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64);
+    if let Err(error) = pom_core::ensure_registered(state, session, root, now) {
+        eprintln!("pom: list the project {session}: {error}");
+    }
+}
+
 /// The project `cwd` is in (its `pom.yml` is here or in a parent), or the explicit one.
 fn find_config(explicit: Option<&Path>, cwd: &Path) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
@@ -890,6 +905,7 @@ impl Session {
             (None, None) => return Err("pom.yml could not be loaded".into()),
         };
         let (branch, is_main) = pick_workspace(&project, invocation.workspace.as_deref(), cwd)?;
+        register_project(&state, &config.session, &project.root);
         let binary = std::env::current_exe().map_err(|error| error.to_string())?;
         let runner = ServiceRunner::new(RunnerOptions {
             project_root: project.root.clone(),
@@ -1259,14 +1275,16 @@ impl Session {
                 return 1;
             }
         };
-        let print = |counts: &pom_services::QueueCounts, idle: bool, out: &mut dyn Write| {
+        let print = |snapshot: &pom_services::QueueSnapshot, idle: bool, out: &mut dyn Write| {
+            let counts = &snapshot.counts;
             if queue.json {
                 let document = serde_json::json!({
-                    "schema": "pom.queue/v1",
+                    "schema": "pom.queue/v2",
                     "service": format!("{}/{}", target.repo, target.service),
                     "idle": idle,
                     "total": counts.total(),
                     "counts": counts,
+                    "redis": snapshot.redis,
                 });
                 report(out, &document.to_string());
             } else {
@@ -1278,21 +1296,26 @@ impl Session {
                 report(
                     out,
                     &format!(
-                        "{}/{}: waiting [{}], active {}, due {}, delayed {}",
+                        "{}/{}: waiting [{}], active {}, delayed due {}, prioritized {}; not counted: delayed later {}, repeat scheduled {} (redis {} db {})",
                         target.repo,
                         target.service,
                         waiting.join(" "),
                         counts.active,
-                        counts.due,
-                        counts.delayed
+                        counts.delayed_due,
+                        counts.prioritized,
+                        counts.delayed_future,
+                        counts.repeat_scheduled,
+                        snapshot.redis.name,
+                        snapshot.redis.database,
                     ),
                 );
             }
         };
+        let redis = queue.redis.as_deref();
         if !queue.wait {
-            return match self.runner.queue_counts(&self.config, &target) {
-                Ok(counts) => {
-                    print(&counts, counts.total() == 0, out);
+            return match self.runner.queue_snapshot(&self.config, &target, redis) {
+                Ok(snapshot) => {
+                    print(&snapshot, snapshot.counts.total() == 0, out);
                     0
                 }
                 Err(message) => {
@@ -1302,13 +1325,16 @@ impl Session {
             };
         }
         let timeout = queue.timeout.unwrap_or(DEFAULT_QUEUE_WAIT);
-        match self.runner.wait_queue_idle(&self.config, &target, timeout) {
-            Ok(Ok(counts)) => {
-                print(&counts, true, out);
+        match self
+            .runner
+            .wait_queue_idle(&self.config, &target, redis, timeout)
+        {
+            Ok(Ok(snapshot)) => {
+                print(&snapshot, true, out);
                 0
             }
-            Ok(Err(counts)) => {
-                print(&counts, false, err);
+            Ok(Err(snapshot)) => {
+                print(&snapshot, false, err);
                 report(
                     err,
                     &format!("error: still busy after {}s", timeout.as_secs()),
@@ -1556,6 +1582,15 @@ mod tests {
                 wait: true,
                 timeout: Some(std::time::Duration::from_secs(120)),
                 json: true,
+                redis: None,
+            }))
+        );
+        assert_eq!(
+            parsed("queue counts api/worker --redis cache").map(|i| i.command),
+            Ok(Command::Queue(QueueArgs {
+                service: "api/worker".into(),
+                redis: Some("cache".into()),
+                ..QueueArgs::default()
             }))
         );
         assert!(parsed("queue counts api/worker --timeout 1s").is_err());
