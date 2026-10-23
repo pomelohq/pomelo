@@ -63,6 +63,8 @@ pub struct Problem {
     pub target: String,
     /// The workspace's branch (or its host label), when known.
     pub workspace: String,
+    /// The same workspace's `<host>` address, when a remote host has it too.
+    pub elsewhere: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -389,6 +391,13 @@ impl RemoteGateway {
     }
 }
 
+/// A request a remote host's dev proxy can serve, and the workspace's `<host>` address.
+struct RemoteRoute {
+    decision: Decision,
+    host: String,
+    address: String,
+}
+
 /// Routes requests into the open projects, caching what is expensive to look up per request (a dev server
 /// fires hundreds of module requests per page load).
 pub struct Router {
@@ -621,6 +630,7 @@ impl Router {
         branch: &str,
         target: &str,
         prefix: &str,
+        wake: bool,
     ) -> Route {
         let Some(service_key) = resolve_service_key(config, target) else {
             return no_route(branch, target);
@@ -635,7 +645,9 @@ impl Router {
                 .state
                 .is_running()
         {
-            self.wake_once(project, branch);
+            if wake {
+                self.wake_once(project, branch);
+            }
             return Route::Error {
                 status: 503,
                 message: format!(
@@ -645,6 +657,7 @@ impl Router {
                     kind: ProblemKind::Waking,
                     target: target.to_string(),
                     workspace: branch.to_string(),
+                    elsewhere: String::new(),
                 },
             };
         }
@@ -662,6 +675,7 @@ impl Router {
                     kind: ProblemKind::Starting,
                     target: target.to_string(),
                     workspace: branch.to_string(),
+                    elsewhere: String::new(),
                 },
             },
             Err(Unavailable::Stopped) => Route::Error {
@@ -673,6 +687,7 @@ impl Router {
                     kind: ProblemKind::Stopped,
                     target: target.to_string(),
                     workspace: branch.to_string(),
+                    elsewhere: String::new(),
                 },
             },
             Err(Unavailable::Unknown) => no_route(branch, target),
@@ -729,6 +744,8 @@ impl Router {
         fallback
     }
 
+    /// A workspace both here and on a remote host is served here while its service runs here, else by the
+    /// host.
     pub fn decide(&self, host: &str, path: &str) -> Decision {
         let unrouted = |route: Route| Decision {
             route,
@@ -747,9 +764,40 @@ impl Router {
                 problem: Problem::default(),
             });
         };
-        if let Some(decision) = self.remote_decision(host, &labels, path) {
-            return decision;
+        let Some(remote) = self.remote_decision(host, &labels, path) else {
+            return self.local_decision(host, &labels, path, true);
+        };
+        if !self.claimed_locally(&labels) {
+            return remote.decision;
         }
+        let local = self.local_decision(host, &labels, path, false);
+        if !is_down(&local.route) {
+            return local;
+        }
+        if remote_answers(&remote.decision.route) {
+            return remote.decision;
+        }
+        let mut local = self.local_decision(host, &labels, path, true);
+        if let Route::Error {
+            message, problem, ..
+        } = &mut local.route
+        {
+            let url = format!("http://{}{path}", remote.address);
+            message.push_str(&format!(" - it is also on {}: {url}", remote.host));
+            problem.elsewhere = url;
+        }
+        local
+    }
+
+    /// Where a request goes among the local projects, waking an asleep workspace only when `wake` is set.
+    fn local_decision(&self, host: &str, labels: &[String], path: &str, wake: bool) -> Decision {
+        let unrouted = |route: Route| Decision {
+            route,
+            path: path.to_string(),
+            upstream_host: None,
+            logged: None,
+            fault: None,
+        };
         if labels.len() == 2 {
             for (_, config) in self.projects() {
                 if labels[1] == config.session && config.shared_services.contains_key(&labels[0]) {
@@ -787,7 +835,7 @@ impl Router {
                     };
                 };
                 if let Some((profile, url)) =
-                    self.override_profile(&project, &config, &branch, &labels, repo, service)
+                    self.override_profile(&project, &config, &branch, labels, repo, service)
                 {
                     logged.profile = profile;
                     logged.target = url.clone();
@@ -802,7 +850,8 @@ impl Router {
                         fault,
                     };
                 }
-                let route = self.workspace_route(&project, &config, &branch, &target, &prefix);
+                let route =
+                    self.workspace_route(&project, &config, &branch, &target, &prefix, wake);
                 logged.target = logged_target(&route);
                 let fault = self.fault_for(&config.session, &branch, &target, &stripped);
                 return Decision {
@@ -818,7 +867,7 @@ impl Router {
             let target = format!("{}/{}", labels[1], labels[0]);
             let (route, fault) = match self.project_for(&branch_label, &target) {
                 Some((project, config, branch)) => (
-                    self.workspace_route(&project, &config, &branch, &target, ""),
+                    self.workspace_route(&project, &config, &branch, &target, "", wake),
                     self.fault_for(&config.session, &branch, &target, path),
                 ),
                 None => (no_route(&branch_label, &target), None),
@@ -854,12 +903,12 @@ impl Router {
         })
     }
 
-    /// A remote project's workspace goes through the forward to its host's dev proxy, unchanged. A local
-    /// workspace with the same label wins; `<...>.<host>.localhost` still reaches the remote one, sent on
-    /// without the host label.
-    fn remote_decision(&self, host: &str, labels: &[String], path: &str) -> Option<Decision> {
+    /// A remote project's workspace goes through the forward to its host's dev proxy, unchanged;
+    /// `<...>.<host>.localhost` reaches it too, sent on without the host label. Also returns that `<host>`
+    /// address.
+    fn remote_decision(&self, host: &str, labels: &[String], path: &str) -> Option<RemoteRoute> {
         let gateways = self.gateways.read().ok()?.clone();
-        if gateways.is_empty() || self.claimed_locally(labels) {
+        if gateways.is_empty() {
             return None;
         }
         let last = labels.last()?;
@@ -879,6 +928,11 @@ impl Router {
             .map(|port| format!(":{port}"))
             .unwrap_or_default();
         let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), gateway.port);
+        let elsewhere = format!(
+            "{}.{}.{DOMAIN}{port}",
+            labels.join("."),
+            pom_env::branch_host(&gateway.host)
+        );
         let (repo, service, host_routed) = match path.strip_prefix(DEV_PREFIX) {
             Some(rest) => {
                 let mut parts = rest.splitn(3, '/');
@@ -891,7 +945,7 @@ impl Router {
             None if labels.len() == 3 => (labels[1].clone(), labels[0].clone(), true),
             None => (String::new(), labels[0].clone(), true),
         };
-        Some(Decision {
+        let decision = Decision {
             route: Route::Local {
                 address,
                 prefix: String::new(),
@@ -906,6 +960,11 @@ impl Router {
                 host_routed,
             }),
             fault: None,
+        };
+        Some(RemoteRoute {
+            decision,
+            host: gateway.host.clone(),
+            address: elsewhere,
         })
     }
 
@@ -971,6 +1030,19 @@ impl Router {
     }
 }
 
+/// A local service that is not running, so a remote host with the same workspace may serve it instead.
+fn is_down(route: &Route) -> bool {
+    matches!(
+        route,
+        Route::Error { problem, .. }
+            if matches!(problem.kind, ProblemKind::Stopped | ProblemKind::Waking | ProblemKind::NoRoute)
+    )
+}
+
+fn remote_answers(route: &Route) -> bool {
+    matches!(route, Route::Local { address, .. } if reachable(address.port()).is_some())
+}
+
 fn logged_target(route: &Route) -> String {
     match route {
         Route::Local { address, .. } => address.to_string(),
@@ -986,6 +1058,7 @@ fn no_route(branch_label: &str, target: &str) -> Route {
             kind: ProblemKind::NoRoute,
             target: target.to_string(),
             workspace: branch_label.to_string(),
+            elsewhere: String::new(),
         },
     }
 }

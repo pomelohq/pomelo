@@ -111,6 +111,14 @@ pub fn render(status: u16, message: &str, problem: &Problem) -> String {
             )
         })
         .unwrap_or_default();
+    let elsewhere = if problem.elsewhere.is_empty() {
+        String::new()
+    } else {
+        let url = escape(&problem.elsewhere);
+        format!(
+            r#"<p>The same workspace is on a remote host too, at <a href="{url}"><code>{url}</code></a>.</p>"#
+        )
+    };
     let poll = poll_ms(problem.kind);
     let status_line = match poll {
         Some(_) => {
@@ -188,6 +196,7 @@ main {{
 h1 {{ font-size: 22px; line-height: 1.3; margin: 12px 0 8px; font-weight: 600; word-break: break-word; }}
 p {{ margin: 0 0 14px; color: var(--muted); }}
 p b {{ color: var(--text); font-weight: 600; }}
+p a {{ color: var(--text); }}
 code {{ font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }}
 p code {{ background: var(--code); padding: 1px 6px; border-radius: 4px; color: var(--text); }}
 .cmd {{
@@ -214,6 +223,7 @@ details code {{ display: block; margin-top: 8px; white-space: pre-wrap; word-bre
 <span class="badge">{status} - Pomelo dev proxy</span>
 <h1>{title}</h1>
 <p>{lead}</p>
+{elsewhere}
 {command}
 {status_line}
 <details><summary>Details</summary><code>{message}</code></details>
@@ -235,6 +245,7 @@ mod tests {
             kind,
             target: "api/server".into(),
             workspace: "feat-login".into(),
+            elsewhere: String::new(),
         }
     }
 
@@ -265,6 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_also_on_a_host_links_its_host_address() {
+        let url = "http://server.api.feat-login.dev.localhost:8767/";
+        let page = render(
+            503,
+            "stopped",
+            &Problem {
+                elsewhere: url.into(),
+                ..problem(ProblemKind::Stopped)
+            },
+        );
+        assert!(page.contains(&format!(r#"<a href="{url}">"#)), "{page}");
+        assert!(!render(503, "stopped", &problem(ProblemKind::Stopped)).contains("remote host"));
+    }
+
+    #[test]
     fn a_wrong_address_does_not_poll_and_text_is_escaped() {
         let page = render(404, "no route for <script>", &Problem::default());
         assert!(!page.contains("location.reload()"));
@@ -281,6 +307,7 @@ mod tests {
                 kind: ProblemKind::Unreachable,
                 target: "api/server".into(),
                 workspace: "feat x".into(),
+                elsewhere: String::new(),
             },
         );
         assert!(

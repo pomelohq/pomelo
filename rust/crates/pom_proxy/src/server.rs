@@ -455,6 +455,7 @@ async fn handle_proxy(
                         .map(|logged| format!("{}/{}", logged.repo, logged.service))
                         .unwrap_or_default(),
                     workspace: workspace_label.clone(),
+                    elsewhere: String::new(),
                 };
                 response = error_response(
                     502,
