@@ -39,6 +39,8 @@ pub enum DriveError {
     NeedsTrust(String),
     /// A queued send waited its whole timeout for the session to become idle.
     Timeout(String),
+    /// An answer names a permission prompt that no longer waits.
+    Stale(String),
 }
 
 /// `pom agent start` found the agent waiting at its folder trust prompt.
@@ -56,7 +58,10 @@ impl DriveError {
             DriveError::NotSubmitted(_) => crate::conversation::NOT_SUBMITTED_EXIT,
             DriveError::NeedsTrust(_) => NEEDS_TRUST_EXIT,
             DriveError::Timeout(_) => crate::conversation::TIMEOUT_EXIT,
-            DriveError::NotFound(_) | DriveError::Invalid(_) | DriveError::Failed(_) => 1,
+            DriveError::NotFound(_)
+            | DriveError::Invalid(_)
+            | DriveError::Failed(_)
+            | DriveError::Stale(_) => 1,
         }
     }
 
@@ -69,6 +74,7 @@ impl DriveError {
             DriveError::Failed(_) => "failed",
             DriveError::NeedsTrust(_) => "needs_trust",
             DriveError::Timeout(_) => "timeout",
+            DriveError::Stale(_) => "stale",
         }
     }
 
@@ -95,7 +101,8 @@ impl std::fmt::Display for DriveError {
             | DriveError::Invalid(message)
             | DriveError::Failed(message)
             | DriveError::NeedsTrust(message)
-            | DriveError::Timeout(message) => write!(formatter, "{message}"),
+            | DriveError::Timeout(message)
+            | DriveError::Stale(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -130,6 +137,8 @@ pub struct SessionView {
     pub running: bool,
     /// One of `sessions::PHASES`.
     pub phase: String,
+    /// The permission prompt a live session waits on, if any.
+    pub pending_permission: Option<crate::permission::PermissionPrompt>,
 }
 
 impl SessionView {
@@ -225,12 +234,16 @@ impl Drive {
                 continue;
             };
             let role = holder_role(&record.holder, &self.project, branch);
-            let view = view_of(
+            let mut view = view_of(
                 &record,
                 self.alive(&record.holder),
                 role.is_some_and(|role| role.drivable),
                 now,
             );
+            if view.alive {
+                view.pending_permission =
+                    crate::permission::pending_permission(&self.state, &record.session_id);
+            }
             // A resumed conversation keeps its id; a relaunched role gets a new one: keep the newest per role.
             match views.iter_mut().find(|known| known.role == view.role) {
                 Some(known) if known.alive && !view.alive => {}

@@ -3552,6 +3552,7 @@ dependencies = [
 name = "pom_agent"
 version = "0.9.4"
 dependencies = [
+ "alacritty_terminal",
  "libc",
  "notify",
  "pom_config",

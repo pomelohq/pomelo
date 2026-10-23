@@ -20,7 +20,7 @@ const HOOK_WRAPPER: &str = "claude-hook";
 const SESSION_WRAPPER: &str = "claude-session-hook";
 const POLICY_WRAPPER: &str = "claude-policy-hook";
 const SESSION_FLAG: &str = "--session";
-const HOOK_EVENTS: [&str; 9] = [
+const HOOK_EVENTS: [&str; 10] = [
     "SessionStart",
     "UserPromptSubmit",
     "PreToolUse",
@@ -30,7 +30,10 @@ const HOOK_EVENTS: [&str; 9] = [
     "Stop",
     "SessionEnd",
     "Notification",
+    "MessageDisplay",
 ];
+/// The agent holds each batch of a streaming reply until this hook returns, so it only appends a line.
+const MESSAGE_DISPLAY_TIMEOUT_S: u64 = 5;
 const AGENTS_DIR: &str = "agents";
 const WORKSPACE_PREFIX: &str = "workspace--";
 /// A working state not refreshed for this long belongs to a session that died without saying so.
@@ -167,6 +170,12 @@ pub fn session_event(input: &[u8]) -> Option<SessionEvent> {
             "PreCompact" => json!({ "trigger": field("trigger") }),
             "SessionEnd" => json!({ "reason": field("reason") }),
             "SessionStart" => json!({ "source": field("source") }),
+            "PreToolUse" | "PostToolUse" => json!({
+                "call": crate::permission::call_key(
+                    body.get("tool_name").unwrap_or(&Value::Null),
+                    body.get("tool_input").unwrap_or(&Value::Null),
+                )
+            }),
             _ => Value::Null,
         },
     })
@@ -224,17 +233,46 @@ pub fn run(args: &[String]) -> Option<i32> {
     if identity.is_some() && !attached {
         return Some(0);
     }
+    let body: Value = serde_json::from_slice(&input).unwrap_or(Value::Null);
+    let event_name = body
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if event_name == "MessageDisplay" {
+        if identity.is_some() {
+            if let Err(error) = crate::live::record_delta(&state, &body) {
+                eprintln!("claude-hook: {error}");
+            }
+        }
+        return Some(0);
+    }
     // A side agent works next to the main one; only the main agent's state is the workspace's dot.
     if std::env::var_os(crate::SIDE_AGENT_ENV).is_none() {
         if let Err(error) = record_hook(&state, &input) {
             eprintln!("claude-hook: {error}");
         }
     }
-    if let (Some(identity), Some(event)) = (&identity, session_event(&input)) {
+    if let (Some(identity), Some(mut event)) = (&identity, session_event(&input)) {
+        if event.event == crate::permission::REQUEST_EVENT {
+            event.detail = crate::permission::request_detail(&state, Some(identity), &body);
+        }
         if event.state.is_some() {
             if let Err(error) = record_session_event(&state, identity, &event) {
                 eprintln!("claude-hook: {error}");
             }
+        }
+        let request = event.detail["request"].as_str().unwrap_or_default();
+        if event.detail["answer_by"] == crate::permission::ANSWER_BY_HOOK && !request.is_empty() {
+            if let Some(output) = crate::permission::await_answer(
+                &state,
+                identity,
+                &event.session_id,
+                request,
+                crate::permission::HOOK_WAIT,
+            ) {
+                println!("{output}");
+            }
+            return Some(0);
         }
     }
     let decided = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -284,10 +322,20 @@ pub fn session_hooks(state: &StateDir, binary: &Path) -> Option<Value> {
         } else {
             quoted(recorder.clone())
         };
-        hooks.insert(
-            event.to_string(),
-            json!([{ "matcher": "", "hooks": [{ "type": "command", "command": command }] }]),
-        );
+        let mut hook = json!({ "type": "command", "command": command });
+        match event {
+            "PermissionRequest" => {
+                hook["timeout"] = json!(crate::permission::HOOK_WAIT.as_secs() + 60);
+            }
+            "MessageDisplay" => hook["timeout"] = json!(MESSAGE_DISPLAY_TIMEOUT_S),
+            _ => {}
+        }
+        let entry = if event == "MessageDisplay" {
+            json!([{ "hooks": [hook] }])
+        } else {
+            json!([{ "matcher": "", "hooks": [hook] }])
+        };
+        hooks.insert(event.to_string(), entry);
     }
     Some(Value::Object(hooks))
 }
@@ -619,6 +667,16 @@ mod tests {
             };
             assert!(command.contains(wrapper), "{event}: {command}");
         }
+        assert_eq!(
+            hooks["PermissionRequest"][0]["hooks"][0]["timeout"],
+            crate::permission::HOOK_WAIT.as_secs() + 60,
+            "the agent must not cancel a prompt pom holds before pom lets go"
+        );
+        assert_eq!(
+            hooks["MessageDisplay"][0]["hooks"][0]["timeout"],
+            MESSAGE_DISPLAY_TIMEOUT_S
+        );
+        assert!(hooks["MessageDisplay"][0].get("matcher").is_none());
         let guard = state.path(POLICY_WRAPPER);
         let run = |path: &Path| {
             std::process::Command::new("/bin/sh")

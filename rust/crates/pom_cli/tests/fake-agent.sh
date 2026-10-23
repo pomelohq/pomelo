@@ -6,8 +6,39 @@ transcript="$FAKE_TRANSCRIPT"
 hook() {
     printf '%s' "$1" | "$POM" claude-hook --session >/dev/null
 }
+payload() {
+    printf '%s' "{\"session_id\":\"$session\",\"hook_event_name\":\"$1\",\"cwd\":\"$PWD\",\"transcript_path\":\"$transcript\",\"permission_mode\":\"default\"$2}"
+}
 event() {
-    hook "{\"session_id\":\"$session\",\"hook_event_name\":\"$1\",\"cwd\":\"$PWD\",\"transcript_path\":\"$transcript\",\"permission_mode\":\"default\"$2}"
+    hook "$(payload "$1" "$2")"
+}
+reply() {
+    printf '{"type":"assistant","uuid":"a-%s","message":{"id":"m-%s","content":[{"type":"text","text":"%s"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}}\n' "$1" "$1" "$2" >>"$transcript"
+    event Stop ""
+}
+tool='"tool_name":"Bash","tool_input":{"command":"make test","description":"Run the tests"}'
+# Like the agent: the PermissionRequest hook may answer; else the dialog is drawn and answered with a key.
+ask_permission() {
+    out=$(payload PermissionRequest ",$tool,\"permission_suggestions\":[]" | "$POM" claude-hook --session)
+    case "$out" in
+    *'"behavior":"allow"'*) answer=allow ;;
+    *'"behavior":"deny"'*) answer=deny ;;
+    *)
+        printf 'Bash command\r\n\r\n  make test\r\n\r\nDo you want to proceed?\r\n\342\235\257 1. Yes\r\n  2. Yes, and don'"'"'t ask again for make commands\r\n  3. No, and tell Claude what to do differently (esc)\r\n'
+        stty -icanon min 1 2>/dev/null
+        key=$(dd bs=1 count=1 2>/dev/null)
+        stty icanon 2>/dev/null
+        printf '\033[8A\033[J'
+        if [ -z "$key" ]; then answer=allow; else answer=esc; fi
+        ;;
+    esac
+    case "$answer" in
+    allow)
+        event PostToolUse ",$tool,\"tool_response\":{\"stdout\":\"ok\"}"
+        reply "$1" "ran make test"
+        ;;
+    deny) reply "$1" "not allowed: $(printf '%s' "$out" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')" ;;
+    esac
 }
 : >"$transcript"
 event SessionStart ""
@@ -23,6 +54,19 @@ while IFS= read -r line; do
         ;;
     *crash*)
         exit 1
+        ;;
+    *ask-permission*)
+        ask_permission "$text"
+        ;;
+    *stream*)
+        event MessageDisplay ",\"turn_id\":\"t-$text\",\"message_id\":\"d-$text\",\"index\":0,\"final\":false,\"delta\":\"Working on it:\\n\""
+        waited=0
+        while [ ! -e "$FAKE_RELEASE" ] && [ $waited -lt 100 ]; do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        event MessageDisplay ",\"turn_id\":\"t-$text\",\"message_id\":\"d-$text\",\"index\":1,\"final\":true,\"delta\":\"done\""
+        reply "$text" "Working on it: done"
         ;;
     *long*)
         ;;

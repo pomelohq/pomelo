@@ -192,10 +192,13 @@ agents (one workspace at a time; --json for stable output)
               [--permission-mode m] [--model m] [--extra-mcp-config f]
                      start (or reuse) a session; --fresh starts role r on a new conversation;
                      --trust says yes to the agent's prompt to trust the folder (else exit 7)
-  agent read <workspace/role> [--turn n | --since n] [--full]
-                     what the agent did in a turn (the last by default), from its transcript
-  agent watch [workspace] [--from-start] [--timeout d]
-                     stream the workspace's agent events as NDJSON
+  agent read <workspace/role> [--turn n | --since n] [--full] [--live]
+                     what the agent did in a turn (the last by default), from its transcript;
+                     --live adds the reply it is still writing
+  agent watch [workspace] [--role r] [--live] [--until turn-end] [--from-start] [--timeout d]
+                     stream the workspace's agent events as NDJSON; --role keeps one session's,
+                     --live adds live_text lines as its reply is written, --until turn-end stops
+                     once that session's turn ends (picked as wait does)
   agent stop <workspace/role>
                      end a session
   agent send <workspace/role> <text | --file f> [--queue] [--take | --as-person] [--timeout d]
@@ -209,8 +212,12 @@ agents (one workspace at a time; --json for stable output)
                      send, wait for the turn to end, and read it
   agent interrupt <workspace/role> [--as-person]
                      stop the current turn
-  agent approve|deny <workspace/role> <request> [--always]
-                     answer a pending approval of the workspace policy
+  agent allow|deny <workspace/role> [<id> | --id id] [--reason r] [--as-person]
+                     answer the permission prompt the session waits on (pending_permission in
+                     agent ls --json), the agent's own or its workspace policy's; an id that no
+                     longer waits is refused (stale)
+  agent approve <workspace/role> <request> [--always]
+                     approve a pending approval of the workspace policy
   agent takeover [workspace] --session-id <id> [--settings f] [--mcp-config f]
   agent release <workspace/role>
                      a person takes a session over, and hands it back

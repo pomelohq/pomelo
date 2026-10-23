@@ -20,20 +20,11 @@ const WATCH_POLL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AgentCommand {
-    Ls {
-        all: bool,
-        json: bool,
-    },
+    Ls { all: bool, json: bool },
     Start(StartRequest),
-    Stop {
-        handle: String,
-        json: bool,
-    },
+    Stop { handle: String, json: bool },
     Read(ReadRequest),
-    Watch {
-        from_start: bool,
-        timeout: Option<Duration>,
-    },
+    Watch(WatchRequest),
     Drive(DriveRequest),
 }
 
@@ -43,7 +34,7 @@ impl AgentCommand {
             AgentCommand::Ls { json, .. } | AgentCommand::Stop { json, .. } => *json,
             AgentCommand::Read(request) => request.json,
             AgentCommand::Start(request) => request.json,
-            AgentCommand::Watch { .. } => true,
+            AgentCommand::Watch(_) => true,
             AgentCommand::Drive(request) => request.json,
         }
     }
@@ -72,6 +63,12 @@ pub(crate) enum DriveAction {
     Approve {
         request: String,
         scope: ApproveScope,
+    },
+    Answer {
+        id: Option<String>,
+        allow: bool,
+        reason: String,
+        send_as: SendAs,
     },
     Takeover {
         session_id: String,
@@ -103,7 +100,20 @@ pub(crate) struct ReadRequest {
     pub turn: Option<u64>,
     pub since: Option<u64>,
     pub full: bool,
+    pub live: bool,
     pub json: bool,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct WatchRequest {
+    pub from_start: bool,
+    pub timeout: Option<Duration>,
+    /// Only this session's lines.
+    pub role: Option<String>,
+    /// Also the reply being written, as `live_text` lines.
+    pub live: bool,
+    /// Ends once that session's turn ends, the way `wait --until turn-end` picks it.
+    pub until_turn_end: bool,
 }
 
 /// `pom agent <command> ...`: returns the command and the workspace it names, if any.
@@ -130,6 +140,8 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
         "--until",
         "--session-id",
         "--settings",
+        "--id",
+        "--reason",
         "-o",
         "--output",
     ];
@@ -234,7 +246,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
         }
         "read" => {
             args.allow(&[
-                "--turn", "--since", "--full", "--format", "--json", "-o", "--output",
+                "--turn", "--since", "--full", "--live", "--format", "--json", "-o", "--output",
             ])?;
             let (handle, workspace) = handle("a session (<workspace>/<role>)")?;
             Ok((
@@ -243,29 +255,49 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                     turn: number("--turn")?,
                     since: number("--since")?,
                     full: args.has("--full"),
+                    live: args.has("--live"),
                     json,
                 }),
                 workspace,
             ))
         }
         "watch" => {
-            args.allow(&["--from-start", "--timeout"])?;
+            args.allow(&[
+                "--from-start",
+                "--timeout",
+                "--role",
+                "--live",
+                "--until",
+                "--json",
+            ])?;
             args.at_most(1, "pom agent watch")?;
+            let role = args.value(&["--role"]);
+            let until_turn_end = match args.value(&["--until"]).as_deref() {
+                None => false,
+                Some("turn-end" | "turn_end") if role.is_some() => true,
+                Some("turn-end" | "turn_end") => {
+                    return Err("pom agent watch --until turn-end needs --role".into())
+                }
+                Some(other) => return Err(format!("--until {other}: only turn-end")),
+            };
             Ok((
-                AgentCommand::Watch {
+                AgentCommand::Watch(WatchRequest {
                     from_start: args.has("--from-start"),
                     timeout: args
                         .value(&["--timeout"])
                         .map(|text| parse_duration(&text))
                         .transpose()?,
-                },
+                    role,
+                    live: args.has("--live"),
+                    until_turn_end,
+                }),
                 args.positional.first().cloned(),
             ))
         }
-        "send" | "ask" | "wait" | "interrupt" | "approve" | "deny" | "release" => {
+        "send" | "ask" | "wait" | "interrupt" | "approve" | "allow" | "deny" | "release" => {
             args.allow(&[
                 "--file", "--queue", "--take", "--as-person", "--until", "--turn", "--timeout", "--full",
-                "--always", "--json", "-o", "--output",
+                "--always", "--id", "--reason", "--json", "-o", "--output",
             ])?;
             let send_as = match (args.has("--take"), args.has("--as-person")) {
                 (true, true) => return Err("--take and --as-person do not go together: --take moves the session to you, --as-person types as the person who keeps it".into()),
@@ -304,16 +336,24 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 },
                 "interrupt" => DriveAction::Interrupt { send_as },
                 "release" => DriveAction::Release,
+                "allow" | "deny" => DriveAction::Answer {
+                    id: args
+                        .value(&["--id"])
+                        .or_else(|| args.positional.get(1).cloned()),
+                    allow: *verb == "allow",
+                    reason: args.value(&["--reason"]).unwrap_or_default(),
+                    send_as,
+                },
                 _ => DriveAction::Approve {
                     request: args
                         .positional
                         .get(1)
                         .cloned()
                         .ok_or(format!("pom agent {verb} needs the request id"))?,
-                    scope: match (*verb, args.has("--always")) {
-                        ("deny", _) => ApproveScope::Deny,
-                        (_, true) => ApproveScope::Always,
-                        _ => ApproveScope::Once,
+                    scope: if args.has("--always") {
+                        ApproveScope::Always
+                    } else {
+                        ApproveScope::Once
                     },
                 },
             };
@@ -347,7 +387,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
             ))
         }
         other => Err(format!(
-            "unknown agent command {other} (ls, start, stop, read, watch, send, wait, ask, interrupt, approve, deny, takeover, release)"
+            "unknown agent command {other} (ls, start, stop, read, watch, send, wait, ask, interrupt, allow, deny, approve, takeover, release)"
         )),
     }
 }
@@ -549,6 +589,28 @@ fn drive_turn(
             )?;
             Ok(0)
         }
+        DriveAction::Answer {
+            id,
+            allow,
+            reason,
+            send_as,
+        } => {
+            let answer =
+                drive.answer_permission(&gate, &view, id.as_deref(), *allow, reason, *send_as)?;
+            let scope = if answer.allow { "once" } else { "deny" };
+            print(
+                out,
+                json!({"handle": answer.handle, "id": answer.id, "request": answer.id, "allow": answer.allow, "scope": scope, "via": answer.via}),
+                format!(
+                    "{} {} for {} (through its {})",
+                    if answer.allow { "allowed" } else { "denied" },
+                    answer.id,
+                    answer.handle,
+                    answer.via
+                ),
+            )?;
+            Ok(0)
+        }
         DriveAction::Release => {
             let lease = drive.release(&gate, &view)?;
             print(
@@ -643,29 +705,113 @@ fn run_view(
                 (None, None) => turn == last,
             };
             let turns = drive.read(&view, select, request.full)?;
-            print_turns(out, &view, &turns, request.json)
+            if !request.live {
+                return print_turns(out, &view, &turns, request.json);
+            }
+            let live = pom_agent::live_turn(&drive.state, &view.session_id, view.turn);
+            if request.json {
+                return line(
+                    out,
+                    &json!({"schema": SCHEMA, "handle": view.handle, "session_id": view.session_id, "state": view.state, "reason": view.reason, "running": view.running, "phase": view.phase, "turns": turns, "live": live})
+                        .to_string(),
+                );
+            }
+            print_turns(out, &view, &turns, false)?;
+            if view.running && !live.text.is_empty() {
+                line(out, &format!("(writing, turn {})", live.turn))?;
+                line(out, &live.text)?;
+            }
+            Ok(())
         }
-        AgentCommand::Watch {
-            from_start,
-            timeout,
-        } => {
-            open()?;
-            let mut seen: HashMap<String, usize> = HashMap::new();
-            if !from_start {
-                drive.new_events(&workspace.branch, &mut seen);
-            }
-            let started = Instant::now();
-            loop {
-                for event in drive.new_events(&workspace.branch, &mut seen) {
-                    line(out, &event.to_string())?;
-                }
-                if timeout.is_some_and(|timeout| started.elapsed() >= timeout) {
-                    return Ok(());
-                }
-                std::thread::sleep(WATCH_POLL);
-            }
+        AgentCommand::Watch(request) => {
+            let gate = open()?;
+            watch(&drive, &gate, request, out)
         }
         AgentCommand::Drive(_) => Ok(()),
+    }
+}
+
+fn watch(
+    drive: &Drive,
+    gate: &Gate<'_>,
+    request: &WatchRequest,
+    out: &mut dyn Write,
+) -> Result<(), DriveError> {
+    let branch = gate.workspace().branch.clone();
+    let mine = |role: &str| request.role.as_deref().is_none_or(|wanted| wanted == role);
+    let target = match (&request.role, request.until_turn_end) {
+        (Some(role), true) => {
+            let view = drive.resolve(gate, role)?;
+            let turn = drive.default_wait_turn(&view);
+            Some((view, turn))
+        }
+        _ => None,
+    };
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    if !request.from_start {
+        drive.new_events(&branch, &mut seen);
+    }
+    let mut live_at: HashMap<String, (u64, u64)> = HashMap::new();
+    let started = Instant::now();
+    loop {
+        for event in drive.new_events(&branch, &mut seen) {
+            if mine(event["role"].as_str().unwrap_or_default()) {
+                line(out, &event.to_string())?;
+            }
+        }
+        if request.live {
+            for view in drive.list(&branch) {
+                if !mine(&view.role) || view.session_id.is_empty() || !view.alive {
+                    continue;
+                }
+                let (turn, from) = match live_at.get(&view.session_id) {
+                    Some((turn, from)) if *turn == view.turn => (*turn, *from),
+                    _ => (view.turn, 0),
+                };
+                let (deltas, next) =
+                    pom_agent::live_deltas(&drive.state, &view.session_id, turn, from);
+                for delta in deltas {
+                    let mut value = json!(delta);
+                    value["schema"] = json!(SCHEMA);
+                    value["event"] = json!("live_text");
+                    value["workspace"] = json!(branch);
+                    value["role"] = json!(view.role);
+                    value["session_id"] = json!(view.session_id);
+                    line(out, &value.to_string())?;
+                }
+                live_at.insert(view.session_id.clone(), (turn, next));
+            }
+        }
+        if let Some((view, turn)) = &target {
+            let reached = match pom_agent::read_state(&drive.state, &view.session_id) {
+                Some(record) if record.turn > *turn => Some("turn-end"),
+                Some(record)
+                    if record.turn == *turn
+                        && matches!(
+                            record.turn_state,
+                            pom_agent::TurnState::Ended | pom_agent::TurnState::Cancelled
+                        ) =>
+                {
+                    Some("turn-end")
+                }
+                _ if !drive.holders.holder_alive(&view.holder) => Some("died"),
+                _ => None,
+            };
+            if let Some(reached) = reached {
+                return line(
+                    out,
+                    &json!({"schema": SCHEMA, "event": "watch_end", "workspace": branch, "role": view.role, "reached": reached, "for_turn": turn})
+                        .to_string(),
+                );
+            }
+        }
+        if request
+            .timeout
+            .is_some_and(|timeout| started.elapsed() >= timeout)
+        {
+            return Ok(());
+        }
+        std::thread::sleep(WATCH_POLL);
     }
 }
 

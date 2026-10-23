@@ -11,11 +11,16 @@ use serde_json::{json, Value};
 
 use crate::caller::Caller;
 use crate::drive::{Drive, DriveError, SessionView};
-use crate::driver::driver;
+use crate::driver::{driver, PermissionDialog};
 use crate::gate::{ApproveScope, Gate, Refusal};
 use crate::identity::Identity;
 use crate::lease::{log, read_lease, set_lease, Lease, LeaseClass};
+use crate::permission::{
+    answer_taken, is_policy_request, pending_permission, PermissionPrompt, ANSWER_BY_HOOK,
+    ANSWER_BY_POLICY, ANSWER_BY_TERMINAL,
+};
 use crate::policy::{write_answer, Answer};
+use crate::screen::rendered_lines;
 use crate::sessions::{
     events, now_ms, read_state, record_event, session_dir, with_lock, SessionEvent, TurnState,
 };
@@ -30,6 +35,10 @@ const END_TURN_QUIET: Duration = Duration::from_millis(800);
 /// A holder must be missing this many checks in a row before its session counts as dead.
 const DEAD_AFTER_MISSES: u32 = 3;
 const INTERRUPT_SETTLE: Duration = Duration::from_secs(3);
+/// How long an answer may take to reach a prompt pom holds.
+const HOOK_TAKE_WAIT: Duration = Duration::from_secs(3);
+const DIALOG_CLOSE_WAIT: Duration = Duration::from_secs(3);
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long `send --queue` waits for an operator that gave no timeout.
 pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
@@ -48,6 +57,16 @@ pub enum SendAs {
     TakeOver,
     /// As the person who drives the session (`--as-person`), from another client; the lease stays theirs.
     Person,
+}
+
+/// What `answer_permission` did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct PermissionAnswer {
+    pub handle: String,
+    pub id: String,
+    pub allow: bool,
+    /// `hook`, `terminal` or `policy`.
+    pub via: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -557,6 +576,177 @@ impl Drive {
             json!({"event": "permission_answer", "role": view.role, "request": request, "scope": scope, "decided_by": decided_by}),
         )
         .map_err(|error| DriveError::Failed(error.to_string()))
+    }
+
+    /// Allows or denies the permission prompt `view`'s session waits on: `id` if given, which must still be the
+    /// waiting one. A workspace policy's ask is answered as `approve` does; the agent's own prompt through its
+    /// hook while pom holds it, else by typing into the agent's dialog once it is on screen.
+    pub fn answer_permission(
+        &self,
+        gate: &Gate<'_>,
+        view: &SessionView,
+        id: Option<&str>,
+        allow: bool,
+        reason: &str,
+        send_as: SendAs,
+    ) -> Result<PermissionAnswer, DriveError> {
+        gate.drivable_target(&view.holder)?;
+        if view.session_id.is_empty() {
+            return Err(DriveError::NotFound(format!(
+                "{} has no session yet",
+                view.handle
+            )));
+        }
+        let pending = pending_permission(&self.state, &view.session_id);
+        let prompt = match (pending, id) {
+            (Some(prompt), None) => prompt,
+            (Some(prompt), Some(id)) if prompt.id == id => prompt,
+            (_, Some(id)) if is_policy_request(&self.state, &view.session_id, id) => {
+                PermissionPrompt {
+                    id: id.to_string(),
+                    answer_by: ANSWER_BY_POLICY.into(),
+                    ..PermissionPrompt::default()
+                }
+            }
+            (_, Some(id)) => {
+                return Err(DriveError::Stale(format!(
+                    "{} does not wait on permission prompt {id}: it was answered, or another replaced it",
+                    view.handle
+                )))
+            }
+            (None, None) => {
+                return Err(DriveError::NotFound(format!(
+                    "{} waits on no permission prompt",
+                    view.handle
+                )))
+            }
+        };
+        let decided_by = sender(gate, send_as).to_string();
+        let answered = |via: &str| PermissionAnswer {
+            handle: view.handle.clone(),
+            id: prompt.id.clone(),
+            allow,
+            via: via.to_string(),
+        };
+        if prompt.answer_by == ANSWER_BY_POLICY {
+            let scope = if allow {
+                ApproveScope::Once
+            } else {
+                ApproveScope::Deny
+            };
+            self.approve(gate, view, &prompt.id, scope)?;
+            return Ok(answered(ANSWER_BY_POLICY));
+        }
+        let lease = self.typing_lease(gate, view, send_as)?;
+        let failed = |error: std::io::Error| DriveError::Failed(error.to_string());
+        if prompt.answer_by == ANSWER_BY_HOOK {
+            let answer = Answer {
+                allow,
+                decided_by: decided_by.clone(),
+                reason: reason.to_string(),
+                always: false,
+            };
+            write_answer(&self.state, &view.session_id, &prompt.id, &answer).map_err(failed)?;
+            if !answer_taken(&self.state, &view.session_id, &prompt.id, HOOK_TAKE_WAIT) {
+                return Err(DriveError::Failed(format!(
+                    "the prompt {} of {} stopped waiting for an answer before taking this one; read agent ls and answer again",
+                    prompt.id, view.handle
+                )));
+            }
+        } else {
+            self.answer_dialog(view, &prompt, &lease, allow)?;
+            // The agent moves on as soon as the dialog closes, so the decision leaves its state alone.
+            self.record(
+                view,
+                crate::permission::DECISION_EVENT,
+                None,
+                json!({"request": prompt.id, "allow": allow, "decided_by": decided_by, "via": ANSWER_BY_TERMINAL}),
+            );
+            if !allow {
+                // The dialog's deny key also stops the turn, and that fires no hook.
+                self.record(
+                    view,
+                    "Interrupted",
+                    Some(crate::hooks::AgentState::Idle),
+                    json!({"stop_reason": "cancelled"}),
+                );
+            }
+        }
+        log(
+            &self.state,
+            &self.project,
+            &view.workspace,
+            json!({"event": "permission_answer", "role": view.role, "request": prompt.id, "scope": if allow { "once" } else { "deny" }, "decided_by": decided_by, "via": prompt.answer_by}),
+        )
+        .map_err(failed)?;
+        Ok(answered(&prompt.answer_by))
+    }
+
+    /// Types an answer into the agent's permission dialog, only while the screen shows it for this very prompt
+    /// with the plain yes highlighted, and checks the dialog closed.
+    fn answer_dialog(
+        &self,
+        view: &SessionView,
+        prompt: &PermissionPrompt,
+        lease: &Lease,
+        allow: bool,
+    ) -> Result<(), DriveError> {
+        let agent_driver = driver(&view.driver).ok_or_else(|| Refusal::NotDrivable {
+            role: view.role.clone(),
+        })?;
+        let dialog = |what: &str| -> Result<Option<PermissionDialog>, DriveError> {
+            let output = pom_ptyhost::snapshot(&self.holders, &view.holder, SNAPSHOT_TIMEOUT)
+                .map_err(|error| {
+                    DriveError::Failed(format!("could not read the screen of {what}: {error}"))
+                })?;
+            Ok(agent_driver.permission_dialog(&rendered_lines(&output)))
+        };
+        let shown = dialog(&view.handle)?.ok_or_else(|| {
+            DriveError::Failed(format!(
+                "{} does not show its permission dialog yet; answer again in a moment",
+                view.handle
+            ))
+        })?;
+        if allow && !shown.first_choice_selected {
+            return Err(DriveError::Failed(format!(
+                "the dialog of {} has another choice than the plain yes highlighted; answer it in its terminal",
+                view.handle
+            )));
+        }
+        if pending_permission(&self.state, &view.session_id).map(|now| now.id)
+            != Some(prompt.id.clone())
+        {
+            return Err(DriveError::Stale(format!(
+                "permission prompt {} of {} was answered meanwhile",
+                prompt.id, view.handle
+            )));
+        }
+        let mut connection =
+            pom_ptyhost::connect_writer(&self.holders, &view.holder).map_err(|error| {
+                DriveError::Failed(format!("could not reach {}: {error}", view.handle))
+            })?;
+        if lease.class != LeaseClass::Human {
+            connection
+                .claim(&lease.token)
+                .map_err(|error| DriveError::Failed(error.to_string()))?;
+        }
+        for keys in agent_driver.answer_permission(allow) {
+            connection
+                .input(&keys.bytes)
+                .map_err(|error| DriveError::Failed(error.to_string()))?;
+            std::thread::sleep(Duration::from_millis(keys.pause_ms));
+        }
+        let started = Instant::now();
+        while started.elapsed() < DIALOG_CLOSE_WAIT {
+            std::thread::sleep(POLL);
+            if dialog(&view.handle)?.is_none() {
+                return Ok(());
+            }
+        }
+        Err(DriveError::Failed(format!(
+            "typed the answer into {} but its dialog is still open; answer it in its terminal",
+            view.handle
+        )))
     }
 
     /// A person takes the session over: the lease moves to them and every client may type again. When the

@@ -114,7 +114,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "agent_list",
-        "The coding-agent sessions of THIS workspace: role, state (starting, needs_trust, idle, thinking, tool_use, compacting, awaiting_input, died, ended, unknown), reason (pending_approval, idle_notification, stop, interrupted, stale or null), running (a turn is in progress), phase (working, waiting, idle, gone), turn, and whether you may drive it. Only this workspace's sessions exist for you.",
+        "The coding-agent sessions of THIS workspace: role, state (starting, needs_trust, idle, thinking, tool_use, compacting, awaiting_input, died, ended, unknown), reason (pending_approval, idle_notification, stop, interrupted, stale or null), running (a turn is in progress), phase (working, waiting, idle, gone), turn, pending_permission (the tool prompt it waits on: id, kind, tool_name, tool_input, answer_by) and whether you may drive it. Only this workspace's sessions exist for you.",
         json!({"type": "object", "properties": {}}),
         true,
         Box::new(move |_| {
@@ -259,29 +259,30 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     ));
 
     let ws = workspace;
-    let schema = json!({"type": "object", "required": ["role", "request"], "properties": {
+    let schema = json!({"type": "object", "required": ["role"], "properties": {
         "role": role_schema,
-        "request": {"type": "string", "description": "The id from its permission_request (pending approval <id>)."},
-        "deny": {"type": "boolean"}
+        "request": {"type": "string", "description": "The prompt's id: pending_permission.id from agent_list, or the id in a policy's \"pending approval <id>\". Without it, the prompt the session waits on now."},
+        "deny": {"type": "boolean"},
+        "reason": {"type": "string", "description": "Told to the agent when you deny."}
     }});
     tools.push(tool(
         "agent_approve",
-        "Answer a pending approval of another agent session of THIS workspace, once (approve or deny). Use it only for a call you would make yourself.",
+        "Answer the permission prompt another agent session of THIS workspace waits on, once (allow, or deny with deny: true): its own tool prompt, if you drive that session, or its workspace policy's ask. A request id that no longer waits is refused (stale). Use it only for a call you would make yourself.",
         schema,
         false,
         Box::new(move |args| {
             let role = role(args)?;
-            let request = text(args, "request");
-            let scope = if args.get("deny").and_then(Value::as_bool).unwrap_or(false) {
-                ApproveScope::Deny
-            } else {
-                ApproveScope::Once
-            };
+            let request = Some(text(args, "request")).filter(|request| !request.is_empty());
+            let deny = args.get("deny").and_then(Value::as_bool).unwrap_or(false);
+            let reason = text(args, "reason");
             ws.gated(|drive, gate| {
                 let view = drive.resolve(gate, &role)?;
-                drive.approve(gate, &view, &request, scope)
+                drive.answer_permission(gate, &view, request.as_deref(), !deny, &reason, SendAs::LeaseHolder)
             })
-            .and_then(|()| answer(json!({"role": role, "request": request, "scope": scope})))
+            .and_then(|answered| {
+                let scope = if answered.allow { ApproveScope::Once } else { ApproveScope::Deny };
+                answer(json!({"role": role, "request": answered.id, "scope": scope, "via": answered.via}))
+            })
         }),
     ));
 

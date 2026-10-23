@@ -9,10 +9,13 @@ mod hooks;
 mod identity;
 mod launch;
 mod lease;
+mod live;
 mod naming;
 mod onboard;
+mod permission;
 mod policy;
 mod presence;
+mod screen;
 mod sessions;
 mod side;
 mod statusline;
@@ -23,11 +26,11 @@ mod watch;
 pub use caller::Caller;
 pub use claude::{install_mcp, mcp_config_json, ClaudeHome, InstallError};
 pub use conversation::{
-    SendAs, WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT, NOT_SUBMITTED_EXIT,
-    TIMEOUT_EXIT,
+    PermissionAnswer, SendAs, WaitOutcome, WaitUntil, AWAITING_INPUT_EXIT, DIED_EXIT,
+    NOT_SUBMITTED_EXIT, TIMEOUT_EXIT,
 };
 pub use drive::{split_handle, watch_line, Drive, DriveError, SessionView, NEEDS_TRUST_EXIT};
-pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes};
+pub use driver::{driver, AgentDriver, ClaudeDriver, Keystrokes, PermissionDialog};
 pub use forget::forget_workspace;
 pub use gate::{ApproveScope, Gate, Limits, Refusal, Workspace, REFUSED_EXIT};
 pub use hooks::{
@@ -44,8 +47,12 @@ pub use launch::{
     system_prompt, AgentLaunch, LaunchContext, LaunchOptions,
 };
 pub use lease::{log as log_workspace, log_lines, read_lease, set_lease, Lease, LeaseClass};
+pub use live::{live_deltas, live_turn, LiveDelta, LiveMessage, LiveTurn};
 pub use naming::{claude_available, naming_prompt, parse_suggestion, suggest_name, NameSuggestion};
 pub use onboard::{onboard_launch_with, AgentCli};
+pub use permission::{
+    pending_permission, PermissionPrompt, ANSWER_BY_HOOK, ANSWER_BY_POLICY, ANSWER_BY_TERMINAL,
+};
 pub use policy::{
     answer_path, ask_policy, decide, hook_output, request_id, take_answer, workspace_policy,
     write_answer, Answer, Decision, Driver, Policy, PolicyLookup, Verdict,
