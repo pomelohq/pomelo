@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use pom_agent::{
-    ApproveScope, Caller, Drive, DriveError, Gate, LaunchOptions, Limits, WaitUntil, SCHEMA,
+    ApproveScope, Caller, Drive, DriveError, Gate, LaunchOptions, Limits, SendAs, WaitUntil, SCHEMA,
 };
 use pom_ptyhost::SocketDir;
 use serde_json::{json, Value};
@@ -114,7 +114,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "agent_list",
-        "The coding-agent sessions of THIS workspace: role, state (idle, thinking, tool_use, awaiting_input, died), reason (pending_approval, idle_notification, stop, interrupted, stale or null), turn, and whether you may drive it. Only this workspace's sessions exist for you.",
+        "The coding-agent sessions of THIS workspace: role, state (starting, needs_trust, idle, thinking, tool_use, compacting, awaiting_input, died, ended, unknown), reason (pending_approval, idle_notification, stop, interrupted, stale or null), running (a turn is in progress), phase (working, waiting, idle, gone), turn, and whether you may drive it. Only this workspace's sessions exist for you.",
         json!({"type": "object", "properties": {}}),
         true,
         Box::new(move |_| {
@@ -168,7 +168,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             let message = text(args, "text");
             ws.gated(|drive, gate| {
                 let view = drive.resolve(gate, &role)?;
-                drive.send(gate, &view, &message, false, false, None)
+                drive.send(gate, &view, &message, false, SendAs::LeaseHolder, None)
             })
             .and_then(|turn| answer(json!({"role": role, "turn": turn})))
         }),
@@ -183,7 +183,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     }});
     tools.push(tool(
         "agent_wait",
-        "Wait for another agent session of THIS workspace: until its turn ends (default), it is idle, or it asks for a permission. Returns reached (turn-end, idle, awaiting_input, timeout, died) and the stop reason.",
+        "Wait for another agent session of THIS workspace: until its turn ends (default), it is idle, or it asks for a permission. A turn-end wait waits for exactly `turn` if given, else the running turn, else the turn the last send started, else the next one; never an older turn. Returns reached (turn-end, idle, awaiting_input, timeout, died), for_turn and the stop reason.",
         schema,
         true,
         Box::new(move |args| {
@@ -249,7 +249,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
             ws.gated(|drive, gate| {
                 let view = drive.resolve(gate, &role)?;
                 let limit = gate.wait(timeout(args))?;
-                let turn = drive.send(gate, &view, &message, false, false, limit)?;
+                let turn = drive.send(gate, &view, &message, false, SendAs::LeaseHolder, limit)?;
                 let outcome = drive.wait(&view, WaitUntil::TurnEnd, Some(turn), limit);
                 let result = drive.read(&view, |number| number == turn, false)?;
                 Ok(json!({"role": role, "turn": turn, "wait": outcome, "result": result.first()}))

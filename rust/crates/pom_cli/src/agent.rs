@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use pom_agent::{
     split_handle, ApproveScope, Caller, Drive, DriveError, Gate, LaunchOptions, Limits,
-    RecordedTurn, SessionView, WaitUntil, Workspace, SCHEMA,
+    RecordedTurn, SendAs, SessionView, WaitUntil, Workspace, SCHEMA,
 };
 use pom_ptyhost::SocketDir;
 use serde_json::{json, Value};
@@ -55,7 +55,7 @@ pub(crate) enum DriveAction {
     Send {
         text: String,
         queue: bool,
-        take: bool,
+        send_as: SendAs,
     },
     Wait {
         until: WaitUntil,
@@ -63,10 +63,12 @@ pub(crate) enum DriveAction {
     },
     Ask {
         text: String,
-        take: bool,
+        send_as: SendAs,
         full: bool,
     },
-    Interrupt,
+    Interrupt {
+        send_as: SendAs,
+    },
     Approve {
         request: String,
         scope: ApproveScope,
@@ -262,9 +264,15 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
         }
         "send" | "ask" | "wait" | "interrupt" | "approve" | "deny" | "release" => {
             args.allow(&[
-                "--file", "--queue", "--take", "--until", "--turn", "--timeout", "--full",
+                "--file", "--queue", "--take", "--as-person", "--until", "--turn", "--timeout", "--full",
                 "--always", "--json", "-o", "--output",
             ])?;
+            let send_as = match (args.has("--take"), args.has("--as-person")) {
+                (true, true) => return Err("--take and --as-person do not go together: --take moves the session to you, --as-person types as the person who keeps it".into()),
+                (true, false) => SendAs::TakeOver,
+                (false, true) => SendAs::Person,
+                (false, false) => SendAs::LeaseHolder,
+            };
             let (handle, workspace) = handle("a session (<workspace>/<role>)")?;
             let text = || -> Result<String, String> {
                 match (args.positional.get(1), args.value(&["--file"])) {
@@ -278,11 +286,11 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                 "send" => DriveAction::Send {
                     text: text()?,
                     queue: args.has("--queue"),
-                    take: args.has("--take"),
+                    send_as,
                 },
                 "ask" => DriveAction::Ask {
                     text: text()?,
-                    take: args.has("--take"),
+                    send_as,
                     full: args.has("--full"),
                 },
                 "wait" => DriveAction::Wait {
@@ -294,7 +302,7 @@ pub(crate) fn parse(rest: &[&str]) -> Result<(AgentCommand, Option<String>), Str
                     },
                     turn: number("--turn")?,
                 },
-                "interrupt" => DriveAction::Interrupt,
+                "interrupt" => DriveAction::Interrupt { send_as },
                 "release" => DriveAction::Release,
                 _ => DriveAction::Approve {
                     request: args
@@ -474,8 +482,12 @@ fn drive_turn(
     }
     let view = drive.resolve(&gate, &request.handle)?;
     match &request.action {
-        DriveAction::Send { text, queue, take } => {
-            let turn = drive.send(&gate, &view, text, *queue, *take, timeout)?;
+        DriveAction::Send {
+            text,
+            queue,
+            send_as,
+        } => {
+            let turn = drive.send(&gate, &view, text, *queue, *send_as, timeout)?;
             print(
                 out,
                 json!({"handle": view.handle, "turn": turn}),
@@ -496,8 +508,12 @@ fn drive_turn(
             )?;
             Ok(code)
         }
-        DriveAction::Ask { text, take, full } => {
-            let turn = drive.send(&gate, &view, text, false, *take, timeout)?;
+        DriveAction::Ask {
+            text,
+            send_as,
+            full,
+        } => {
+            let turn = drive.send(&gate, &view, text, false, *send_as, timeout)?;
             let outcome = drive.wait(&view, WaitUntil::TurnEnd, Some(turn), timeout);
             let turns = drive.read(&view, |number| number == turn, *full)?;
             let code = outcome.exit_code;
@@ -515,8 +531,8 @@ fn drive_turn(
             }
             Ok(code)
         }
-        DriveAction::Interrupt => {
-            drive.interrupt(&gate, &view)?;
+        DriveAction::Interrupt { send_as } => {
+            drive.interrupt(&gate, &view, *send_as)?;
             print(
                 out,
                 json!({"handle": view.handle, "interrupted": true}),
