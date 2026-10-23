@@ -18,6 +18,8 @@ pub enum SecretsError {
     /// Decryption failed: the machine key changed or the file was tampered with.
     Decrypt,
     Format(serde_json::Error),
+    /// The machine key file exists but is not a key; it is left as is so a backup can replace it.
+    BadKey(PathBuf),
 }
 
 impl std::fmt::Display for SecretsError {
@@ -27,6 +29,11 @@ impl std::fmt::Display for SecretsError {
             SecretsError::Corrupt => formatter.write_str("secrets store corrupt"),
             SecretsError::Decrypt => formatter.write_str("secrets decrypt failed (key changed?)"),
             SecretsError::Format(error) => write!(formatter, "secrets store format: {error}"),
+            SecretsError::BadKey(path) => write!(
+                formatter,
+                "secrets key {} is not a {KEY_LENGTH}-byte key; restore it from a backup",
+                path.display()
+            ),
         }
     }
 }
@@ -133,18 +140,33 @@ impl SecretStore {
         Ok(())
     }
 
-    /// The machine key is created on first use; losing it makes every store unreadable.
+    /// The machine key is created on first use; losing it makes every store unreadable, so any read error
+    /// other than a missing file is returned instead of replacing the key.
     fn cipher(&self) -> Result<Aes256Gcm, SecretsError> {
         let path = self.state.path(KEY_FILE);
         let key = match std::fs::read(&path) {
-            Ok(key) if key.len() == KEY_LENGTH => key,
-            _ => {
-                let key = Aes256Gcm::generate_key(&mut OsRng).to_vec();
-                write_atomic(&path, &key, 0o600)?;
-                key
-            }
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => create_key(&path)?,
+            Err(error) => return Err(error.into()),
         };
+        if key.len() != KEY_LENGTH {
+            return Err(SecretsError::BadKey(path));
+        }
         Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key)))
+    }
+}
+
+/// Writes a fresh key only if none exists yet; when another process got there first, its key wins.
+fn create_key(path: &std::path::Path) -> Result<Vec<u8>, SecretsError> {
+    let key = Aes256Gcm::generate_key(&mut OsRng).to_vec();
+    let staged = path.with_extension(format!("new-{}", random_hex(8)));
+    write_atomic(&staged, &key, 0o600)?;
+    let linked = std::fs::hard_link(&staged, path);
+    let _ = std::fs::remove_file(&staged);
+    match linked {
+        Ok(()) => Ok(key),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(std::fs::read(path)?),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -211,6 +233,49 @@ mod tests {
         assert!(matches!(store.get("A"), Err(SecretsError::Decrypt)));
         std::fs::write(store.store_path(), [1u8; 5])?;
         assert!(matches!(store.get("A"), Err(SecretsError::Corrupt)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_key_that_cannot_be_read_is_never_replaced() -> Result<(), SecretsError> {
+        let (temp, store) = store("demo");
+        store.set("A", "1")?;
+        let key_path = temp.path().join("pom/secret.key");
+        let key = std::fs::read(&key_path)?;
+
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o000))?;
+        assert!(matches!(store.get("A"), Err(SecretsError::Io(_))));
+        assert!(matches!(store.set("B", "2"), Err(SecretsError::Io(_))));
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+        assert_eq!(std::fs::read(&key_path)?, key);
+
+        std::fs::write(&key_path, b"short")?;
+        assert!(matches!(store.get("A"), Err(SecretsError::BadKey(_))));
+        assert_eq!(std::fs::read(&key_path)?, b"short");
+
+        std::fs::write(&key_path, &key)?;
+        assert_eq!(store.get("A")?.as_deref(), Some("1"));
+        Ok(())
+    }
+
+    #[test]
+    fn stores_on_one_machine_share_the_first_key() -> Result<(), SecretsError> {
+        let (temp, first) = store("one");
+        let second = SecretStore::new(StateDir::new(temp.path().join("pom")), "two");
+        first.set("A", "1")?;
+        second.set("B", "2")?;
+        assert_eq!(first.get("A")?.as_deref(), Some("1"));
+        assert_eq!(second.get("B")?.as_deref(), Some("2"));
+        let leftovers = std::fs::read_dir(temp.path().join("pom"))?
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("secret.new-")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
         Ok(())
     }
 
