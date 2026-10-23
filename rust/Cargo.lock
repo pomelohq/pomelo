@@ -4842,6 +4842,7 @@ dependencies = [
  "pom_rpc",
  "pom_services",
  "pom_shell",
+ "serde",
  "serde_json",
  "tempfile",
  "terminal",

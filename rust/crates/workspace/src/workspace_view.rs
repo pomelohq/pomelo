@@ -7451,6 +7451,15 @@ impl WorkspaceView {
                 .is_some_and(|group| group.has_item(id))
     }
 
+    /// Whether the agent tab `id` was moved next to the code.
+    pub fn agent_item_in_center(&mut self, id: &str) -> bool {
+        self.layout
+            .files_view
+            .as_mut()
+            .and_then(|files| files.pane_group_mut())
+            .is_some_and(|group| group.has_item(id))
+    }
+
     /// Sends `text` to the agent tab `id` as a message; false when it is not open.
     pub fn send_to_agent(&mut self, id: &str, text: &str) -> bool {
         self.layout
