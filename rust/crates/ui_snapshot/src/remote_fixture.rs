@@ -32,6 +32,111 @@ struct Board {
     older_pom: Option<String>,
     /// Its server opens terminals, whether or not the scene opens one.
     serves_terminals: bool,
+    /// Its server reads the workspace's files.
+    serves_files: bool,
+}
+
+/// The workspace folder the boards show on the host.
+const WORKTREE: &str = "/home/dev/pom/myproject/workspace--feat-login";
+const CONTROLLER: &str = "api/app/controllers/users_controller.rb";
+
+/// The boards' files in a scratch folder, read as if they were on the host; `partial` stops the tree's walk
+/// after its first folders, as a large tree still being read.
+struct HostFiles {
+    local: files::LocalFs,
+    partial: bool,
+}
+
+struct PartialFeed {
+    entries: Option<Vec<files::FileEntry>>,
+}
+
+impl files::TreeFeed for PartialFeed {
+    fn poll(&mut self) -> Vec<files::TreeEvent> {
+        self.entries
+            .take()
+            .map(|entries| files::TreeEvent::Snapshot {
+                entries,
+                complete: false,
+            })
+            .into_iter()
+            .collect()
+    }
+}
+
+impl files::ProjectFs for HostFiles {
+    fn local_root(&self) -> Option<&std::path::Path> {
+        None
+    }
+
+    fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn files::TreeFeed> {
+        let Some(root) = files::ProjectFs::local_root(&self.local) else {
+            return Box::new(PartialFeed { entries: None });
+        };
+        if self.partial {
+            let entries = files::list(root)
+                .into_iter()
+                .filter(|entry| {
+                    entry.path.starts_with("api") && entry.path.matches('/').count() < 2
+                })
+                .collect();
+            return Box::new(PartialFeed {
+                entries: Some(entries),
+            });
+        }
+        self.local.watch(wake)
+    }
+
+    fn stat(&self, path: &str) -> std::io::Result<files::FileStat> {
+        self.local.stat(path)
+    }
+
+    fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+        self.local.read(path)
+    }
+
+    fn read_bytes(&self, path: &str, limit: u64) -> std::io::Result<Vec<u8>> {
+        self.local.read_bytes(path, limit)
+    }
+
+    fn project_files(&self, include_ignored: bool) -> std::io::Result<Vec<String>> {
+        self.local.project_files(include_ignored)
+    }
+}
+
+/// The file tree and editor of the host's workspace, with the controller open when the tree is whole.
+fn host_files(partial: bool) -> anyhow::Result<files_ui::FilesView> {
+    let root = crate::fixture_dir().join("remote");
+    crate::editor_fixture::create(&root)?;
+    let fs = Arc::new(HostFiles {
+        local: files::LocalFs::new(root),
+        partial,
+    });
+    let mut files = files_ui::FilesView::new(fs, WORKTREE.into()).read_only(true);
+    let file = std::path::Path::new(WORKTREE).join(CONTROLLER);
+    if !partial {
+        workspace::FunctionView::open_file_at(&mut files, &file, None, None);
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        workspace::FunctionView::tick_items(&mut files, &|| None);
+        let ready = if partial {
+            files.scanning()
+        } else {
+            !files.scanning() && workspace::FunctionView::active_file_path(&files).is_some()
+        };
+        if ready {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let shown = if partial {
+        std::path::Path::new(WORKTREE).join("api/README.md")
+    } else {
+        file
+    };
+    workspace::FunctionView::reveal_in_tree(&mut files, &shown);
+    Ok(files)
 }
 
 const DEV_AGENT: &str = "ws-myproject-feat-login-claude-raw";
@@ -275,9 +380,13 @@ impl ProjectSource for Board {
         Some(pom_remote::TransportInfo {
             via: pom_remote::Via::Server,
             terminals: self.serves_terminals,
+            files: self.serves_files,
             pushes: self.pushes,
             agents: self.pushes,
-            version_mismatch: self.older_pom.is_some(),
+            version_mismatch: self
+                .older_pom
+                .as_ref()
+                .is_some_and(|version| version != pom_remote::VERSION),
             remote_version: self.older_pom.clone(),
             ..pom_remote::TransportInfo::default()
         })
@@ -483,7 +592,9 @@ pub fn render(
         link: link.clone(),
         restarts: u64::from(mode == "restarted"),
         older_pom: matches!(mode, "version" | "version-commands" | "version-updating")
-            .then(|| "0.1.0".to_string()),
+            .then(|| "0.1.0".to_string())
+            .or_else(|| (mode == "files-old-server").then(|| pom_remote::VERSION.to_string())),
+        serves_files: mode != "files-old-server",
         serves_terminals: mode != "disconnected",
         ..Board::default()
     });
@@ -515,6 +626,11 @@ pub fn render(
         });
     }
     let snapshot = watch.snapshot();
+    let mut files_view = match mode {
+        "files-scanning" => Some(host_files(true)?),
+        "files-open" => Some(host_files(false)?),
+        _ => None,
+    };
     let sessions = vec![
         workspace::Session {
             name: "myproject".into(),
@@ -571,6 +687,9 @@ pub fn render(
         let (notice, _) =
             remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject", &update);
         view.set_center_notice(Some(notice));
+        if let Some(files) = files_view.take() {
+            view.set_files_view(Some(Box::new(files)));
+        }
         if mode == "restarted" {
             view.show_toast(remote_ui::restart_notice("dev"), None);
         }
@@ -607,7 +726,7 @@ pub fn render(
     if mode == "logs" {
         wait_until(&watch, |snapshot| snapshot.logs.is_some());
     }
-    let live = terminal || agents;
+    let live = terminal || agents || mode.starts_with("files");
     for _ in 0..if live { 40 } else { 4 } {
         app.draw(handle).expect("frame");
         if live {

@@ -2509,8 +2509,16 @@ impl Layout {
     }
 
     pub fn func_offered(&self, i: usize) -> bool {
-        if self.func_hidden.get(i).copied().unwrap_or(false) || self.is_remote() {
+        if self.func_hidden.get(i).copied().unwrap_or(false) {
             return false;
+        }
+        // A remote project's files open once its server reads them; its services then leave the page too.
+        if self.is_remote() {
+            return self.files_view.is_some()
+                && matches!(
+                    PaneKind::ALL.get(i),
+                    Some(PaneKind::Files | PaneKind::Services)
+                );
         }
         let on_main = self.project.as_ref().is_some_and(|project| {
             project

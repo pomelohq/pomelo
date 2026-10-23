@@ -449,6 +449,11 @@ pub struct PomUpdate {
     pub error: Option<String>,
 }
 
+/// A server older than file access: the files stay on the host until pom there is updated.
+fn lacks_files(transport: &pom_remote::TransportInfo) -> bool {
+    transport.via == pom_remote::Via::Server && !transport.files
+}
+
 /// The banners of a host read over ssh, or whose pom is on another minor version than the app; `update_action`
 /// is the index of the page's Update button.
 pub fn transport_banners(
@@ -492,6 +497,38 @@ pub fn transport_banners(
             (None, None) => NoticeBanner {
                 tone: NoticeTone::Warning,
                 text: version,
+                action: update_action,
+                ..NoticeBanner::default()
+            },
+        };
+        banners.push(banner);
+    } else if lacks_files(transport) {
+        let text = match &transport.remote_version {
+            Some(remote) => format!("pom {remote} on {host} cannot show its files here."),
+            None => format!("pom on {host} cannot show its files here."),
+        };
+        let banner = match (&update.running, &update.error) {
+            (Some(step), _) => NoticeBanner {
+                tone: NoticeTone::Info,
+                busy: true,
+                text: format!("Updating pom on {host}: {}...", step.label()),
+                ..NoticeBanner::default()
+            },
+            (None, Some(error)) => NoticeBanner {
+                tone: NoticeTone::Error,
+                text: format!("Could not update pom on {host}: {error}"),
+                action: update_action,
+                ..NoticeBanner::default()
+            },
+            (None, None) if !update.can_install => NoticeBanner {
+                tone: NoticeTone::Warning,
+                text: format!("{text} To update it, run on {host}:"),
+                commands: pom_remote::update::manual_commands(pom_remote::VERSION),
+                ..NoticeBanner::default()
+            },
+            (None, None) => NoticeBanner {
+                tone: NoticeTone::Warning,
+                text: format!("{text} Update it to open files in this window."),
                 action: update_action,
                 ..NoticeBanner::default()
             },
@@ -600,7 +637,7 @@ pub fn remote_notice(
     let mismatch = snapshot
         .transport
         .as_ref()
-        .is_some_and(|transport| transport.version_mismatch);
+        .is_some_and(|transport| transport.version_mismatch || lacks_files(transport));
     let update_action = (mismatch && update.can_install && update.running.is_none()).then(|| {
         actions.push(NoticeAction::UpdatePom);
         actions.len() - 1
@@ -745,6 +782,40 @@ mod tests {
         assert!(matches!(modal.step, Step::Hosts));
         modal.key(EditKey::Escape, false);
         assert!(matches!(modal.take_result(), Some(ModalResult::Cancelled)));
+    }
+
+    #[test]
+    fn a_server_without_files_keeps_the_page_and_offers_an_update() {
+        let mut snapshot = Snapshot {
+            connection: Connection::Connected,
+            ..Snapshot::default()
+        };
+        snapshot.transport = Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Server,
+            remote_version: Some("0.9.0".into()),
+            terminals: true,
+            ..pom_remote::TransportInfo::default()
+        });
+        let update = PomUpdate {
+            can_install: true,
+            ..PomUpdate::default()
+        };
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
+        assert_eq!(
+            actions,
+            vec![NoticeAction::OpenInEditor, NoticeAction::UpdatePom]
+        );
+        assert_eq!(
+            notice.banners[0].text,
+            "pom 0.9.0 on dev cannot show its files here. Update it to open files in this window."
+        );
+        assert_eq!(notice.banners[0].action, Some(1));
+        if let Some(transport) = snapshot.transport.as_mut() {
+            transport.files = true;
+        }
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
+        assert!(notice.banners.is_empty());
+        assert_eq!(actions, vec![NoticeAction::OpenInEditor]);
     }
 
     #[test]

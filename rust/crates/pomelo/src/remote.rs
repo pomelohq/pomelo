@@ -18,6 +18,8 @@ pub(crate) struct RemoteWindow {
     notice_actions: Vec<remote_ui::NoticeAction>,
     /// The workspace whose terminals the window shows, once the host's server opens them.
     terminals_for: Option<String>,
+    /// The workspace whose files the window shows, once the host's server reads them.
+    files_for: Option<String>,
     /// The agent roles whose tabs were open when last saved, for the shown workspace.
     agent_tabs: Vec<String>,
     /// Server restarts already told about.
@@ -191,6 +193,7 @@ impl App {
                 seen: u64::MAX,
                 notice_actions: Vec::new(),
                 terminals_for: None,
+                files_for: None,
                 agent_tabs: Vec::new(),
                 restarts_told: 0,
                 pom_update: Arc::new(std::sync::Mutex::new(remote_ui::PomUpdate {
@@ -267,6 +270,7 @@ impl App {
             if let Some(remote) = main.remote.as_mut() {
                 remote.seen = u64::MAX;
                 remote.terminals_for = None;
+                remote.files_for = None;
             }
             main.dirty = true;
         }
@@ -334,6 +338,7 @@ impl App {
             }
         });
         self.install_remote_terminals(id, &snapshot);
+        self.install_remote_files(id, &snapshot);
         self.open_started_agents(id);
         self.save_remote_agent_tabs(id, &snapshot);
     }
@@ -478,6 +483,39 @@ impl App {
             for (item_id, item) in restored {
                 view.open_agent_item(&item_id, false, move || Some(item));
             }
+        });
+    }
+
+    /// The file tree and editor of the shown workspace, read on the host through its server; an older server
+    /// keeps the page, whose banner asks for a newer pom there.
+    fn install_remote_files(&mut self, id: WindowId, snapshot: &pom_remote::Snapshot) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if remote.active.is_empty() || remote.files_for.as_deref() == Some(&remote.active) {
+            return;
+        }
+        let Some(fs) = remote.watch.files() else {
+            return;
+        };
+        let root = snapshot
+            .workspaces
+            .as_ref()
+            .and_then(|list| {
+                list.workspaces
+                    .iter()
+                    .find(|workspace| workspace.branch == remote.active)
+            })
+            .map(|workspace| workspace.path.clone())
+            .unwrap_or_default();
+        remote.files_for = Some(remote.active.clone());
+        let files = files_ui::FilesView::new(fs, root).read_only(true);
+        self.with_workspace_view(id, |view, _| {
+            view.set_files_view(Some(Box::new(files)));
         });
     }
 

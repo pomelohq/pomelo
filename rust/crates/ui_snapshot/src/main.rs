@@ -403,6 +403,15 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         ),
         "remote-agents" => (0, &[("REMOTEVIEW", "agents"), ("CROP", "1054,40,380,832")]),
         "remote-create" => (0, &[("REMOTEVIEW", "create"), ("CROP", "0,40,256,860")]),
+        "remote-files-scanning" => (
+            0,
+            &[("REMOTEVIEW", "files-scanning"), ("CROP", REMOTE_FILES)],
+        ),
+        "remote-file-open" => (0, &[("REMOTEVIEW", "files-open"), ("CROP", REMOTE_FILES)]),
+        "remote-files-old-server" => (
+            0,
+            &[("REMOTEVIEW", "files-old-server"), ("CROP", REMOTE_CENTER)],
+        ),
         "remote-restarted" => (
             0,
             &[("REMOTEVIEW", "restarted"), ("CROP", "496,814,449,52")],
@@ -419,6 +428,9 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         _ => return None,
     })
 }
+
+/// A remote window right of its workspaces: the file tree, the editor and the status bar.
+const REMOTE_FILES: &str = "256,40,1184,860";
 
 /// The center pane of a remote window at the boards' size, with the terminal dock when one is open.
 const REMOTE_CENTER: &str = "256,40,1178,832";

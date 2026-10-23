@@ -4,6 +4,7 @@
 
 mod editor;
 mod local;
+mod remote_fs;
 pub mod server_api;
 mod server_source;
 pub mod server_transport;
@@ -23,6 +24,7 @@ pub use local::{
     OpenedProject, WorkspaceTerminals,
 };
 pub use pom_rpc::pty::LinkState;
+pub use remote_fs::RemoteFs;
 pub use server_source::{project_source, Opener, ServerSource, VERSION};
 pub use source::{
     remote_projects, run_pom, AgentTurn, FailedRun, Feed, FeedEvent, JobEvent, JobFeed, LastSync,

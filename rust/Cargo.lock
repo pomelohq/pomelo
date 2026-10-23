@@ -3588,6 +3588,7 @@ dependencies = [
 name = "pom_cli"
 version = "0.9.5"
 dependencies = [
+ "files",
  "git",
  "module_store",
  "pom_agent",
@@ -3846,6 +3847,7 @@ dependencies = [
 name = "pom_remote"
 version = "0.9.5"
 dependencies = [
+ "files",
  "pom_agent",
  "pom_config",
  "pom_core",
@@ -3888,6 +3890,7 @@ dependencies = [
 name = "pom_server"
 version = "0.9.5"
 dependencies = [
+ "files",
  "libc",
  "pom_agent",
  "pom_layout",

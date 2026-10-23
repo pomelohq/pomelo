@@ -283,3 +283,82 @@ fn an_op_runs_once_and_its_result_is_remembered() {
     assert!(forgetful.run("op-3", || Ok(String::new())).is_ok());
     assert_eq!(forgetful.result("op-3").state, op_state::UNKNOWN);
 }
+
+/// The file methods behind a connection, as the server routes them, so their pushes and streams have one.
+fn fs_connection(project: &Project) -> (pom_rpc::Connection, pom_rpc::Connection) {
+    let dispatcher = Arc::new(project.dispatcher());
+    let handler = move |request: Request, context: &pom_rpc::RequestContext| {
+        let caller = pom_server::Caller {
+            connection: 1,
+            client: "test",
+            context,
+        };
+        dispatcher
+            .dispatch_fs(&request, &caller)
+            .unwrap_or_else(|| {
+                Err(pom_rpc::RemoteError::new(
+                    error_code::METHOD_NOT_FOUND,
+                    request.method.clone(),
+                ))
+            })
+    };
+    pom_rpc::mock::connected(pom_rpc::Config::default(), handler).expect("connected")
+}
+
+fn refusal(result: Result<Value, pom_rpc::Error>) -> String {
+    match result {
+        Err(pom_rpc::Error::Remote(error)) => error.code,
+        other => panic!("not refused: {other:?}"),
+    }
+}
+
+#[test]
+fn file_methods_refuse_paths_and_projects_outside_what_the_server_knows() {
+    let project = Project::new();
+    let worktree = project.temp.path().join("project/workspace--feat/api");
+    std::fs::write(worktree.join("main.rs"), "fn main() {}\n").expect("file");
+    std::os::unix::fs::symlink(project.config(), worktree.join("config")).expect("symlink");
+    let (client, _server) = fs_connection(&project);
+    let stat = |cfg: &str, branch: &str, path: &str| {
+        client.request(
+            method::FS_STAT,
+            json!({"cfg": cfg, "branch": branch, "path": path}),
+        )
+    };
+    let cfg = project.config();
+    let found = stat(&cfg, "feat", "api/main.rs").expect("stat");
+    assert_eq!(found["size"], 13);
+    assert_eq!(
+        refusal(stat(&cfg, "feat", "api/../../pom.yml")),
+        "invalid_params"
+    );
+    assert_eq!(refusal(stat(&cfg, "feat", "/etc/hosts")), "invalid_params");
+    assert_eq!(
+        refusal(stat(&cfg, "feat", "api/config")),
+        "outside_workspace"
+    );
+    assert_eq!(refusal(stat(&cfg, "feat", "api/gone.rs")), "not_found");
+    assert_eq!(
+        refusal(stat(&cfg, "../feat", "api/main.rs")),
+        "invalid_params"
+    );
+    assert_eq!(refusal(stat(&cfg, "nope", "api/main.rs")), "failed");
+    assert_eq!(
+        refusal(stat("/etc/pom.yml", "feat", "api/main.rs")),
+        "invalid_params"
+    );
+    let read = client.request(
+        method::FS_READ,
+        json!({"cfg": cfg, "branch": "feat", "path": "api", "channel": 0}),
+    );
+    assert_eq!(refusal(read), "not_a_file");
+    let watch = client.request(
+        method::FS_WATCH,
+        json!({"cfg": cfg, "branch": "feat", "channel": 2}),
+    );
+    assert_eq!(
+        refusal(watch),
+        "invalid_params",
+        "a channel the client never opened"
+    );
+}

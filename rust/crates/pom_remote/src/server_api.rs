@@ -32,6 +32,10 @@ pub mod method {
     pub const JOB_START: &str = "job.start";
     pub const JOB_FOLLOW: &str = "job.follow";
     pub const JOB_CANCEL: &str = "job.cancel";
+    pub const FS_WATCH: &str = "fs.watch";
+    pub const FS_READ: &str = "fs.read";
+    pub const FS_STAT: &str = "fs.stat";
+    pub const FS_FILES: &str = "fs.files";
     pub use pom_rpc::pty::method::{
         ATTACH as PTY_ATTACH, CLOSE as PTY_CLOSE, DETACH as PTY_DETACH, OPEN as PTY_OPEN,
         PRIMARY as PTY_PRIMARY, RESIZE as PTY_RESIZE,
@@ -67,10 +71,17 @@ pub const METHODS: &[&str] = &[
     method::JOB_START,
     method::JOB_FOLLOW,
     method::JOB_CANCEL,
+    method::FS_WATCH,
+    method::FS_READ,
+    method::FS_STAT,
+    method::FS_FILES,
 ];
 
 /// What the server's HELLO lists beside its methods.
-pub const FEATURES: &[&str] = &[pom_rpc::pty::SHARED_EVENTS];
+pub const FEATURES: &[&str] = &[pom_rpc::pty::SHARED_EVENTS, FILES_READ];
+
+/// The server reads a workspace's files: its tree as it changes, a file, the finder's list.
+pub const FILES_READ: &str = "files.read";
 
 /// The methods a server must list for the app to take pushes instead of asking again and again.
 pub const PUSH: &[&str] = &[
@@ -200,6 +211,8 @@ pub struct ServerInfo {
     pub jobs: usize,
     /// Terminals and followed streams of clients that went, kept for them to reconnect.
     pub retained: usize,
+    /// Workspace folders whose files are watched for a client, or were until a minute ago.
+    pub file_watches: usize,
     pub socket: PathBuf,
     pub log: PathBuf,
 }
@@ -516,3 +529,84 @@ pub struct Progress {
 
 /// The exit of a job stopped by `job.cancel`.
 pub const EXIT_CANCELLED: i32 = 130;
+
+/// `channel` is the client's subscription the tree is pushed on, as [`TreeChunk`]s under [`FS_TREE_TOPIC`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsWatchParams {
+    pub cfg: String,
+    pub branch: String,
+    pub channel: u32,
+}
+
+/// The workspace folder whose tree is pushed.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsWatched {
+    pub root: PathBuf,
+}
+
+pub const FS_TREE_TOPIC: &str = "fs.tree";
+
+/// A piece of the tree. `reset` starts a full snapshot that replaces what the client has; its chunks run until
+/// one with `last`. After that each change comes as a patch, also ending with `last`: `removed` paths go with
+/// everything under them, `entries` are added or replaced, `changed` files have new contents.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TreeChunk {
+    pub scan_id: u64,
+    pub reset: bool,
+    pub last: bool,
+    pub entries: Vec<files::FileEntry>,
+    pub removed: Vec<String>,
+    pub changed: Vec<files::ChangedFile>,
+}
+
+/// `path` is relative to the workspace, '/'-separated.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsPathParams {
+    pub cfg: String,
+    pub branch: String,
+    pub path: String,
+}
+
+/// `channel` is a stream the client opened: a file larger than the inline limit, or any file asked `raw`,
+/// comes over it. `limit` (0: the server's) caps the size read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsReadParams {
+    pub cfg: String,
+    pub branch: String,
+    pub path: String,
+    pub channel: u32,
+    pub limit: u64,
+    pub raw: bool,
+}
+
+/// A file as read: inline (`text`, or `binary`), or `streamed` over the channel with `size` bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsRead {
+    pub text: Option<String>,
+    pub binary: bool,
+    pub mtime_ns: u64,
+    pub size: u64,
+    pub streamed: bool,
+}
+
+/// The finder's file list comes over `channel`, one path per line.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FsFilesParams {
+    pub cfg: String,
+    pub branch: String,
+    pub include_ignored: bool,
+    pub channel: u32,
+}
+
+/// Error codes of the `fs.*` methods beside the path guard's.
+pub mod fs_error {
+    pub const TOO_LARGE: &str = "too_large";
+    pub const BUSY: &str = "busy";
+}
