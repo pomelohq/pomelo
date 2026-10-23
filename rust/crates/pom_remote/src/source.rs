@@ -43,6 +43,10 @@ pub struct WorkspaceSummary {
     pub remote_ahead: u64,
     /// What the last GitHub push for the workspace did.
     pub last_sync: Option<LastSync>,
+    /// RFC 3339: its last agent event, dev proxy request, service start or git change.
+    pub last_activity_at: Option<String>,
+    /// `agent`, `proxy`, `service` or `git`.
+    pub last_activity_source: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

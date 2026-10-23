@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 pub use depgraph::{CycleError, DepGraph};
 pub use limits::{parse_cpu, parse_memory, LimitsConfig, ResourceLimit};
-pub use lookup::ResolvedService;
+pub use lookup::{NamedCommand, ResolvedService};
 pub use migrate::{migrate_fragments, Migrated};
 pub use schema::{
     AgentsConfig, CodeAgentsConfig, Config, Dir, EnvFileEntry, HealthCheck, OnPush, Preset,

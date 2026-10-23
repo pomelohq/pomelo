@@ -48,6 +48,12 @@ pub fn workspace_list(
     state: &StateDir,
 ) -> WorkspaceList {
     let last_syncs = pom_push::last_syncs(state, &config.session);
+    let proxy_requests = pom_workspace::proxy_requests(state);
+    let context = pom_workspace::WorkspaceContext {
+        config,
+        runner,
+        state,
+    };
     let workspaces = project
         .workspaces
         .iter()
@@ -71,6 +77,11 @@ pub fn workspace_list(
                     stage: failed.failed_stage + 1,
                 });
             let workspace_state = WorkspaceState::load(&workspace.path);
+            let request = proxy_requests
+                .get(&(project.root.clone(), workspace.branch.clone()))
+                .copied()
+                .unwrap_or_default();
+            let activity = pom_workspace::workspace_activity(&context, workspace, request);
             WorkspaceSummary {
                 branch: workspace.branch.clone(),
                 is_main: workspace.is_main,
@@ -94,6 +105,8 @@ pub fn workspace_list(
                     restarted: record.restarted.clone(),
                     detail: record.detail.clone(),
                 }),
+                last_activity_at: activity.map(|activity| pom_push::utc_text(activity.at_ms)),
+                last_activity_source: activity.map(|activity| activity.source.to_string()),
             }
         })
         .collect();

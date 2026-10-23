@@ -609,3 +609,35 @@ fn repo_test_block() {
         .expect_err("rejects a path outside the repo");
     assert!(error.contains("test.env_file"), "{error}");
 }
+
+#[test]
+fn every_named_command_is_runnable_even_when_two_share_a_command() {
+    let config = load(
+        "repos:\n  api:\n    tasks:\n      - { cmd: npm test, desc: tests }\n      - { key: up, cmd: docker compose up, desc: up }\n    lifecycle:\n      commands:\n        install: npm ci\n        test: npm test\n        test-db: bin/rails db:test:prepare\n        lint: npm ci\n    services:\n      web:\n        cmd: npm start\n        tasks:\n          - { key: logs, cmd: tail -f log/web.log, desc: tail }\n",
+    );
+    let api = &config.repos["api"];
+    let named: Vec<(String, String, String)> = api
+        .named_commands()
+        .into_iter()
+        .map(|named| (named.name, named.command, named.source))
+        .collect();
+    let row = |name: &str, command: &str, source: &str| {
+        (name.to_string(), command.to_string(), source.to_string())
+    };
+    assert_eq!(
+        named,
+        [
+            row("up", "docker compose up", "tasks"),
+            row("install", "npm ci", "commands"),
+            row("test", "npm test", "commands"),
+            row("lint", "npm ci", "commands"),
+            row("test-db", "bin/rails db:test:prepare", "commands"),
+            row("logs", "tail -f log/web.log", "services.web.tasks"),
+        ]
+    );
+    assert_eq!(
+        api.named_command("TEST-DB").map(|named| named.command),
+        Some("bin/rails db:test:prepare".to_string())
+    );
+    assert_eq!(api.named_command("missing"), None);
+}

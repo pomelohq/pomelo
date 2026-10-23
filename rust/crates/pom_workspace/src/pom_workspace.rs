@@ -34,8 +34,9 @@ pub use repo_branch::{
     switch_repo_branch, use_another_branch, BranchInfo,
 };
 pub use schedule::{
-    admission, plan, run_in_background, wake_with_room, Admission, Admitted, Machine,
-    PowerSettings, Seen, Step, WakeOutcome, ACTIVITY_FILE,
+    admission, agent_event_ms, git_activity_ms, last_activity, plan, proxy_requests,
+    run_in_background, wake_with_room, workspace_activity, Admission, Admitted, LastActivity,
+    Machine, PowerSettings, Seen, Step, WakeOutcome, ACTIVITY_FILE,
 };
 pub use sleep::now_ms;
 pub use sleep::{

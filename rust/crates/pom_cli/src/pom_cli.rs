@@ -76,7 +76,8 @@ services
                      the repo has a `test:` block
   run --explain-env [--profile test] [--json] <name|\"cmd\"> [repo]
                      where each variable the command would get comes from, secrets masked
-  commands           the commands the config defines, per repo
+  commands [-o json] the named commands of every repo (lifecycle.commands, keyed tasks, the test
+                     block, service tasks); json: pom.commands/v1 with name, repo, command, source
   refresh            stop every running service of the project (frees their ports)
   release [--disk] [--worktrees] [--yes]
                      stop services and remove the shared containers; --disk also drops their
@@ -268,7 +269,7 @@ enum Command {
     Env(EnvCommand),
     Db(DbCommand),
     Run(RunCommand),
-    Commands,
+    Commands { json: bool },
     Lifecycle(LifecycleCommand),
     Onboard(OnboardCommand),
     Ps { watch: bool, json: bool },
@@ -493,6 +494,8 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "env"
                         | "db"
                         | "run"
+                        | "commands"
+                        | "shortcuts"
                         | "get"
                         | "describe"
                         | "apply"
@@ -581,7 +584,9 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
         "env" => Command::Env(env::parse(rest)?),
         "db" => Command::Db(db::parse(rest)?),
         "run" => Command::Run(run::parse(rest)?),
-        "commands" | "shortcuts" => none().map(|_| Command::Commands)?,
+        "commands" | "shortcuts" => Command::Commands {
+            json: run::parse_commands(rest)?,
+        },
         "refresh" | "release" | "get" | "describe" | "apply" => {
             Command::Lifecycle(lifecycle::parse(name, rest)?)
         }
@@ -845,7 +850,7 @@ impl Session {
             Command::Env(command) => self.env_command(command, out),
             Command::Db(command) => self.db_command(command, out),
             Command::Run(request) => self.run_command(request, out),
-            Command::Commands => self.list_commands(out),
+            Command::Commands { json } => self.list_commands(*json, out),
             Command::Lifecycle(command) => self.lifecycle_command(command, out),
             Command::Github(request) => {
                 push::setup(&self.state, &self.config.session, request, out)
