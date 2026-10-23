@@ -749,6 +749,7 @@ mod tests {
         let started = pom_ptyhost::listen_and_serve(
             &pom_ptyhost::SocketDir::new(dir),
             name,
+            None,
             pom_ptyhost::StartOptions {
                 argv: vec![
                     "/bin/sh".into(),

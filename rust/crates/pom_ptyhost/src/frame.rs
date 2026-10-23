@@ -29,22 +29,25 @@ pub struct Frame {
 pub fn write_frame(writer: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
     let length = u16::try_from(payload.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "frame payload too large"))?;
-    let mut header = [kind, 0, 0];
-    header[1..3].copy_from_slice(&length.to_be_bytes());
-    writer.write_all(&header)?;
-    writer.write_all(payload)
+    let mut frame = Vec::with_capacity(3 + payload.len());
+    frame.push(kind);
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(payload);
+    writer.write_all(&frame)
 }
 
 pub fn read_frame(reader: &mut impl Read) -> io::Result<Frame> {
-    let mut header = [0u8; 3];
-    reader.read_exact(&mut header)?;
-    let length = usize::from(u16::from_be_bytes([header[1], header[2]]));
-    let mut payload = vec![0u8; length];
+    let mut kind = [0u8; 1];
+    reader.read_exact(&mut kind)?;
+    read_frame_body(kind[0], reader)
+}
+
+pub fn read_frame_body(kind: u8, reader: &mut impl Read) -> io::Result<Frame> {
+    let mut length = [0u8; 2];
+    reader.read_exact(&mut length)?;
+    let mut payload = vec![0u8; usize::from(u16::from_be_bytes(length))];
     reader.read_exact(&mut payload)?;
-    Ok(Frame {
-        kind: header[0],
-        payload,
-    })
+    Ok(Frame { kind, payload })
 }
 
 /// Input larger than one frame goes out as several, in order.

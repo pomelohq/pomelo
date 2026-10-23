@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
@@ -17,10 +17,11 @@ const RESUME_WAIT: Duration = Duration::from_millis(40);
 const SNAPSHOT_CHUNK: usize = 32 * 1024;
 
 /// Runs `options` as holder `name`: socket, pidfile and crash log in `dir`. Returns the running session;
-/// the socket and pidfile go away when the command exits.
+/// the socket and pidfile go away when the command exits. `group` is the workspace recorded with it.
 pub fn listen_and_serve(
     dir: &SocketDir,
     name: &str,
+    group: Option<&str>,
     mut options: StartOptions,
 ) -> io::Result<Session> {
     std::fs::DirBuilder::new()
@@ -30,7 +31,8 @@ pub fn listen_and_serve(
     let socket = dir.socket(name);
     let pidfile = dir.pidfile(name);
     remove_quietly(&socket);
-    std::fs::write(&pidfile, format!("{}\n{name}\n", std::process::id()))?;
+    // Complete before the socket appears: whoever sees the holder up reads its group at once.
+    dir.write_pidfile(name, group)?;
     let listener = match UnixListener::bind(&socket) {
         Ok(listener) => listener,
         Err(error) => {
@@ -187,16 +189,35 @@ fn serve_client(
 }
 
 /// The client's optional resume offset, sent first. Anything else arriving first is handed back to apply.
+/// Only the first byte is waited for with a deadline: a frame that has started is read whole, however late
+/// the rest comes, or its remainder would be taken for the next frame.
 fn read_leading_resume(stream: &mut UnixStream) -> io::Result<(u64, Option<Frame>)> {
     stream.set_read_timeout(Some(RESUME_WAIT))?;
-    let first = frame::read_frame(stream);
-    stream.set_read_timeout(None)?;
-    Ok(match first {
-        Ok(frame) if frame.kind == frame::RESUME => {
-            (frame::parse_u64(&frame.payload).unwrap_or(0), None)
+    let mut kind = [0u8; 1];
+    let started = loop {
+        match stream.read(&mut kind) {
+            Ok(count) => break count == 1,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                break false
+            }
+            Err(error) => return Err(error),
         }
-        Ok(frame) => (0, Some(frame)),
-        Err(_) => (0, None),
+    };
+    stream.set_read_timeout(None)?;
+    if !started {
+        return Ok((0, None));
+    }
+    let frame = frame::read_frame_body(kind[0], stream)?;
+    Ok(if frame.kind == frame::RESUME {
+        (frame::parse_u64(&frame.payload).unwrap_or(0), None)
+    } else {
+        (0, Some(frame))
     })
 }
 

@@ -1406,6 +1406,7 @@ mod tests {
         let session = pom_ptyhost::listen_and_serve(
             &dir,
             "appsh-test",
+            None,
             pom_ptyhost::StartOptions {
                 argv: vec![
                     "/bin/sh".into(),

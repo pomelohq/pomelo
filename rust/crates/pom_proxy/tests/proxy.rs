@@ -373,3 +373,42 @@ fn webhooks_fan_out_to_every_running_workspace() {
     );
     assert!(response.starts_with("HTTP/1.1 404"), "{response}");
 }
+
+#[test]
+fn a_delivery_the_moment_the_relay_listens_already_sees_the_projects() {
+    let ports = Ports {
+        webhook: free_port(),
+        proxy: free_port(),
+    };
+    let hook: pom_proxy::GithubHook = Arc::new(|_, projects| pom_proxy::GithubReply {
+        status: 200,
+        body: format!("{{\"projects\":{}}}", projects.len()),
+        repo: String::new(),
+        summary: "seen".into(),
+    });
+    let _proxy = DevProxy::start_with(
+        Box::new(FakeMachine {
+            leases: Vec::new(),
+            envs: HashMap::new(),
+        }),
+        pom_env::DevNetwork::local(pom_env::DevPorts {
+            webhook: ports.webhook,
+            proxy: ports.proxy,
+        }),
+        Serve::default(),
+        pom_proxy::Initial {
+            projects: vec![ProjectRoute {
+                root: "/tmp/demo".into(),
+                config: Arc::new(RwLock::new(Some(Arc::new(config())))),
+            }],
+            github: Some(hook),
+        },
+    )
+    .expect("start");
+    let response = request(
+        ports.webhook,
+        "POST /_pom/github HTTP/1.1\r\nHost: 127.0.0.1\r\nX-GitHub-Event: ping\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+    );
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains(r#"{"projects":1}"#), "{response}");
+}

@@ -28,6 +28,9 @@ const HOLDER_START: Duration = Duration::from_secs(5);
 /// How often a waiting bridge looks up from its wait to notice a detach.
 const POLL: Duration = Duration::from_millis(100);
 const MAX_CLAIM: usize = 256;
+/// macOS can leave a blocked read asleep after the holder half-closes a reader that fell behind; the next read
+/// sees the end, so no read waits longer than this.
+const END_RECHECK: Duration = Duration::from_secs(1);
 /// How long a vanished client's input numbering and followed streams are kept for it to reconnect.
 pub const RETENTION: Duration = Duration::from_secs(10 * 60);
 const MAX_TERMINAL_ID: usize = 64;
@@ -376,6 +379,9 @@ impl Bridge {
     }
 
     fn read(self: Arc<Self>, mut output: BufReader<UnixStream>, generation: u64) {
+        if let Err(error) = output.get_ref().set_read_timeout(Some(END_RECHECK)) {
+            eprintln!("pom server: read {}: {error}", self.holder);
+        }
         let mut chunk = vec![0u8; MAX_DATA];
         loop {
             let read = output.read(&mut chunk);
@@ -396,7 +402,13 @@ impl Bridge {
                     drop(flow);
                     self.changed.notify_all();
                 }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::Interrupted
+                            | io::ErrorKind::WouldBlock
+                            | io::ErrorKind::TimedOut
+                    ) => {}
                 Err(_) => break,
             }
         }

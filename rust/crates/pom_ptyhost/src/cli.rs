@@ -95,6 +95,7 @@ fn run_holder(dir: &SocketDir, args: &[String]) -> io::Result<()> {
     let session = server::listen_and_serve(
         dir,
         &args.name,
+        args.group.as_deref(),
         StartOptions {
             argv: args.argv,
             dir: cwd,
@@ -104,11 +105,6 @@ fn run_holder(dir: &SocketDir, args: &[String]) -> io::Result<()> {
             on_exit: None,
         },
     )?;
-    if let Some(group) = &args.group {
-        if let Err(error) = dir.record_group(&args.name, group) {
-            eprintln!("pty: record the workspace of {}: {error}", args.name);
-        }
-    }
     session.wait();
     // Give the cleanup thread a moment to remove the socket and pidfile before the process exits.
     std::thread::sleep(Duration::from_millis(50));

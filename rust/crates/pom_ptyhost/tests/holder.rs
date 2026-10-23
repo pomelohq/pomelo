@@ -1,6 +1,6 @@
 //! Holders as real detached processes (the `pomelo-pty` binary), driven through the client API.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -226,6 +226,42 @@ fn while_a_lease_is_set_only_the_client_that_claimed_it_can_type() {
     read_until(&mut watcher, "viewer-again");
 }
 
+/// Reads until the holder ends the output. macOS can leave a reader blocked after its peer's half-close (the
+/// next read sees the end), so it never waits long in one read.
+fn read_to_eof(
+    output: &mut std::io::BufReader<std::os::unix::net::UnixStream>,
+    read: &mut Vec<u8>,
+    wait: Duration,
+) {
+    output
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("read timeout");
+    let deadline = Instant::now() + wait;
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        match output.read(&mut buffer) {
+            Ok(0) => return,
+            Ok(count) => read.extend_from_slice(&buffer[..count]),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the holder never ended the output of a reader far behind, after {} bytes",
+                    read.len()
+                );
+            }
+            Err(error) => panic!("read: {error}"),
+        }
+    }
+}
+
 #[test]
 fn a_reader_far_behind_loses_its_output_not_chunks_and_resumes_by_offset() {
     let holders = Holders::new();
@@ -248,14 +284,18 @@ fn a_reader_far_behind_loses_its_output_not_chunks_and_resumes_by_offset() {
     }
 
     let mut read = slow.snapshot.clone();
-    slow.output
-        .read_to_end(&mut read)
-        .expect("read until the holder stops");
+    read_to_eof(&mut slow.output, &mut read, Duration::from_secs(60));
     assert!(read.len() < expected.len(), "it fell behind");
+    let differs = read
+        .iter()
+        .zip(expected.as_bytes())
+        .position(|(got, want)| got != want);
     assert_eq!(
-        &read[..],
-        &expected.as_bytes()[..read.len()],
-        "what it got is an exact prefix"
+        differs,
+        None,
+        "what it got is an exact prefix; {} bytes read, the snapshot was {}",
+        read.len(),
+        slow.snapshot.len()
     );
 
     slow.connection
@@ -264,4 +304,39 @@ fn a_reader_far_behind_loses_its_output_not_chunks_and_resumes_by_offset() {
     let offset = slow.end + read.len() as u64 - slow.snapshot.len() as u64;
     let mut resumed = holders.attach("appsh-behind", offset);
     read_until(&mut resumed, "still-typing");
+}
+
+#[test]
+fn a_resume_offset_that_arrives_in_pieces_still_resumes() {
+    let holders = Holders::new();
+    holders.spawn(
+        "appsh-split",
+        &["sh", "-c", "printf 'first-part second-part'; exec cat"],
+    );
+    let end = 22;
+    let deadline = Instant::now() + TIMEOUT;
+    while pom_ptyhost::output_end(&holders.dir, "appsh-split", TIMEOUT).expect("end") < end {
+        assert!(Instant::now() < deadline, "the output never came");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut stream = std::os::unix::net::UnixStream::connect(holders.dir.socket("appsh-split"))
+        .expect("connect");
+    stream.set_read_timeout(Some(TIMEOUT)).expect("timeout");
+    let since = 11u64.to_be_bytes();
+    stream
+        .write_all(&[pom_ptyhost::frame::RESUME, 0, 8])
+        .expect("header");
+    std::thread::sleep(Duration::from_millis(200));
+    stream.write_all(&since).expect("offset");
+    let meta = pom_ptyhost::frame::read_frame(&mut stream).expect("meta");
+    assert_eq!(meta.kind, pom_ptyhost::frame::META);
+    let mut snapshot = Vec::new();
+    loop {
+        let frame = pom_ptyhost::frame::read_frame(&mut stream).expect("snapshot");
+        if frame.kind == pom_ptyhost::frame::SNAPSHOT_END {
+            break;
+        }
+        snapshot.extend_from_slice(&frame.payload);
+    }
+    assert_eq!(String::from_utf8_lossy(&snapshot), "second-part");
 }

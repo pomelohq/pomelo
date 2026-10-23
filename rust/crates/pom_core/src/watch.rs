@@ -123,8 +123,54 @@ mod tests {
         false
     }
 
+    fn settled(wakes: &AtomicUsize) -> usize {
+        let mut seen = wakes.load(Ordering::SeqCst);
+        let mut still_since = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while still_since.elapsed() < Duration::from_millis(500) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            let now = wakes.load(Ordering::SeqCst);
+            if now != seen {
+                seen = now;
+                still_since = Instant::now();
+            }
+        }
+        seen
+    }
+
     #[test]
-    fn burst_of_edits_wakes_once_and_ignores_other_files() -> notify::Result<()> {
+    fn changes_queued_within_the_quiet_time_wake_once() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for _ in 0..5 {
+            assert!(sender.send(Change::Config).is_ok());
+        }
+        assert!(sender.send(Change::Workspaces).is_ok());
+        let flags = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let thread = {
+            let (flags, wakes) = (flags.clone(), wakes.clone());
+            std::thread::spawn(move || {
+                debounce(
+                    receiver,
+                    flags,
+                    Arc::new(move || {
+                        wakes.fetch_add(1, Ordering::SeqCst);
+                    }),
+                )
+            })
+        };
+        assert!(wait_for(|| wakes.load(Ordering::SeqCst) >= 1));
+        drop(sender);
+        assert!(thread.join().is_ok());
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        assert!(flags.0.load(Ordering::SeqCst) && flags.1.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn edits_of_the_config_and_workspace_folders_are_told_apart() -> notify::Result<()> {
         let temp = tempfile::tempdir()?;
         let root = temp.path().canonicalize()?;
         std::fs::write(root.join("pom.yml"), "session: a\n")?;
@@ -137,9 +183,9 @@ mod tests {
             }),
         )?;
         // FSEvents may replay the setup writes; let that settle before measuring.
-        std::thread::sleep(Duration::from_millis(400));
+        settled(&wakes);
         watcher.take_changed();
-        wakes.store(0, Ordering::SeqCst);
+        watcher.take_workspaces_changed();
 
         std::fs::write(root.join("notes.txt"), "x")?;
         std::thread::sleep(Duration::from_millis(400));
@@ -151,17 +197,19 @@ mod tests {
         assert!(!watcher.take_changed(), "reading the config is not an edit");
         assert!(!watcher.take_workspaces_changed());
 
+        let before = wakes.load(Ordering::SeqCst);
         for index in 0..5 {
             std::fs::write(root.join("pom.yml"), format!("session: a{index}\n"))?;
         }
-        assert!(wait_for(|| wakes.load(Ordering::SeqCst) >= 1));
-        std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        assert!(wait_for(|| wakes.load(Ordering::SeqCst) > before));
+        settled(&wakes);
         assert!(watcher.take_changed());
         assert!(!watcher.take_changed());
+        assert!(!watcher.take_workspaces_changed());
 
         std::fs::create_dir(root.join("workspace--feat-x"))?;
         assert!(wait_for(|| watcher.take_workspaces_changed()));
+        settled(&wakes);
         assert!(
             !watcher.take_changed(),
             "a new workspace is not a config edit"
