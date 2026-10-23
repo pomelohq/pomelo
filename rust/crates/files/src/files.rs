@@ -10,7 +10,7 @@ pub mod search;
 mod watch;
 pub use fs::{
     ChangedFile, FileResult, FileStat, LocalFs, ProjectFs, TreeEvent, TreeFeed, TreePatch,
-    UnservedFs,
+    UnservedFs, WriteError,
 };
 pub use watch::TreeWatcher;
 
@@ -480,7 +480,12 @@ pub fn remove(root: &Path, rel: &str) -> std::io::Result<()> {
 }
 
 pub fn trash(root: &Path, rel: &str) -> std::io::Result<()> {
-    trash::delete(safe_join(root, rel)?).map_err(std::io::Error::other)
+    trash_path(&safe_join(root, rel)?)
+}
+
+/// Moves `full` to the system's trash: the Finder's, or the freedesktop one on Linux.
+pub fn trash_path(full: &Path) -> std::io::Result<()> {
+    trash::delete(full).map_err(std::io::Error::other)
 }
 
 pub fn exists(root: &Path, rel: &str) -> bool {

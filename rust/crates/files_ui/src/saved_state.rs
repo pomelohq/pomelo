@@ -1,7 +1,9 @@
 //! How file and image tabs save themselves between sessions and come back: a file keeps its path, the disk
-//! time it was read at, its selections, scroll position and folds.
+//! time it was read at, its selections, scroll position and folds. A file on another machine also keeps that
+//! machine's name, and its unsaved text is kept under `ssh://<host>/<folder>/<path>`.
 
-use std::path::PathBuf;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use workspace::persistence::SerializedItem;
@@ -20,6 +22,12 @@ struct SavedFile {
     path: String,
     /// Seconds and nanoseconds since the epoch of the disk version the tab last read or saved.
     mtime: Option<(u64, u32)>,
+    /// That version's size, which a save to another machine expects to find there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    /// The machine the file is on, when it is another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
     selections: Vec<(usize, usize)>,
     scroll: SavedScroll,
     folds: Vec<SavedFold>,
@@ -48,6 +56,19 @@ struct SavedFold {
 struct SavedImage {
     root: PathBuf,
     path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<String>,
+}
+
+/// Where a file on another machine is told apart from one here with the same path.
+pub(crate) fn remote_key(host: &str, root: &Path, path: &str) -> PathBuf {
+    let root = root.to_string_lossy();
+    let mut key = format!("ssh://{host}/{}", root.trim_start_matches('/'));
+    if !path.is_empty() {
+        key.push('/');
+        key.push_str(path);
+    }
+    PathBuf::from(key)
 }
 
 enum UnsavedJob {
@@ -92,8 +113,11 @@ fn write_unsaved(target: &std::path::Path, rope: &ropey::Rope) -> std::io::Resul
     std::fs::rename(&partial, target)
 }
 
-fn unsaved_path(root: &std::path::Path, path: &str) -> Option<PathBuf> {
-    let full = root.join(path);
+fn unsaved_path(host: Option<&str>, root: &std::path::Path, path: &str) -> Option<PathBuf> {
+    let full = match host {
+        Some(host) => remote_key(host, root, path),
+        None => root.join(path),
+    };
     let hash = full
         .as_os_str()
         .as_encoded_bytes()
@@ -186,15 +210,22 @@ pub fn flush_unsaved_writes(timeout: std::time::Duration) {
     }
 }
 
-fn epoch(time: std::time::SystemTime) -> Option<(u64, u32)> {
-    let since = time.duration_since(std::time::UNIX_EPOCH).ok()?;
-    Some((since.as_secs(), since.subsec_nanos()))
+fn epoch(mtime_ns: u64) -> (u64, u32) {
+    (
+        mtime_ns / 1_000_000_000,
+        u32::try_from(mtime_ns % 1_000_000_000).unwrap_or(0),
+    )
+}
+
+fn from_epoch((secs, nanos): (u64, u32)) -> u64 {
+    secs.saturating_mul(1_000_000_000)
+        .saturating_add(u64::from(nanos))
 }
 
 impl FileItem {
     fn queue_unsaved_contents(&self) -> Option<PathBuf> {
         let buffer = self.buffer.as_ref()?;
-        let target = unsaved_path(&self.root, &self.path)?;
+        let target = unsaved_path(self.fs.host(), &self.root, &self.path)?;
         let version = buffer.is_dirty().then(|| buffer.version());
         if self.unsaved_queued.get() != version {
             self.unsaved_queued.set(version);
@@ -231,7 +262,13 @@ impl FileItem {
         let saved = SavedFile {
             root: self.root.clone(),
             path: self.path.clone(),
-            mtime: self.saved_mtime.and_then(epoch),
+            mtime: self.saved_stat.as_ref().map(|stat| epoch(stat.mtime_ns)),
+            size: self
+                .fs
+                .host()
+                .and(self.saved_stat.as_ref())
+                .map(|stat| stat.size),
+            host: self.fs.host().map(str::to_string),
             selections: buffer
                 .selections()
                 .iter()
@@ -253,8 +290,23 @@ impl FileItem {
     }
 
     /// The tab a saved file state describes, or `None` when the file is gone.
+    #[cfg(test)]
     pub(crate) fn from_saved(item: &SerializedItem) -> Option<FileItem> {
+        Self::from_saved_in(item, None)
+    }
+
+    /// A saved file of `remote`'s machine comes back through it; one of another machine does not.
+    pub(crate) fn from_saved_in(
+        item: &SerializedItem,
+        remote: Option<&crate::SharedFs>,
+    ) -> Option<FileItem> {
         let saved: SavedFile = serde_json::from_value(item.data.clone()).ok()?;
+        if saved.host.as_deref() != remote.and_then(|fs| fs.host()) {
+            return None;
+        }
+        if let Some(fs) = remote {
+            return Self::from_saved_remote(fs, saved);
+        }
         let SavedFile {
             root,
             path,
@@ -264,14 +316,9 @@ impl FileItem {
             folds,
             contents,
             contents_file,
+            ..
         } = saved;
-        let contents = contents.or_else(|| {
-            contents_file.and_then(|file| {
-                std::fs::read_to_string(&file)
-                    .map_err(|error| eprintln!("unsaved text {}: {error}", file.display()))
-                    .ok()
-            })
-        });
+        let contents = contents.or_else(|| contents_file.and_then(|file| read_unsaved(&file)));
         let on_disk = root.join(&path).is_file();
         if !on_disk && contents.is_none() {
             return None;
@@ -289,6 +336,40 @@ impl FileItem {
         Some(file)
     }
 
+    /// A file of the other machine: read again there, with the text left unsaved laid over it. The tab keeps
+    /// the version it was based on, so a save after a change there meanwhile is a conflict.
+    fn from_saved_remote(fs: &crate::SharedFs, saved: SavedFile) -> Option<FileItem> {
+        let contents = saved
+            .contents
+            .or_else(|| saved.contents_file.and_then(|file| read_unsaved(&file)));
+        let read = fs.read(&saved.path);
+        let text = match (&read, &contents) {
+            (Ok(read), _) => read.text.clone(),
+            (Err(_), Some(_)) => Some(String::new()),
+            (Err(_), None) => return None,
+        };
+        let mut file = FileItem::in_fs(fs.clone(), saved.root, &saved.path, text);
+        let found = read.as_ref().ok().map(crate::stat_of);
+        file.saved_stat = found.clone();
+        if let Some(contents) = contents {
+            if let Some(buffer) = file.buffer.as_mut() {
+                buffer.restore_unsaved(&contents);
+            }
+            file.saved_stat = saved.mtime.map(|mtime| files::FileStat {
+                dir: false,
+                size: saved.size.unwrap_or_default(),
+                mtime_ns: from_epoch(mtime),
+            });
+            file.conflict = match (&found, &file.saved_stat) {
+                (Some(found), Some(based)) => found.mtime_ns > based.mtime_ns,
+                _ => false,
+            };
+            file.rows = None;
+        }
+        file.restore_view(&saved.selections, &saved.scroll, &saved.folds);
+        Some(file)
+    }
+
     /// Bring back text left unsaved last session. The tab keeps the disk time it was based on, so a file that
     /// changed on disk meanwhile shows as a conflict instead of being overwritten.
     fn restore_unsaved(&mut self, contents: &str, mtime: Option<(u64, u32)>) {
@@ -296,8 +377,11 @@ impl FileItem {
             return;
         };
         buffer.restore_unsaved(contents);
-        self.saved_mtime = mtime
-            .map(|(secs, nanos)| std::time::UNIX_EPOCH + std::time::Duration::new(secs, nanos));
+        self.saved_stat = mtime.map(|mtime| files::FileStat {
+            dir: false,
+            size: 0,
+            mtime_ns: from_epoch(mtime),
+        });
         self.rows = None;
         self.refresh_disk_state();
     }
@@ -382,11 +466,18 @@ fn locate_fold(
     (end > start && end <= len).then_some(start..end)
 }
 
+fn read_unsaved(file: &Path) -> Option<String> {
+    std::fs::read_to_string(file)
+        .map_err(|error| eprintln!("unsaved text {}: {error}", file.display()))
+        .ok()
+}
+
 impl ImageItem {
     pub(crate) fn saved_state(&self) -> Option<SerializedItem> {
         let saved = SavedImage {
             root: self.root.clone(),
             path: self.path.clone(),
+            host: self.fs.host().map(str::to_string),
         };
         Some(SerializedItem {
             kind: IMAGE_KIND.into(),
@@ -394,8 +485,17 @@ impl ImageItem {
         })
     }
 
-    pub(crate) fn from_saved(item: &SerializedItem) -> Option<ImageItem> {
+    pub(crate) fn from_saved(
+        item: &SerializedItem,
+        remote: Option<&crate::SharedFs>,
+    ) -> Option<ImageItem> {
         let saved: SavedImage = serde_json::from_value(item.data.clone()).ok()?;
+        if saved.host.as_deref() != remote.and_then(|fs| fs.host()) {
+            return None;
+        }
+        if let Some(fs) = remote {
+            return Some(ImageItem::in_fs(fs.clone(), &saved.root, &saved.path));
+        }
         saved
             .root
             .join(&saved.path)
@@ -404,12 +504,52 @@ impl ImageItem {
     }
 }
 
-/// Rebuild a file or image tab from its saved state.
-pub(crate) fn restore_item(item: &SerializedItem) -> Option<Box<dyn Item>> {
+/// Rebuild a file or image tab from its saved state; `remote` reads the files of another machine.
+pub(crate) fn restore_item(
+    item: &SerializedItem,
+    remote: Option<&crate::SharedFs>,
+) -> Option<Box<dyn Item>> {
     match item.kind.as_str() {
-        FILE_KIND => FileItem::from_saved(item).map(|file| Box::new(file) as Box<dyn Item>),
-        IMAGE_KIND => ImageItem::from_saved(item).map(|image| Box::new(image) as Box<dyn Item>),
+        FILE_KIND => {
+            FileItem::from_saved_in(item, remote).map(|file| Box::new(file) as Box<dyn Item>)
+        }
+        IMAGE_KIND => {
+            ImageItem::from_saved(item, remote).map(|image| Box::new(image) as Box<dyn Item>)
+        }
         _ => None,
+    }
+}
+
+/// Where the missing servers the user asked not to hear about again are kept.
+pub(crate) fn quiet_servers_file() -> Option<PathBuf> {
+    Some(pom_paths::config_dir()?.join("quiet-language-servers.json"))
+}
+
+pub(crate) fn quiet_servers(file: &Path) -> HashSet<String> {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub(crate) fn quiet_server(file: &Path, name: &str) {
+    let mut names: Vec<String> = quiet_servers(file).into_iter().collect();
+    if names.iter().any(|known| known == name) {
+        return;
+    }
+    names.push(name.to_string());
+    names.sort();
+    let written = file
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| {
+            std::fs::write(
+                file,
+                serde_json::to_string_pretty(&names).unwrap_or_default(),
+            )
+        });
+    if let Err(error) = written {
+        eprintln!("lsp: save {}: {error}", file.display());
     }
 }
 

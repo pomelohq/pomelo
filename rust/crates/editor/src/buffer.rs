@@ -406,6 +406,10 @@ struct AutocloseRegion {
 
 /// A saved marker no history entry carries, for text whose saved version is not in the undo history.
 const UNREACHABLE_SAVE: Option<usize> = Some(usize::MAX);
+
+/// A place in the edit history a save was taken at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavePoint(Option<usize>);
 const LOG_KEEP: usize = 1024;
 const HISTORY_MAX_ENTRIES: usize = 10_000;
 const HISTORY_MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -1308,8 +1312,19 @@ impl EditorBuffer {
     }
 
     pub fn mark_saved(&mut self) {
+        let point = self.save_point();
+        self.mark_saved_at(point);
+    }
+
+    /// The text as a save that starts now writes it. Once that save lands, [`EditorBuffer::mark_saved_at`] with
+    /// this point leaves the buffer dirty when it was edited meanwhile.
+    pub fn save_point(&mut self) -> SavePoint {
         self.finalize_last_transaction();
-        self.saved_transaction = self.undo_stack.last().map(|e| e.id);
+        SavePoint(self.undo_stack.last().map(|e| e.id))
+    }
+
+    pub fn mark_saved_at(&mut self, point: SavePoint) {
+        self.saved_transaction = point.0;
     }
 
     pub fn place_cursor(&mut self, off: usize) {
@@ -4058,6 +4073,23 @@ mod tests {
         let bytes: usize = b.undo_stack.iter().map(HistoryEntry::text_bytes).sum();
         assert!(bytes <= HISTORY_MAX_BYTES);
         assert!(b.can_undo());
+    }
+
+    #[test]
+    fn edits_made_while_a_save_runs_keep_the_buffer_dirty() {
+        let mut b = buffer("abc");
+        b.set_group_interval(Duration::ZERO);
+        b.place_cursor(3);
+        b.insert_char('d');
+        let point = b.save_point();
+        b.insert_char('e');
+        b.mark_saved_at(point);
+        assert!(b.is_dirty(), "typed during the save");
+        b.undo();
+        assert!(!b.is_dirty(), "back to what was saved");
+        let point = b.save_point();
+        b.mark_saved_at(point);
+        assert!(!b.is_dirty());
     }
 
     #[test]

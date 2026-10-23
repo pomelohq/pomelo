@@ -629,19 +629,29 @@ impl App {
                 true,
             ),
         };
-        let root = snapshot
-            .workspaces
-            .as_ref()
-            .and_then(|list| {
-                list.workspaces
-                    .iter()
-                    .find(|workspace| workspace.branch == remote.active)
-            })
+        let shown = snapshot.workspaces.as_ref().and_then(|list| {
+            list.workspaces
+                .iter()
+                .find(|workspace| workspace.branch == remote.active)
+        });
+        let root = shown
             .map(|workspace| workspace.path.clone())
             .unwrap_or_default();
+        // Main changes only its pom.yml, and a server that cannot save keeps every file read only.
+        let saves = snapshot
+            .transport
+            .as_ref()
+            .is_some_and(|transport| transport.files_write);
+        let main = shown.is_none_or(|workspace| workspace.is_main);
         remote.files_for = Some(remote.active.clone());
         remote.files_unserved = unserved;
-        let files = files_ui::FilesView::new(fs, root).read_only(true);
+        let files = files_ui::FilesView::new(fs, root)
+            .read_only(main || !saves)
+            .writable(if saves {
+                vec![std::path::PathBuf::from(&remote.config)]
+            } else {
+                Vec::new()
+            });
         self.with_workspace_view(id, |view, _| {
             view.set_files_view(Some(Box::new(files)));
         });

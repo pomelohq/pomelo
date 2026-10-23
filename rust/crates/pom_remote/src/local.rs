@@ -347,6 +347,18 @@ impl LocalSource {
         })
     }
 
+    /// The folder of workspace `branch` and whether it is the main one, read even while pom.yml is broken so
+    /// that it can still be fixed from afar.
+    pub fn workspace_folder(&self, branch: &str) -> Result<(PathBuf, bool), SourceError> {
+        let project = Project::open(&self.config_path, &self.state);
+        project
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.branch == branch)
+            .map(|workspace| (workspace.path.clone(), workspace.is_main))
+            .ok_or_else(|| SourceError::Failed(format!("no workspace {branch}")))
+    }
+
     /// The holder of `service` (`repo/name`, `name`, or `_ws/name` for a workspace-level one).
     pub fn service_holder(&self, branch: &str, service: &str) -> Result<String, SourceError> {
         let opened = self.open_project()?;

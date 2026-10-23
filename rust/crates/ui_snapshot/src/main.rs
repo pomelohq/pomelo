@@ -437,6 +437,16 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
             &[("REMOTEVIEW", "files-scanning"), ("CROP", REMOTE_FILES)],
         ),
         "remote-file-open" => (0, &[("REMOTEVIEW", "files-open"), ("CROP", REMOTE_FILES)]),
+        "remote-file-saving" => (0, &[("REMOTEVIEW", "files-saving"), ("CROP", REMOTE_FILES)]),
+        "remote-file-offline" => (
+            0,
+            &[("REMOTEVIEW", "files-offline"), ("CROP", REMOTE_FILES)],
+        ),
+        "remote-file-too-large" => (
+            0,
+            &[("REMOTEVIEW", "files-too-large"), ("CROP", REMOTE_FILES)],
+        ),
+        "remote-file-conflict" => (0, &[("PROMPT", "save-conflict")]),
         "remote-files-old-server" => (
             0,
             &[("REMOTEVIEW", "files-old-server"), ("CROP", REMOTE_CENTER)],

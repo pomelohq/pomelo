@@ -62,7 +62,7 @@ use editor::wrap::Boundary;
 use editor::{EditorBuffer, Lang, Syntax, Theme};
 use files::{FileNode, LocalFs, ProjectFs};
 
-type SharedFs = std::sync::Arc<dyn ProjectFs>;
+pub(crate) type SharedFs = std::sync::Arc<dyn ProjectFs>;
 
 fn local_fs(root: &Path) -> SharedFs {
     std::sync::Arc::new(LocalFs::new(root.to_path_buf()))
@@ -359,38 +359,7 @@ struct ServerNotices {
 
 pub(crate) const DONT_SHOW_AGAIN: &str = "Don't show again";
 
-/// Where the missing servers the user asked not to hear about again are kept.
-fn quiet_servers_file() -> Option<PathBuf> {
-    Some(pom_paths::config_dir()?.join("quiet-language-servers.json"))
-}
-
-fn quiet_servers(file: &Path) -> HashSet<String> {
-    std::fs::read_to_string(file)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-fn quiet_server(file: &Path, name: &str) {
-    let mut names: Vec<String> = quiet_servers(file).into_iter().collect();
-    if names.iter().any(|known| known == name) {
-        return;
-    }
-    names.push(name.to_string());
-    names.sort();
-    let written = file
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| {
-            std::fs::write(
-                file,
-                serde_json::to_string_pretty(&names).unwrap_or_default(),
-            )
-        });
-    if let Err(error) = written {
-        eprintln!("lsp: save {}: {error}", file.display());
-    }
-}
+use saved_state::{quiet_server, quiet_servers, quiet_servers_file};
 
 impl ServerNotices {
     fn receive(&mut self, mut message: lsp::ServerMessage) {
@@ -505,6 +474,8 @@ const HOVER_BASE: u64 = FUNC_VIEW_BASE + 14_800_000; // + popover
 const HUNK_CONTROL_BASE: u64 = FUNC_VIEW_BASE + 14_900_000; // + control
 const CONFLICT_CONTROL_BASE: u64 = HUNK_CONTROL_BASE + 1_000; // + conflict * 4 + control
 const MODAL_END: u64 = FUNC_VIEW_BASE + 15_000_000;
+/// The button that pages through a file too large to open, in a terminal on its machine.
+const OPEN_IN_TERMINAL: u64 = MODAL_END - 1;
 
 /// An open file as a center `Item` (an editor item): path/name + decoded text + language (`None` text =
 /// binary) + its own syntax highlighter. Any center tab is a `Box<dyn Item>`, so a terminal/search/etc. can
@@ -724,9 +695,21 @@ struct FileItem {
     syntax: Option<Syntax>,
     /// Buffer version that folds and `max_cols` were last brought up to.
     synced_version: Option<u64>,
-    /// Disk mtime at load/save; a newer one on disk means reload (clean) or conflict (dirty).
-    saved_mtime: Option<std::time::SystemTime>,
+    /// The file as last read or saved: a newer one means reload (clean) or conflict (dirty), and a save to
+    /// another machine expects to find this one there.
+    saved_stat: Option<files::FileStat>,
     conflict: bool,
+    /// A save to another machine still on its way, and whether another is owed once it lands.
+    saving: Option<PendingSave>,
+    save_again: bool,
+    /// The tab closes once its save lands (it was closed with Save while the save was on its way).
+    close_when_saved: bool,
+    /// The machine the file is on cannot be reached right now.
+    offline: bool,
+    /// The file there as a save found it, changed since it was read: waiting for the person to choose.
+    save_conflict: Option<files::FileStat>,
+    /// The file is too large to open here, and can be paged through in a terminal instead.
+    too_large: bool,
     /// Whether this item's pane is focused -- the caret only blinks in the focused pane.
     focused: bool,
     /// Vertical scroll in pixels (smooth, sub-line) and the visible body height (px) set before render.
@@ -1157,7 +1140,7 @@ impl FileItem {
 
 pub fn text_tab(id: String, title: String, text: &str) -> Box<dyn Item> {
     let mut item = FileItem::new(std::env::temp_dir(), "output.log", Some(text.to_string()));
-    item.saved_mtime = None;
+    item.saved_stat = None;
     item.git = git_diff::GitDiff::default();
     item.scratch = Some((id, title));
     item.read_only = true;
@@ -1174,7 +1157,7 @@ pub fn revision_diff(
     base: Option<String>,
 ) -> Box<dyn Item> {
     let mut item = FileItem::branch_diff(root, path, text, base);
-    item.saved_mtime = None;
+    item.saved_stat = None;
     item.scratch = Some((id, title));
     item.read_only = true;
     Box::new(item)
@@ -1187,7 +1170,7 @@ pub fn scratch_editor(
     footer: Box<dyn workspace::ItemFooter>,
 ) -> Box<dyn Item> {
     let mut item = FileItem::new(std::env::temp_dir(), "console.sql", Some(text.to_string()));
-    item.saved_mtime = None;
+    item.saved_stat = None;
     item.git = git_diff::GitDiff::default();
     item.scratch = Some((id, title));
     item.footer = Some(Footer {
@@ -1282,15 +1265,23 @@ impl FileItem {
     }
 
     /// Takes a newer read of the file from another machine: a clean tab shows it, an edited one is in conflict.
+    /// While a save is on its way the change may be that save, which answers for itself.
     fn take_fresh_read(&mut self, read: files::FileResult) -> bool {
-        let modified = read.modified();
-        if self.saved_mtime.is_some_and(|saved| modified <= saved) {
+        if self.saving.is_some() {
+            return false;
+        }
+        if self
+            .saved_stat
+            .as_ref()
+            .is_some_and(|saved| read.mtime_ns <= saved.mtime_ns)
+        {
             return false;
         }
         if self.buffer.as_ref().is_some_and(|b| b.is_dirty()) {
             self.conflict = true;
             return true;
         }
+        let stat = stat_of(&read);
         let Some(text) = read.text else {
             return false;
         };
@@ -1301,16 +1292,154 @@ impl FileItem {
                 b.place_cursor(cursor.min(b.rope.len_chars()));
             }
         }
-        self.saved_mtime = Some(modified);
+        self.saved_stat = Some(stat);
         self.refresh();
         self.ensure_visible();
         true
     }
 
+    /// A file of another machine too large to open here, which a terminal there can page through instead.
+    fn pages_in_terminal(&self) -> bool {
+        self.too_large && !self.is_local()
+    }
+
+    /// Why the file is not shown, with the button that opens it in a terminal on its machine.
+    fn too_large_notice(&self, content: Rect) -> (Node, f32, f32) {
+        let message = self
+            .load_error
+            .clone()
+            .unwrap_or_else(|| "The file is too large to open here".to_string());
+        let mut message = message;
+        if let Some(first) = message.get(..1) {
+            message = format!("{}{}", first.to_uppercase(), &message[1..]);
+        }
+        let node = div()
+            .col()
+            .gap(12.0)
+            .child(
+                label(format!("{message}."))
+                    .size(13.0)
+                    .color(theme().text_muted),
+            )
+            .child(div().row().child(ui::button_sized(
+                OPEN_IN_TERMINAL,
+                "Open in terminal",
+                ui::ButtonStyle::Filled,
+                ui::ButtonSize::Medium,
+            )))
+            .into();
+        (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)
+    }
+
+    /// Sends `text` to the other machine off the UI thread, expecting to find the file as `expect` there. The
+    /// buffer stays dirty until the answer comes, and stays dirty after it when edited meanwhile.
+    fn start_save(&mut self, text: String, expect: Option<files::FileStat>) {
+        if self.saving.is_some() {
+            self.save_again = true;
+            return;
+        }
+        let Some(b) = self.buffer.as_mut() else {
+            return;
+        };
+        let point = b.save_point();
+        let (sender, answer) = std::sync::mpsc::channel();
+        let (fs, path) = (self.fs.clone(), self.path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("file-save".into())
+            .spawn(move || {
+                if sender.send(fs.write(&path, &text, expect.as_ref())).is_ok() {
+                    ui::wake();
+                }
+            });
+        match spawned {
+            Ok(_) => self.saving = Some(PendingSave { answer, point }),
+            Err(error) => self
+                .panel_requests
+                .push(workspace::PanelRequest::Toast(format!(
+                    "Could not save {}: {error}",
+                    self.path
+                ))),
+        }
+    }
+
+    /// Takes the answer to a save on its way, when it came; returns whether it did.
+    fn poll_save(&mut self) -> bool {
+        let Some(pending) = self.saving.as_ref() else {
+            return false;
+        };
+        let answer = match pending.answer.try_recv() {
+            Ok(answer) => answer,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(files::WriteError::Failed(
+                std::io::Error::other("the save stopped"),
+            )),
+        };
+        let Some(pending) = self.saving.take() else {
+            return false;
+        };
+        let again = std::mem::take(&mut self.save_again);
+        match answer {
+            Ok(stat) => {
+                if let Some(b) = self.buffer.as_mut() {
+                    b.mark_saved_at(pending.point);
+                }
+                self.saved_stat = Some(stat);
+                self.conflict = false;
+                self.save_conflict = None;
+                if again && self.is_dirty() {
+                    if let Err(error) = workspace::Item::save(self) {
+                        self.panel_requests
+                            .push(workspace::PanelRequest::Toast(error));
+                    }
+                }
+            }
+            Err(files::WriteError::Conflict(now)) => {
+                self.conflict = true;
+                self.close_when_saved = false;
+                self.save_conflict = Some(now);
+            }
+            Err(files::WriteError::Failed(error)) => {
+                self.close_when_saved = false;
+                self.panel_requests
+                    .push(workspace::PanelRequest::Toast(format!(
+                        "Could not save {}: {error}",
+                        self.path
+                    )));
+            }
+        }
+        true
+    }
+
+    /// Saves over a file that changed on the other machine, expecting to find it as it is there now.
+    fn overwrite(&mut self, found: files::FileStat) {
+        let Some(text) = self.buffer.as_ref().map(EditorBuffer::text_for_save) else {
+            return;
+        };
+        self.start_save(text, Some(found));
+    }
+
+    /// Drops the edits for the file as the other machine has it.
+    fn discard_for(&mut self, read: files::FileResult) {
+        let Some(text) = read.text.as_deref() else {
+            return;
+        };
+        if let Some(b) = self.buffer.as_mut() {
+            let cursor = b.cursor();
+            b.reload(text);
+            b.mark_saved();
+            b.place_cursor(cursor.min(b.rope.len_chars()));
+        }
+        self.saved_stat = Some(stat_of(&read));
+        self.conflict = false;
+        self.save_conflict = None;
+        self.refresh();
+        self.ensure_visible();
+    }
+
     fn retarget(&mut self, path: &str) {
         self.path = path.to_string();
         self.name = path.rsplit('/').next().unwrap_or(path).to_string();
-        self.saved_mtime = self.local_mtime();
+        self.saved_stat = self.local_stat();
         self.diagnostics.clear();
         if self.buffer.is_some() && self.is_local() {
             self.git = git_diff::GitDiff::load(self.root.join(path));
@@ -1325,12 +1454,12 @@ impl FileItem {
         self.fs.local_root().is_some()
     }
 
-    /// The modification time on disk, asked only of local files: another machine's come with each read.
-    fn local_mtime(&self) -> Option<std::time::SystemTime> {
+    /// The file on disk, asked only of local files: another machine's come with each read.
+    fn local_stat(&self) -> Option<files::FileStat> {
         if !self.is_local() {
-            return self.saved_mtime;
+            return self.saved_stat.clone();
         }
-        self.fs.stat(&self.path).ok().map(|stat| stat.modified())
+        self.fs.stat(&self.path).ok()
     }
 
     /// `root` is where the files are, shown and used as ids even when they are on another machine.
@@ -1340,9 +1469,7 @@ impl FileItem {
         let buffer = text.map(|t| EditorBuffer::from_text(&t));
         let syntax = buffer.as_ref().and_then(|_| Syntax::new(lang));
         let local = fs.local_root().is_some();
-        let saved_mtime = local
-            .then(|| fs.stat(path).ok().map(|stat| stat.modified()))
-            .flatten();
+        let saved_stat = local.then(|| fs.stat(path).ok()).flatten();
         let git = if buffer.is_some() && local {
             git_diff::GitDiff::load(root.join(path))
         } else {
@@ -1357,8 +1484,14 @@ impl FileItem {
             buffer,
             syntax,
             synced_version: None,
-            saved_mtime,
+            saved_stat,
             conflict: false,
+            saving: None,
+            save_again: false,
+            close_when_saved: false,
+            offline: false,
+            save_conflict: None,
+            too_large: false,
             focused: false,
             scroll_y: 0.0,
             scroll_anchor: 0,
@@ -1413,7 +1546,7 @@ impl FileItem {
             link: None,
             active_diagnostic: None,
             scratch: None,
-            read_only: !local,
+            read_only: false,
             save_check: None,
             footer: None,
             premeasured: false,
@@ -1442,11 +1575,11 @@ impl FileItem {
 
     fn loaded(fs: SharedFs, root: PathBuf, path: &str, loaded: LoadedFile) -> Self {
         let mut item = Self::in_fs(fs, root, path, None);
-        if loaded.saved_mtime.is_some() {
-            item.saved_mtime = loaded.saved_mtime;
+        if loaded.saved_stat.is_some() {
+            item.saved_stat = loaded.saved_stat;
         }
         item.load_error = loaded.error;
-        item.read_only |= !item.is_local();
+        item.too_large = loaded.too_large;
         let Some(buffer) = loaded.buffer else {
             return item;
         };
@@ -3351,6 +3484,8 @@ impl FileItem {
         let mut text = format!("{}:{}", line + 1, column + 1);
         if self.read_only && self.scratch.is_none() {
             text = format!("Read only  {text}");
+        } else if self.saving.is_some() && self.offline {
+            text = format!("Will save when reconnected  {text}");
         }
         let (mut lines, mut characters) = (0usize, 0usize);
         for s in b.selections() {
@@ -4486,9 +4621,15 @@ impl Item for FileItem {
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+        let saved = self.poll_save();
+        let close = self.close_when_saved && self.saving.is_none() && !self.is_dirty();
         let version = self.buffer.as_ref().map(EditorBuffer::version);
         let Some(footer) = self.footer.as_mut() else {
-            return workspace::ItemTick::default();
+            return workspace::ItemTick {
+                changed: saved,
+                close,
+                ..workspace::ItemTick::default()
+            };
         };
         if footer.version != version {
             footer.version = version;
@@ -4497,7 +4638,8 @@ impl Item for FileItem {
             }
         }
         workspace::ItemTick {
-            changed: footer.view.tick(),
+            changed: footer.view.tick() || saved,
+            close,
             ..workspace::ItemTick::default()
         }
     }
@@ -4651,13 +4793,16 @@ impl Item for FileItem {
         }
         let text = self.buffer.as_ref().map(|b| b.text_for_save());
         let mut item = FileItem::in_fs(self.fs.clone(), self.root.clone(), &self.path, text);
-        item.saved_mtime = self.saved_mtime;
-        item.read_only |= !self.is_local();
+        item.saved_stat = self.saved_stat.clone();
+        item.read_only = self.read_only;
         item.set_language(self.lang);
         Some(Box::new(item))
     }
 
     fn render(&mut self) -> Node {
+        if self.buffer.is_none() && self.pages_in_terminal() {
+            return div().col().flex(1.0).into();
+        }
         if self.buffer.is_none() {
             let message = match &self.load_error {
                 Some(error) => format!("Cannot open this file: {error}"),
@@ -4958,6 +5103,9 @@ impl Item for FileItem {
     }
 
     fn hover_popovers(&self, content: Rect) -> Vec<(Node, f32, f32)> {
+        if self.buffer.is_none() && self.pages_in_terminal() {
+            return vec![self.too_large_notice(content)];
+        }
         let mut popovers = self.hover_popover_nodes(content);
         popovers.extend(self.hunk_controls(content));
         popovers.extend(self.conflict_controls(content));
@@ -4991,6 +5139,13 @@ impl Item for FileItem {
         if self.click_hunk_control(id) || self.click_conflict_control(id) {
             return true;
         }
+        if id == OPEN_IN_TERMINAL {
+            self.panel_requests
+                .push(workspace::PanelRequest::TypeInTerminal {
+                    input: format!("less -- {}\n", shell_quoted(&self.path)),
+                });
+            return true;
+        }
         if (HOVER_BASE..HUNK_CONTROL_BASE).contains(&id) {
             self.hover_clicked();
             return true;
@@ -5002,13 +5157,10 @@ impl Item for FileItem {
         if self.scratch.is_some() {
             return Ok(());
         }
-        if !self.is_local() {
-            return Err("Files on another machine are read-only for now".into());
-        }
         if self.read_only {
             return Err("main is read-only: make changes in a branch workspace".into());
         }
-        let Some(b) = self.buffer.as_mut() else {
+        let Some(b) = self.buffer.as_ref() else {
             return Ok(());
         };
         let text = b.text_for_save();
@@ -5016,14 +5168,35 @@ impl Item for FileItem {
             check(&self.root.join(&self.path), &text)
                 .map_err(|problem| format!("Not saved: {problem}"))?;
         }
-        let mtime = files::write(&self.root, &self.path, &text)
+        if !self.is_local() {
+            self.start_save(text, self.saved_stat.clone());
+            return Ok(());
+        }
+        let stat = self
+            .fs
+            .write(&self.path, &text, None)
             .map_err(|e| format!("Could not save {}: {e}", self.path))?;
-        b.mark_saved();
-        self.saved_mtime = Some(mtime);
+        if let Some(b) = self.buffer.as_mut() {
+            b.mark_saved();
+        }
+        self.saved_stat = Some(stat);
         self.conflict = false;
         self.saved_unannounced = true;
         self.git.reload_bases(self.root.join(&self.path));
         Ok(())
+    }
+
+    fn close_when_saved(&mut self) -> bool {
+        self.close_when_saved = self.saving.is_some();
+        self.close_when_saved
+    }
+
+    fn tab_detail(&self) -> Option<String> {
+        self.saving.as_ref()?;
+        Some(match self.fs.host().filter(|_| self.offline) {
+            Some(host) => format!("Waiting for {host}"),
+            None => "Saving...".to_string(),
+        })
     }
 
     fn is_dirty(&self) -> bool {
@@ -5041,10 +5214,14 @@ impl Item for FileItem {
         if self.scratch.is_some() || !self.is_local() {
             return;
         }
-        let Ok(disk) = self.fs.stat(&self.path).map(|stat| stat.modified()) else {
+        let Ok(disk) = self.fs.stat(&self.path) else {
             return;
         };
-        if self.saved_mtime.is_some_and(|saved| disk <= saved) {
+        if self
+            .saved_stat
+            .as_ref()
+            .is_some_and(|saved| disk.mtime_ns <= saved.mtime_ns)
+        {
             return;
         }
         if self.buffer.as_ref().is_some_and(|b| b.is_dirty()) {
@@ -5062,16 +5239,18 @@ impl Item for FileItem {
             }
         }
         self.git.reload_bases(self.root.join(&self.path));
-        self.saved_mtime = Some(disk);
+        self.saved_stat = Some(disk);
         self.refresh();
         self.ensure_visible();
     }
 
     fn is_busy(&self) -> bool {
         // Keep repainting while a parse runs or the scrollbars wait to hide.
-        self.footer
-            .as_ref()
-            .is_some_and(|footer| footer.view.busy())
+        self.saving.is_some()
+            || self
+                .footer
+                .as_ref()
+                .is_some_and(|footer| footer.view.busy())
             || self.syntax.as_ref().is_some_and(|s| s.is_parsing())
             || self.scrollbars_revealed()
             || self.git.is_busy()
@@ -6509,20 +6688,43 @@ const BACKGROUND_OPEN_BYTES: u64 = 8 * 1024 * 1024;
 struct LoadedFile {
     buffer: Option<EditorBuffer>,
     widths: LineWidths,
-    /// When it was read from another machine, the modification time it had there.
-    saved_mtime: Option<std::time::SystemTime>,
+    /// When it was read from another machine, the file as it was there.
+    saved_stat: Option<files::FileStat>,
     error: Option<String>,
+    /// Past what opens here; it can still be paged through in a terminal there.
+    too_large: bool,
+}
+
+/// `text` as one word for a POSIX shell.
+fn shell_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// A save on its way to another machine: its answer, and where in the edit history it was taken.
+struct PendingSave {
+    answer: std::sync::mpsc::Receiver<Result<files::FileStat, files::WriteError>>,
+    point: editor::buffer::SavePoint,
+}
+
+/// What a read says the file was, to tell a later change from it.
+pub(crate) fn stat_of(read: &files::FileResult) -> files::FileStat {
+    files::FileStat {
+        dir: false,
+        size: read.size,
+        mtime_ns: read.mtime_ns,
+    }
 }
 
 fn load_file(fs: &dyn ProjectFs, path: &str) -> LoadedFile {
-    let mut saved_mtime = None;
+    let mut saved_stat = None;
+    let mut too_large = false;
     let loaded = match fs.local_root() {
         Some(root) => files::text_file(root, path).and_then(|found| match found {
             Some((full, len)) => load_text_in_pieces(&full, len).map(Some),
             None => Ok(None),
         }),
         None => fs.read(path).map(|read| {
-            saved_mtime = Some(read.modified());
+            saved_stat = Some(stat_of(&read));
             read.text.map(|text| {
                 let ending = LineEnding::detect(&text);
                 let rope = Rope::from_str(&editor::buffer::normalize_newlines(&text));
@@ -6536,45 +6738,26 @@ fn load_file(fs: &dyn ProjectFs, path: &str) -> LoadedFile {
         Ok(None) => (None, LineWidths::default(), None),
         Err(error) => {
             eprintln!("open {path}: {error}");
+            too_large = files::fs::is_too_large(&error);
             (None, LineWidths::default(), Some(error.to_string()))
         }
     };
     LoadedFile {
         buffer,
         widths,
-        saved_mtime,
+        saved_stat,
         error,
+        too_large,
     }
 }
 
 fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, LineWidths)> {
-    use std::io::{Read, Seek, SeekFrom};
     const MIN_PIECE: u64 = 4 * 1024 * 1024;
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(8) as u64;
     let pieces = (len / MIN_PIECE).clamp(1, workers);
-    let mut bounds = vec![0u64];
-    let mut file = std::fs::File::open(full)?;
-    for index in 1..pieces {
-        let previous = bounds.last().copied().unwrap_or(0);
-        let nominal = (len * index / pieces).max(previous);
-        file.seek(SeekFrom::Start(nominal))?;
-        let mut window = [0u8; 64 * 1024];
-        let mut at = nominal;
-        let boundary = loop {
-            let read = file.read(&mut window)?;
-            if read == 0 {
-                break len;
-            }
-            if let Some(newline) = window[..read].iter().position(|byte| *byte == b'\n') {
-                break at + newline as u64 + 1;
-            }
-            at += read as u64;
-        };
-        bounds.push(boundary);
-    }
-    bounds.push(len);
+    let bounds = files::fs::line_bounds(full, len, pieces)?;
     type Piece = std::io::Result<(Rope, LineWidths, Option<LineEnding>)>;
     let results: Vec<Piece> = std::thread::scope(|scope| {
         let workers: Vec<_> = bounds
@@ -6583,10 +6766,7 @@ fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, 
             .map(|(index, range)| {
                 let (start, end) = (range[0], range[1].max(range[0]));
                 scope.spawn(move || -> Piece {
-                    let mut file = std::fs::File::open(full)?;
-                    file.seek(SeekFrom::Start(start))?;
-                    let mut bytes = vec![0u8; (end - start) as usize];
-                    file.read_exact(&mut bytes)?;
+                    let bytes = files::fs::read_range(full, start, end)?;
                     let text = match String::from_utf8(bytes) {
                         Ok(text) => text,
                         Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
@@ -7026,11 +7206,11 @@ impl OpenFile for Pane {
             Box::new(ImageItem::in_fs(fs.clone(), root, path))
         } else {
             let read = fs.read(path).ok();
-            let modified = read.as_ref().map(files::FileResult::modified);
+            let stat = read.as_ref().map(stat_of);
             let text = read.and_then(|read| read.text);
             let mut item = FileItem::in_fs(fs.clone(), root.to_path_buf(), path, text);
-            if item.saved_mtime.is_none() {
-                item.saved_mtime = modified;
+            if item.saved_stat.is_none() {
+                item.saved_stat = stat;
             }
             Box::new(item)
         };
@@ -7139,7 +7319,21 @@ pub struct FilesView {
     lsp_toast: Option<String>,
     tree_ops: tree_actions::TreeOps,
     request: Option<workspace::ViewRequest>,
+    /// Whether the machine the files are on answers, as of the last frame.
+    online: bool,
+    /// A conflict a save ran into, to ask about; then the one asked about, by its prompt token.
+    save_prompt: Option<workspace::Prompt>,
+    asked_save: Option<(u64, String, files::FileStat)>,
+    /// Open files whose edits were dropped, waiting for the other machine's text.
+    discarding: Vec<String>,
+    /// Tree changes on their way to the other machine, shown already.
+    tree_jobs: Vec<tree_actions::TreeJob>,
 }
+
+const OFFLINE_NOTICE_H: f32 = 48.0;
+
+/// Prompt tokens for a save's conflict, apart from the tree's and the workspace's own.
+const SAVE_PROMPT_TOKENS: u64 = 1 << 40;
 
 /// The syntax palette matching the active UI theme's light/dark appearance, so highlighting stays in sync with
 /// the app theme (the reference drives both UI and syntax from one theme).
@@ -7162,7 +7356,7 @@ impl FilesView {
     /// Opens at once with an empty tree; the tree fills in from a background walk so a large workspace
     /// never stalls the window.
     pub fn read_only(mut self, read_only: bool) -> Self {
-        self.read_only = read_only || self.is_remote();
+        self.read_only = read_only;
         self
     }
 
@@ -7191,7 +7385,7 @@ impl FilesView {
         Self::new(local_fs(&root), root)
     }
 
-    /// Whether the files are on another machine, where this view only reads them for now.
+    /// Whether the files are on another machine.
     pub fn is_remote(&self) -> bool {
         self.fs.local_root().is_none()
     }
@@ -7297,17 +7491,140 @@ impl FilesView {
                     continue;
                 }
             };
+            let discard = self.discarding.contains(&path);
+            self.discarding.retain(|known| *known != path);
             self.panes.for_each_item_mut(&mut |item| {
                 if let Some(file) = item
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<FileItem>())
                     .filter(|file| file.path == path && file.scratch.is_none())
                 {
-                    changed |= file.take_fresh_read(read.clone());
+                    if discard {
+                        file.discard_for(read.clone());
+                        changed = true;
+                    } else {
+                        changed |= file.take_fresh_read(read.clone());
+                    }
                 }
             });
         }
         changed
+    }
+
+    fn offline_notice_shown(&self) -> bool {
+        self.is_remote() && !self.online
+    }
+
+    /// Over the tree while the files' machine does not answer: the files open here stay, edits stay, and saves
+    /// wait for it to come back.
+    fn offline_notice(&self) -> Node {
+        let host = self.fs.host().unwrap_or("the host");
+        let line = div()
+            .row()
+            .h_px(OFFLINE_NOTICE_H - 1.0)
+            .px(12.0)
+            .gap(8.0)
+            .items_center()
+            .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(theme().warning))
+            .child(
+                div()
+                    .col()
+                    .gap(2.0)
+                    .child(
+                        label(format!("Reconnecting to {host}..."))
+                            .size(13.0)
+                            .color(theme().text),
+                    )
+                    .child(
+                        label("Edits stay here; saves wait for it.")
+                            .size(12.0)
+                            .color(theme().text_muted),
+                    ),
+            );
+        div()
+            .col()
+            .bg(theme().panel_background)
+            .child(line)
+            .child(div().h_px(1.0).bg(theme().border))
+            .into()
+    }
+
+    /// Tells open files whether their machine answers, and asks about the first save that found its file
+    /// changed there.
+    fn follow_saves(&mut self) -> bool {
+        if !self.is_remote() {
+            return false;
+        }
+        let online = self.fs.online();
+        let changed = online != self.online;
+        self.online = online;
+        let asking = self.save_prompt.is_some() || self.asked_save.is_some();
+        let mut conflict: Option<(String, files::FileStat)> = None;
+        self.panes.for_each_item_mut(&mut |item| {
+            let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+            else {
+                return;
+            };
+            file.offline = !online;
+            if !asking && conflict.is_none() {
+                if let Some(found) = file.save_conflict.take() {
+                    conflict = Some((file.path.clone(), found));
+                }
+            }
+        });
+        if let Some((path, found)) = conflict {
+            let token = SAVE_PROMPT_TOKENS + self.tree_ops.next_save_token();
+            let host = self.fs.host().unwrap_or("the host").to_string();
+            self.save_prompt = Some(workspace::Prompt {
+                token,
+                message: format!(
+                    "{} changed on {host}",
+                    path.rsplit('/').next().unwrap_or(&path)
+                ),
+                detail: Some(format!(
+                    "It has changed on {host} since you started editing it. Do you want to overwrite it?"
+                )),
+                buttons: vec![
+                    "Overwrite".to_string(),
+                    "Discard Edits".to_string(),
+                    "Cancel".to_string(),
+                ],
+                warning: None,
+            });
+            self.asked_save = Some((token, path, found));
+            return true;
+        }
+        changed
+    }
+
+    /// Overwrite saves again over the file as found there; Discard Edits takes that file; Cancel keeps both,
+    /// the tab marked as in conflict.
+    fn save_prompt_answered(&mut self, token: u64, answer: usize) {
+        let Some((asked, path, found)) = self.asked_save.take() else {
+            return;
+        };
+        if asked != token {
+            self.asked_save = Some((asked, path, found));
+            return;
+        }
+        match answer {
+            0 => self.panes.for_each_item_mut(&mut |item| {
+                if let Some(file) = item
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<FileItem>())
+                    .filter(|file| file.path == path && file.scratch.is_none())
+                {
+                    file.overwrite(found.clone());
+                }
+            }),
+            1 => {
+                self.discarding.push(path.clone());
+                self.reload_changed(vec![path]);
+            }
+            _ => {}
+        }
     }
 
     #[cfg(test)]
@@ -7320,7 +7637,12 @@ impl FilesView {
         let lsp = (!cfg!(test) && fs.local_root().is_some())
             .then(|| lsp::LspStore::new(root.clone(), std::sync::Arc::new(ui::wake)));
         Self {
-            read_only: fs.local_root().is_none(),
+            read_only: false,
+            online: true,
+            save_prompt: None,
+            asked_save: None,
+            discarding: Vec::new(),
+            tree_jobs: Vec::new(),
             fs,
             root,
             tree,
@@ -8380,10 +8702,14 @@ impl FilesView {
         let sources: Vec<(String, Option<String>, Vec<lsp::lsp_types::Diagnostic>)> = files
             .into_iter()
             .map(|(path, diagnostics)| {
-                let text = open
-                    .get(&path)
-                    .cloned()
-                    .or_else(|| std::fs::read_to_string(&path).ok());
+                let text = open.get(&path).cloned().or_else(|| {
+                    files::read(
+                        Path::new("/"),
+                        path.to_string_lossy().trim_start_matches('/'),
+                    )
+                    .ok()
+                    .and_then(|read| read.text)
+                });
                 let relative = path
                     .strip_prefix(&root)
                     .map(|relative| relative.to_string_lossy().into_owned())
@@ -8508,11 +8834,11 @@ impl FilesView {
             if open_paths.contains(&full) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(&full) else {
+            let Some(text) = self.fs.read(relative).ok().and_then(|read| read.text) else {
                 continue;
             };
             if let Some(replaced) = project_search::replace_in_text(&text, &query) {
-                if let Err(error) = files::write(&self.root, relative, &replaced) {
+                if let Err(error) = self.fs.write(relative, &replaced, None) {
                     eprintln!("replace all: write {relative}: {error}");
                 }
             }
@@ -9295,7 +9621,12 @@ impl FunctionView for FilesView {
             self.flat_cache = f;
             self.flat_dirty = false;
         }
-        self.content_h = 8.0 + self.flat_cache.len() as f32 * ROW_H;
+        let notice_h = if self.offline_notice_shown() {
+            OFFLINE_NOTICE_H
+        } else {
+            0.0
+        };
+        self.content_h = 8.0 + notice_h + self.flat_cache.len() as f32 * ROW_H;
 
         // Virtualize by row: render only the visible window starting at `first`. To scroll pixel-smoothly the
         // caller shifts the whole window up by the sub-row remainder `y_offset` rather than snapping per row;
@@ -9310,7 +9641,12 @@ impl FunctionView for FilesView {
             .map(|r| 46.0 + r.depth as f32 * INDENT + r.name.chars().count() as f32 * 7.5)
             .fold(0.0_f32, f32::max);
         let flat = &self.flat_cache;
-        let mut tree_col = div().col().gap(ROW_H - ROW_BOX_H).px(6.0).pb(8.0);
+        let mut tree_col = div()
+            .col()
+            .gap(ROW_H - ROW_BOX_H)
+            .px(6.0)
+            .pt(notice_h)
+            .pb(8.0);
         let active_path = self.active_path();
         for (i, row) in flat.iter().enumerate().take(last).skip(first) {
             let id = FUNC_VIEW_BASE + i as u64;
@@ -9419,6 +9755,9 @@ impl FunctionView for FilesView {
         // Each is clickable (collapse that folder). A bottom border + soft shadow separate it from the scroll.
         self.sticky_paths.clear();
         let mut sticky = div().col();
+        if notice_h > 0.0 {
+            sticky = sticky.child(self.offline_notice());
+        }
         if first > 0 {
             if let Some(top) = flat.get(first) {
                 let comps: Vec<&str> = top.path.split('/').collect();
@@ -9744,8 +10083,9 @@ impl FunctionView for FilesView {
         saved: &workspace::persistence::SerializedMember,
         fallback: &mut dyn FnMut(&workspace::persistence::SerializedItem) -> Option<Box<dyn Item>>,
     ) -> bool {
+        let remote = self.is_remote().then(|| self.fs.clone());
         self.panes.restore(saved, &mut |item| {
-            saved_state::restore_item(item).or_else(|| fallback(item))
+            saved_state::restore_item(item, remote.as_ref()).or_else(|| fallback(item))
         })
     }
 
@@ -9893,7 +10233,15 @@ impl FunctionView for FilesView {
     }
 
     fn prompt_answered(&mut self, token: u64, answer: usize) {
+        if token >= SAVE_PROMPT_TOKENS {
+            self.save_prompt_answered(token, answer);
+            return;
+        }
         self.tree_prompt_answered(token, answer);
+    }
+
+    fn take_prompt(&mut self) -> Option<workspace::Prompt> {
+        self.save_prompt.take()
     }
 
     fn take_toast(&mut self) -> Option<String> {
@@ -9960,6 +10308,8 @@ impl FunctionView for FilesView {
         outcome.changed |= self.serve_server_logs();
         outcome.changed |= self.poll_tree();
         outcome.changed |= self.poll_reloads();
+        outcome.changed |= self.poll_tree_jobs();
+        outcome.changed |= self.follow_saves();
         outcome.changed |= self.serve_project_search();
         outcome.changed |= self.serve_project_diagnostics();
         self.sync_markdown_previews();
@@ -10115,6 +10465,13 @@ impl FunctionView for FilesView {
 
     fn root_dir(&self) -> Option<PathBuf> {
         (!self.is_remote()).then(|| self.root.clone())
+    }
+
+    fn panes_key(&self) -> Option<PathBuf> {
+        match self.fs.host() {
+            Some(host) => Some(saved_state::remote_key(host, &self.root, "")),
+            None => self.root_dir(),
+        }
     }
 
     fn open_path(&mut self, path: &str) {
@@ -13191,7 +13548,7 @@ mod disk_reload_tests {
         for request in 0..50 {
             text.push_str(&format!("Completed 200 OK request {request}\n"));
             std::fs::write(root.join("development.log"), &text).expect("write");
-            item.saved_mtime = None;
+            item.saved_stat = None;
             item.refresh_disk_state();
         }
         let buffer = item.buffer.as_ref().expect("buffer");
@@ -13230,10 +13587,17 @@ mod remote_files_tests {
     use std::sync::{Arc, Mutex};
 
     /// Files on another machine, as a test holds them: what a read returns and what the feed reports next.
+    /// Saves wait for `release` when `hold` is set; tree changes fail when `refuse` is set.
     #[derive(Default)]
     struct Elsewhere {
         files: Mutex<HashMap<String, (String, u64)>>,
         events: Arc<Mutex<Vec<files::TreeEvent>>>,
+        hold: std::sync::atomic::AtomicBool,
+        released: Mutex<bool>,
+        release: std::sync::Condvar,
+        offline: std::sync::atomic::AtomicBool,
+        refuse: std::sync::atomic::AtomicBool,
+        saves: Mutex<Vec<(String, Option<u64>)>>,
     }
 
     struct Feed(Arc<Mutex<Vec<files::TreeEvent>>>);
@@ -13266,6 +13630,30 @@ mod remote_files_tests {
                 .ok()
                 .and_then(|files| files.get(path).cloned())
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+        }
+
+        fn release(&self) {
+            if let Ok(mut released) = self.released.lock() {
+                *released = true;
+            }
+            self.release.notify_all();
+        }
+
+        fn saves(&self) -> Vec<(String, Option<u64>)> {
+            self.saves
+                .lock()
+                .map(|saves| saves.clone())
+                .unwrap_or_default()
+        }
+
+        fn change(&self) -> std::io::Result<()> {
+            if self.refuse.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "refused there",
+                ));
+            }
+            Ok(())
         }
     }
 
@@ -13303,6 +13691,411 @@ mod remote_files_tests {
                 .map(|files| files.keys().cloned().collect())
                 .unwrap_or_default())
         }
+
+        fn write(
+            &self,
+            path: &str,
+            text: &str,
+            expect: Option<&files::FileStat>,
+        ) -> Result<files::FileStat, files::WriteError> {
+            if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut released = self
+                    .released
+                    .lock()
+                    .map_err(|_| std::io::Error::other("poisoned"))?;
+                while !*released {
+                    released = self
+                        .release
+                        .wait(released)
+                        .map_err(|_| std::io::Error::other("poisoned"))?;
+                }
+            }
+            if let Ok(mut saves) = self.saves.lock() {
+                saves.push((text.to_string(), expect.map(|stat| stat.mtime_ns)));
+            }
+            let (current, mtime_ns) = self.get(path).unwrap_or_default();
+            let found = files::FileStat {
+                dir: false,
+                size: current.len() as u64,
+                mtime_ns,
+            };
+            if expect.is_some_and(|expect| *expect != found) {
+                return Err(files::WriteError::Conflict(found));
+            }
+            self.put(path, text, mtime_ns + 1);
+            Ok(files::FileStat {
+                dir: false,
+                size: text.len() as u64,
+                mtime_ns: mtime_ns + 1,
+            })
+        }
+
+        fn create_file(&self, path: &str) -> std::io::Result<()> {
+            self.change()?;
+            self.put(path, "", 1);
+            Ok(())
+        }
+
+        fn rename(&self, _from: &str, _to: &str) -> std::io::Result<()> {
+            self.change()
+        }
+
+        fn online(&self) -> bool {
+            !self.offline.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn host(&self) -> Option<&str> {
+            Some("dev")
+        }
+    }
+
+    fn opened(elsewhere: &Arc<Elsewhere>, read_only: bool) -> FilesView {
+        let fs: SharedFs = elsewhere.clone();
+        let mut view = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"))
+            .read_only(read_only);
+        view.open_file("src/main.rs");
+        settle(&mut view, |view| open_text(view).is_some());
+        view
+    }
+
+    fn open_file(view: &FilesView) -> Option<&FileItem> {
+        view.panes
+            .active_item()
+            .and_then(|item| item.as_any())
+            .and_then(|any| any.downcast_ref::<FileItem>())
+    }
+
+    fn detail(view: &FilesView) -> Option<String> {
+        view.panes.active_item().and_then(|item| item.tab_detail())
+    }
+
+    fn dirty(view: &FilesView) -> bool {
+        view.panes.active_item().is_some_and(|item| item.is_dirty())
+    }
+
+    #[test]
+    fn a_save_there_runs_off_the_ui_thread_and_typing_meanwhile_stays_unsaved() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        elsewhere
+            .hold
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut view = opened(&elsewhere, false);
+        view.editor_text("// a\n");
+        assert!(matches!(view.editor_save(), Some(Ok(()))));
+        view.tick_items(&|| None);
+        assert_eq!(detail(&view).as_deref(), Some("Saving..."));
+        assert!(dirty(&view), "unsaved until the machine answers");
+        view.editor_text("// b\n");
+        elsewhere.release();
+        settle(&mut view, |view| detail(view).is_none());
+        assert_eq!(
+            elsewhere.saves(),
+            [("// a\nfn main() {}\n".to_string(), Some(10))]
+        );
+        assert!(dirty(&view), "typed while the save was on its way");
+        assert!(matches!(view.editor_save(), Some(Ok(()))));
+        settle(&mut view, |view| !dirty(view));
+        assert_eq!(
+            elsewhere.saves().last(),
+            Some(&("// a\n// b\nfn main() {}\n".to_string(), Some(11))),
+            "the next save expects what the first one left"
+        );
+    }
+
+    #[test]
+    fn a_save_waits_while_the_machine_is_away_and_says_so() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        elsewhere
+            .hold
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut view = opened(&elsewhere, false);
+        elsewhere
+            .offline
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        view.editor_text("// a\n");
+        assert!(matches!(view.editor_save(), Some(Ok(()))));
+        view.tick_items(&|| None);
+        assert_eq!(detail(&view).as_deref(), Some("Waiting for dev"));
+        assert!(view
+            .cursor_position()
+            .is_some_and(|status| status.starts_with("Will save when reconnected")));
+        assert!(view.offline_notice_shown());
+        elsewhere
+            .offline
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        elsewhere.release();
+        settle(&mut view, |view| !dirty(view));
+        assert!(!view.offline_notice_shown());
+        assert_eq!(elsewhere.saves().len(), 1);
+    }
+
+    #[test]
+    fn a_save_over_a_file_changed_there_asks_and_overwrite_expects_what_is_there_now() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        elsewhere.put("src/main.rs", "// theirs\n", 30);
+        view.editor_text("// mine\n");
+        assert!(matches!(view.editor_save(), Some(Ok(()))));
+        settle(&mut view, |view| view.save_prompt.is_some());
+        let Some(prompt) = FunctionView::take_prompt(&mut view) else {
+            panic!("no prompt for the conflict");
+        };
+        assert_eq!(prompt.buttons, ["Overwrite", "Discard Edits", "Cancel"]);
+        assert!(
+            prompt.message.contains("changed on dev"),
+            "{}",
+            prompt.message
+        );
+        assert!(view
+            .panes
+            .active_item()
+            .is_some_and(|item| item.has_conflict()));
+        FunctionView::prompt_answered(&mut view, prompt.token, 0);
+        settle(&mut view, |view| !dirty(view));
+        assert_eq!(
+            elsewhere.saves().last(),
+            Some(&("// mine\nfn main() {}\n".to_string(), Some(30)))
+        );
+        assert_eq!(
+            elsewhere
+                .get("src/main.rs")
+                .ok()
+                .map(|(text, _)| text)
+                .as_deref(),
+            Some("// mine\nfn main() {}\n")
+        );
+    }
+
+    #[test]
+    fn discard_edits_takes_the_file_as_it_is_there() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        elsewhere.put("src/main.rs", "// theirs\n", 30);
+        view.editor_text("// mine\n");
+        assert!(matches!(view.editor_save(), Some(Ok(()))));
+        settle(&mut view, |view| view.save_prompt.is_some());
+        let Some(prompt) = FunctionView::take_prompt(&mut view) else {
+            panic!("no prompt for the conflict");
+        };
+        FunctionView::prompt_answered(&mut view, prompt.token, 1);
+        settle(&mut view, |view| {
+            open_text(view).as_deref() == Some("// theirs\n")
+        });
+        assert!(!dirty(&view));
+        assert!(open_file(&view).is_some_and(|file| !file.conflict));
+        assert_eq!(elsewhere.saves().len(), 1, "nothing written over theirs");
+    }
+
+    #[test]
+    fn a_tab_closed_with_its_save_on_the_way_closes_once_it_lands() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        elsewhere
+            .hold
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut view = opened(&elsewhere, false);
+        view.editor_text("// a\n");
+        let path = view.panes.active.clone();
+        let Some(pane) = view.panes.group.leaf_at_mut(&path) else {
+            panic!("no pane");
+        };
+        let Some(item) = pane.open.get_mut(0) else {
+            panic!("no tab");
+        };
+        assert!(item.save().is_ok());
+        assert!(item.close_when_saved());
+        elsewhere.release();
+        settle(&mut view, |view| view.panes.active_item().is_none());
+        assert!(view.panes.active_item().is_none(), "closed after the save");
+    }
+
+    #[test]
+    fn main_there_stays_read_only() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, true);
+        view.editor_text("oops");
+        assert_eq!(open_text(&view).as_deref(), Some("fn main() {}\n"));
+        assert!(view
+            .run_tree_action(Some("src/main.rs"), workspace::TreeAction::Delete)
+            .is_none());
+        assert!(view
+            .tree_ops
+            .toast
+            .take()
+            .is_some_and(|toast| toast.contains("read-only")));
+    }
+
+    #[test]
+    fn a_tree_change_there_shows_at_once_and_goes_back_when_it_fails() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.report(files::TreeEvent::Snapshot {
+            entries: vec![entry("src", true), entry("src/main.rs", false)],
+            complete: true,
+        });
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        view.render_tree();
+        let paths = |view: &FilesView| -> Vec<String> {
+            view.entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect()
+        };
+        assert!(view.change_tree(tree_actions::TreeChange::CreateFile("docs/new.md".into())));
+        assert_eq!(paths(&view), ["docs", "docs/new.md", "src", "src/main.rs"]);
+        settle(&mut view, |view| view.tree_jobs.is_empty());
+        assert!(view.tree_ops.toast.is_none());
+
+        elsewhere
+            .refuse
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(view.change_tree(tree_actions::TreeChange::Rename {
+            from: "src".into(),
+            to: "lib".into(),
+        }));
+        view.retarget_paths("src", "lib");
+        assert_eq!(paths(&view), ["docs", "docs/new.md", "lib", "lib/main.rs"]);
+        settle(&mut view, |view| view.tree_jobs.is_empty());
+        assert_eq!(paths(&view), ["docs", "docs/new.md", "src", "src/main.rs"]);
+        assert!(
+            open_file(&view).is_some_and(|file| file.path == "src/main.rs"),
+            "the tab went back too"
+        );
+        assert!(view
+            .tree_ops
+            .toast
+            .take()
+            .is_some_and(|toast| toast.starts_with("Failed to rename src")));
+    }
+
+    #[test]
+    fn unsaved_text_of_a_file_there_comes_back_after_a_restart() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        view.editor_text("// draft\n");
+        let Some(saved) = view.save_panes() else {
+            panic!("the editor area should save its panes");
+        };
+        assert_eq!(
+            FunctionView::panes_key(&view),
+            Some(PathBuf::from(
+                "ssh://dev/home/dev/pom/myproject/workspace--feat"
+            ))
+        );
+        saved_state::flush_unsaved_writes(std::time::Duration::from_secs(5));
+        let fs: SharedFs = elsewhere.clone();
+        let mut back = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"));
+        assert!(back.restore_panes(&saved, &mut |_| None));
+        assert_eq!(
+            open_text(&back).as_deref(),
+            Some("// draft\nfn main() {}\n")
+        );
+        assert!(dirty(&back));
+        assert!(back
+            .panes
+            .active_item()
+            .is_some_and(|item| !item.has_conflict()));
+        assert!(matches!(back.editor_save(), Some(Ok(()))));
+        settle(&mut back, |view| !dirty(view));
+        assert_eq!(
+            elsewhere.saves().last().map(|save| save.1),
+            Some(Some(10)),
+            "expects the file it was based on"
+        );
+
+        let temp = tempfile::tempdir().expect("temp");
+        let mut here = FilesView::scanned(temp.path().to_path_buf());
+        assert!(here.restore_panes(&saved, &mut |_| None) || here.panes.active_item().is_none());
+        assert!(
+            open_text(&here).is_none(),
+            "a file there never opens as one here"
+        );
+    }
+
+    #[test]
+    fn unsaved_text_over_a_file_changed_there_meanwhile_is_a_conflict() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        view.editor_text("// draft\n");
+        let Some(saved) = view.save_panes() else {
+            panic!("the editor area should save its panes");
+        };
+        saved_state::flush_unsaved_writes(std::time::Duration::from_secs(5));
+        elsewhere.put("src/main.rs", "// changed there\n", 40);
+        let fs: SharedFs = elsewhere.clone();
+        let mut back = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"));
+        assert!(back.restore_panes(&saved, &mut |_| None));
+        assert_eq!(
+            open_text(&back).as_deref(),
+            Some("// draft\nfn main() {}\n")
+        );
+        assert!(back
+            .panes
+            .active_item()
+            .is_some_and(|item| item.has_conflict()));
+    }
+
+    #[test]
+    fn a_file_too_large_to_open_there_offers_a_terminal() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        let fs: SharedFs = elsewhere.clone();
+        let mut item = FileItem::in_fs(fs, PathBuf::from("/w"), "logs/it's big.log", None);
+        item.too_large = true;
+        item.load_error = Some("the file is 120 MiB, past the 64 MiB that can be opened".into());
+        let content = Rect::new(0.0, 0.0, 800.0, 600.0, Rgba::TRANSPARENT);
+        assert_eq!(item.hover_popovers(content).len(), 1);
+        assert!(item.popover_click(OPEN_IN_TERMINAL));
+        let requests = item.take_requests();
+        let Some(workspace::PanelRequest::TypeInTerminal { input }) = requests.first() else {
+            panic!("no terminal asked for");
+        };
+        assert_eq!(input, "less -- 'logs/it'\\''s big.log'\n");
+    }
+
+    #[test]
+    fn only_the_saved_state_reaches_the_disk_directly() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        let mut folders = vec![src.clone()];
+        while let Some(folder) = folders.pop() {
+            for child in std::fs::read_dir(&folder).expect("src").flatten() {
+                let path = child.path();
+                if path.is_dir() {
+                    folders.push(path);
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned());
+                if path.extension().is_none_or(|ext| ext != "rs")
+                    || matches!(name.as_deref(), Some("saved_state.rs" | "snippet_store.rs"))
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("source");
+                let code = text
+                    .split("\n#[cfg(test)]\nmod ")
+                    .next()
+                    .unwrap_or_default();
+                for (index, line) in code.lines().enumerate() {
+                    if line.contains(concat!("std::", "fs")) {
+                        found.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
+                    }
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "read and write a workspace's files through its ProjectFs:\n{}",
+            found.join("\n")
+        );
     }
 
     fn entry(path: &str, is_dir: bool) -> files::FileEntry {
@@ -13338,7 +14131,8 @@ mod remote_files_tests {
             complete: false,
         });
         let fs: SharedFs = elsewhere.clone();
-        let mut view = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/main"));
+        let mut view =
+            FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/main")).read_only(true);
         assert!(view.is_remote());
         view.render_tree();
         assert!(view.scanning());
@@ -13376,7 +14170,7 @@ mod remote_files_tests {
         assert!(view.tree_ops.toast.is_some());
         assert!(
             view.root_dir().is_none(),
-            "no saved panes for another machine"
+            "no folder here for another machine's files"
         );
     }
 }

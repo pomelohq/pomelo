@@ -204,6 +204,9 @@ pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
 
 /// The confirmation a scene draws: `delete`, `discard-all`, `discard-file`.
 pub fn prompt(name: &str) -> Option<workspace::Prompt> {
+    if name == "save-conflict" {
+        return crate::remote_fixture::conflict_prompt();
+    }
     let (message, detail, confirm) = match name {
         "delete" => (
             "Delete Workspace".to_string(),

@@ -2202,3 +2202,86 @@ fn install_unit_writes_a_user_unit_on_linux_only() {
         "--user daemon-reload\n--user enable pom-server.service\n--user disable pom-server.service\n--user daemon-reload\n"
     );
 }
+
+fn server_log(fixture: &Fixture) -> String {
+    std::fs::read_to_string(fixture.temp.path().join(format!(
+        "state/pom/server/{}.log",
+        env!("CARGO_PKG_VERSION")
+    )))
+    .unwrap_or_default()
+}
+
+#[test]
+fn a_save_cut_off_by_a_dropped_session_lands_once_and_a_host_edit_is_a_conflict() {
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source_dir = fixture.root().join("workspace--feat/api/src");
+    std::fs::create_dir_all(&source_dir).expect("src");
+    let file = source_dir.join("main.rs");
+    std::fs::write(&file, "fn main() {}\n").expect("main.rs");
+    let source = fixture.server_source("dev");
+    source.set_backoff(vec![Duration::from_millis(50); 6]);
+    source.workspaces().expect("connect");
+    let fs = source.files("feat").expect("files over the server");
+    let opened = fs.stat("api/src/main.rs").expect("stat");
+
+    let mut text = String::new();
+    let mut line = 0u64;
+    while text.len() < 24 * 1024 * 1024 {
+        text.push_str(&format!("// line {line:09}\n"));
+        line += 1;
+    }
+    let mut saved = opened.clone();
+    let mut cut = false;
+    for delay in [5u64, 12, 20, 30, 45, 60, 80, 110] {
+        let text = format!("// try {delay}\n{text}");
+        let saving = {
+            let (fs, text, expect) = (fs.clone(), text.clone(), saved.clone());
+            std::thread::spawn(move || fs.write("api/src/main.rs", &text, Some(&expect)))
+        };
+        std::thread::sleep(Duration::from_millis(delay));
+        kill_session(&source);
+        saved = saving
+            .join()
+            .expect("the save thread")
+            .expect("saved after the session came back");
+        assert!(
+            std::fs::read_to_string(&file).expect("read") == text,
+            "the whole text, once"
+        );
+        let written = std::fs::metadata(&file).expect("stat");
+        assert_eq!(saved.size, written.len());
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            std::fs::metadata(&file)
+                .expect("stat")
+                .modified()
+                .expect("mtime"),
+            written.modified().expect("mtime"),
+            "no second write after the first landed"
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !connected(&source) {
+            assert!(Instant::now() < deadline, "the session never came back");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if server_log(&fixture).contains("result=incomplete") {
+            cut = true;
+            break;
+        }
+    }
+    assert!(cut, "no save was cut off midway:\n{}", server_log(&fixture));
+
+    std::fs::write(&file, "// edited on the host meanwhile\n").expect("host edit");
+    let conflict = fs.write("api/src/main.rs", "fn mine() {}\n", Some(&saved));
+    assert!(
+        matches!(conflict, Err(files::WriteError::Conflict(_))),
+        "{conflict:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("read"),
+        "// edited on the host meanwhile\n"
+    );
+}

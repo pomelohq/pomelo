@@ -3895,6 +3895,7 @@ dependencies = [
  "files",
  "libc",
  "pom_agent",
+ "pom_config",
  "pom_env",
  "pom_layout",
  "pom_paths",

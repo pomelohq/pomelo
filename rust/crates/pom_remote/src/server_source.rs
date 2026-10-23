@@ -20,8 +20,8 @@ use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
-    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, JOB_TASK, LIVE_LOGS,
-    PROGRESS_TOPIC, PUSH, REQUIRED,
+    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, FILES_WRITE, JOBS,
+    JOB_TASK, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_api::{
     ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams, SharedRunParams,
@@ -375,6 +375,7 @@ impl Inner {
                 shared_logs: offers(&[method::SVC_SHARED_LOGS]),
                 tasks: offers(&[JOB_TASK]),
             },
+            files_write: offers(&[FILES_WRITE]),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -397,6 +398,15 @@ impl Inner {
 
     pub(crate) fn host_name(&self) -> &str {
         &self.host.name
+    }
+
+    /// A fresh op id: asking again with it after a reconnect gets the first run's outcome.
+    pub(crate) fn next_op_id(&self) -> String {
+        format!(
+            "{}-{}",
+            self.client_id,
+            self.next_op.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     /// The project's pom.yml on the host.

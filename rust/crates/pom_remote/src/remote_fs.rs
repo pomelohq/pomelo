@@ -1,14 +1,18 @@
-//! A workspace's files on another machine, read through its `pom server`: the tree pushed as it changes, files
-//! read in one answer or streamed. Read only for now.
+//! A workspace's files on another machine, through its `pom server`: the tree pushed as it changes, files read
+//! in one answer or streamed, saves and tree changes sent with an op id and sent again with it after a
+//! reconnect, so each happens once.
 
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use files::fs::{FileResult, FileStat, ProjectFs, TreeEvent, TreeFeed, TreePatch, READ_LIMIT};
+use files::fs::{
+    FileResult, FileStat, ProjectFs, TreeEvent, TreeFeed, TreePatch, WriteError, INLINE_READ_LIMIT,
+    READ_LIMIT,
+};
 use files::guard::Refusal;
 use files::FileEntry;
 use pom_rpc::{Connection, Error, PushEvent, StreamEvent, StreamReceiver};
@@ -16,8 +20,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::server_api::{
-    fs_error, method, FsFilesParams, FsPathParams, FsRead, FsReadParams, FsWatchParams, TreeChunk,
-    FS_TREE_TOPIC,
+    fs_error, method, FsChangeParams, FsFilesParams, FsPathParams, FsRead, FsReadParams,
+    FsWatchParams, FsWriteParams, FsWritten, TreeChunk, FS_TREE_TOPIC, WRITE_READY,
 };
 use crate::server_source::Inner;
 use crate::source::READ_TIMEOUT;
@@ -26,6 +30,22 @@ use crate::source::READ_TIMEOUT;
 const FEED_TICK: Duration = Duration::from_millis(250);
 /// The wait before following the tree again after the session dropped.
 const RESUBSCRIBE_WAIT: Duration = Duration::from_millis(500);
+/// How long a save waits for the machine to come back before it gives up; the text stays in the editor.
+const SAVE_PATIENCE: Duration = Duration::from_secs(30 * 60);
+/// How long a change to the tree waits for the machine: the tree shows it meanwhile, so not long.
+const CHANGE_PATIENCE: Duration = Duration::from_secs(2 * 60);
+const RETRY_WAIT: Duration = Duration::from_millis(500);
+/// How long an answer to a save or change may take once everything is sent.
+const WRITE_ANSWER: Duration = Duration::from_secs(60);
+/// How far a streamed save runs ahead of what the server says has arrived.
+const UPLOAD_AHEAD: u64 = 1024 * 1024;
+const UPLOAD_PIECE: usize = 32 * 1024;
+
+/// Why one try at a save or change did not finish: worth trying again once the machine is back, or not.
+enum Attempt {
+    Again(io::Error),
+    Final(io::Error),
+}
 
 pub struct RemoteFs {
     inner: Arc<Inner>,
@@ -95,14 +115,221 @@ impl RemoteFs {
     }
 }
 
+impl RemoteFs {
+    /// Runs `once` until it finishes or fails for a reason other than the connection, for at most `patience`.
+    fn with_retries<T>(
+        &self,
+        patience: Duration,
+        mut once: impl FnMut(&Connection) -> Result<T, Attempt>,
+    ) -> io::Result<T> {
+        let deadline = Instant::now() + patience;
+        loop {
+            let tried = match self.inner.connection() {
+                Ok(Some(connection)) => once(&connection),
+                Ok(None) => Err(Attempt::Final(io::Error::other(format!(
+                    "{} is read over plain ssh, which has no files",
+                    self.inner.host_name()
+                )))),
+                Err(error) => Err(Attempt::Again(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    error.to_string(),
+                ))),
+            };
+            match tried {
+                Ok(value) => return Ok(value),
+                Err(Attempt::Final(error)) => return Err(error),
+                Err(Attempt::Again(error)) if Instant::now() >= deadline => return Err(error),
+                Err(Attempt::Again(_)) => std::thread::sleep(RETRY_WAIT),
+            }
+        }
+    }
+
+    fn attempt_error(&self, error: Error) -> Attempt {
+        match error {
+            Error::Remote(remote) if remote.code == fs_error::INCOMPLETE => {
+                Attempt::Again(io::Error::other(remote.message))
+            }
+            remote @ Error::Remote(_) => Attempt::Final(io_error(&self.inner, remote)),
+            other => Attempt::Again(io_error(&self.inner, other)),
+        }
+    }
+
+    fn write_params(&self, path: &str, expect: Option<&FileStat>, op_id: &str) -> FsWriteParams {
+        FsWriteParams {
+            cfg: self.inner.config().to_string(),
+            branch: self.branch.clone(),
+            path: path.to_string(),
+            expect: expect.cloned(),
+            op_id: op_id.to_string(),
+            ..FsWriteParams::default()
+        }
+    }
+
+    fn write_once(
+        &self,
+        connection: &Connection,
+        path: &str,
+        text: &str,
+        expect: Option<&FileStat>,
+        op_id: &str,
+    ) -> Result<FsWritten, Attempt> {
+        let mut params = self.write_params(path, expect, op_id);
+        if text.len() as u64 <= INLINE_READ_LIMIT {
+            params.text = Some(text.to_string());
+            let answer = connection
+                .start_request(method::FS_WRITE, &params)
+                .and_then(|mut pending| pending.wait_timeout(WRITE_ANSWER))
+                .map_err(|error| self.attempt_error(error))?;
+            return serde_json::from_value(answer).map_err(|error| {
+                Attempt::Final(io::Error::new(io::ErrorKind::InvalidData, error))
+            });
+        }
+        let stream = connection
+            .open_stream()
+            .map_err(|error| self.attempt_error(error))?;
+        params.channel = stream.channel();
+        params.size = text.len() as u64;
+        let mut pending = connection
+            .start_request(method::FS_WRITE, &params)
+            .map_err(|error| self.attempt_error(error))?;
+        let mut upload = Upload::new(&stream);
+        loop {
+            match pending.wait_timeout(Duration::ZERO) {
+                Ok(answer) => {
+                    return serde_json::from_value(answer).map_err(|error| {
+                        Attempt::Final(io::Error::new(io::ErrorKind::InvalidData, error))
+                    })
+                }
+                Err(Error::Timeout) => {}
+                Err(error) => return Err(self.attempt_error(error)),
+            }
+            if upload.done(text.len()) {
+                let answer = pending
+                    .wait_timeout(WRITE_ANSWER)
+                    .map_err(|error| self.attempt_error(error))?;
+                return serde_json::from_value(answer).map_err(|error| {
+                    Attempt::Final(io::Error::new(io::ErrorKind::InvalidData, error))
+                });
+            }
+            upload.step(text.as_bytes()).map_err(|error| {
+                Attempt::Again(io::Error::new(io::ErrorKind::NotConnected, error))
+            })?;
+        }
+    }
+
+    fn change(&self, name: &str, path: &str, from: &str, is_dir: bool) -> io::Result<()> {
+        let params = FsChangeParams {
+            cfg: self.inner.config().to_string(),
+            branch: self.branch.clone(),
+            path: path.to_string(),
+            from: from.to_string(),
+            is_dir,
+            op_id: self.inner.next_op_id(),
+        };
+        self.with_retries(CHANGE_PATIENCE, |connection| {
+            connection
+                .start_request(name, &params)
+                .and_then(|mut pending| pending.wait_timeout(WRITE_ANSWER))
+                .map(|_| ())
+                .map_err(|error| self.attempt_error(error))
+        })
+    }
+}
+
+/// A save's text going out as INPUT, never more than [`UPLOAD_AHEAD`] past what the server says it has.
+struct Upload<'a> {
+    stream: &'a StreamReceiver,
+    ready: bool,
+    sent: usize,
+    confirmed: u64,
+    /// What the server sent back so far: the ready word, then 8-byte counts.
+    heard: Vec<u8>,
+}
+
+impl<'a> Upload<'a> {
+    fn new(stream: &'a StreamReceiver) -> Upload<'a> {
+        Upload {
+            stream,
+            ready: false,
+            sent: 0,
+            confirmed: 0,
+            heard: Vec::new(),
+        }
+    }
+
+    fn done(&self, size: usize) -> bool {
+        self.ready && self.confirmed >= size as u64
+    }
+
+    /// Takes what the server said, then sends what the window allows; waits a little when it allows nothing.
+    fn step(&mut self, text: &[u8]) -> Result<(), String> {
+        let ahead = self.sent as u64 - self.confirmed.min(self.sent as u64);
+        let can_send = self.ready && self.sent < text.len() && ahead < UPLOAD_AHEAD;
+        let wait = if can_send {
+            Duration::ZERO
+        } else {
+            FEED_TICK / 5
+        };
+        match self.stream.recv_timeout(wait) {
+            Ok(StreamEvent::Data { bytes, .. }) => {
+                self.heard.extend_from_slice(&bytes);
+                self.stream.ack(self.heard.len() as u64);
+                self.read_heard()?;
+            }
+            Ok(StreamEvent::End { reason }) => return Err(format!("the save stopped: {reason}")),
+            Ok(StreamEvent::Reset { .. }) => return Err("the save skipped ahead".into()),
+            Err(Error::Timeout) => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        if !self.ready {
+            return Ok(());
+        }
+        while self.sent < text.len()
+            && (self.sent as u64).saturating_sub(self.confirmed) < UPLOAD_AHEAD
+        {
+            let end = (self.sent + UPLOAD_PIECE).min(text.len());
+            let piece = text.get(self.sent..end).unwrap_or_default();
+            self.stream
+                .send_input(piece)
+                .map_err(|error| error.to_string())?;
+            self.sent = end;
+        }
+        Ok(())
+    }
+
+    fn read_heard(&mut self) -> Result<(), String> {
+        if !self.ready {
+            if self.heard.len() < WRITE_READY.len() {
+                return Ok(());
+            }
+            if !self.heard.starts_with(WRITE_READY) {
+                return Err("the server did not take the save".into());
+            }
+            self.ready = true;
+        }
+        let counts = self.heard.get(WRITE_READY.len()..).unwrap_or_default();
+        if let Some(last) = counts.chunks_exact(8).last() {
+            let mut count = [0u8; 8];
+            count.copy_from_slice(last);
+            self.confirmed = u64::from_be_bytes(count);
+        }
+        Ok(())
+    }
+}
+
 fn io_error(inner: &Inner, error: Error) -> io::Error {
     match error {
+        Error::Remote(error) if error.code == fs_error::TOO_LARGE => io::Error::new(
+            io::ErrorKind::InvalidData,
+            files::fs::TooLarge(error.message),
+        ),
         Error::Remote(error) => {
             let kind = match error.code.as_str() {
                 code if code == Refusal::NotFound.code() => io::ErrorKind::NotFound,
                 code if code == Refusal::OutsideWorkspace.code() => io::ErrorKind::PermissionDenied,
                 code if code == Refusal::NotAFile.code() => io::ErrorKind::InvalidInput,
                 code if code == Refusal::Invalid.code() => io::ErrorKind::InvalidInput,
+                code if code == Refusal::ReadOnly.code() => io::ErrorKind::PermissionDenied,
                 fs_error::TOO_LARGE => io::ErrorKind::InvalidData,
                 _ => io::ErrorKind::Other,
             };
@@ -253,6 +480,65 @@ impl ProjectFs for RemoteFs {
             .filter(|line| !line.is_empty())
             .map(str::to_string)
             .collect())
+    }
+
+    /// Waits for the machine while it is away (the editor shows the save as waiting), then sends the save again
+    /// with the same op id and the same `expect`: a file changed there meanwhile comes back as a conflict.
+    fn write(
+        &self,
+        path: &str,
+        text: &str,
+        expect: Option<&FileStat>,
+    ) -> Result<FileStat, WriteError> {
+        let op_id = self.inner.next_op_id();
+        let written = self.with_retries(SAVE_PATIENCE, |connection| {
+            self.write_once(connection, path, text, expect, &op_id)
+        })?;
+        let stat = FileStat {
+            dir: false,
+            size: written.size,
+            mtime_ns: written.mtime_ns,
+        };
+        if written.conflict {
+            return Err(WriteError::Conflict(stat));
+        }
+        Ok(stat)
+    }
+
+    fn create_file(&self, path: &str) -> io::Result<()> {
+        self.change(method::FS_CREATE_FILE, path, "", false)
+    }
+
+    fn create_dir(&self, path: &str) -> io::Result<()> {
+        self.change(method::FS_CREATE_DIR, path, "", false)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        self.change(method::FS_RENAME, to, from, false)
+    }
+
+    fn copy(&self, from: &str, to: &str) -> io::Result<()> {
+        self.change(method::FS_COPY, to, from, false)
+    }
+
+    fn remove(&self, path: &str) -> io::Result<()> {
+        self.change(method::FS_REMOVE, path, "", false)
+    }
+
+    fn trash(&self, path: &str) -> io::Result<()> {
+        self.change(method::FS_TRASH, path, "", false)
+    }
+
+    fn add_to_gitignore(&self, path: &str, is_dir: bool) -> io::Result<()> {
+        self.change(method::FS_APPEND_GITIGNORE, path, "", is_dir)
+    }
+
+    fn online(&self) -> bool {
+        self.inner.live_connection().is_some()
+    }
+
+    fn host(&self) -> Option<&str> {
+        Some(self.inner.host_name())
     }
 }
 

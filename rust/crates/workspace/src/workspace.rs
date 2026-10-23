@@ -1568,6 +1568,11 @@ pub trait Item: 'static {
     fn save(&mut self) -> Result<(), String> {
         Ok(())
     }
+    /// After a save that finishes later (the file is on another machine): the tab closes itself once its save
+    /// lands, and stays open when it does not. Returns whether it will.
+    fn close_when_saved(&mut self) -> bool {
+        false
+    }
     fn is_dirty(&self) -> bool {
         false
     }
@@ -1999,6 +2004,14 @@ pub trait TerminalPanelView: 'static {
     fn link_hovered(&self) -> bool;
     /// A new shell as a pane item, for placing outside the panel.
     fn new_item(&mut self, cwd: Option<std::path::PathBuf>) -> Option<Box<dyn Item>>;
+    /// A new shell as a pane item with `input` typed into it, as if at its prompt.
+    fn new_item_typing(
+        &mut self,
+        cwd: Option<std::path::PathBuf>,
+        _input: &str,
+    ) -> Option<Box<dyn Item>> {
+        self.new_item(cwd)
+    }
     /// A terminal running `argv` in `cwd` with `env` added, titled `title`.
     fn command_item(
         &mut self,
@@ -2144,6 +2157,10 @@ pub trait FunctionView: ItemInput + 'static {
         None
     }
     fn prompt_answered(&mut self, _token: u64, _answer: usize) {}
+    /// A question the view raised on its own (not from a menu); its answer comes to `prompt_answered`.
+    fn take_prompt(&mut self) -> Option<Prompt> {
+        None
+    }
     fn take_toast(&mut self) -> Option<String> {
         None
     }
@@ -2322,6 +2339,10 @@ pub trait FunctionView: ItemInput + 'static {
     }
     fn root_dir(&self) -> Option<std::path::PathBuf> {
         None
+    }
+    /// What the editor area's saved tabs are kept under: the folder here, or a host and folder elsewhere.
+    fn panes_key(&self) -> Option<std::path::PathBuf> {
+        self.root_dir()
     }
     fn open_path(&mut self, _path: &str) {}
     fn refresh_disk_state(&mut self) {}
