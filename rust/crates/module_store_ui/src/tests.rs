@@ -192,3 +192,18 @@ fn optimize_keeps_then_moves_then_frees_and_asks_first() {
         .iter()
         .any(|text| text == "Optimizing 2 of 3 - Swapping feat-pay to the shared copy"));
 }
+
+#[test]
+fn a_store_that_cannot_be_shown_says_why_and_can_be_asked_again() {
+    let mut state = StoreState {
+        unavailable: Some("pom on dev cannot show its node_modules store here.".into()),
+        ..StoreState::default()
+    };
+    let shown = texts(&state, 1200.0);
+    assert!(shown
+        .iter()
+        .any(|text| text == "pom on dev cannot show its node_modules store here."));
+    assert!(!shown.iter().any(|text| text == "Reading lockfiles"));
+    click(&mut state, REFRESH);
+    assert_eq!(state.requests, [Request::Refresh]);
+}

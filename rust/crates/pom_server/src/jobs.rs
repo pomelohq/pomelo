@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use pom_layout::Workspace;
 use pom_remote::server_api::{
     job_op, progress_kind, BranchArgs, CreateArgs, JobFollowParams, JobFollowed, JobParams,
-    JobStartParams, JobStarted, Progress, StartWaitArgs, TaskArgs, EXIT_CANCELLED, PROGRESS_TOPIC,
+    JobStartParams, JobStarted, Progress, StartWaitArgs, StoreArgs, TaskArgs, EXIT_CANCELLED,
+    PROGRESS_TOPIC,
 };
 use pom_remote::{LocalSource, OpenedProject, ProjectSource, ServiceAction};
 use pom_rpc::{error_code, Connection, ConnectionState, Publisher, RemoteError};
@@ -171,6 +172,7 @@ pub struct Jobs {
     next: AtomicU64,
     /// What runs a task's script in place of the user's login shell (tests).
     task_shell: Mutex<Option<Vec<String>>>,
+    store_sizes: pom_workspace::SizeCache,
 }
 
 /// A repo command to run: where, with which env, and the argv that runs it.
@@ -188,6 +190,14 @@ enum Work {
     StartWait(Workspace, String, Duration),
     Sync(Workspace),
     Task(Task),
+    Store(StoreWork),
+}
+
+/// A Store page request, with what runs a script in place of the login shell and the sizes measured before.
+struct StoreWork {
+    request: module_store::Request,
+    shell: Option<Vec<String>>,
+    sizes: pom_workspace::SizeCache,
 }
 
 impl Jobs {
@@ -197,6 +207,7 @@ impl Jobs {
             memory: Mutex::new(memory),
             next: AtomicU64::new(1),
             task_shell: Mutex::new(None),
+            store_sizes: pom_workspace::SizeCache::default(),
         }
     }
 
@@ -247,7 +258,10 @@ impl Jobs {
             });
         }
         let task_shell = locked(&self.task_shell).clone();
-        let work = checked_work(&source, &params.op, &params.args, task_shell)?;
+        let mut work = checked_work(&source, &params.op, &params.args, task_shell)?;
+        if let Work::Store(store) = &mut work {
+            store.sizes = self.store_sizes.clone();
+        }
         let mut entries = self.entries();
         if let Some(id) = entries.by_op_id.get(&params.op_id) {
             return Ok(JobStarted {
@@ -430,6 +444,15 @@ fn checked_work(
             let workspace = workspace_of(&opened, &args.branch)?;
             checked_task(&opened, &workspace, &args, task_shell).map(Work::Task)
         }
+        job_op::STORE => {
+            let args: StoreArgs = parsed(args)?;
+            checked_store_request(&args.request)?;
+            Ok(Work::Store(StoreWork {
+                request: args.request,
+                shell: task_shell,
+                sizes: pom_workspace::SizeCache::default(),
+            }))
+        }
         other => Err(invalid(format!("no job {other}"))),
     }
 }
@@ -503,6 +526,10 @@ fn run(job: &Job, source: &LocalSource, work: Work) {
             return job.fail(0, error.to_string(), EXIT_FAILED);
         }
     };
+    let work = match work {
+        Work::Store(store) => return run_store(job, source, opened, store),
+        other => other,
+    };
     let context = WorkspaceContext {
         config: &opened.config,
         runner: &opened.runner,
@@ -517,7 +544,97 @@ fn run(job: &Job, source: &LocalSource, work: Work) {
         }
         Work::Sync(workspace) => sync(job, source, &opened, &workspace),
         Work::Task(task) => run_task(job, &task),
+        Work::Store(_) => {}
     }
+}
+
+fn checked_store_request(request: &module_store::Request) -> Result<(), RemoteError> {
+    use module_store::Request;
+    match request {
+        Request::FreeOld { repo } => check_name("repo", repo),
+        Request::Relink {
+            repo,
+            workspace,
+            path,
+        } => {
+            check_name("repo", repo)?;
+            check_branch(workspace)?;
+            check_worktree_path(path)
+        }
+        Request::Keep { repo, path } => {
+            check_name("repo", repo)?;
+            check_worktree_path(path)
+        }
+        Request::Refresh | Request::FreeUnused | Request::FreeOthers | Request::Optimize => Ok(()),
+    }
+}
+
+/// The job itself only acts on a path that is one of the project's worktrees; this turns away the obvious.
+fn check_worktree_path(path: &std::path::Path) -> Result<(), RemoteError> {
+    let valid = path.is_absolute()
+        && !path
+            .components()
+            .any(|component| component == std::path::Component::ParentDir);
+    if valid {
+        Ok(())
+    } else {
+        Err(invalid(format!("{} is not a worktree", path.display())))
+    }
+}
+
+/// `node --version` in `path`: through the stand-in shell when one is set, else the user's login shell.
+fn node_version(shell: Option<&[String]>, path: &std::path::Path) -> Option<String> {
+    let Some((program, args)) = shell.and_then(|argv| argv.split_first()) else {
+        return pom_workspace::node_version(path, &[]);
+    };
+    let output = std::process::Command::new(program)
+        .args(args)
+        .arg("node --version")
+        .current_dir(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Reports the store's place, then each [`module_store::StoreUpdate`] as a `data` event.
+fn run_store(job: &Job, source: &LocalSource, opened: OpenedProject, work: StoreWork) {
+    let store = module_store::Store::new(source.state());
+    let supported = store.supported_method(&opened.project.root);
+    let method = module_store::Options::from_settings_file().method(supported);
+    let send = |update: module_store::StoreUpdate| match serde_json::to_value(&update) {
+        Ok(data) => {
+            job.push_event(Progress {
+                kind: progress_kind::DATA.to_string(),
+                data: Some(data),
+                ..Progress::default()
+            });
+            !job.stopped()
+        }
+        Err(error) => {
+            eprintln!("pom server: a store update: {error}");
+            true
+        }
+    };
+    send(module_store::StoreUpdate::Place {
+        root: store.root().display().to_string(),
+        method: module_store::describe_method(method).to_string(),
+    });
+    let repos = pom_workspace::store_worktrees(&opened.config, &opened.project.workspaces);
+    let shell = work.shell.clone();
+    let repos =
+        pom_workspace::with_node_versions(repos, &|path| node_version(shell.as_deref(), path));
+    let request = pom_workspace::StoreJob {
+        request: work.request,
+        repos,
+        previous: None,
+        services: Some((Arc::new(opened.runner), Arc::new(opened.config))),
+    };
+    pom_workspace::run_store_job(&store, request, &work.sizes, &send);
+    job.finish(if job.stopped() { EXIT_CANCELLED } else { 0 });
 }
 
 fn create(

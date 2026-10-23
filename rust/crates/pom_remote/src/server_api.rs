@@ -134,6 +134,7 @@ pub const FEATURES: &[&str] = &[
     JOB_TASK,
     FILES_WRITE,
     FILES_SEARCH,
+    MODULE_STORE,
 ];
 
 /// The server runs a repo's pre-written command as a job (`job_op::TASK`).
@@ -143,6 +144,9 @@ pub const JOB_TASK: &str = "job.task";
 pub const FILES_READ: &str = "files.read";
 /// The server saves a workspace's files and changes its tree: new files and folders, moves, copies, removals.
 pub const FILES_WRITE: &str = "files.write";
+
+/// The server runs the node_modules Store page's requests as jobs (`job_op::STORE`).
+pub const MODULE_STORE: &str = "module_store";
 
 /// The server searches a workspace's files and pushes what it finds.
 pub const FILES_SEARCH: &str = "files.search";
@@ -453,7 +457,9 @@ pub mod job_op {
     pub const SYNC: &str = "sync";
     /// A repo's pre-written command, run with the workspace's env.
     pub const TASK: &str = "task";
-    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC, TASK];
+    /// A request of the node_modules Store page, reporting [`module_store::StoreUpdate`]s as `data`.
+    pub const STORE: &str = "store";
+    pub const ALL: &[&str] = &[WS_CREATE, WS_WAKE, WS_SLEEP, START_WAIT, SYNC, TASK, STORE];
 }
 
 /// `ws.create`: an empty `repos` checks out every repo of the project.
@@ -496,6 +502,13 @@ pub struct TaskArgs {
     pub label: String,
 }
 
+/// `store`: a request of the node_modules Store page, run on the project's store and workspaces there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StoreArgs {
+    pub request: module_store::Request,
+}
+
 /// A job as the app asks for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobRequest {
@@ -505,6 +518,7 @@ pub enum JobRequest {
     StartWait(StartWaitArgs),
     Sync(BranchArgs),
     Task(TaskArgs),
+    Store(StoreArgs),
 }
 
 impl JobRequest {
@@ -516,6 +530,7 @@ impl JobRequest {
             JobRequest::StartWait(_) => job_op::START_WAIT,
             JobRequest::Sync(_) => job_op::SYNC,
             JobRequest::Task(_) => job_op::TASK,
+            JobRequest::Store(_) => job_op::STORE,
         }
     }
 
@@ -524,6 +539,7 @@ impl JobRequest {
             JobRequest::Create(args) => &args.branch,
             JobRequest::StartWait(args) => &args.branch,
             JobRequest::Task(args) => &args.branch,
+            JobRequest::Store(_) => "",
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 &args.branch
             }
@@ -535,6 +551,7 @@ impl JobRequest {
             JobRequest::Create(args) => serde_json::to_value(args),
             JobRequest::StartWait(args) => serde_json::to_value(args),
             JobRequest::Task(args) => serde_json::to_value(args),
+            JobRequest::Store(args) => serde_json::to_value(args),
             JobRequest::Wake(args) | JobRequest::Sleep(args) | JobRequest::Sync(args) => {
                 serde_json::to_value(args)
             }
@@ -604,6 +621,8 @@ pub mod progress_kind {
     pub const FAILED: &str = "failed";
     /// The last event: `done` with the job's `exit`.
     pub const DONE: &str = "done";
+    /// `data` is what the job reports in its own terms.
+    pub const DATA: &str = "data";
 }
 
 /// One event of a job, numbered from 0 so a client can follow again from the last one it saw.
@@ -622,6 +641,8 @@ pub struct Progress {
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// The exit of a job stopped by `job.cancel`.

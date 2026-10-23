@@ -4,13 +4,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     detect, import, key, node_major, tree_size, Detection, Entry, Manager, Method, RepoRules,
     Store, MODULES,
 };
 
 /// Something whose size is not known yet.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Measure {
     Stored {
         repo: String,
@@ -73,7 +75,7 @@ pub struct RepoWorktrees {
     pub setup: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Holding {
     /// Its node_modules came from (or went into) the store.
     Shared,
@@ -84,7 +86,7 @@ pub enum Holding {
     NotInstalled,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct User {
     pub workspace: String,
     pub is_main: bool,
@@ -93,7 +95,7 @@ pub struct User {
 }
 
 /// One lockfile version of a repo: the worktrees on it and the stored copy, if any.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub key: String,
     pub lockfile: String,
@@ -105,9 +107,9 @@ pub struct Version {
     pub users: Vec<User>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepoState {
-    SelfManaged(&'static str),
+    SelfManaged(String),
     NoLockfile,
     Versions {
         manager: Manager,
@@ -117,13 +119,14 @@ pub enum RepoState {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoOverview {
     pub repo: String,
     pub state: RepoState,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Overview {
     pub repos: Vec<RepoOverview>,
     /// Copies of repos this project does not have (other projects, or renamed repos).
@@ -209,7 +212,7 @@ impl Store {
         if let Some(Detection::SelfManaged(name)) =
             probe.map(|worktree| detect(&worktree.path, &input.setup))
         {
-            return RepoState::SelfManaged(name);
+            return RepoState::SelfManaged(name.to_string());
         }
         let node = input.node.as_deref();
         let mut manager = None;

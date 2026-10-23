@@ -6,6 +6,7 @@
 mod detect;
 mod import;
 mod overview;
+mod request;
 
 use std::fs;
 use std::io;
@@ -19,6 +20,7 @@ pub use import::{probe, tree_size, Method};
 pub use overview::{
     Holding, Measure, Overview, RepoOverview, RepoState, RepoWorktrees, User, Version, Worktree,
 };
+pub use request::{describe_method, plan, Request, StoreUpdate};
 
 const STORE_DIR: &str = "nm-store";
 const INDEX_FILE: &str = "index.json";

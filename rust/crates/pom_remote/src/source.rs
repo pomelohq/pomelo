@@ -187,6 +187,8 @@ pub struct TransportInfo {
     pub usage: bool,
     /// The server reads Jira with the settings kept there.
     pub jira: bool,
+    /// The server runs the node_modules Store page's requests.
+    pub module_store: bool,
 }
 
 /// The Services panel's methods a server lists, each on its own so an older one hides only what it lacks.
