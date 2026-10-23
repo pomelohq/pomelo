@@ -41,6 +41,7 @@ pub struct Dir {
     pub proxy_port: Option<u16>,
     pub profiles: Vec<String>,
     pub copy: Vec<String>,
+    pub modules_private: Vec<String>,
     pub env: IndexMap<String, String>,
     /// The repo's own base env before presets fill in defaults.
     pub own_env: IndexMap<String, String>,
@@ -372,6 +373,7 @@ impl Dir {
         dir.proxy_port = decoder.opt_u16(field("proxy_port"));
         dir.profiles = decoder.string_list(field("profiles"));
         dir.copy = decoder.strings(field("copy"));
+        dir.modules_private = decoder.string_list(field("modules_private"));
         dir.databases = decoder.string_map(field("databases"));
         dir.setup = decoder.strings(field("setup"));
         dir.migrate = decoder.strings(field("migrate"));

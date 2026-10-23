@@ -27,6 +27,7 @@ const TEMP_DIR: &str = ".tmp";
 const MODULES: &str = "node_modules";
 /// Build caches tools write under node_modules; each workspace keeps its own.
 const UNSHARED: [&str; 1] = [".cache"];
+pub const DEFAULT_PRIVATE: [&str; 1] = [".prisma"];
 const STALE_TEMP: Duration = Duration::from_secs(3600);
 const DAY: u64 = 86_400;
 
@@ -230,6 +231,16 @@ impl Drop for Lock {
     }
 }
 
+fn unshared(private: &[String]) -> Vec<&str> {
+    UNSHARED
+        .iter()
+        .chain(DEFAULT_PRIVATE.iter())
+        .copied()
+        .chain(private.iter().map(String::as_str))
+        .filter(|name| !name.is_empty() && *name != "." && *name != ".." && !name.contains('/'))
+        .collect()
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -337,6 +348,7 @@ impl Store {
         manager: Manager,
         source: &Path,
         method: Method,
+        private: &[String],
     ) -> io::Result<()> {
         let target = self.entry_dir(repo, key);
         if target.is_dir() {
@@ -351,12 +363,13 @@ impl Store {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |elapsed| elapsed.as_nanos())
         ));
-        let built = import::import(source, &temp.join(MODULES), method, &UNSHARED).and_then(|()| {
-            if method == Method::HardLink {
-                import::protect(&temp.join(MODULES))?;
-            }
-            Ok(())
-        });
+        let built = import::import(source, &temp.join(MODULES), method, &unshared(private))
+            .and_then(|()| {
+                if method == Method::HardLink {
+                    import::protect(&temp.join(MODULES))?;
+                }
+                Ok(())
+            });
         if let Err(error) = built {
             remove_tree(&temp)?;
             return Err(error);
@@ -420,7 +433,6 @@ impl Store {
     }
 
     /// Gives a fresh worktree the stored `node_modules` for its lockfile, first keeping main's when main
-    /// has the same lockfile. `node` is `node --version` as the workspace's shell reports it.
     pub fn restore(
         &self,
         repo: &str,
@@ -428,6 +440,7 @@ impl Store {
         main: &Path,
         node: Option<&str>,
         options: &Options,
+        private: &[String],
     ) -> io::Result<Restored> {
         let target = worktree.join(MODULES);
         if !options.enabled || target.exists() {
@@ -455,12 +468,12 @@ impl Store {
                 Method::Clone => Method::Clone,
                 _ => Method::Copy,
             };
-            self.fill(repo, &key, manager, &main_modules, from_main)?;
+            self.fill(repo, &key, manager, &main_modules, from_main, private)?;
         }
         if method == Method::HardLink {
             import::protect(&stored)?;
         }
-        import::import(&stored, &target, method, &[])?;
+        import::import(&stored, &target, method, &unshared(private))?;
         self.touch(repo, &key, worktree)?;
         Ok(Restored::FromStore(method))
     }
@@ -495,6 +508,7 @@ impl Store {
         worktree: &Path,
         node: Option<&str>,
         options: &Options,
+        private: &[String],
     ) -> io::Result<()> {
         let source = worktree.join(MODULES);
         if !options.enabled || !source.is_dir() {
@@ -506,7 +520,7 @@ impl Store {
         let Some(method) = options.method(probe(&self.root, worktree)) else {
             return Ok(());
         };
-        self.fill(repo, &key, manager, &source, method)?;
+        self.fill(repo, &key, manager, &source, method, private)?;
         self.touch(repo, &key, worktree)
     }
 

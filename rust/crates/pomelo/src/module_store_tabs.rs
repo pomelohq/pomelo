@@ -131,6 +131,13 @@ fn node_for(repos: &[RepoWorktrees], repo: &str) -> Option<String> {
         .and_then(|found| found.node.clone())
 }
 
+fn private_for(job: &Job, repo: &str) -> Vec<String> {
+    job.services
+        .as_ref()
+        .and_then(|(_, config)| config.repos.get(repo))
+        .map_or_else(Vec::new, |dir| dir.modules_private.clone())
+}
+
 fn repo_targets(
     config: &pom_config::Config,
     repo: &str,
@@ -223,7 +230,12 @@ fn relink(
             runner.stop(target)?;
         }
     }
-    let result = store.relink(repo, path, node_for(&job.repos, repo).as_deref());
+    let result = store.relink(
+        repo,
+        path,
+        node_for(&job.repos, repo).as_deref(),
+        &private_for(job, repo),
+    );
     if let Some((runner, config)) = &job.services {
         for target in &stopped {
             if let Err(error) = runner.start(config, target) {
@@ -261,7 +273,12 @@ fn perform(
             ))
         }),
         Request::Keep { repo, path } => store
-            .keep(repo, path, node_for(&job.repos, repo).as_deref())
+            .keep(
+                repo,
+                path,
+                node_for(&job.repos, repo).as_deref(),
+                &private_for(job, repo),
+            )
             .map(|()| Some(format!("Kept {repo}'s install; new workspaces get it now"))),
         Request::Optimize => Ok(None),
     };
@@ -296,7 +313,12 @@ fn optimize(store: &Store, job: &Job, sender: &Sender<Update>) -> std::io::Resul
                 freed += bytes;
             }),
             Request::Keep { repo, path } => store
-                .keep(repo, path, node_for(&job.repos, repo).as_deref())
+                .keep(
+                    repo,
+                    path,
+                    node_for(&job.repos, repo).as_deref(),
+                    &private_for(job, repo),
+                )
                 .map(|()| kept += 1),
             Request::FreeUnused => store
                 .delete_all(&unused_copies(job.previous.as_ref(), step))

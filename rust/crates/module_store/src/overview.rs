@@ -265,8 +265,13 @@ impl Store {
     }
 
     /// Swaps a worktree's own node_modules for a clone of the stored copy of its lockfile; returns the
-    /// bytes its own copy took. The old folder is kept until the new one is in place.
-    pub fn relink(&self, repo: &str, worktree: &Path, node: Option<&str>) -> io::Result<u64> {
+    pub fn relink(
+        &self,
+        repo: &str,
+        worktree: &Path,
+        node: Option<&str>,
+        private: &[String],
+    ) -> io::Result<u64> {
         let Some((_, key, _)) = worktree_key(worktree, node) else {
             return Err(io::Error::other("no lockfile the store keeps"));
         };
@@ -288,7 +293,8 @@ impl Store {
             }
             Method::Copy => Method::Copy,
         };
-        if let Err(error) = import::import(&stored, &target, method, &[]) {
+        let skipped = crate::unshared(private);
+        if let Err(error) = import::import(&stored, &target, method, &skipped) {
             if target.exists() {
                 fs::remove_dir_all(&target)?;
             }
@@ -298,6 +304,12 @@ impl Store {
             return Err(error);
         }
         if aside.exists() {
+            for name in &skipped {
+                let own = aside.join(name);
+                if own.is_dir() {
+                    fs::rename(&own, target.join(name))?;
+                }
+            }
             fs::remove_dir_all(&aside)?;
         }
         self.touch(repo, &key, worktree)?;
@@ -306,7 +318,13 @@ impl Store {
 
     /// Keeps a worktree's own install as the stored copy of its lockfile. Its files are cloned or
     /// copied, never linked, so the worktree stays writable.
-    pub fn keep(&self, repo: &str, worktree: &Path, node: Option<&str>) -> io::Result<()> {
+    pub fn keep(
+        &self,
+        repo: &str,
+        worktree: &Path,
+        node: Option<&str>,
+        private: &[String],
+    ) -> io::Result<()> {
         let Some((manager, key, _)) = worktree_key(worktree, node) else {
             return Err(io::Error::other("no lockfile the store keeps"));
         };
@@ -318,7 +336,7 @@ impl Store {
             Method::Clone => Method::Clone,
             _ => Method::Copy,
         };
-        self.fill(repo, &key, manager, &source, method)?;
+        self.fill(repo, &key, manager, &source, method, private)?;
         self.touch(repo, &key, worktree)
     }
 
@@ -413,7 +431,7 @@ mod tests {
         let main = worktree(dir.path(), "main", "v1", true);
         let login = worktree(dir.path(), "feat-login", "v1", false);
         store
-            .restore("api", &login.path, &main.path, None, &options)
+            .restore("api", &login.path, &main.path, None, &options, &[])
             .unwrap();
         let own = worktree(dir.path(), "feat-pay", "v1", true);
         let react = worktree(dir.path(), "feat-react", "v2", false);
@@ -421,10 +439,10 @@ mod tests {
         fs::create_dir_all(stale.join("x")).unwrap();
         fs::write(stale.join("x/i.js"), "old").unwrap();
         store
-            .fill("api", "oldkey", Manager::Npm, &stale, Method::Copy)
+            .fill("api", "oldkey", Manager::Npm, &stale, Method::Copy, &[])
             .unwrap();
         store
-            .fill("web", "webkey", Manager::Npm, &stale, Method::Copy)
+            .fill("web", "webkey", Manager::Npm, &stale, Method::Copy, &[])
             .unwrap();
         let overview = store
             .overview(&[RepoWorktrees {
@@ -474,7 +492,16 @@ mod tests {
         assert_eq!(overview.others.len(), 1);
         assert_eq!(overview.unused().len(), 2);
 
-        assert_eq!(store.relink("api", &own.path, None).unwrap(), 3);
+        assert_eq!(store.relink("api", &own.path, None, &[]).unwrap(), 3);
+        let client = own.path.join("node_modules/.prisma/client");
+        fs::create_dir_all(&client).unwrap();
+        fs::write(client.join("index.js"), "own client").unwrap();
+        store.relink("api", &own.path, None, &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(client.join("index.js")).unwrap(),
+            "own client",
+            "relinking keeps the workspace's generated client"
+        );
         let after = store
             .overview(&[RepoWorktrees {
                 repo: "api".into(),
@@ -499,12 +526,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::at(dir.path().join("store"));
         let main = worktree(dir.path(), "main", "v1", true);
-        store.keep("api", &main.path, None).unwrap();
+        store.keep("api", &main.path, None, &[]).unwrap();
         let entries = store.list().unwrap();
         assert_eq!(entries.len(), 1);
         assert!(fs::write(main.path.join("node_modules/pad/index.js"), "mine").is_ok());
         assert!(store
-            .relink("api", &dir.path().join("nowhere"), None)
+            .relink("api", &dir.path().join("nowhere"), None, &[])
             .is_err());
         assert_eq!(
             store

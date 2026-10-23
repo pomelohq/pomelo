@@ -461,6 +461,10 @@ impl<'a> Creation<'a> {
                     )
                     .then(|| node_version(&repo.worktree, &repo_env))
                     .flatten();
+                    let private = config
+                        .repos
+                        .get(&repo.name)
+                        .map_or(&[][..], |dir| dir.modules_private.as_slice());
                     let restored = store
                         .restore(
                             &repo.name,
@@ -468,6 +472,7 @@ impl<'a> Creation<'a> {
                             &repo.main,
                             node.as_deref(),
                             store_options,
+                            private,
                         )
                         .unwrap_or_else(|error| {
                             scope.warn(format!("{}: shared node_modules ({error})", repo.name));
@@ -502,6 +507,7 @@ impl<'a> Creation<'a> {
                                     &repo.worktree,
                                     node.as_deref(),
                                     store_options,
+                                    private,
                                 ) {
                                     eprintln!(
                                         "workspace: keep node_modules for {}: {error}",
