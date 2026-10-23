@@ -44,6 +44,15 @@ impl Fixture {
                     .into_owned(),
             ),
             ("POM", POM.to_string()),
+            (
+                "FAKE_RELEASE",
+                fixture
+                    .temp
+                    .path()
+                    .join("release")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
             ("FAKE_SESSION", "s1".to_string()),
             (
                 "FAKE_TRANSCRIPT",
@@ -688,4 +697,231 @@ fn the_person_who_drives_may_send_from_another_client_without_moving_the_lease()
             .is_some_and(|message| message.contains("an orchestrator")),
         "{error}"
     );
+}
+
+impl Fixture {
+    fn pending(&self) -> Value {
+        self.reviewer()["pending_permission"].clone()
+    }
+
+    fn answer(&self, verb: &str, extra: &[&str]) -> Output {
+        let mut args = vec!["agent", verb, "feat/reviewer", "--json"];
+        args.extend_from_slice(extra);
+        self.pom(&args)
+    }
+
+    fn last_text(&self) -> Value {
+        let read = self.json(&["agent", "read", "feat/reviewer", "--json"]);
+        read["turns"][0]["items"][0]["text"].clone()
+    }
+}
+
+#[test]
+fn an_orchestrator_answers_the_agents_own_prompt_while_pom_holds_it() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("ask-permission", &["--take"]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the held prompt", |fixture| {
+        fixture.pending()["answer_by"] == "hook"
+    });
+    let pending = fixture.pending();
+    assert_eq!(pending["kind"], "agent");
+    assert_eq!(pending["tool_name"], "Bash");
+    assert_eq!(pending["tool_input"]["command"], "make test");
+    assert_eq!(pending["summary"], "make test");
+    let id = pending["id"].as_str().expect("id").to_string();
+    let reviewer = fixture.reviewer();
+    assert_eq!(
+        (reviewer["state"].as_str(), reviewer["reason"].as_str()),
+        (Some("awaiting_input"), Some("pending_approval"))
+    );
+    assert_eq!(reviewer["running"], true);
+    let watched = fixture.pom(&["agent", "watch", "feat", "--from-start", "--timeout", "1"]);
+    assert!(String::from_utf8_lossy(&watched.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(
+            |line| line["event"] == "PermissionRequest" && line["detail"]["request"] == id.as_str()
+        ));
+
+    let stale = fixture.answer("allow", &["--id", "0123456789ab"]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert_eq!(stderr_json(&stale)["error"], "stale");
+
+    let allowed = fixture.answer("allow", &["--id", &id]);
+    assert_eq!(
+        allowed.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(stdout_json(&allowed)["via"], "hook");
+    let (code, _) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(fixture.last_text(), "ran make test");
+    assert_eq!(fixture.pending(), Value::Null);
+    let again = fixture.answer("allow", &["--id", &id]);
+    assert_eq!(
+        stderr_json(&again)["error"],
+        "stale",
+        "an answered prompt takes no second answer"
+    );
+
+    let sent = fixture.send("ask-permission again", &[]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the next held prompt", |fixture| {
+        fixture.pending()["answer_by"] == "hook"
+    });
+    let denied = fixture.answer("deny", &["--reason", "not now"]);
+    assert_eq!(
+        denied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let (code, _) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(fixture.last_text(), "not allowed: not now");
+}
+
+#[test]
+fn taking_over_lets_go_of_a_held_prompt_and_the_person_answers_its_dialog() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("ask-permission", &["--take"]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the held prompt", |fixture| {
+        fixture.pending()["answer_by"] == "hook"
+    });
+    let taken = fixture.pom(&["agent", "takeover", "feat", "--session-id", "s1", "--json"]);
+    assert_eq!(taken.status.code(), Some(0));
+    fixture.until("the dialog", |fixture| {
+        fixture.pending()["answer_by"] == "terminal"
+    });
+    let mut connection = pom_ptyhost::connect_writer(&fixture.holders(), HOLDER).expect("connect");
+    connection.input(b"\r").expect("enter");
+    fixture.until(
+        "the person at the terminal to answer as before",
+        |fixture| fixture.reviewer()["last_event"] == "Stop",
+    );
+    assert_eq!(fixture.last_text(), "ran make test");
+}
+
+#[test]
+fn the_person_answers_the_agents_dialog_from_another_client() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("ask-permission", &["--as-person"]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the dialog", |fixture| {
+        fixture.pending()["answer_by"] == "terminal"
+    });
+    let refused = fixture.answer("allow", &[]);
+    assert_eq!(
+        stderr_json(&refused)["error"],
+        "lease",
+        "only as the person"
+    );
+    let answer = |verb: &str| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let output = fixture.answer(verb, &["--as-person"]);
+            if output.status.code() == Some(0) || Instant::now() > deadline {
+                return output;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let allowed = answer("allow");
+    assert_eq!(
+        allowed.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(stdout_json(&allowed)["via"], "terminal");
+    let (code, _) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(fixture.last_text(), "ran make test");
+
+    let sent = fixture.send("ask-permission again", &["--as-person"]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the next dialog", |fixture| {
+        fixture.pending()["answer_by"] == "terminal"
+    });
+    let denied = answer("deny");
+    assert_eq!(
+        denied.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&denied.stderr)
+    );
+    let reviewer = fixture.reviewer();
+    assert_eq!(
+        (reviewer["state"].as_str(), reviewer["reason"].as_str()),
+        (Some("idle"), Some("interrupted")),
+        "the dialog's deny key stops the turn"
+    );
+    assert_eq!(fixture.pending(), Value::Null);
+}
+
+#[test]
+fn read_live_and_watch_live_show_the_reply_while_it_is_written() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("stream", &["--take"]);
+    assert_eq!(sent.status.code(), Some(0));
+    fixture.until("the first lines of the reply", |fixture| {
+        fixture.json(&["agent", "read", "feat/reviewer", "--live", "--json"])["live"]["text"]
+            == "Working on it:"
+    });
+    let read = fixture.json(&["agent", "read", "feat/reviewer", "--live", "--json"]);
+    assert_eq!(read["running"], true);
+    assert_eq!(read["phase"], "working");
+    assert_eq!(read["live"]["turn"], 1);
+    assert_eq!(read["live"]["messages"][0]["final"], false);
+    assert_eq!(
+        read["turns"][0]["items"],
+        serde_json::json!([]),
+        "the transcript has none of it yet"
+    );
+
+    std::fs::write(fixture.temp.path().join("release"), "").expect("release");
+    let watched = fixture.pom(&[
+        "agent",
+        "watch",
+        "feat",
+        "--role",
+        "reviewer",
+        "--live",
+        "--until",
+        "turn-end",
+        "--from-start",
+        "--timeout",
+        "20s",
+    ]);
+    let lines: Vec<Value> = String::from_utf8_lossy(&watched.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let deltas: Vec<(&str, bool)> = lines
+        .iter()
+        .filter(|line| line["event"] == "live_text")
+        .map(|line| {
+            (
+                line["delta"].as_str().unwrap_or_default(),
+                line["final"].as_bool().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(deltas, [("Working on it:\n", false), ("done", true)]);
+    let end = lines.last().expect("lines");
+    assert_eq!(
+        (
+            end["event"].as_str(),
+            end["reached"].as_str(),
+            end["for_turn"].as_u64()
+        ),
+        (Some("watch_end"), Some("turn-end"), Some(1))
+    );
+    assert!(lines.iter().any(|line| line["event"] == "Stop"
+        && line["running"] == false
+        && line["phase"] == "idle"));
 }

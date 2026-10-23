@@ -27,6 +27,17 @@ pub trait AgentDriver: Send + Sync {
     fn waits_for_trust(&self, screen: &[u8]) -> bool;
     /// The writes that answer that prompt with yes.
     fn accept_trust(&self) -> Vec<Keystrokes>;
+    /// The agent's own permission dialog, if the rendered screen shows one.
+    fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog>;
+    /// The writes that answer that dialog: its highlighted first choice, or its deny key.
+    fn answer_permission(&self, allow: bool) -> Vec<Keystrokes>;
+}
+
+/// The agent's permission dialog as it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PermissionDialog {
+    /// The highlight is on the first choice, a plain yes for this one call.
+    pub first_choice_selected: bool,
 }
 
 /// Terminal output as plain lowercase text without spaces: the UI positions words with cursor moves, so
@@ -121,6 +132,38 @@ impl AgentDriver for ClaudeDriver {
         tail.contains("itrustthisfolder") && tail.contains("entertoconfirm")
     }
 
+    fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog> {
+        let bottom = &lines[lines.len().saturating_sub(DIALOG_TAIL_LINES)..];
+        let deny_at = bottom
+            .iter()
+            .rposition(|line| line.contains(DIALOG_DENY_CHOICE))?;
+        let selected = bottom[..=deny_at]
+            .iter()
+            .rev()
+            .take(DIALOG_CHOICES_MAX)
+            .find(|line| line.contains(SELECTION_MARK))?;
+        let choice = selected
+            .split(SELECTION_MARK)
+            .nth(1)
+            .unwrap_or_default()
+            .trim_start();
+        Some(PermissionDialog {
+            first_choice_selected: choice.starts_with("1. Yes") && !choice.contains("don't ask"),
+        })
+    }
+
+    fn answer_permission(&self, allow: bool) -> Vec<Keystrokes> {
+        // Enter takes the highlighted choice, checked to be the plain yes; Esc is the dialog's own deny key.
+        vec![Keystrokes {
+            bytes: if allow {
+                b"\r".to_vec()
+            } else {
+                b"\x1b".to_vec()
+            },
+            pause_ms: 0,
+        }]
+    }
+
     fn accept_trust(&self) -> Vec<Keystrokes> {
         // "No, exit" is preselected; one step down is "Yes, I trust this folder". Separate writes, or the
         // escape that starts the arrow key reads as Esc, which cancels the prompt and exits.
@@ -136,6 +179,12 @@ impl AgentDriver for ClaudeDriver {
         ]
     }
 }
+
+/// The last choice of every permission dialog the agent draws.
+const DIALOG_DENY_CHOICE: &str = "tell Claude what to do differently";
+const SELECTION_MARK: char = '\u{276F}';
+const DIALOG_TAIL_LINES: usize = 30;
+const DIALOG_CHOICES_MAX: usize = 4;
 
 /// How much of the end of the screen text the trust prompt check reads.
 const TRUST_TAIL: usize = 600;
@@ -194,5 +243,47 @@ mod tests {
         assert_eq!(keys[0].bytes, b"\x1b[B".to_vec());
         assert!(keys[0].pause_ms > 0);
         assert_eq!(keys[1].bytes, b"\r".to_vec());
+    }
+
+    #[test]
+    fn the_permission_dialog_is_found_with_where_its_highlight_is() {
+        let claude = driver("claude").expect("claude");
+        let screen = |selected: usize| -> Vec<String> {
+            let choices = [
+                "1. Yes",
+                "2. Yes, and don't ask again for make commands in /p/workspace--feat-login",
+                "3. No, and tell Claude what to do differently (esc)",
+            ];
+            let mut lines = vec![
+                "Bash command".to_string(),
+                String::new(),
+                "  make test".into(),
+                "Do you want to proceed?".into(),
+            ];
+            lines.extend(choices.iter().enumerate().map(|(index, choice)| {
+                if index == selected {
+                    format!("\u{276F} {choice}")
+                } else {
+                    format!("  {choice}")
+                }
+            }));
+            lines
+        };
+        assert_eq!(
+            claude.permission_dialog(&screen(0)),
+            Some(PermissionDialog {
+                first_choice_selected: true
+            })
+        );
+        assert_eq!(
+            claude.permission_dialog(&screen(1)),
+            Some(PermissionDialog {
+                first_choice_selected: false
+            }),
+            "Enter there would allow every later call too"
+        );
+        assert_eq!(claude.permission_dialog(&["> hello".to_string()]), None);
+        assert_eq!(claude.answer_permission(true)[0].bytes, b"\r".to_vec());
+        assert_eq!(claude.answer_permission(false)[0].bytes, b"\x1b".to_vec());
     }
 }
