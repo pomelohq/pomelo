@@ -296,9 +296,10 @@ fn a_remote_workspace_goes_to_its_host_proxy_while_local_ones_stay_here() {
 
     let response = get("server.api.main.localhost", "/");
     assert!(
-        response.starts_with("HTTP/1.1 502"),
-        "local main wins: {response}"
+        response.starts_with("HTTP/1.1 200"),
+        "local main does not run it, so the host does: {response}"
     );
+    assert!(next(&remote_seen).starts_with("get / "));
     let response = get("server.api.main.dev.localhost:8767", "/there");
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     let head = next(&remote_seen);
@@ -311,6 +312,75 @@ fn a_remote_workspace_goes_to_its_host_proxy_while_local_ones_stay_here() {
     proxy.set_remote_gateways(Vec::new());
     let response = get("server.api.feat-remote.localhost", "/");
     assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    assert!(local_seen.try_recv().is_err() && remote_seen.try_recv().is_err());
+}
+
+#[test]
+fn a_workspace_on_both_sides_goes_to_the_host_only_while_it_is_down_here() {
+    let (local_sender, local_seen) = mpsc::channel();
+    let local = echo_backend(local_sender);
+    let (remote_sender, remote_seen) = mpsc::channel();
+    let tunnel = echo_backend(remote_sender);
+    let (proxy, ports) = start(
+        vec![
+            service_lease("feat-login", local),
+            service_lease("main", free_port()),
+        ],
+        HashMap::new(),
+    );
+    let gateway = |port: u16| RemoteGateway {
+        host: "dev".into(),
+        session: "remoteproj".into(),
+        branches: vec!["main".into(), "feat-login".into()],
+        port,
+    };
+    proxy.set_remote_gateways(vec![gateway(tunnel)]);
+    let get = |host: &str, path: &str| {
+        request(
+            ports.proxy,
+            &format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+        )
+    };
+    let next = |seen: &mpsc::Receiver<String>| {
+        seen.recv_timeout(Duration::from_secs(5))
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+
+    let response = get("server.api.feat-login.localhost:8767", "/here");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        next(&local_seen).starts_with("get /here"),
+        "running here wins"
+    );
+
+    let response = get("server.api.main.localhost:8767", "/there");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let head = next(&remote_seen);
+    assert!(head.starts_with("get /there"), "{head}");
+    assert!(
+        head.contains("host: server.api.main.localhost:8767"),
+        "{head}"
+    );
+    let response = get("web.web.main.localhost", "/_pom_dev/api/server/v1");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(next(&remote_seen).starts_with("get /_pom_dev/api/server/v1"));
+
+    proxy.set_remote_gateways(vec![gateway(free_port())]);
+    let response = get("server.api.main.localhost:8767", "/down");
+    assert!(response.starts_with("HTTP/1.1 503"), "{response}");
+    assert!(
+        response.contains("it is also on dev: http://server.api.main.dev.localhost:8767/down"),
+        "{response}"
+    );
+    let page = request(
+        ports.proxy,
+        "GET /down HTTP/1.1\r\nHost: server.api.main.localhost:8767\r\nAccept: text/html\r\nConnection: close\r\n\r\n",
+    );
+    assert!(
+        page.contains(r#"<a href="http://server.api.main.dev.localhost:8767/down">"#),
+        "{page}"
+    );
     assert!(local_seen.try_recv().is_err() && remote_seen.try_recv().is_err());
 }
 
