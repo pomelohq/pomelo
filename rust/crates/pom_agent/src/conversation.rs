@@ -108,6 +108,37 @@ pub struct WaitOutcome {
     pub exit_code: i32,
 }
 
+/// Whether the agent started on the turn sent at `sent_ms`, by its state or by any event since.
+fn turn_began(state: &pom_paths::StateDir, session_id: &str, before: u64, sent_ms: u64) -> bool {
+    if read_state(state, session_id)
+        .is_some_and(|record| record.turn > before || record.turn_state == TurnState::Running)
+        || pending_permission(state, session_id).is_some()
+    {
+        return true;
+    }
+    events(state, session_id).iter().any(|line| {
+        line.t_ms >= sent_ms
+            && !(line.event == "Notification"
+                && line.notification.as_deref() == Some("idle_prompt"))
+    })
+}
+
+/// Why the rendered screen makes one more Enter unsafe: a dialog would take it, or the box no longer holds
+/// `text`, so the Enter was taken and the turn is only slow to show.
+fn retry_blocker_on_screen(
+    agent_driver: &dyn crate::driver::AgentDriver,
+    lines: &[String],
+    text: &str,
+) -> Option<&'static str> {
+    if agent_driver.shows_choices(lines) {
+        return Some("a dialog is on its screen");
+    }
+    if !agent_driver.holds_unsent(lines, text) {
+        return Some("its input box no longer shows the prompt");
+    }
+    None
+}
+
 fn identity_of(drive: &Drive, view: &SessionView) -> Identity {
     Identity {
         holder: view.holder.clone(),
@@ -284,16 +315,27 @@ impl Drive {
                     sent_ms: now_ms(),
                 },
             )?;
+            if self
+                .screen(view)
+                .is_some_and(|lines| agent_driver.shows_choices(&lines))
+            {
+                return Ok(Err(DriveError::Failed(format!(
+                    "{} shows a dialog; answer it before sending, or a typed key could answer it",
+                    view.handle
+                ))));
+            }
             let mut connection = pom_ptyhost::connect_writer(&self.holders, &view.holder)?;
             if lease.class != LeaseClass::Human {
                 connection.claim(&lease.token)?;
             }
+            let sent_ms = now_ms();
             for keys in agent_driver.submit(text) {
                 connection.input(&keys.bytes)?;
                 std::thread::sleep(Duration::from_millis(keys.pause_ms));
             }
             let started = Instant::now();
             let mut retried = false;
+            let mut held_back = None;
             loop {
                 let turn = read_state(&self.state, &view.session_id).map_or(before, |record| record.turn);
                 if turn > before {
@@ -309,16 +351,45 @@ impl Drive {
                     return Ok(Ok(turn));
                 }
                 if !retried && started.elapsed() > SUBMIT_RETRY_AFTER {
-                    connection.input(b"\r")?;
-                    retried = true;
+                    match self.retry_blocker(view, agent_driver, text, before, sent_ms) {
+                        Some(why) => held_back = Some(why),
+                        None => {
+                            connection.input(b"\r")?;
+                            retried = true;
+                        }
+                    }
                 }
                 if started.elapsed() > SUBMIT_GIVE_UP {
-                    return Ok(Err(DriveError::NotSubmitted(view.handle.clone())));
+                    return Ok(Err(DriveError::NotSubmitted(view.handle.clone(), held_back)));
                 }
                 std::thread::sleep(POLL);
             }
         })
         .map_err(|error| DriveError::Failed(format!("could not send to {}: {error}", view.handle)))?
+    }
+
+    fn screen(&self, view: &SessionView) -> Option<Vec<String>> {
+        pom_ptyhost::snapshot(&self.holders, &view.holder, SNAPSHOT_TIMEOUT)
+            .ok()
+            .map(|output| rendered_lines(&output))
+    }
+
+    /// Why one more Enter could do something other than submit `text`; `None` only when it is safe.
+    fn retry_blocker(
+        &self,
+        view: &SessionView,
+        agent_driver: &dyn crate::driver::AgentDriver,
+        text: &str,
+        before: u64,
+        sent_ms: u64,
+    ) -> Option<&'static str> {
+        if turn_began(&self.state, &view.session_id, before, sent_ms) {
+            return Some("the agent already reacted to it");
+        }
+        let Some(lines) = self.screen(view) else {
+            return Some("its screen could not be read");
+        };
+        retry_blocker_on_screen(agent_driver, &lines, text)
     }
 
     fn wait_until_idle(&self, view: &SessionView, timeout: Duration) -> Result<(), DriveError> {
@@ -950,6 +1021,85 @@ mod tests {
     use crate::hooks::AgentState;
     use pom_paths::StateDir;
     use pom_ptyhost::SocketDir;
+
+    fn input_screen(input: &str, dialog: &[&str]) -> Vec<String> {
+        let rule = "\u{2500}".repeat(40);
+        let mut lines = vec![
+            "\u{276F} review the diff please".to_string(),
+            "\u{23FA} Reviewed it.".into(),
+            String::new(),
+        ];
+        lines.extend(dialog.iter().map(|line| line.to_string()));
+        lines.extend([
+            rule.clone(),
+            format!("\u{276F}\u{A0}{input}"),
+            rule,
+            "  ? for shortcuts".into(),
+        ]);
+        lines
+    }
+
+    #[test]
+    fn a_second_enter_is_pressed_only_while_the_box_still_holds_the_prompt_and_no_dialog_shows() {
+        let claude = driver("claude").expect("claude");
+        let text = "review the diff please\nand say what breaks";
+        let decide = |lines: &[String]| retry_blocker_on_screen(claude, lines, text);
+
+        assert_eq!(decide(&input_screen("review the diff please", &[])), None);
+        assert_eq!(
+            decide(&input_screen("[Pasted text #1 +1 lines]", &[])),
+            None,
+            "a long paste shows as its placeholder"
+        );
+        assert_eq!(
+            decide(&input_screen("", &[])),
+            Some("its input box no longer shows the prompt"),
+            "the first Enter was taken; only the turn is slow to show"
+        );
+        assert_eq!(
+            decide(&input_screen("Try \"write a test\"", &[])),
+            Some("its input box no longer shows the prompt")
+        );
+        assert_eq!(
+            decide(&input_screen("review the diff please", &[])[..2]),
+            Some("its input box no longer shows the prompt"),
+            "the sent turn's echo above the box does not count as the box"
+        );
+
+        let permission = [
+            "Bash command",
+            "make test",
+            "Do you want to proceed?",
+            "\u{276F} 1. Yes",
+            "  2. Yes, and always allow access to /tmp/myproject from this project",
+            "  3. Yes, and switch to auto mode",
+            "  4. No",
+            "",
+            "Esc to cancel - Tab to amend",
+        ];
+        assert_eq!(
+            decide(&input_screen("review the diff please", &permission)),
+            Some("a dialog is on its screen"),
+            "Enter would take the highlighted yes"
+        );
+        let unknown = ["Pick one", "\u{276F} 1. Keep going", "  2. Stop"];
+        assert_eq!(
+            decide(&input_screen("review the diff please", &unknown)),
+            Some("a dialog is on its screen"),
+            "any highlighted numbered choice counts"
+        );
+        let trust = [
+            "Quick safety check: Is this a project you created or one you trust?",
+            "\u{276F} No, exit",
+            "  Yes, I trust this folder",
+            "",
+            "Enter to confirm - Esc to cancel",
+        ];
+        assert_eq!(
+            decide(&trust.map(str::to_string)),
+            Some("a dialog is on its screen")
+        );
+    }
 
     #[test]
     fn a_transcript_end_turn_ends_the_turn_only_after_it_stays_quiet() {

@@ -31,8 +31,8 @@ const WORKSPACE_LOG_KEY: &str = "\u{0}workspace";
 #[derive(Debug)]
 pub enum DriveError {
     Refused(Refusal),
-    /// The prompt was typed but the agent never took it as a turn.
-    NotSubmitted(String),
+    /// The prompt was typed but the agent never took it as a turn, with why pom held back a second Enter.
+    NotSubmitted(String, Option<&'static str>),
     NotFound(String),
     Invalid(String),
     Failed(String),
@@ -61,7 +61,7 @@ impl DriveError {
     pub fn exit_code(&self) -> i32 {
         match self {
             DriveError::Refused(_) => crate::gate::REFUSED_EXIT,
-            DriveError::NotSubmitted(_) => crate::conversation::NOT_SUBMITTED_EXIT,
+            DriveError::NotSubmitted(..) => crate::conversation::NOT_SUBMITTED_EXIT,
             DriveError::NeedsTrust(_) => NEEDS_TRUST_EXIT,
             DriveError::Timeout(_) => crate::conversation::TIMEOUT_EXIT,
             DriveError::NotFound(_)
@@ -74,7 +74,7 @@ impl DriveError {
     pub fn code(&self) -> &'static str {
         match self {
             DriveError::Refused(refusal) => refusal.code(),
-            DriveError::NotSubmitted(_) => "not_submitted",
+            DriveError::NotSubmitted(..) => "not_submitted",
             DriveError::NotFound(_) => "not_found",
             DriveError::Invalid(_) => "invalid",
             DriveError::Failed(_) => "failed",
@@ -99,9 +99,13 @@ impl std::fmt::Display for DriveError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DriveError::Refused(refusal) => write!(formatter, "{refusal}"),
-            DriveError::NotSubmitted(handle) => write!(
+            DriveError::NotSubmitted(handle, None) => write!(
                 formatter,
                 "the prompt was typed into {handle} but it never started a turn"
+            ),
+            DriveError::NotSubmitted(handle, Some(why)) => write!(
+                formatter,
+                "the prompt was typed into {handle} but it never started a turn; pom did not press Enter again because {why}, so look at its terminal before sending again"
             ),
             DriveError::NotFound(message)
             | DriveError::Invalid(message)
