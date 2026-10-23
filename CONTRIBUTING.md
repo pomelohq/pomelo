@@ -21,7 +21,7 @@ updates) behave like the shipped app.
 
 ```bash
 make check          # cargo fmt --check, cargo clippy --all-targets -D warnings, cargo nextest run + doctests
-make check-changed  # the same, but clippy and tests only for the crates changed since origin/main and their dependents
+make check-changed  # the same, but tests only the crates changed since origin/main and their dependents
 ```
 
 The tests run under [cargo-nextest](https://nexte.st) (`brew install cargo-nextest` or

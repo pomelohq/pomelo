@@ -12,11 +12,15 @@ shared-ports = { max-threads = 1 }
 real-host = { max-threads = 1 }
 
 [profile.default]
-slow-timeout = { period = "60s" }
+# A hung test is killed and named instead of running into the job's timeout.
+slow-timeout = { period = "60s", terminate-after = 1 }
+fail-fast = false
 
 [[profile.default.overrides]]
 filter = 'binary_id(database_ui::docker) | binary_id(pom_db::docker) | binary_id(pom_services::shared_docker) | binary_id(pom_services::snapshots) | binary_id(pom_services::queues) | binary_id(pom_services::queue_counts) | binary_id(pom_cli::transfer)'
 test-group = 'docker'
+# Pulls images and starts real servers.
+slow-timeout = { period = "300s", terminate-after = 1 }
 
 [[profile.default.overrides]]
 filter = 'binary_id(pom_services::run_service) | binary_id(pom_services::port_drift)'
@@ -29,6 +33,7 @@ test-group = 'shared-ports'
 [[profile.default.overrides]]
 filter = 'binary_id(pom_ptyhost::limits_real) | test(/real_sshd/)'
 test-group = 'real-host'
+slow-timeout = { period = "180s", terminate-after = 1 }
 
 # Latency budgets, and a stalled client that must fall behind a flood within seconds, need a quiet machine.
 [[profile.default.overrides]]
@@ -37,8 +42,17 @@ threads-required = 'num-test-threads'
 # First, while nothing else runs yet, so the run never drains to make room for them.
 priority = 100
 
+# The slowest suites start first, so none of them is left running alone at the end.
+[[profile.default.overrides]]
+filter = 'binary_id(pom_cli::push_sync) | binary_id(pom_workspace::pipeline) | binary_id(git_ui::panel) | binary_id(pom_cli::agent_drive) | binary_id(pom_cli::remote) | binary_id(pom_services::run_service) | binary_id(pom_server::watch) | binary_id(pom_server::logs)'
+priority = 50
+
+# Catching up a 6 MiB flood after a stall may take minutes on a loaded runner.
+[[profile.default.overrides]]
+filter = 'binary_id(pom_server::logs) & test(/stops_acknowledging/)'
+slow-timeout = { period = "180s", terminate-after = 1 }
+
 [profile.ci]
 retries = 1
-fail-fast = false
 failure-output = "immediate-final"
 final-status-level = "flaky"
