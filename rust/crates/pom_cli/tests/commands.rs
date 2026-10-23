@@ -248,6 +248,32 @@ fn every_declared_command_is_listed_and_runs_without_naming_its_repo() {
 }
 
 #[test]
+fn a_relative_config_path_lists_the_project_without_a_warning() {
+    let fixture = Fixture::new();
+    for (cwd, config) in [
+        (fixture.root(), "pom.yml"),
+        (fixture.root(), "./pom.yml"),
+        (fixture.root().join("workspace--main"), "../pom.yml"),
+    ] {
+        let output = fixture.pom(&cwd, &["-c", config, "commands", "-o", "json"]);
+        assert!(output.status.success(), "{config}: {}", text(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "",
+            "-c {config} from {}",
+            cwd.display()
+        );
+    }
+    let sessions = std::fs::read_to_string(fixture.temp.path().join("state/pom/sessions.json"))
+        .expect("sessions.json");
+    let root = fixture.root();
+    assert!(
+        sessions.contains(&*root.to_string_lossy()),
+        "registered under its absolute root: {sessions}"
+    );
+}
+
+#[test]
 fn workspace_status_drift_and_refresh() {
     let fixture = Fixture::new();
     let root = fixture.root();
