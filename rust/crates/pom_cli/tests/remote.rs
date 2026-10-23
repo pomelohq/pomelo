@@ -1185,11 +1185,19 @@ fn the_server_proxy_starts_a_server_and_reconnect_never_does() {
     assert!(stopped.status.success(), "{}", text(&stopped));
     assert!(text(&stopped).contains(&format!("(pid {pid})")));
     assert!(!socket.exists());
-    let log = std::fs::read_to_string(fixture.temp.path().join(format!(
+    let log_path = fixture.temp.path().join(format!(
         "state/pom/server/{}.log",
         env!("CARGO_PKG_VERSION")
-    )))
-    .expect("server log");
+    ));
+    // The server logs its exit only after removing the socket that `server stop` waits on.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let log = loop {
+        let log = std::fs::read_to_string(&log_path).expect("server log");
+        if log.contains("exit: stopped") || Instant::now() >= deadline {
+            break log;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert!(log.contains("method=server.info"), "{log}");
     assert!(log.contains("exit: stopped"), "{log}");
 }

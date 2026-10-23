@@ -178,7 +178,8 @@ impl Fixture {
             holders: SocketDir::new(temp.path().join("s")),
             binary: PathBuf::from("/nonexistent"),
             docker: fake_docker(temp.path()),
-        });
+        })
+        .with_database_wait(std::time::Duration::ZERO);
         Fixture {
             temp,
             root,

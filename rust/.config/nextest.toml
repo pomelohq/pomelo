@@ -1,0 +1,44 @@
+# Every test runs in its own process, all binaries at once; these groups keep apart the tests that share
+# something outside the process.
+
+[test-groups]
+# One Docker daemon, fixed container names and published ports.
+docker = { max-threads = 1 }
+# Each fixture leases from a fresh state, so two at once get the same first port and start onto each other.
+service-ports = { max-threads = 1 }
+# Leasing a shared port probes it by binding 5432 and up.
+shared-ports = { max-threads = 1 }
+# A real systemd user manager or a real sshd on the runner.
+real-host = { max-threads = 1 }
+
+[profile.default]
+slow-timeout = { period = "60s" }
+
+[[profile.default.overrides]]
+filter = 'binary_id(database_ui::docker) | binary_id(pom_db::docker) | binary_id(pom_services::shared_docker) | binary_id(pom_services::snapshots) | binary_id(pom_services::queues) | binary_id(pom_services::queue_counts) | binary_id(pom_cli::transfer)'
+test-group = 'docker'
+
+[[profile.default.overrides]]
+filter = 'binary_id(pom_services::run_service) | binary_id(pom_services::port_drift)'
+test-group = 'service-ports'
+
+[[profile.default.overrides]]
+filter = 'binary_id(pom_services::shared)'
+test-group = 'shared-ports'
+
+[[profile.default.overrides]]
+filter = 'binary_id(pom_ptyhost::limits_real) | test(/real_sshd/)'
+test-group = 'real-host'
+
+# Latency budgets, and a stalled client that must fall behind a flood within seconds, need a quiet machine.
+[[profile.default.overrides]]
+filter = 'binary_id(pom_server::pty_perf)'
+threads-required = 'num-test-threads'
+# First, while nothing else runs yet, so the run never drains to make room for them.
+priority = 100
+
+[profile.ci]
+retries = 1
+fail-fast = false
+failure-output = "immediate-final"
+final-status-level = "flaky"

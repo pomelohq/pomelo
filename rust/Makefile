@@ -1,5 +1,5 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
-.PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test fmt fmt-check hakari-check lint check clean gc trim \
+.PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test test-cargo fmt fmt-check hakari-check lint check check-changed clean gc trim \
         patch minor major version
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
@@ -15,8 +15,9 @@ help:
 	@echo "  make dmg          build Pomelo.app + package Pomelo-$(VERSION).dmg"
 	@echo "  make appcast      build auto-update tarball + latest.json"
 	@echo "  make check        fmt-check + lint + test (the gate)"
+	@echo "  make check-changed  fmt-check, then lint + test only the crates changed since origin/main and their dependents"
 	@echo "  make gc           drop the dev/test build cache (target/debug); keeps release builds and the apps"
-	@echo "  make test / fmt / lint / clean"
+	@echo "  make test / test-cargo / fmt / lint / clean"
 	@echo "  make patch|minor|major   bump version, commit, tag v<x>, push (on main)"
 
 # Dev builds first drop a cache left useless by a toolchain change or grown past its limit.
@@ -47,7 +48,16 @@ linux-tarball:
 appcast:
 	scripts/make-appcast.sh
 
+# Each test in its own process, all binaries at once; .config/nextest.toml keeps apart the ones that share a resource.
 test: trim
+	@if cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace && cargo test --doc --workspace; \
+	else \
+		echo "cargo-nextest not installed (cargo install cargo-nextest): running plain cargo test"; \
+		cargo test; \
+	fi
+
+test-cargo: trim
 	cargo test
 
 fmt:
@@ -68,6 +78,9 @@ hakari-check:
 	fi
 
 check: fmt-check hakari-check lint test
+
+check-changed: trim
+	@scripts/check-changed.sh
 
 clean:
 	cargo clean

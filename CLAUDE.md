@@ -21,7 +21,8 @@ build/run, smooth resize.
 ```bash
 make run        # build + open PomeloDev.app (dev bundle, coexists with Pomelo.app)
 make prod       # build + open the release Pomelo.app
-make check      # cargo fmt --check + clippy -D warnings + cargo test (the gate CI runs)
+make check      # cargo fmt --check + clippy -D warnings + cargo nextest (the gate CI runs)
+make check-changed  # the same, limited to the crates changed since origin/main and their dependents
 make snapshot   # render a settings page headless (ui_snapshot) for visual checks
 ```
 
