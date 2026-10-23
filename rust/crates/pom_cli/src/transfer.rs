@@ -825,6 +825,9 @@ fn project_export(
     let session = pom_config::Config::load(&config_path)
         .map_err(|error| error.to_string())?
         .session;
+    if let Some(root) = config_path.parent() {
+        crate::register_project(&state, &session, root);
+    }
     let default_name = format!("{session}.{}", pom_transfer::PROJECT_EXTENSION);
     let (export, written) = write_archive(
         target,

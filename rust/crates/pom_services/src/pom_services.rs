@@ -26,7 +26,10 @@ pub use marks::{
     parse_statement_rows, step_stats, strip_ansi, LogSlice, Mark, StatementRow, StepQuery,
     StepStats, STATS_UNAVAILABLE,
 };
-pub use queue::{bull_queues_from_keys, count_commands, tally, Count, QueueCounts, QueueKind};
+pub use queue::{
+    bull_queues_from_keys, count_commands, count_queue, is_redis, pick_redis, tally, Count,
+    QueueCounts, QueueKind, QueueRedis, QueueSnapshot, RedisChoice, RedisCli, DEFAULT_BULL_PREFIX,
+};
 pub use run_env::{
     runs_tests, RunEnv, RunEnvLine, RunProfile, SOURCE_CONNECTION, SOURCE_TEST_ENV,
     SOURCE_WORKSPACE,

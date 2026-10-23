@@ -264,7 +264,7 @@ jobs:
         continue-on-error: true
         run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_keystroke -- --nocapture
 
-  # The macOS runners have no Docker; these tests need a real Postgres, so they run here.
+  # The macOS runners have no Docker; these tests need a real Postgres (and Redis), so they run here.
   postgres:
     name: Real Postgres tests (Linux)
     needs: changes
@@ -280,6 +280,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
+      - run: sudo apt-get update -q >/dev/null && sudo apt-get install -yq --no-install-recommends redis-server >/dev/null
+      - run: cargo test -p pom_services --test queue_counts
+        env:
+          POM_REDIS_TEST: 1
       - run: cargo test -p pom_services --test snapshots --test queues -- --test-threads 1
       - run: cargo test -p pom_cli --test transfer -- --test-threads 1
 

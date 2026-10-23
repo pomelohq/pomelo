@@ -117,13 +117,13 @@ pub struct Service {
 /// The background-job queue a worker service drains, so `pom queue wait-idle` knows what to watch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServiceQueue {
-    /// `sidekiq` or `bullmq`.
+    /// `sidekiq` or `bullmq` (`bull` is the same).
     pub kind: String,
-    /// BullMQ's key prefix; `bull` when empty.
+    /// The Bull/BullMQ key prefix; `bull` when empty.
     pub prefix: String,
     /// Queue names; empty means every queue found.
     pub queues: Vec<String>,
-    /// The shared Redis it uses; the repo's first Redis when empty.
+    /// The shared Redis it uses; when empty, the one the env points at.
     pub redis: String,
 }
 

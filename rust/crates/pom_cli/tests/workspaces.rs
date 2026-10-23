@@ -161,3 +161,68 @@ fn prepare_main_migrates_and_seeds_main() {
     assert!(prepared.status.success(), "{}", text(&prepared));
     assert!(!api.join("seeded").exists());
 }
+
+fn listed(fixture: &Fixture) -> Vec<(String, String)> {
+    let output = fixture.pom(&["project", "ls", "--json"]);
+    assert!(output.status.success(), "{}", text(&output));
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("project ls json");
+    document["projects"]
+        .as_array()
+        .expect("projects")
+        .iter()
+        .map(|entry| {
+            (
+                entry["name"].as_str().unwrap_or_default().to_string(),
+                entry["path"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_project_used_only_from_the_cli_is_listed() {
+    let fixture = Fixture::new();
+    assert_eq!(listed(&fixture), []);
+    let created = fixture.pom(&["ws", "create", "feat-login"]);
+    assert!(created.status.success(), "{}", text(&created));
+    assert_eq!(
+        listed(&fixture),
+        [(
+            "demo".to_string(),
+            std::fs::canonicalize(fixture.root())
+                .expect("root")
+                .display()
+                .to_string()
+        )]
+    );
+    let registry = std::fs::read_to_string(fixture.temp.path().join("state/pom/registry.json"))
+        .expect("registry.json");
+    assert!(registry.contains("\"demo\""), "{registry}");
+}
+
+#[test]
+fn a_project_made_by_pom_init_is_listed() {
+    let fixture = Fixture::new();
+    let sessions = fixture.temp.path().join("sessions");
+    let output = Command::new(POM)
+        .args(["init", "shop"])
+        .current_dir(fixture.root().join("workspace--main/api"))
+        .env("XDG_STATE_HOME", fixture.temp.path().join("state"))
+        .env("POM_SESSIONS_ROOT", &sessions)
+        .env("POM_PTY_SOCK_DIR", fixture.temp.path().join("s"))
+        .env("ZDOTDIR", fixture.temp.path().join("zdot"))
+        .output()
+        .expect("pom init");
+    assert!(output.status.success(), "{}", text(&output));
+    assert_eq!(
+        listed(&fixture),
+        [(
+            "shop".to_string(),
+            sessions.join("shop").display().to_string()
+        )]
+    );
+    let registry = std::fs::read_to_string(fixture.temp.path().join("state/pom/registry.json"))
+        .expect("registry.json");
+    assert!(registry.contains("\"shop\""), "{registry}");
+}
