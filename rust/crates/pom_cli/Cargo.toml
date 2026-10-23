@@ -13,6 +13,7 @@ name = "pom"
 path = "src/bin/pom.rs"
 
 [dependencies]
+libc = "0.2"
 pom_shell = { path = "../pom_shell" }
 pom_config = { path = "../pom_config" }
 pom_bundle = { path = "../pom_bundle" }

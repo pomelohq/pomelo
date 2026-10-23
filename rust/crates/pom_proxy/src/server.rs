@@ -380,7 +380,7 @@ async fn handle_proxy(
         .unwrap_or_default();
     let request_capture = Capture::default();
     let (request_parts, request_body) = request.into_parts();
-    let request = Request::from_parts(
+    let mut request = Request::from_parts(
         request_parts,
         Tee {
             inner: request_body,
@@ -397,6 +397,13 @@ async fn handle_proxy(
         Ok(decision) => decision,
         Err(error) => return text_response(500, &format!("dev-proxy: {error}")),
     };
+    if let Some(value) = decision
+        .upstream_host
+        .as_deref()
+        .and_then(|host| HeaderValue::from_str(host).ok())
+    {
+        request.headers_mut().insert(HOST, value);
+    }
     let fault = decision.fault.clone();
     if let Some(delay) = fault
         .as_ref()

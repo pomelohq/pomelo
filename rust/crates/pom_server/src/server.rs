@@ -128,6 +128,7 @@ impl Shared {
             file_watches: self.dispatcher.files().watched(),
             socket: self.paths.socket.clone(),
             log: self.log.path().to_path_buf(),
+            proxy_port: pom_env::dev_ports().proxy,
         }
     }
 

@@ -21,7 +21,7 @@ pub use machine::{listening_ports_in_tree, SystemMachine, Waker};
 pub use routing::{
     branch_labels, host_labels, host_name, reachable, resolve_service_key, rewrite_external_cookie,
     rewrite_local_cookie, rewrite_public_cookie, ConfigSource, Decision, Logged, Machine, Problem,
-    ProblemKind, ProjectRoute, Route, Router,
+    ProblemKind, ProjectRoute, RemoteGateway, Route, Router,
 };
 
 const LOG_CAPACITY: usize = 300;
@@ -408,6 +408,11 @@ impl DevProxy {
 
     pub fn set_projects(&self, projects: Vec<ProjectRoute>) {
         self.router.set_projects(projects);
+    }
+
+    /// The remote projects open in the app, whose workspaces go to their host's dev proxy.
+    pub fn set_remote_gateways(&self, gateways: Vec<RemoteGateway>) {
+        self.router.set_remote_gateways(gateways);
     }
 
     /// Who handles `/_pom/github` on the relay; without one it answers 404.

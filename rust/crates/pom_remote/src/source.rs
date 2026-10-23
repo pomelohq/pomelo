@@ -282,6 +282,10 @@ pub trait ProjectSource: Send + Sync {
     fn files(&self, _branch: &str) -> Option<Arc<dyn files::ProjectFs>> {
         None
     }
+    /// The dev proxy port on the machine, when it says; its workspace addresses are forwarded there.
+    fn dev_proxy_port(&self) -> Option<u16> {
+        None
+    }
     /// Pushes about `branch` (empty: only the workspace list) when the machine sends them; `None` means ask.
     fn events(
         &self,

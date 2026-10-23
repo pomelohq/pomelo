@@ -215,6 +215,8 @@ pub struct ServerInfo {
     pub file_watches: usize,
     pub socket: PathBuf,
     pub log: PathBuf,
+    /// The dev proxy port on the server's machine (0 from a server that predates it).
+    pub proxy_port: u16,
 }
 
 /// `channel` is the client's subscription the values are pushed on; `branch` may be empty until the client

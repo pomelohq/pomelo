@@ -241,10 +241,15 @@ remote machines
                      forget one
   host test <name> [--json]
                      connect and compare the remote pom's version with this one
+  host ports <name> [--json]
+                     the ports the app (and pom -H <name> forward) forwards from that machine
   -H <host> <command>
                      run the command on that machine over ssh (--host works too, anywhere on the
                      line): output, input and exit code pass through; exit 69 when ssh cannot
                      connect (with a JSON error object when the command asked for JSON)
+  -H <host> forward <port>[:<local>] [--json]
+                     open the machine's port <port> on 127.0.0.1 here (the same number when free,
+                     else the next free one; exactly <local> when given) until Ctrl-C
   server run [--foreground]
                      start this machine's pom server in the background (the app starts it on
                      demand over ssh; it listens on a private Unix socket, never the network,
@@ -326,6 +331,9 @@ fn std_handles() -> (std::io::Stdout, std::io::Stderr) {
 /// Runs `args` (the program name first) as if typed in `cwd`; returns the exit code.
 pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let args = match remote::extract_host(args.get(1..).unwrap_or_default()) {
+        Ok((Some(host), rest)) if rest.first().map(String::as_str) == Some("forward") => {
+            return remote::hold_forward(&host, &rest[1..], out, err)
+        }
         Ok((Some(host), rest)) => return remote::forward(&host, &rest, out, err),
         Ok((None, rest)) => rest,
         Err(message) => {

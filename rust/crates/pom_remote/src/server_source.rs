@@ -19,9 +19,9 @@ use serde::Serialize;
 use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
-    JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, TurnParams, WatchBranchParams,
-    WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH,
-    REQUIRED,
+    JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, ServerInfo, TurnParams,
+    WatchBranchParams, WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, LIVE_LOGS,
+    PROGRESS_TOPIC, PUSH, REQUIRED,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -882,6 +882,21 @@ impl ProjectSource for ServerSource {
             Arc::new(crate::remote_fs::RemoteFs::new(self.inner.clone(), branch))
                 as Arc<dyn files::ProjectFs>
         })
+    }
+
+    fn dev_proxy_port(&self) -> Option<u16> {
+        match self.inner.request::<ServerInfo>(
+            method::SERVER_INFO,
+            serde_json::Value::Null,
+            READ_TIMEOUT,
+        ) {
+            Ok(Route::Server(info)) => Some(info.proxy_port).filter(|port| *port > 0),
+            Ok(Route::Fallback) => None,
+            Err(error) => {
+                eprintln!("{}: server.info: {error}", self.inner.host.name);
+                None
+            }
+        }
     }
 
     fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {
