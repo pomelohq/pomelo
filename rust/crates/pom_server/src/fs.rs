@@ -126,19 +126,8 @@ impl FsService {
             .canonicalize()
             .map_err(|error| failed(format!("the workspace folder: {error}")))?;
         let key = (root.clone(), lazy);
-        let mut roots = locked(&self.roots);
-        let mut publisher = Some(publisher);
-        if let Some(commands) = roots.get(&key) {
-            if let Some(given) = publisher.take() {
-                match commands.send(Command::Add(given)) {
-                    Ok(()) => return Ok(()),
-                    Err(mpsc::SendError(Command::Add(back))) => publisher = Some(back),
-                    Err(_) => {}
-                }
-            }
-        }
-        let Some(publisher) = publisher else {
-            return Err(failed("the watch went away"));
+        let Some(publisher) = join(&locked(&self.roots), &key, publisher) else {
+            return Ok(());
         };
         let (sender, commands) = mpsc::channel();
         let wake = {
@@ -149,8 +138,17 @@ impl FsService {
                 }
             })
         };
-        let watcher = files::TreeWatcher::new(&root, wake)
-            .map_err(|error| failed(format!("watching the workspace: {error}")))?;
+        // Registering the watches walks the tree; other folders' requests must not wait on it.
+        let watcher = if lazy {
+            files::TreeWatcher::following(&root, wake)
+        } else {
+            files::TreeWatcher::new(&root, wake)
+        }
+        .map_err(|error| failed(format!("watching the workspace: {error}")))?;
+        let mut roots = locked(&self.roots);
+        let Some(publisher) = join(&roots, &key, publisher) else {
+            return Ok(());
+        };
         let folder = RootWatch {
             root,
             lazy,
@@ -629,6 +627,22 @@ fn stream_file(mut sender: StreamSender, head: Vec<u8>, mut file: std::fs::File,
     sender.finish("done");
 }
 
+/// Hands `publisher` to the folder's running watch; gives it back when there is none to take it.
+fn join(
+    roots: &HashMap<(PathBuf, bool), mpsc::Sender<Command>>,
+    key: &(PathBuf, bool),
+    publisher: Publisher,
+) -> Option<Publisher> {
+    let Some(commands) = roots.get(key) else {
+        return Some(publisher);
+    };
+    match commands.send(Command::Add(publisher)) {
+        Ok(()) => None,
+        Err(mpsc::SendError(Command::Add(back))) => Some(back),
+        Err(_) => None,
+    }
+}
+
 /// One watched folder, owned by its thread: everything it pushes goes out in order from here.
 struct RootWatch {
     root: PathBuf,
@@ -679,6 +693,7 @@ impl RootWatch {
                     Command::Expand(path) => expands.push(path),
                 }
             }
+            watch.watch_listed(&batch);
             for entry in &batch {
                 watch.entries.insert(entry.path.clone(), entry.clone());
             }
@@ -787,7 +802,9 @@ impl RootWatch {
     fn rescan(&mut self) {
         self.entries.clear();
         let opened = self.opened.clone();
-        files::fs::walk_lazily(&self.root, &self.root, &opened, usize::MAX, &mut |batch| {
+        let root = self.root.clone();
+        files::fs::walk_lazily(&root, &root, &opened, usize::MAX, &mut |batch| {
+            self.watch_listed(&batch);
             for entry in batch {
                 self.entries.insert(entry.path.clone(), entry);
             }
@@ -799,6 +816,16 @@ impl RootWatch {
             .into_iter()
             .filter(|publisher| self.send_snapshot(publisher))
             .collect();
+    }
+
+    /// A lazy tree watches only the folders it lists; the full one watched its whole tree at the start.
+    fn watch_listed(&self, batch: &[FileEntry]) {
+        if !self.lazy {
+            return;
+        }
+        for entry in batch.iter().filter(|entry| entry.is_dir && !entry.lazy) {
+            self.watcher.watch_folder(&self.root.join(&entry.path));
+        }
     }
 
     /// Whether `path` lies in a folder whose contents nobody opened, so no client has it.
@@ -818,7 +845,9 @@ impl RootWatch {
             return;
         }
         self.opened.insert(path.clone());
+        self.watcher.watch_folder(&self.root.join(&path));
         let patch = files::fs::patch_lazily(&self.root, &[path], &self.opened);
+        self.watch_listed(&patch.upserted);
         self.publish(patch);
     }
 
