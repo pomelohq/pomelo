@@ -348,7 +348,10 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
         }
     };
     let invocation = match parse(&args) {
-        Ok(invocation) => invocation,
+        Ok(invocation) => Invocation {
+            config: invocation.config.map(|path| absolute_in(cwd, &path)),
+            ..invocation
+        },
         Err(message) if transfer::wants_json_errors(&args) => {
             let document = transfer::error_document(transfer::USAGE, &message);
             if let Err(error) = writeln!(out, "{document}") {
@@ -870,6 +873,14 @@ pub(crate) fn register_project(state: &StateDir, session: &str, root: &Path) {
     if let Err(error) = pom_core::ensure_registered(state, session, root, now) {
         eprintln!("pom: list the project {session}: {error}");
     }
+}
+
+/// `path` as seen from `cwd`, so a project root derived from a bare `-c pom.yml` is never empty.
+fn absolute_in(cwd: &Path, path: &Path) -> PathBuf {
+    cwd.join(path)
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect()
 }
 
 /// The project `cwd` is in (its `pom.yml` is here or in a parent), or the explicit one.
