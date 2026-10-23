@@ -27,12 +27,16 @@ pub(crate) enum HostCommand {
         name: String,
         json: bool,
     },
+    Ports {
+        name: String,
+        json: bool,
+    },
 }
 
 pub(crate) fn parse(words: &[&str]) -> Result<HostCommand, String> {
     let (verb, rest) = words
         .split_first()
-        .ok_or("host needs add, ls, rm or test")?;
+        .ok_or("host needs add, ls, rm, test or ports")?;
     let args = Args::parse(rest, &["--pom-path", "--transport", "-o", "--output"])?;
     let json = args.has("--json") || args.json()?;
     let name = |verb: &str| -> Result<String, String> {
@@ -79,7 +83,16 @@ pub(crate) fn parse(words: &[&str]) -> Result<HostCommand, String> {
                 json,
             })
         }
-        other => Err(format!("unknown host command {other} (add, ls, rm, test)")),
+        "ports" => {
+            args.allow(&["--json", "-o", "--output"])?;
+            Ok(HostCommand::Ports {
+                name: name("ports")?,
+                json,
+            })
+        }
+        other => Err(format!(
+            "unknown host command {other} (add, ls, rm, test, ports)"
+        )),
     }
 }
 
@@ -108,6 +121,7 @@ pub(crate) fn execute(command: &HostCommand, out: &mut dyn Write, err: &mut dyn 
         } => add(name, url, pom_path.clone(), *transport, *json, out),
         HostCommand::List { json } => list(*json, out),
         HostCommand::Remove { name, json } => remove(name, *json, out),
+        HostCommand::Ports { name, json } => ports(name, *json, out),
     };
     match result {
         Ok(()) => 0,
@@ -172,6 +186,212 @@ fn list(json: bool, out: &mut dyn Write) -> Result<(), String> {
         line(out, &text)?;
     }
     Ok(())
+}
+
+fn ports(name: &str, json: bool, out: &mut dyn Write) -> Result<(), String> {
+    Hosts::load(&hosts_path()?)?.get(name)?;
+    let records = pom_remote::recorded_ports(&pom_paths::StateDir::from_env(), name);
+    if json {
+        return json_line(
+            out,
+            &serde_json::json!({
+                "schema": pom_remote::PORTS_SCHEMA,
+                "host": name,
+                "records": records,
+            }),
+        );
+    }
+    let rows: Vec<[String; 5]> = records
+        .iter()
+        .flat_map(|record| {
+            record.forwards.iter().map(|forward| {
+                let owner = if record.project.is_empty() {
+                    format!("pom forward ({})", record.pid)
+                } else {
+                    record.project.clone()
+                };
+                let mut state = forward_state(forward.state).to_string();
+                if !forward.message.is_empty() {
+                    state = format!("{state}: {}", forward.message);
+                }
+                let here = if forward.local_port == 0 {
+                    "-".to_string()
+                } else {
+                    forward.address()
+                };
+                [
+                    forward.remote_port.to_string(),
+                    here,
+                    forward.label.clone(),
+                    owner,
+                    state,
+                ]
+            })
+        })
+        .collect();
+    if rows.is_empty() {
+        return line(
+            out,
+            &format!("nothing is forwarded from {name} (forwards live while the app or pom -H {name} forward runs)"),
+        );
+    }
+    let header = [
+        format!("ON {name}"),
+        "HERE".to_string(),
+        "WHAT".to_string(),
+        "FOR".to_string(),
+        "STATE".to_string(),
+    ];
+    let mut widths = header.clone().map(|cell| cell.len());
+    for row in &rows {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.len());
+        }
+    }
+    for row in std::iter::once(&header).chain(&rows) {
+        let cells: Vec<String> = row
+            .iter()
+            .zip(widths)
+            .map(|(cell, width)| format!("{cell:<width$}"))
+            .collect();
+        line(out, cells.join("  ").trim_end())?;
+    }
+    Ok(())
+}
+
+fn forward_state(state: pom_remote::ForwardState) -> &'static str {
+    match state {
+        pom_remote::ForwardState::Starting => "starting",
+        pom_remote::ForwardState::Forwarded => "forwarded",
+        pom_remote::ForwardState::Lost => "reconnecting",
+        pom_remote::ForwardState::Failed => "failed",
+    }
+}
+
+/// `<port>` or `<port>:<local>`.
+fn parse_forward(spec: &str) -> Result<(u16, pom_remote::LocalPort), String> {
+    let port = |text: &str| -> Result<u16, String> {
+        text.parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .ok_or_else(|| format!("{text} is not a port (1-65535)"))
+    };
+    match spec.split_once(':') {
+        Some((remote, local)) => Ok((port(remote)?, pom_remote::LocalPort::Exact(port(local)?))),
+        None => Ok((port(spec)?, pom_remote::LocalPort::Same)),
+    }
+}
+
+/// Blocks the stop signals in this thread and every thread it starts from now on, so one waiting thread
+/// takes them and the forward is cancelled before exit.
+fn block_stop_signals() -> Option<libc::sigset_t> {
+    // SAFETY: the set is initialised by sigemptyset before use and only passed to libc.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            libc::sigaddset(&mut set, signal);
+        }
+        (libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) == 0).then_some(set)
+    }
+}
+
+/// `pom -H <host> forward <port>[:<local>]`: holds the forward in the foreground until a stop signal, opening it
+/// again when the connection comes back.
+pub(crate) fn hold_forward(
+    name: &str,
+    args: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let parsed = Args::parse(&words, &["-o", "--output"]).and_then(|args| {
+        args.allow(&["--json", "-o", "--output"])?;
+        let json = args.has("--json") || args.json()?;
+        match args.positional.as_slice() {
+            [spec] => Ok((parse_forward(spec)?, json)),
+            _ => Err("usage: pom -H <host> forward <port>[:<local>] [--json]".to_string()),
+        }
+    });
+    let ((remote_port, local), json) = match parsed {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            crate::report(err, &format!("error: {message}"));
+            return 2;
+        }
+    };
+    let host = match hosts_path().and_then(|path| Hosts::load(&path)?.get(name)) {
+        Ok(host) => host,
+        Err(message) => {
+            crate::report(err, &format!("error: {message}"));
+            return 1;
+        }
+    };
+    let Some(signals) = block_stop_signals() else {
+        crate::report(err, "error: could not take over Ctrl-C");
+        return 1;
+    };
+    let state = pom_paths::StateDir::from_env();
+    let forwarder = pom_remote::Forwarder::new(pom_remote::Ssh::system(), host).recorded_in(
+        &pom_remote::ports_dir(&state, name),
+        &format!("cli-{}", std::process::id()),
+        "",
+    );
+    let request = pom_remote::ForwardRequest {
+        remote_port,
+        local,
+        label: remote_port.to_string(),
+        kind: pom_remote::ForwardKind::Manual,
+    };
+    let forward = match forwarder.forward(&request) {
+        Ok(forward) => forward,
+        Err(message) => {
+            crate::report(err, &format!("error: {message}"));
+            return 1;
+        }
+    };
+    let said = if json {
+        serde_json::to_value(&forward)
+            .map_err(|error| error.to_string())
+            .and_then(|value| json_line(out, &value))
+    } else {
+        let moved = if forward.moved() {
+            format!(" ({} is in use here)", forward.wanted_port)
+        } else {
+            String::new()
+        };
+        line(
+            out,
+            &format!(
+                "{name}:{remote_port} is on http://{}{moved} - Ctrl-C stops it",
+                forward.address()
+            ),
+        )
+    };
+    if let Err(message) = said.and_then(|()| out.flush().map_err(|error| error.to_string())) {
+        crate::report(err, &message);
+    }
+    let (stopped, stop) = std::sync::mpsc::channel();
+    let waiter = std::thread::Builder::new()
+        .name("pom-forward-signals".into())
+        .spawn(move || {
+            let mut signal = 0;
+            // SAFETY: `signals` is the set blocked above; sigwait only writes `signal`.
+            let waited = unsafe { libc::sigwait(&signals, &mut signal) };
+            if stopped.send(waited).is_err() {
+                eprintln!("forward: stop signal arrived after exit");
+            }
+        });
+    if let Err(error) = waiter {
+        crate::report(err, &format!("error: {error}"));
+        return 1;
+    }
+    let every = std::time::Duration::from_secs(2);
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop.recv_timeout(every) {
+        forwarder.reapply();
+    }
+    forwarder.close();
+    0
 }
 
 fn remove(name: &str, json: bool, out: &mut dyn Write) -> Result<(), String> {

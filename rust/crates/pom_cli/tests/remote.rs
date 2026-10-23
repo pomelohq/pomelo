@@ -199,6 +199,62 @@ fn hosts_are_added_listed_tested_and_removed() {
 }
 
 #[test]
+fn forward_holds_a_port_on_the_shared_connection_until_interrupted() {
+    use std::io::BufRead;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .expect("free port");
+    let mut child = fixture
+        .command(&["-H", "dev", "forward", &port.to_string(), "--json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("pom forward");
+    let mut first = String::new();
+    std::io::BufReader::new(child.stdout.take().expect("stdout"))
+        .read_line(&mut first)
+        .expect("read");
+    let forward: Value = serde_json::from_str(&first).expect("forward json");
+    assert_eq!(forward["remote_port"], port);
+    assert_eq!(forward["local_port"], port);
+    assert_eq!(forward["state"], "forwarded");
+    assert_eq!(forward["via"], "shared");
+
+    let listed = json(&fixture.pom(&["host", "ports", "dev", "--json"]));
+    assert_eq!(listed["schema"], "pom.ports/v1");
+    assert_eq!(listed["records"][0]["forwards"][0]["remote_port"], port);
+    let plain = text(&fixture.pom(&["host", "ports", "dev"]));
+    assert!(plain.contains("pom forward ("), "{plain}");
+    assert!(plain.contains(&format!("127.0.0.1:{port}")), "{plain}");
+
+    let pid = libc::pid_t::try_from(child.id()).expect("pid");
+    // SAFETY: signals the child this test started.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+    let status = child.wait().expect("wait");
+    assert!(status.success(), "{status}");
+    let spec = format!("127.0.0.1:{port}:127.0.0.1:{port}");
+    let calls = fixture.ssh_calls();
+    let with = |verb: &str| {
+        calls
+            .iter()
+            .filter(|call| {
+                call.windows(2)
+                    .any(|pair| pair[0] == "-O" && pair[1] == verb)
+                    && call.contains(&spec)
+            })
+            .count()
+    };
+    assert_eq!((with("forward"), with("cancel")), (1, 1), "{calls:?}");
+    let after = text(&fixture.pom(&["host", "ports", "dev"]));
+    assert!(after.contains("nothing is forwarded from dev"), "{after}");
+    let bad = fixture.pom(&["-H", "dev", "forward", "99999"]);
+    assert_eq!(bad.status.code(), Some(2), "{}", text(&bad));
+}
+
+#[test]
 fn an_older_remote_pom_is_flagged_as_a_version_mismatch() {
     let fixture = Fixture::new();
     let old = fixture.temp.path().join("home/old-pom");
@@ -651,6 +707,12 @@ fn the_server_source_reads_what_the_local_one_does() {
     let status = json(&fixture.pom(&["server", "status", "--json"]));
     assert_eq!(status["schema"], "pom.server/v1");
     assert_eq!(status["version"], env!("CARGO_PKG_VERSION"));
+    let proxy_port = status["proxy_port"].as_u64().expect("proxy port");
+    assert_eq!(
+        server.dev_proxy_port().map(u64::from),
+        Some(proxy_port),
+        "the host's dev proxy port"
+    );
     assert!(status["connections"]
         .as_u64()
         .is_some_and(|count| count >= 2));

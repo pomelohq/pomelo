@@ -12,6 +12,7 @@ path = "src/pom_server.rs"
 files = { path = "../files" }
 libc = "0.2"
 pom_agent = { path = "../pom_agent" }
+pom_env = { path = "../pom_env" }
 pom_layout = { path = "../pom_layout" }
 pom_paths = { path = "../pom_paths" }
 pom_ptyhost = { path = "../pom_ptyhost" }

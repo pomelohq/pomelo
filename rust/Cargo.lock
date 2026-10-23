@@ -3590,6 +3590,7 @@ version = "0.9.5"
 dependencies = [
  "files",
  "git",
+ "libc",
  "module_store",
  "pom_agent",
  "pom_bundle",
@@ -3848,6 +3849,7 @@ name = "pom_remote"
 version = "0.9.5"
 dependencies = [
  "files",
+ "libc",
  "pom_agent",
  "pom_config",
  "pom_core",
@@ -3893,6 +3895,7 @@ dependencies = [
  "files",
  "libc",
  "pom_agent",
+ "pom_env",
  "pom_layout",
  "pom_paths",
  "pom_ptyhost",

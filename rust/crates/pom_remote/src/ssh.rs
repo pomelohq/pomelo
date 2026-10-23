@@ -218,58 +218,146 @@ impl Ssh {
         args: &[String],
         timeout: Duration,
     ) -> std::io::Result<Output> {
-        let mut child = self
-            .command(host, args, Tty::Batch)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let drain = |pipe: Option<Box<dyn Read + Send>>| {
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                if let Some(mut pipe) = pipe {
-                    if let Err(error) = pipe.read_to_end(&mut bytes) {
-                        bytes.extend_from_slice(error.to_string().as_bytes());
-                    }
-                }
-                bytes
-            })
-        };
-        let stdout = drain(
-            child
-                .stdout
-                .take()
-                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-        );
-        let stderr = drain(
-            child
-                .stderr
-                .take()
-                .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-        );
-        let started = Instant::now();
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if started.elapsed() >= timeout {
-                if let Err(error) = child.kill() {
-                    eprintln!("ssh to {}: kill after timeout: {error}", host.name);
-                }
-                child.wait()?;
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    format!("no answer from {} after {}s", host.name, timeout.as_secs()),
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        Ok(Output {
-            status,
-            stdout: stdout.join().unwrap_or_default(),
-            stderr: stderr.join().unwrap_or_default(),
-        })
+        run_with_timeout(self.command(host, args, Tty::Batch), &host.name, timeout)
     }
+
+    /// `ssh -O <verb>` on the shared connection; the host's port and destination follow.
+    fn control_command(&self, control: &std::path::Path, verb: &str) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .arg("-O")
+            .arg(verb)
+            .arg("-o")
+            .arg(format!("ControlPath={}/%C", control.display()))
+            .args(["-o", "BatchMode=yes", "-o", "LogLevel=ERROR"]);
+        command.envs(self.envs.iter().map(|(key, value)| (key, value)));
+        command
+    }
+
+    fn destination(command: &mut Command, host: &Host) {
+        if let Some(port) = host.url.port {
+            command.arg("-p").arg(port.to_string());
+        }
+        command.arg("--").arg(host.url.destination());
+    }
+
+    /// A shared connection to `host` is up, so forwards can ride on it without logging in again.
+    pub fn master_running(&self, host: &Host) -> bool {
+        let Some(control) = self.control.as_deref() else {
+            return false;
+        };
+        let mut command = self.control_command(control, "check");
+        Ssh::destination(&mut command, host);
+        run_with_timeout(command, &host.name, MASTER_TIMEOUT)
+            .is_ok_and(|output| output.status.success())
+    }
+
+    /// Adds (`forward`) or removes (`cancel`) the loopback forward `spec` on the shared connection to `host`.
+    pub fn master_forward(&self, host: &Host, verb: &str, spec: &str) -> Result<(), String> {
+        let control = self
+            .control
+            .as_deref()
+            .ok_or_else(|| "ssh connection sharing is off".to_string())?;
+        let mut command = self.control_command(control, verb);
+        command.arg("-L").arg(spec);
+        Ssh::destination(&mut command, host);
+        let output = run_with_timeout(command, &host.name, MASTER_TIMEOUT)
+            .map_err(|error| format!("ssh -O {verb}: {error}"))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let said = String::from_utf8_lossy(&output.stderr);
+        let reason = said
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or("no message from ssh");
+        Err(format!("ssh -O {verb} {spec}: {}", reason.trim()))
+    }
+
+    /// A connection of its own that only holds the loopback forward `spec`, for a host without a shared one.
+    pub fn tunnel(&self, host: &Host, spec: &str) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args([
+            "-N",
+            "-o",
+            "ControlPath=none",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=10",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "LogLevel=ERROR",
+            "-L",
+            spec,
+        ]);
+        Ssh::destination(&mut command, host);
+        command.envs(self.envs.iter().map(|(key, value)| (key, value)));
+        command
+    }
+}
+
+const MASTER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `command` without a terminal, killing it once `timeout` passes.
+fn run_with_timeout(
+    mut command: Command,
+    host_name: &str,
+    timeout: Duration,
+) -> std::io::Result<Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                if let Err(error) = pipe.read_to_end(&mut bytes) {
+                    bytes.extend_from_slice(error.to_string().as_bytes());
+                }
+            }
+            bytes
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() >= timeout {
+            if let Err(error) = child.kill() {
+                eprintln!("ssh to {host_name}: kill after timeout: {error}");
+            }
+            child.wait()?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("no answer from {host_name} after {}s", timeout.as_secs()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
 }
 
 /// Whether the command asks for machine-readable output (`--json`, `-o json`, `--output=json`).

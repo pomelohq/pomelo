@@ -9,7 +9,7 @@ use std::time::Duration;
 use pom_config::{Config, Dir, Service, SharedServiceDef};
 use pom_layout::WorkspaceState;
 use pom_ports::{Lease, PortState};
-use pom_proxy::{DevProxy, Machine, Ports, ProjectRoute, RequestKind, Serve};
+use pom_proxy::{DevProxy, Machine, Ports, ProjectRoute, RemoteGateway, RequestKind, Serve};
 
 struct FakeMachine {
     leases: Vec<Lease>,
@@ -237,6 +237,81 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
         "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
     );
     assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+}
+
+#[test]
+fn a_remote_workspace_goes_to_its_host_proxy_while_local_ones_stay_here() {
+    let (local_sender, local_seen) = mpsc::channel();
+    let local = echo_backend(local_sender);
+    let (remote_sender, remote_seen) = mpsc::channel();
+    let tunnel = echo_backend(remote_sender);
+    let (proxy, ports) = start(vec![service_lease("feat-login", local)], HashMap::new());
+    proxy.set_remote_gateways(vec![RemoteGateway {
+        host: "dev".into(),
+        session: "remoteproj".into(),
+        branches: vec!["main".into(), "feat-remote".into()],
+        port: tunnel,
+    }]);
+    let get = |host: &str, path: &str| {
+        request(
+            ports.proxy,
+            &format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+        )
+    };
+    let next = |seen: &mpsc::Receiver<String>| {
+        seen.recv_timeout(Duration::from_secs(5))
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+
+    let response = get("server.api.feat-remote.localhost:8767", "/health");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let head = next(&remote_seen);
+    assert!(head.starts_with("get /health http/1.1"), "{head}");
+    assert!(
+        head.contains("host: server.api.feat-remote.localhost:8767"),
+        "{head}"
+    );
+
+    let response = get("web.web.feat-remote.localhost", "/_pom_dev/api/server/v1");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let head = next(&remote_seen);
+    assert!(
+        head.starts_with("get /_pom_dev/api/server/v1 http/1.1"),
+        "{head}"
+    );
+    assert_eq!(proxy.log(1)[0].profile, "dev");
+    assert_eq!(
+        proxy.log(1)[0].target,
+        format!("dev via 127.0.0.1:{tunnel}")
+    );
+
+    let response = get("postgres-ui.remoteproj.localhost", "/");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(next(&remote_seen).contains("host: postgres-ui.remoteproj.localhost"));
+
+    let response = get("server.api.feat-login.localhost", "/here");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(next(&local_seen).starts_with("get /here"));
+
+    let response = get("server.api.main.localhost", "/");
+    assert!(
+        response.starts_with("HTTP/1.1 502"),
+        "local main wins: {response}"
+    );
+    let response = get("server.api.main.dev.localhost:8767", "/there");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let head = next(&remote_seen);
+    assert!(head.starts_with("get /there"), "{head}");
+    assert!(
+        head.contains("host: server.api.main.localhost:8767"),
+        "{head}"
+    );
+
+    proxy.set_remote_gateways(Vec::new());
+    let response = get("server.api.feat-remote.localhost", "/");
+    assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+    assert!(local_seen.try_recv().is_err() && remote_seen.try_recv().is_err());
 }
 
 #[test]

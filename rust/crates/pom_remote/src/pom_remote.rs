@@ -3,6 +3,7 @@
 //! Pomelo relies on the user's own SSH config and keys.
 
 mod editor;
+mod forward;
 mod local;
 mod remote_fs;
 pub mod server_api;
@@ -19,6 +20,10 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use editor::{editor_argv, find_program};
+pub use forward::{
+    choose_port, forward_spec, port_free, ports_dir, recorded_ports, ForwardKind, ForwardRequest,
+    ForwardState, Forwarder, LocalPort, PortForward, PortsRecord, PORTS_SCHEMA,
+};
 pub use local::{
     local_projects, ordered_services, service_output, status_report, workspace_list, LocalSource,
     OpenedProject, WorkspaceTerminals,

@@ -94,6 +94,8 @@ pub struct Decision {
     pub route: Route,
     /// The path to send upstream.
     pub path: String,
+    /// The `Host` to send upstream instead of the one that came in.
+    pub upstream_host: Option<String>,
     pub logged: Option<Logged>,
     /// A test's fault rule matched: delay and/or answer with a status instead of forwarding.
     pub fault: Option<crate::Fault>,
@@ -361,6 +363,28 @@ type BranchMap = (Instant, HashMap<String, String>);
 type LeaseCache = (Instant, Vec<Lease>);
 type AddressCache = (Instant, Result<SocketAddr, Unavailable>);
 
+/// A remote host's workspaces, reached through a forward to the dev proxy on that host.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteGateway {
+    /// The host's name, as `pom host ls` lists it.
+    pub host: String,
+    /// The remote project's session, the label its shared services' hosts end in.
+    pub session: String,
+    pub branches: Vec<String>,
+    /// The loopback port here that forwards to the host's dev proxy.
+    pub port: u16,
+}
+
+impl RemoteGateway {
+    fn claims(&self, labels: &[String]) -> bool {
+        let Some(last) = labels.last() else {
+            return false;
+        };
+        (labels.len() == 2 && *last == self.session)
+            || branch_labels(&self.branches).contains_key(last)
+    }
+}
+
 /// Routes requests into the open projects, caching what is expensive to look up per request (a dev server
 /// fires hundreds of module requests per page load).
 pub struct Router {
@@ -372,6 +396,8 @@ pub struct Router {
     /// One lookup at a time: requests arriving while it runs wait and read its result from the cache.
     resolving: Mutex<()>,
     faults: Mutex<(Option<Instant>, Vec<crate::FaultRule>)>,
+    /// Remote projects open in the app, whose workspaces no local project claims.
+    gateways: RwLock<Vec<RemoteGateway>>,
     /// When each workspace was last asked to wake.
     woken: Mutex<HashMap<(PathBuf, String), Instant>>,
     activity: crate::activity::Activity,
@@ -393,6 +419,7 @@ impl Router {
             resolving: Mutex::new(()),
             faults: Mutex::new((None, Vec::new())),
             woken: Mutex::new(HashMap::new()),
+            gateways: RwLock::new(Vec::new()),
             random: Mutex::new(crate::faults::now_ms() | 1),
             domain: DOMAIN.to_string(),
         }
@@ -410,6 +437,12 @@ impl Router {
     pub fn set_projects(&self, projects: Vec<ProjectRoute>) {
         if let Ok(mut current) = self.projects.write() {
             *current = projects;
+        }
+    }
+
+    pub fn set_remote_gateways(&self, gateways: Vec<RemoteGateway>) {
+        if let Ok(mut current) = self.gateways.write() {
+            *current = gateways;
         }
     }
 
@@ -696,6 +729,7 @@ impl Router {
         let unrouted = |route: Route| Decision {
             route,
             path: path.to_string(),
+            upstream_host: None,
             logged: None,
             fault: None,
         };
@@ -709,6 +743,9 @@ impl Router {
                 problem: Problem::default(),
             });
         };
+        if let Some(decision) = self.remote_decision(host, &labels, path) {
+            return decision;
+        }
         if labels.len() == 2 {
             for (_, config) in self.projects() {
                 if labels[1] == config.session && config.shared_services.contains_key(&labels[0]) {
@@ -740,6 +777,7 @@ impl Router {
                     return Decision {
                         route: no_route(&branch_label, &target),
                         path: stripped,
+                        upstream_host: None,
                         logged: Some(logged),
                         fault: None,
                     };
@@ -755,6 +793,7 @@ impl Router {
                     return Decision {
                         route: Route::External { url, prefix },
                         path: stripped,
+                        upstream_host: None,
                         logged: Some(logged),
                         fault,
                     };
@@ -765,6 +804,7 @@ impl Router {
                 return Decision {
                     route,
                     path: stripped,
+                    upstream_host: None,
                     logged: Some(logged),
                     fault,
                 };
@@ -789,11 +829,80 @@ impl Router {
             return Decision {
                 route,
                 path: path.to_string(),
+                upstream_host: None,
                 logged: Some(logged),
                 fault,
             };
         }
         unrouted(no_route_for(host, path))
+    }
+
+    /// A local project knows the host's workspace (or shared service), so it is served here.
+    fn claimed_locally(&self, labels: &[String]) -> bool {
+        let Some(last) = labels.last() else {
+            return false;
+        };
+        self.projects().iter().any(|(project, config)| {
+            (labels.len() == 2
+                && *last == config.session
+                && config.shared_services.contains_key(&labels[0]))
+                || self.branch_for_label(project, config, last).is_some()
+        })
+    }
+
+    /// A remote project's workspace goes through the forward to its host's dev proxy, unchanged. A local
+    /// workspace with the same label wins; `<...>.<host>.localhost` still reaches the remote one, sent on
+    /// without the host label.
+    fn remote_decision(&self, host: &str, labels: &[String], path: &str) -> Option<Decision> {
+        let gateways = self.gateways.read().ok()?.clone();
+        if gateways.is_empty() || self.claimed_locally(labels) {
+            return None;
+        }
+        let last = labels.last()?;
+        let (gateway, labels) = match gateways.iter().find(|gateway| {
+            labels.len() > 1 && pom_env::branch_host(&gateway.host) == last.to_ascii_lowercase()
+        }) {
+            Some(gateway) => (gateway, &labels[..labels.len() - 1]),
+            None => (
+                gateways.iter().find(|gateway| gateway.claims(labels))?,
+                labels,
+            ),
+        };
+        let port = host
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .filter(|port| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+            .map(|port| format!(":{port}"))
+            .unwrap_or_default();
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), gateway.port);
+        let (repo, service, host_routed) = match path.strip_prefix(DEV_PREFIX) {
+            Some(rest) => {
+                let mut parts = rest.splitn(3, '/');
+                (
+                    parts.next().unwrap_or_default().to_string(),
+                    parts.next().unwrap_or_default().to_string(),
+                    false,
+                )
+            }
+            None if labels.len() == 3 => (labels[1].clone(), labels[0].clone(), true),
+            None => (String::new(), labels[0].clone(), true),
+        };
+        Some(Decision {
+            route: Route::Local {
+                address,
+                prefix: String::new(),
+            },
+            path: path.to_string(),
+            upstream_host: Some(format!("{}.{DOMAIN}{port}", labels.join("."))),
+            logged: Some(Logged {
+                repo,
+                service,
+                profile: gateway.host.clone(),
+                target: format!("{} via {address}", gateway.host),
+                host_routed,
+            }),
+            fault: None,
+        })
     }
 
     /// The first fault rule in force for this request, drawn against its rate.

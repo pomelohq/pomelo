@@ -257,6 +257,8 @@ jobs:
           ssh -o BatchMode=yes localhost true
       - name: Reconnect through the real sshd after its session is killed
         run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_session -- --nocapture
+      - name: Forward a port through the real sshd, alone and on a shared connection
+        run: POM_REAL_SSH=1 cargo test -p pom_remote real_sshd_forward -- --nocapture
       # Measures keystrokes through a real ssh session without a tty.
       - name: Keystrokes through the real sshd
         continue-on-error: true
