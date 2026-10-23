@@ -1,7 +1,8 @@
 //! The agent's own permission prompts, answered from outside its terminal. The `PermissionRequest` hook
 //! records each prompt under an id of its own. While an orchestrator or an agent holds the session's lease
 //! nobody sits at its terminal, so the hook itself waits for an answer and hands it to the agent; once a
-//! person drives, or the wait runs out, the agent draws its dialog and an answer is typed into it.
+//! person drives, or the wait runs out, the agent draws its dialog, which only its person allows; pom may
+//! only deny it there (`fallback`).
 
 use std::time::{Duration, Instant};
 

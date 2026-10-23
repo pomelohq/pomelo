@@ -3,6 +3,7 @@ mod claude;
 mod conversation;
 mod drive;
 mod driver;
+mod fallback;
 mod forget;
 mod gate;
 mod hooks;

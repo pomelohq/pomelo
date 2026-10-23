@@ -210,7 +210,8 @@ agents (one workspace at a time; --json for stable output)
               [--system-prompt-file f] [--tools t] [--allowed-tools t] [--disallowed-tools t]
               [--permission-mode m] [--model m] [--extra-mcp-config f]
                      start (or reuse) a session; --fresh starts role r on a new conversation;
-                     --trust says yes to the agent's prompt to trust the folder (else exit 7)
+                     --trust marks the folder trusted in the agent's own config before it starts
+                     (else exit 7 at its trust prompt)
   agent read <workspace/role> [--turn n | --since n] [--full] [--live]
                      what the agent did in a turn (the last by default), from its transcript;
                      --live adds the reply it is still writing
@@ -234,7 +235,8 @@ agents (one workspace at a time; --json for stable output)
   agent allow|deny <workspace/role> [<id> | --id id] [--reason r] [--as-person]
                      answer the permission prompt the session waits on (pending_permission in
                      agent ls --json), the agent's own or its workspace policy's; an id that no
-                     longer waits is refused (stale)
+                     longer waits is refused (stale); a dialog the agent drew (answer_by terminal)
+                     is only denied, with Esc, never allowed and never while a person drives it
   agent approve <workspace/role> <request> [--always]
                      approve a pending approval of the workspace policy
   agent takeover [workspace] --session-id <id> [--settings f] [--mcp-config f]

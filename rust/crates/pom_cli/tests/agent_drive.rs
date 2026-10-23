@@ -765,6 +765,15 @@ impl Fixture {
         self.reviewer()["pending_permission"].clone()
     }
 
+    fn fallback_log(&self) -> Vec<Value> {
+        let watched = self.pom(&["agent", "watch", "feat", "--from-start", "--timeout", "1"]);
+        String::from_utf8_lossy(&watched.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| line["event"] == "screen_fallback")
+            .collect()
+    }
+
     fn answer(&self, verb: &str, extra: &[&str]) -> Output {
         let mut args = vec!["agent", verb, "feat/reviewer", "--json"];
         args.extend_from_slice(extra);
@@ -868,47 +877,43 @@ fn taking_over_lets_go_of_a_held_prompt_and_the_person_answers_its_dialog() {
 }
 
 #[test]
-fn the_person_answers_the_agents_dialog_from_another_client() {
-    person_answers_the_dialog(Fixture::new());
+fn pom_only_denies_the_agents_dialog_and_never_while_a_person_drives() {
+    fallback_answers_the_dialog(Fixture::new());
 }
 
 #[test]
-fn the_person_answers_the_older_dialog_with_its_long_deny_choice() {
-    person_answers_the_dialog(Fixture::with_env(&[("FAKE_DIALOG", "old")]));
+fn pom_only_denies_the_older_dialog_with_its_long_deny_choice() {
+    fallback_answers_the_dialog(Fixture::with_env(&[("FAKE_DIALOG", "old")]));
 }
 
-fn person_answers_the_dialog(fixture: Fixture) {
+fn fallback_answers_the_dialog(fixture: Fixture) {
     let sent = fixture.send("ask-permission", &["--as-person"]);
     assert_eq!(sent.status.code(), Some(0));
     fixture.until("the dialog", |fixture| {
         fixture.pending()["answer_by"] == "terminal"
     });
-    let refused = fixture.answer("allow", &[]);
+    for flags in [&[][..], &["--as-person"], &["--take"]] {
+        let refused = fixture.answer("allow", flags);
+        assert_eq!(refused.status.code(), Some(1));
+        assert_eq!(
+            stderr_json(&refused)["error"],
+            "allow_needs_hook",
+            "an allow is never typed, {flags:?}"
+        );
+    }
+    let refused = fixture.answer("deny", &["--as-person"]);
     assert_eq!(
         stderr_json(&refused)["error"],
-        "lease",
-        "only as the person"
+        "person_drives",
+        "nothing is typed for the person who drives it"
     );
-    let answer = |verb: &str| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let output = fixture.answer(verb, &["--as-person"]);
-            if output.status.code() == Some(0) || Instant::now() > deadline {
-                return output;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    };
-    let allowed = answer("allow");
-    assert_eq!(
-        allowed.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&allowed.stderr)
-    );
-    assert_eq!(stdout_json(&allowed)["via"], "terminal");
-    let (code, _) = fixture.wait(&["--timeout", "10s"]);
-    assert_eq!(code, Some(0));
+    assert_eq!(fixture.pending()["answer_by"], "terminal", "still waits");
+
+    let mut connection = pom_ptyhost::connect_writer(&fixture.holders(), HOLDER).expect("connect");
+    connection.input(b"\r").expect("enter");
+    fixture.until("the person at the terminal to allow it", |fixture| {
+        fixture.reviewer()["last_event"] == "Stop"
+    });
     assert_eq!(fixture.last_text(), "ran make test");
 
     let sent = fixture.send("ask-permission again", &["--as-person"]);
@@ -916,20 +921,60 @@ fn person_answers_the_dialog(fixture: Fixture) {
     fixture.until("the next dialog", |fixture| {
         fixture.pending()["answer_by"] == "terminal"
     });
-    let denied = answer("deny");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let denied = loop {
+        let output = fixture.answer("deny", &["--take"]);
+        if output.status.code() == Some(0) || Instant::now() > deadline {
+            break output;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    };
     assert_eq!(
         denied.status.code(),
         Some(0),
         "{}",
         String::from_utf8_lossy(&denied.stderr)
     );
+    assert_eq!(stdout_json(&denied)["via"], "terminal");
     let reviewer = fixture.reviewer();
     assert_eq!(
         (reviewer["state"].as_str(), reviewer["reason"].as_str()),
         (Some("idle"), Some("interrupted")),
-        "the dialog's deny key stops the turn"
+        "the dialog's own cancel key stops the turn"
     );
     assert_eq!(fixture.pending(), Value::Null);
+
+    let logged = fixture.fallback_log();
+    let actions: Vec<(&str, &str, bool)> = logged
+        .iter()
+        .map(|line| {
+            (
+                line["action"].as_str().unwrap_or_default(),
+                line["sent"].as_str().unwrap_or("-"),
+                line["skipped"].as_bool().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.0 == "permission_allow")
+            .count(),
+        3
+    );
+    assert!(actions.contains(&("permission_deny", "-", true)));
+    assert_eq!(
+        actions.last(),
+        Some(&("permission_deny", "esc", false)),
+        "{actions:?}"
+    );
+    let typed = logged.last().expect("typed");
+    assert!(
+        typed["seen"]
+            .as_array()
+            .is_some_and(|seen| seen.iter().any(|line| line == "Do you want to proceed?")),
+        "the log keeps the dialog it acted on: {typed}"
+    );
 }
 
 #[test]
@@ -1044,4 +1089,8 @@ fn a_prompt_left_in_the_input_box_is_submitted_by_exactly_one_more_enter() {
         .expect("the stand-in counted the Enters it got after the first");
     assert_eq!(enters, "1");
     assert_eq!(fixture.reviewer()["turn"], 1);
+    let logged = fixture.fallback_log();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0]["action"], "submit_retry");
+    assert_eq!(logged[0]["sent"], "enter");
 }

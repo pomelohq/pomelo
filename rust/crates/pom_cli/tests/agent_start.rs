@@ -71,8 +71,18 @@ impl Fixture {
             .env("FAKE_TRUST_ANSWER", self.trust_answer())
             .envs(env.iter().copied())
             .env_remove("POM_AGENT_HOLDER")
+            .env_remove("CLAUDE_CONFIG_DIR")
             .output()
             .expect("pom")
+    }
+
+    fn workspace_log(&self, event: &str) -> Vec<Value> {
+        let watched = self.pom(&["agent", "watch", "feat", "--from-start", "--timeout", "1"]);
+        String::from_utf8_lossy(&watched.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|line| line["event"] == event)
+            .collect()
     }
 
     fn trust_answer(&self) -> PathBuf {
@@ -189,6 +199,62 @@ fn trust_answers_the_prompt_and_the_session_comes_up_without_the_parent_agent_ma
         );
     }
     assert!(env.lines().any(|line| line == "POM_AGENT_ROLE=reviewer"));
+
+    let trusted = fixture.workspace_log("folder_trusted");
+    assert_eq!(trusted.len(), 1, "{trusted:?}");
+    assert_eq!(trusted[0]["via"], "agent_config");
+    let typed = fixture.workspace_log("screen_fallback");
+    assert!(!typed.is_empty(), "the screen answer is logged");
+    assert!(typed.iter().all(|line| line["action"] == "trust"));
+    assert_eq!(
+        typed
+            .iter()
+            .filter_map(|line| line["sent"].as_str())
+            .next_back(),
+        Some("enter"),
+        "{typed:?}"
+    );
+}
+
+#[test]
+fn trust_goes_through_the_agents_config_and_no_key_is_typed() {
+    let fixture = Fixture::new();
+    let started = fixture.pom_with(
+        &[
+            "agent", "start", "feat", "--fresh", "--role", "reviewer", "--trust", "--json",
+        ],
+        &[("FAKE_TRUST_READS_CONFIG", "1")],
+    );
+    assert_eq!(started.status.code(), Some(0), "{started:?}");
+    fixture.until("the agent's first hook", |fixture| {
+        fixture.reviewer()["state"] == "idle"
+    });
+    assert!(
+        !fixture.trust_answer().exists(),
+        "the prompt was never drawn, so nothing answered it"
+    );
+    assert!(fixture.workspace_log("screen_fallback").is_empty());
+    let folder = std::fs::canonicalize(fixture.root().join("workspace--feat")).expect("folder");
+    let config: Value = serde_json::from_str(
+        &std::fs::read_to_string(fixture.temp.path().join("home/.claude.json")).expect("config"),
+    )
+    .expect("json");
+    assert_eq!(
+        config["projects"][folder.to_string_lossy().as_ref()]["hasTrustDialogAccepted"],
+        true,
+        "{config}"
+    );
+}
+
+#[test]
+fn without_trust_the_agents_config_is_left_alone() {
+    let fixture = Fixture::new();
+    let started = fixture.pom(&[
+        "agent", "start", "feat", "--fresh", "--role", "reviewer", "--json",
+    ]);
+    assert_eq!(started.status.code(), Some(7), "{started:?}");
+    assert!(!fixture.temp.path().join("home/.claude.json").exists());
+    assert!(fixture.workspace_log("folder_trusted").is_empty());
 }
 
 #[test]
