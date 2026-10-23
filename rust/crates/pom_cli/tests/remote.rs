@@ -673,6 +673,45 @@ fn the_server_source_reads_what_the_local_one_does() {
 }
 
 #[test]
+fn the_server_shows_a_workspace_tree_and_reads_its_files() {
+    use pom_remote::ProjectSource;
+    let fixture = Fixture::new();
+    fixture.add_dev();
+    fixture.register_project();
+    let source_dir = fixture.root().join("workspace--feat/api/src");
+    std::fs::create_dir_all(&source_dir).expect("src");
+    std::fs::write(source_dir.join("main.rs"), "fn main() {}\n").expect("main.rs");
+    let server = fixture.server_source("dev");
+    assert!(
+        server.files("feat").is_none(),
+        "unknown before the server answered"
+    );
+    server.workspaces().expect("connect");
+    let fs = server.files("feat").expect("files over the server");
+    let mut feed = fs.watch(std::sync::Arc::new(|| {}));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let entries = loop {
+        let complete = feed.poll().into_iter().find_map(|event| match event {
+            files::TreeEvent::Snapshot {
+                entries,
+                complete: true,
+            } => Some(entries),
+            _ => None,
+        });
+        if let Some(entries) = complete {
+            break entries;
+        }
+        assert!(Instant::now() < deadline, "no tree");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+    assert_eq!(paths, ["api", "api/src", "api/src/main.rs"]);
+    let read = fs.read("api/src/main.rs").expect("read");
+    assert_eq!(read.text.as_deref(), Some("fn main() {}\n"));
+    assert!(fs.read("../pom.yml").is_err());
+}
+
+#[test]
 fn a_shell_on_the_server_runs_what_is_typed() {
     use pom_remote::ProjectSource;
     use pom_rpc::pty::{Mode, Request, Target};

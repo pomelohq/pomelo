@@ -10,13 +10,15 @@ use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
 use pom_remote::server_api::{
     method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
-    AgentStartParams, AgentStarted, FollowLogsParams, JobFollowParams, JobParams, JobStartParams,
-    LogsParams, OpParams, OpResult, ProjectParams, TurnParams, WatchBranchParams, WatchChannel,
-    WatchParams, WorkspaceParams,
+    AgentStartParams, AgentStarted, FollowLogsParams, FsFilesParams, FsPathParams, FsReadParams,
+    FsWatchParams, FsWatched, JobFollowParams, JobParams, JobStartParams, LogsParams, OpParams,
+    OpResult, ProjectParams, TurnParams, WatchBranchParams, WatchChannel, WatchParams,
+    WorkspaceParams,
 };
 use pom_remote::{LocalSource, ProjectSource, ServiceAction, SourceError};
 use pom_rpc::{error_code, RemoteError, Request};
 
+use crate::fs::FsService;
 use crate::jobs::{Jobs, JOB_MEMORY};
 use crate::pty::{Caller, Ptys};
 use crate::watch::Watches;
@@ -233,6 +235,7 @@ pub struct Dispatcher {
     ptys: Ptys,
     watches: Watches,
     jobs: Jobs,
+    files: FsService,
 }
 
 impl Dispatcher {
@@ -241,6 +244,7 @@ impl Dispatcher {
             ptys: Ptys::new(holders.clone(), binary.clone()),
             watches: Watches::new(state.clone()),
             jobs: Jobs::new(JOB_MEMORY),
+            files: FsService::new(),
             state,
             holders,
             binary,
@@ -258,6 +262,50 @@ impl Dispatcher {
 
     pub fn jobs(&self) -> &Jobs {
         &self.jobs
+    }
+
+    pub fn files(&self) -> &FsService {
+        &self.files
+    }
+
+    /// The folder of workspace `branch` of the project `cfg`.
+    fn workspace_root(&self, cfg: &str, branch: &str) -> Result<PathBuf, RemoteError> {
+        check_branch(branch)?;
+        let source = self.source(cfg)?;
+        Ok(source.workspace_terminals(branch).map_err(failed)?.worktree)
+    }
+
+    /// The workspace's files: the tree pushed on the caller's subscription, reads streamed on its streams.
+    pub fn dispatch_fs(
+        &self,
+        request: &Request,
+        caller: &Caller<'_>,
+    ) -> Option<Result<Value, RemoteError>> {
+        let raw = &request.params;
+        let connection = caller.context.connection();
+        Some(match request.method.as_str() {
+            method::FS_WATCH => params::<FsWatchParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                let publisher = connection
+                    .publisher(params.channel)
+                    .map_err(|error| invalid(format!("channel {}: {error}", params.channel)))?;
+                self.files.watch(&root, publisher)?;
+                to_value(FsWatched { root })
+            }),
+            method::FS_READ => params::<FsReadParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                self.files.read(connection, &root, &params)
+            }),
+            method::FS_STAT => params::<FsPathParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                to_value(self.files.stat(&root, &params.path)?)
+            }),
+            method::FS_FILES => params::<FsFilesParams>(raw).and_then(|params| {
+                let root = self.workspace_root(&params.cfg, &params.branch)?;
+                self.files.files(connection, &root, &params)
+            }),
+            _ => return None,
+        })
     }
 
     /// Following a service's output and the jobs: both answer on the caller's connection.

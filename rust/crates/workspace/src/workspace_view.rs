@@ -584,6 +584,14 @@ impl WorkspaceView {
         })
     }
 
+    /// Puts in the editor area and its file tree alone, keeping the rest of the project's views.
+    pub fn set_files_view(&mut self, files_view: Option<Box<dyn crate::FunctionView>>) {
+        self.persist_panes(true);
+        self.layout.files_view = files_view;
+        self.panes_restored = false;
+        self.saved_panes = None;
+    }
+
     /// Puts in the terminal panel and agent dock alone, keeping the rest of the project's views.
     pub fn set_terminal_views(
         &mut self,

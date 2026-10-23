@@ -174,6 +174,8 @@ pub struct TransportInfo {
     pub live_logs: bool,
     /// The server runs workspace jobs (create, sleep, wake, pull) and reports their progress.
     pub jobs: bool,
+    /// The server reads the workspace's files: the tree as it changes, a file, the finder's list.
+    pub files: bool,
 }
 
 /// The long-lived session's state, and how many times it came back to a restarted server.
@@ -274,6 +276,10 @@ pub trait ProjectSource: Send + Sync {
         Err("updating pom needs pom server on the project's machine".to_string())
     }
     fn pty(&self, _branch: &str) -> Option<Arc<dyn pom_rpc::pty::PtyProvider>> {
+        None
+    }
+    /// The files of workspace `branch`, read where they are; `None` when the machine cannot serve them.
+    fn files(&self, _branch: &str) -> Option<Arc<dyn files::ProjectFs>> {
         None
     }
     /// Pushes about `branch` (empty: only the workspace list) when the machine sends them; `None` means ask.

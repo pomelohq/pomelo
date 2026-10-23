@@ -9,6 +9,7 @@ description = "`pom server`: answers a remote app's requests over a private Unix
 path = "src/pom_server.rs"
 
 [dependencies]
+files = { path = "../files" }
 libc = "0.2"
 pom_agent = { path = "../pom_agent" }
 pom_layout = { path = "../pom_layout" }

@@ -20,7 +20,8 @@ use crate::server_api::{
     method, topic, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing, AgentStartParams,
     AgentStarted, FollowLogsParams, FollowedLogs, JobFollowParams, JobParams, JobRequest,
     JobStartParams, JobStarted, LogsParams, Progress, ProjectParams, TurnParams, WatchBranchParams,
-    WatchParams, WorkspaceParams, AGENTS, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH, REQUIRED,
+    WatchParams, WorkspaceParams, AGENTS, FILES_READ, JOBS, LIVE_LOGS, PROGRESS_TOPIC, PUSH,
+    REQUIRED,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -95,7 +96,7 @@ struct Status {
     supervised: bool,
 }
 
-struct Inner {
+pub(crate) struct Inner {
     host: Host,
     config: String,
     ssh: Ssh,
@@ -361,6 +362,7 @@ impl Inner {
             agents: offers(AGENTS),
             live_logs: offers(LIVE_LOGS),
             jobs: offers(JOBS),
+            files: offers(&[FILES_READ]),
         });
         let server_id = server.server_id.unwrap_or_default();
         let previous = std::mem::replace(&mut *locked(&self.server_id), server_id.clone());
@@ -381,8 +383,17 @@ impl Inner {
         connection
     }
 
+    pub(crate) fn host_name(&self) -> &str {
+        &self.host.name
+    }
+
+    /// The project's pom.yml on the host.
+    pub(crate) fn config(&self) -> &str {
+        &self.config
+    }
+
     /// The live session, without opening one.
-    fn live_connection(&self) -> Option<Connection> {
+    pub(crate) fn live_connection(&self) -> Option<Connection> {
         match &*locked(&self.link) {
             LinkSlot::Open(open) if open.connection.state() == pom_rpc::ConnectionState::Open => {
                 Some(open.connection.clone())
@@ -393,7 +404,7 @@ impl Inner {
 
     /// The open connection, opening the first one; `None` once the host fell back to plain ssh. A session that
     /// dropped is the supervisor's to reopen, so this waits a little for it rather than dialing too.
-    fn connection(self: &Arc<Self>) -> Result<Option<Connection>, SourceError> {
+    pub(crate) fn connection(self: &Arc<Self>) -> Result<Option<Connection>, SourceError> {
         let mut link = locked(&self.link);
         match &*link {
             LinkSlot::Fallback => return Ok(None),
@@ -863,6 +874,14 @@ impl ProjectSource for ServerSource {
             inner.kick();
             std::thread::sleep(SUPERVISOR_TICK);
         }
+    }
+
+    fn files(&self, branch: &str) -> Option<Arc<dyn files::ProjectFs>> {
+        let info = self.inner.info()?;
+        (info.via == Via::Server && info.files).then(|| {
+            Arc::new(crate::remote_fs::RemoteFs::new(self.inner.clone(), branch))
+                as Arc<dyn files::ProjectFs>
+        })
     }
 
     fn pty(&self, branch: &str) -> Option<Arc<dyn PtyProvider>> {
