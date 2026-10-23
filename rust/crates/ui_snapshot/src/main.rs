@@ -260,6 +260,11 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "data-store-optimize" => (0, &[("PAGESCENE", "store-optimize")]),
         "services-requests" => (0, &[("PAGESCENE", "requests")]),
         "services-requests-empty" => (0, &[("PAGESCENE", "requests-empty")]),
+        // A remote window's Ports tab below its tab bar, over a fixed list of forwards.
+        "remote-ports" => (0, &[("PAGESCENE", "ports")]),
+        "remote-ports-moved" => (0, &[("PAGESCENE", "ports-moved")]),
+        "remote-ports-error" => (0, &[("PAGESCENE", "ports-error")]),
+        "remote-ports-empty" => (0, &[("PAGESCENE", "ports-empty")]),
         // One tab bar as every pane draws it: the agent dock's, and the design system's sample row.
         // A service tab's facts card, running, stopped and crashed, at the boards' card size.
         "services-running" => (0, &[("SERVICES", "api/server"), ("FACTS", "674")]),
@@ -416,6 +421,7 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
             0,
             &[("REMOTEVIEW", "restarted"), ("CROP", "496,814,449,52")],
         ),
+        "remote-port-ready" => (0, &[("NOTICE", "port-ready")]),
         // Connect to Host alone at its width, in the step a board shows.
         "remote-connect" => (0, &[("MODAL", "connect-hosts")]),
         "remote-connect-empty" => (0, &[("MODAL", "connect-empty")]),
@@ -2967,6 +2973,10 @@ fn main() -> anyhow::Result<()> {
             }
             "requests" => Box::new(dev_services_ui::board_page(true)),
             "requests-empty" => Box::new(dev_services_ui::board_page(false)),
+            "ports" => Box::new(remote_ui::ports_board_page("forwarded")),
+            "ports-moved" => Box::new(remote_ui::ports_board_page("moved")),
+            "ports-error" => Box::new(remote_ui::ports_board_page("error")),
+            "ports-empty" => Box::new(remote_ui::ports_board_page("empty")),
             _ => Box::new(onboarding_ui::preview_page(&which)),
         };
         let body = ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT);
@@ -3375,6 +3385,15 @@ fn main() -> anyhow::Result<()> {
                     .0,
                 colors.editor_background,
             ),
+            "port-ready" => (
+                workspace::toast_preview(
+                    &pom_remote::reachable_notice("dev", &[("postgres".to_string(), 5432)])
+                        .unwrap_or_default(),
+                    None,
+                )
+                .0,
+                colors.editor_background,
+            ),
             "update-ready-button" => (
                 workspace::update_button(
                     &update("Restart to Update", workspace::UpdateTone::Ready, None),
@@ -3449,7 +3468,7 @@ fn main() -> anyhow::Result<()> {
         // The board frames a toast or the update button with 8px of what lies under it.
         let frame = if matches!(
             which.as_str(),
-            "toast" | "update-ready-button" | "update-states"
+            "toast" | "port-ready" | "update-ready-button" | "update-states"
         ) {
             8.0
         } else {

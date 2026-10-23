@@ -27,6 +27,9 @@ pub(crate) struct RemoteWindow {
     /// Updating pom on the host, written by the thread that runs it.
     pom_update: Arc<std::sync::Mutex<remote_ui::PomUpdate>>,
     update_shown: remote_ui::PomUpdate,
+    /// What of the host is open here: its dev proxy, the shown workspace's shared services, ports asked for.
+    pub ports: Option<Arc<pom_remote::RemotePorts>>,
+    ports_seen: u64,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -42,6 +45,15 @@ fn write_update(
         Err(poisoned) => edit(&mut poisoned.into_inner()),
     }
     ui::wake();
+}
+
+/// A Ports tab may still hold the forwards; they stop with the window's project all the same.
+impl Drop for RemoteWindow {
+    fn drop(&mut self) {
+        if let Some(ports) = self.ports.take() {
+            ports.close();
+        }
+    }
 }
 
 impl RemoteWindow {
@@ -167,12 +179,23 @@ impl App {
                 .saturating_mul(1024),
         )
         .unwrap_or(usize::MAX);
+        let host_entry = host.clone();
         let source = pom_remote::project_source(
             host,
             picked.config.clone(),
             pom_remote::Ssh::system(),
             unconfirmed_input_limit,
         );
+        let state = pom_paths::StateDir::from_env();
+        let ports = Arc::new(pom_remote::RemotePorts::start(pom_remote::PortsSetup {
+            source: source.clone(),
+            ssh: pom_remote::Ssh::system(),
+            host: host_entry,
+            project: picked.name.clone(),
+            record_dir: Some(pom_remote::ports_dir(&state, &picked.host)),
+            proxy_port_here: self.proxy_port_here(),
+            waker: Arc::new(ui::wake),
+        }));
         let watch = pom_remote::Watch::start(source, "", Arc::new(ui::wake));
         if let Some(main) = self.mains.get_mut(&id) {
             main.project = None;
@@ -201,6 +224,8 @@ impl App {
                     ..remote_ui::PomUpdate::default()
                 })),
                 update_shown: remote_ui::PomUpdate::default(),
+                ports: Some(ports),
+                ports_seen: 0,
             });
         }
         self.install_remote_views(id);
@@ -289,12 +314,26 @@ impl App {
         remote.watch.set_visible(!hidden);
         let generation = remote.watch.generation();
         let update = read_update(&remote.pom_update);
-        if generation == remote.seen && update == remote.update_shown {
+        let ports_version = remote.ports.as_ref().map_or(0, |ports| ports.version());
+        if generation == remote.seen
+            && update == remote.update_shown
+            && ports_version == remote.ports_seen
+        {
             return;
         }
+        let ports_moved = ports_version != remote.ports_seen;
         remote.seen = generation;
         remote.update_shown = update.clone();
+        remote.ports_seen = ports_version;
         let snapshot = remote.watch.snapshot();
+        let port_notices = remote
+            .ports
+            .as_ref()
+            .map(|ports| {
+                ports.sync(&snapshot);
+                ports.take_notices()
+            })
+            .unwrap_or_default();
         if remote.active.is_empty() {
             let main_branch = snapshot.workspaces.as_ref().and_then(|list| {
                 list.workspaces
@@ -336,11 +375,82 @@ impl App {
             if let Some(message) = restart_notice {
                 view.show_toast(message, None);
             }
+            for message in port_notices {
+                view.show_toast(message, None);
+            }
         });
+        if ports_moved {
+            self.sync_dev_proxy();
+        }
         self.install_remote_terminals(id, &snapshot);
         self.install_remote_files(id, &snapshot);
         self.open_started_agents(id);
         self.save_remote_agent_tabs(id, &snapshot);
+    }
+
+    /// This machine's dev proxy port, which every workspace address here uses.
+    pub(crate) fn proxy_port_here(&self) -> u16 {
+        self.dev_proxy
+            .as_ref()
+            .map_or_else(pom_proxy::Ports::from_env, pom_proxy::DevProxy::ports)
+            .proxy
+    }
+
+    /// Where the dev proxy sends each remote window's workspace addresses.
+    pub(crate) fn remote_gateways(&self) -> Vec<pom_proxy::RemoteGateway> {
+        self.mains
+            .values()
+            .filter_map(|main| main.remote.as_ref()?.ports.as_ref()?.gateway_route())
+            .map(|route| pom_proxy::RemoteGateway {
+                host: route.host,
+                session: route.session,
+                branches: route.branches,
+                port: route.port,
+            })
+            .collect()
+    }
+
+    /// The Ports tab of a remote window: what of the host is forwarded here.
+    pub(crate) fn open_remote_ports(&mut self, id: WindowId) {
+        let Some(ports) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.remote.as_ref())
+            .and_then(|remote| remote.ports.clone())
+        else {
+            self.with_workspace_view(id, |view, _| {
+                view.show_toast("Ports are for a project on another machine", None)
+            });
+            return;
+        };
+        let open_url: Arc<dyn Fn(&str)> = Arc::new(|url: &str| {
+            if let Err(error) = desktop::open(url) {
+                eprintln!("open {url}: {error}");
+            }
+        });
+        let page = remote_ui::PortsPage::new(ports, open_url);
+        self.with_workspace_view(id, |view, _| view.open_page(Box::new(page)));
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
+    }
+
+    /// Stops every window's forwards before the app goes, so none outlives it on a shared ssh connection.
+    pub(crate) fn close_remote_ports(&mut self) {
+        let closing: Vec<Arc<pom_remote::RemotePorts>> = self
+            .mains
+            .values_mut()
+            .filter_map(|main| main.remote.as_mut()?.ports.take())
+            .collect();
+        let threads: Vec<_> = closing
+            .into_iter()
+            .map(|ports| std::thread::spawn(move || ports.close()))
+            .collect();
+        for thread in threads {
+            if thread.join().is_err() {
+                eprintln!("ports: closing panicked");
+            }
+        }
     }
 
     /// Agents this window started on the host, each opened in the dock once it runs.
