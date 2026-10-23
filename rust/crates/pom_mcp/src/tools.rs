@@ -1176,7 +1176,7 @@ pub fn tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     let ws = workspace.clone();
     tools.push(tool(
         "config_set",
-        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written). Newly added services get ports allocated automatically. A shared service is a Docker `image:` or a `cmd:` (one process for every workspace, optional repo/port/environment/healthcheck); start it with shared_start. Every key and token: config_reference.",
+        "Validate and write a new pom.yml, then reload - adds/edits services, repos, shared services, databases, env. Rejected if invalid (nothing is written), or if it changes the `agents` section (the agent policy, which only the person edits). Newly added services get ports allocated automatically. A shared service is a Docker `image:` or a `cmd:` (one process for every workspace, optional repo/port/environment/healthcheck); start it with shared_start. Every key and token: config_reference.",
         Some(yaml_schema()),
         false,
         Box::new(move |args| {

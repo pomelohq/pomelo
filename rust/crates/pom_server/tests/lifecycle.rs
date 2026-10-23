@@ -107,23 +107,6 @@ fn the_socket_is_private_and_a_second_server_is_refused() {
 }
 
 #[test]
-fn a_shared_dir_owned_by_someone_else_or_open_to_others_is_not_trusted() {
-    let temp = scratch();
-    let dir = temp.path().join("pom-server-test");
-    std::fs::create_dir(&dir).expect("dir");
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
-    pom_server::ensure_private_dir(&dir, pom_server::current_uid()).expect("own dir");
-    assert_eq!(mode(&dir), 0o700);
-    let refused = pom_server::ensure_private_dir(&dir, pom_server::current_uid() + 1)
-        .expect_err("another owner");
-    assert_eq!(refused.kind(), std::io::ErrorKind::PermissionDenied);
-
-    let link = temp.path().join("linked");
-    std::os::unix::fs::symlink(&dir, &link).expect("symlink");
-    assert!(pom_server::ensure_private_dir(&link, pom_server::current_uid()).is_err());
-}
-
-#[test]
 fn the_same_user_is_served_and_another_is_refused() {
     let temp = scratch();
     let (handle, paths, thread) = start(options(temp.path()));

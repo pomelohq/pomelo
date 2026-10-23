@@ -1,5 +1,5 @@
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -24,10 +24,7 @@ pub fn listen_and_serve(
     group: Option<&str>,
     mut options: StartOptions,
 ) -> io::Result<Session> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir.root())?;
+    dir.ensure_private()?;
     let socket = dir.socket(name);
     let pidfile = dir.pidfile(name);
     remove_quietly(&socket);

@@ -13,7 +13,6 @@ pub const TAB_ID: &str = "dev-requests";
 
 const RESTART: u64 = 1;
 const FILTER: u64 = 2;
-const REVEAL: u64 = 3;
 const COPY_BODY: u64 = 4;
 const KIND_BASE: u64 = 10;
 const STATUS_BASE: u64 = 20;
@@ -26,7 +25,6 @@ const CARD_GAP: f32 = 6.0;
 const FOOT_H: f32 = 36.0;
 const DETAIL_PAD: f32 = 14.0;
 const BODY_LINES_SHOWN: usize = 300;
-const MASK: &str = "********";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum KindFilter {
@@ -73,8 +71,6 @@ pub struct DevRequestsState {
     pub tab: DetailTab,
     /// The selected row's request and response bodies, as the app last fetched them.
     pub payloads: Option<(u64, Payload, Payload)>,
-    /// Sensitive header values of the selected row are shown.
-    pub revealed: bool,
     pub requests: Vec<Request>,
     pub version: u64,
 }
@@ -163,17 +159,6 @@ fn status_color(status: u16) -> Rgba {
     } else {
         theme().warning
     }
-}
-
-/// Header values shown masked until revealed: credentials and anything named like one.
-pub fn sensitive(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-    ) || ["token", "secret", "password", "api-key", "apikey"]
-        .iter()
-        .any(|part| name.contains(part))
 }
 
 fn content_type(headers: &[(String, String)]) -> String {
@@ -650,7 +635,7 @@ fn section_head(title: Node, action: Option<Node>) -> Node {
     head.into()
 }
 
-fn headers_block(headers: &[(String, String)], revealed: bool) -> Node {
+fn headers_block(headers: &[(String, String)]) -> Node {
     let colors = theme();
     if headers.is_empty() {
         return key_values(vec![small("No headers", colors.text_muted).into()]);
@@ -658,9 +643,8 @@ fn headers_block(headers: &[(String, String)], revealed: bool) -> Node {
     let rows = headers
         .iter()
         .map(|(name, value)| {
-            let masked = sensitive(name) && !revealed;
-            let shown = if masked {
-                small(MASK, colors.text_placeholder)
+            let shown = if value == pom_proxy::REDACTED {
+                small(value.clone(), colors.text_placeholder)
             } else {
                 small(value.clone(), colors.text)
             };
@@ -933,21 +917,9 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         } else {
             &entry.request_headers
         };
-        let masked = !state.revealed && headers.iter().any(|(name, _)| sensitive(name));
-        let reveal = masked.then(|| {
-            small_button(
-                REVEAL,
-                None,
-                "Show Hidden",
-                None,
-                ButtonKind::Ghost,
-                true,
-                hovered,
-            )
-        });
         column = column
-            .child(section_head(section_title("Headers").into(), reveal))
-            .child(headers_block(headers, state.revealed));
+            .child(section_head(section_title("Headers").into(), None))
+            .child(headers_block(headers));
         if tab == DetailTab::Response && webhook {
             column = column.child(div().row().px(DETAIL_PAD).child(small(
                 "What the relay answered the sender, before fanning out.",
@@ -1014,7 +986,6 @@ fn click(state: &mut DevRequestsState, id: u64) -> Option<String> {
     state.filter_focused = id == FILTER;
     match id {
         RESTART => state.requests.push(Request::Restart),
-        REVEAL => state.revealed = true,
         COPY_BODY => copied = copied_body(state),
         id if (KIND_BASE..KIND_BASE + 3).contains(&id) => {
             state.kind = match id - KIND_BASE {
@@ -1040,7 +1011,6 @@ fn click(state: &mut DevRequestsState, id: u64) -> Option<String> {
             let seq = id - ROW_BASE;
             if state.selected != Some(seq) {
                 state.selected = Some(seq);
-                state.revealed = false;
                 let webhook = state
                     .selected_entry()
                     .is_some_and(|entry| entry.kind == RequestKind::Webhook);
@@ -1324,7 +1294,7 @@ pub fn preview_page() -> DevRequestsPage {
         header("content-type", "application/json"),
         header("stripe-signature", "t=1727671325,v1=5257a8c0d1"),
         header("user-agent", "Stripe/1.0"),
-        header("authorization", "Bearer sk_test_secret"),
+        header("authorization", pom_proxy::REDACTED),
     ];
     hook.response_headers = vec![header("content-type", "application/json")];
     hook.deliveries = vec![
@@ -1445,7 +1415,7 @@ pub fn board_page(with_requests: bool) -> DevRequestsPage {
     sessions.request_headers = vec![
         header("content-type", "application/json"),
         header("origin", "http://app.web.feat-login.localhost:8767"),
-        header("cookie", "_myproject_session=abc123"),
+        header("cookie", pom_proxy::REDACTED),
     ];
     let body = br#"{"email":"dev@example.com","password":"********"}"#;
     let payload = |bytes: &[u8]| Payload {
