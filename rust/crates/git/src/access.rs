@@ -501,6 +501,47 @@ impl GitAccess for LocalGit {
     }
 }
 
+/// Repos this window cannot reach, saying why for every request.
+#[derive(Clone, Debug)]
+pub struct UnservedGit {
+    reason: String,
+}
+
+impl UnservedGit {
+    pub fn new(reason: impl Into<String>) -> UnservedGit {
+        UnservedGit {
+            reason: reason.into(),
+        }
+    }
+}
+
+impl GitAccess for UnservedGit {
+    fn scan(&self, repo: &RepoSource) -> RepoScan {
+        RepoScan::failed(&repo.root, self.reason.clone())
+    }
+
+    fn act(&self, _repo: &RepoSource, _op: GitOp) -> Result<(), CommandError> {
+        Err(refused(self.reason.clone()))
+    }
+
+    fn read(&self, _repo: &RepoSource, _query: GitRead) -> Result<GitAnswer, String> {
+        Err(self.reason.clone())
+    }
+
+    fn remote(
+        &self,
+        _repo: &RepoSource,
+        _command: RemoteCommand,
+        _progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<CommandOutput, CommandError> {
+        Err(refused(self.reason.clone()))
+    }
+
+    fn refusal(&self) -> Option<String> {
+        Some(self.reason.clone())
+    }
+}
+
 /// Whether git's output says a remote refused to let it sign in (no key, no token, or a prompt it could not show).
 pub fn sign_in_failed(output: &CommandOutput) -> bool {
     const SIGNS: &[&str] = &[

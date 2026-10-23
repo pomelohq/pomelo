@@ -45,6 +45,7 @@ pom_layout = { path = "../pom_layout" }
 pom_jira = { path = "../pom_jira" }
 jira_ui = { path = "../jira_ui" }
 arboard = "3.6.1"
+git = { path = "../git" }
 git_ui = { path = "../git_ui" }
 pull_request_ui = { path = "../pull_request_ui" }
 pom_doctor = { path = "../pom_doctor" }

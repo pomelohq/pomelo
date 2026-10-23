@@ -45,7 +45,15 @@ pub(crate) struct RemoteWindow {
     pub jira: Arc<pom_remote::RemoteJira>,
     /// Each workspace's ticket status, kept here under `<project>@<host>`.
     tickets: workspaces_ui::TicketStatuses,
+    /// The workspace whose Git panel is shown.
+    git_for: Option<String>,
+    /// The repos the host listed for a workspace's Git panel, once it answers.
+    git_repos: Arc<std::sync::Mutex<Option<GitRepos>>>,
+    /// The workspace whose repos were asked for.
+    git_asked: Option<String>,
 }
+
+type GitRepos = (String, Result<Vec<git::access::RepoSource>, String>);
 
 /// A remote workspace's views while another one is shown.
 struct ParkedRemote {
@@ -53,6 +61,7 @@ struct ParkedRemote {
     files_unserved: bool,
     services: Option<Arc<services_ui::RemoteServices>>,
     agent_tabs: Vec<services_ui::AgentTab>,
+    git_shown: bool,
 }
 
 fn read_update(update: &std::sync::Mutex<remote_ui::PomUpdate>) -> remote_ui::PomUpdate {
@@ -345,6 +354,9 @@ impl App {
                 usage,
                 jira,
                 tickets,
+                git_for: None,
+                git_repos: Arc::new(std::sync::Mutex::new(None)),
+                git_asked: None,
             });
         }
         self.install_remote_views(id);
@@ -416,6 +428,8 @@ impl App {
                 remote.terminals_for = None;
                 remote.files_for = None;
                 remote.services = None;
+                remote.git_for = None;
+                remote.git_asked = None;
             }
             main.dirty = true;
         }
@@ -425,6 +439,7 @@ impl App {
     /// Picks up what the last look found: the workspace list, the page in place of the editor, the title.
     pub(crate) fn poll_remote(&mut self, id: WindowId) {
         self.start_remote_tasks(id);
+        self.install_remote_git(id);
         let Some(main) = self.mains.get_mut(&id) else {
             return;
         };
@@ -866,7 +881,80 @@ impl App {
         }
         let (panel, source) = remote_services_panel(remote, snapshot);
         remote.services = Some((remote.active.clone(), source));
-        self.with_workspace_view(id, |view, _| view.set_side_panels(vec![panel]));
+        self.with_workspace_view(id, |view, _| view.set_side_panel(panel));
+    }
+
+    /// The Git panel of the shown workspace, the same as a local one's, with git run on the host; a host whose
+    /// pom cannot says so in the panel.
+    fn install_remote_git(&mut self, id: WindowId) {
+        let Some(remote) = self
+            .mains
+            .get_mut(&id)
+            .and_then(|main| main.remote.as_mut())
+        else {
+            return;
+        };
+        if remote.active.is_empty() || remote.git_for.as_deref() == Some(&remote.active) {
+            return;
+        }
+        let Some(transport) = remote.watch.snapshot().transport else {
+            return;
+        };
+        let source = remote.watch.source();
+        let active = remote.active.clone();
+        let refusal = git_refusal(&transport, &remote.host);
+        let listed = match refusal {
+            Some(reason) => Err(reason),
+            None => {
+                let answered = remote
+                    .git_repos
+                    .lock()
+                    .ok()
+                    .and_then(|mut repos| repos.take_if(|(branch, _)| *branch == active));
+                match answered {
+                    Some((_, listed)) => listed.map_err(|error| {
+                        format!("Could not list the repos on {}: {error}", remote.host)
+                    }),
+                    None => {
+                        if remote.git_asked.as_deref() != Some(&active) {
+                            remote.git_asked = Some(active.clone());
+                            ask_git_repos(source, &active, remote.git_repos.clone());
+                        }
+                        return;
+                    }
+                }
+            }
+        };
+        remote.git_for = Some(active.clone());
+        remote.git_asked = None;
+        let reviews = pom_paths::StateDir::from_env().path(format!(
+            "reviews/{}-{}.json",
+            pom_env::branch_safe(&pom_remote::remote_jira_session(
+                &remote.project,
+                &remote.host
+            )),
+            pom_env::branch_safe(&active)
+        ));
+        let (repos, access): (
+            Vec<git::access::RepoSource>,
+            Arc<dyn git::access::GitAccess>,
+        ) = match listed.map(|repos| (source.git(&active), repos)) {
+            Ok((Some(access), repos)) => (repos, access),
+            Ok((None, _)) => (
+                Vec::new(),
+                Arc::new(git::access::UnservedGit::new(format!(
+                    "Git on {} needs a newer pom there; update it there",
+                    remote.host
+                ))),
+            ),
+            Err(reason) => (Vec::new(), Arc::new(git::access::UnservedGit::new(reason))),
+        };
+        let panel =
+            git_ui::GitPanel::new(repos, Some(reviews), Arc::new(ui::wake)).with_access(access);
+        self.with_workspace_view(id, |view, _| view.set_side_panel(Box::new(panel)));
+        if let Some(main) = self.mains.get_mut(&id) {
+            main.dirty = true;
+        }
     }
 
     /// Repo commands the Services panel asked for, run on the host as jobs.
@@ -937,12 +1025,15 @@ impl App {
                 files_unserved: remote.files_unserved,
                 services: remote.services.take().map(|(_, source)| source),
                 agent_tabs: std::mem::take(&mut remote.agent_tabs),
+                git_shown: remote.git_for.as_deref() == Some(remote.active.as_str()),
             };
             remote.parked.insert(remote.active.clone(), parked);
         }
         remote.terminals_for = None;
         remote.files_for = None;
         remote.services = None;
+        remote.git_for = None;
+        remote.git_asked = None;
         remote.restore_agent_tabs = false;
         remote.active = branch;
         remote.watch.set_branch(&remote.active);
@@ -958,6 +1049,9 @@ impl App {
             .services
             .map(|source| (remote.active.clone(), source));
         remote.agent_tabs = parked.agent_tabs;
+        if parked.git_shown {
+            remote.git_for = Some(remote.active.clone());
+        }
         let info = project_info(remote, &remote.watch.snapshot());
         self.with_workspace_view(id, |view, _| view.resume(info, parked.views));
     }
@@ -1211,6 +1305,133 @@ impl App {
         remote.watch.refresh_now();
     }
 
+    /// A repo branch change the Git panel's branch menu asked for, run on the host; says what it did.
+    pub(crate) fn apply_remote_branch_request(
+        &mut self,
+        id: WindowId,
+        request: workspace::PanelRequest,
+    ) {
+        use pom_remote::server_api::branch_action;
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let (repo, action, target) = match request {
+            workspace::PanelRequest::KeepBranch { repo, .. } => {
+                (repo, branch_action::KEEP, String::new())
+            }
+            workspace::PanelRequest::SwitchBranch { repo } => {
+                (repo, branch_action::SWITCH, remote.active.clone())
+            }
+            workspace::PanelRequest::PickBranch { repo } => {
+                return self.open_remote_use_branch(id, &repo)
+            }
+            _ => return,
+        };
+        let (source, workspace) = (remote.watch.source(), remote.active.clone());
+        let spawned = std::thread::Builder::new()
+            .name("remote-branch".into())
+            .spawn(move || {
+                source
+                    .change_git_branch(&workspace, &repo, action, &target)
+                    .unwrap_or_else(|error| error.to_string())
+            });
+        match spawned {
+            Ok(thread) => self.await_remote_branch(id, thread),
+            Err(error) => eprintln!("remote branch: {error}"),
+        }
+    }
+
+    /// Shows what a branch change on the host said once it is done, as a local one does.
+    fn await_remote_branch(&mut self, id: WindowId, thread: std::thread::JoinHandle<String>) {
+        let Some(main) = self.mains.get_mut(&id) else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("remote-branch-wait".into())
+            .spawn(move || {
+                let said = thread
+                    .join()
+                    .unwrap_or_else(|_| "The branch change stopped".to_string());
+                if sender.send(said).is_ok() {
+                    ui::wake();
+                }
+            });
+        match spawned {
+            Ok(_) => main.use_branch = Some(receiver),
+            Err(error) => eprintln!("remote branch: {error}"),
+        }
+    }
+
+    /// The branch picker for a repo of the shown workspace, listing and fetching on the host.
+    pub(crate) fn open_remote_use_branch(&mut self, id: WindowId, repo: &str) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let workspace = remote.active.clone();
+        let listing = (remote.watch.source(), workspace.clone());
+        let fetching = listing.clone();
+        let source = workspaces_ui::BranchSource {
+            list: Arc::new(move |repo| {
+                let (source, workspace) = &listing;
+                source
+                    .git_branches(workspace, repo)
+                    .map(|listed| workspaces_ui::RepoBranches {
+                        base: listed.base,
+                        branches: listed.branches,
+                    })
+                    .map_err(|error| error.to_string())
+            }),
+            fetch: Arc::new(move |repo| {
+                let (source, workspace) = &fetching;
+                source
+                    .change_git_branch(
+                        workspace,
+                        repo,
+                        pom_remote::server_api::branch_action::FETCH,
+                        "",
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            }),
+        };
+        let modal = workspaces_ui::UseBranchModal::new(repo, &workspace, None, source);
+        self.with_workspace_view(id, |view, _| view.open_window_modal(Box::new(modal)));
+    }
+
+    /// Checks out the branch picked for a repo of the shown workspace on the host.
+    pub(crate) fn start_remote_use_branch(
+        &mut self,
+        id: WindowId,
+        choice: &workspaces_ui::UseBranch,
+    ) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let (source, workspace) = (remote.watch.source(), remote.active.clone());
+        let (repo, branch) = (choice.repo.clone(), choice.branch.clone());
+        let message = format!("Checking out {branch} in {repo}...");
+        let spawned = std::thread::Builder::new()
+            .name("remote-use-branch".into())
+            .spawn(move || {
+                source
+                    .change_git_branch(
+                        &workspace,
+                        &repo,
+                        pom_remote::server_api::branch_action::USE,
+                        &branch,
+                    )
+                    .unwrap_or_else(|error| error.to_string())
+            });
+        match spawned {
+            Ok(thread) => {
+                self.await_remote_branch(id, thread);
+                self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+            }
+            Err(error) => eprintln!("remote use branch: {error}"),
+        }
+    }
+
     /// Workspace changes run on the host itself for now; say how.
     pub(crate) fn remote_only_on_host(&mut self, id: WindowId, what: &str) -> bool {
         let Some(host) = self
@@ -1274,6 +1495,47 @@ fn remote_services_panel(
     )
     .with_tab_buttons(buttons);
     (Box::new(panel), source)
+}
+
+/// Why the host's repos cannot show in the Git panel here, when they cannot.
+fn git_refusal(transport: &pom_remote::TransportInfo, host: &str) -> Option<String> {
+    if transport.via != pom_remote::Via::Server {
+        return Some(format!(
+            "Git on {host} needs pom server there; this window reaches {host} over plain ssh."
+        ));
+    }
+    if transport.git {
+        return None;
+    }
+    Some(match &transport.remote_version {
+        Some(version) => format!(
+            "pom {version} on {host} cannot show its repos here. Update pom there to use Git in this window."
+        ),
+        None => format!(
+            "pom on {host} cannot show its repos here. Update pom there to use Git in this window."
+        ),
+    })
+}
+
+/// Asks the host for the repos of workspace `branch` off the UI thread; the answer lands in `into`.
+fn ask_git_repos(
+    source: Arc<dyn pom_remote::ProjectSource>,
+    branch: &str,
+    into: Arc<std::sync::Mutex<Option<GitRepos>>>,
+) {
+    let branch = branch.to_string();
+    let spawned = std::thread::Builder::new()
+        .name("remote-git-repos".into())
+        .spawn(move || {
+            let listed = source.git_repos(&branch).map_err(|error| error.to_string());
+            if let Ok(mut answer) = into.lock() {
+                *answer = Some((branch, listed));
+            }
+            ui::wake();
+        });
+    if let Err(error) = spawned {
+        eprintln!("remote git: {error}");
+    }
 }
 
 /// A screenshot pasted in a terminal here goes to the host, where the agent reading that terminal runs.
@@ -1371,5 +1633,25 @@ mod tests {
             agent_dot(&[agent("tool_use"), agent("awaiting_input"), agent("died")]),
             Some(workspace::AgentDot::AwaitingInput)
         );
+    }
+
+    #[test]
+    fn the_git_panel_says_why_a_host_cannot_serve_it() {
+        let ssh = pom_remote::TransportInfo::default();
+        assert_eq!(
+            git_refusal(&ssh, "dev").as_deref(),
+            Some("Git on dev needs pom server there; this window reaches dev over plain ssh.")
+        );
+        let old = pom_remote::TransportInfo {
+            via: pom_remote::Via::Server,
+            remote_version: Some("0.9.6".into()),
+            ..pom_remote::TransportInfo::default()
+        };
+        assert_eq!(
+            git_refusal(&old, "dev").as_deref(),
+            Some("pom 0.9.6 on dev cannot show its repos here. Update pom there to use Git in this window.")
+        );
+        let current = pom_remote::TransportInfo { git: true, ..old };
+        assert_eq!(git_refusal(&current, "dev"), None);
     }
 }
