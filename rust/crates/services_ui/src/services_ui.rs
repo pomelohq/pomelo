@@ -2,6 +2,7 @@
 //! attention), then its services by repo, with the shared containers pinned at the bottom. Clicking a running
 //! service opens its console as a center tab.
 
+mod access;
 mod keys;
 mod model;
 mod remote;
@@ -18,8 +19,11 @@ use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, MenuItem, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
 
-use model::{shared_key, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
-pub use model::{Action, Crash, ServicesContext, SharedConfig, Status};
+pub use access::{
+    Console, ConsoleRequest, LocalServices, LogLines, RepoCommand, ServiceControl, ServicesAccess,
+};
+use model::{shared_key, Context, Model, SharedRun, ALL_SHARED, WORKSPACE_GROUP};
+pub use model::{Action, Crash, ServicesContext, SharedConfig, Status, WorkspaceInfo};
 pub use remote::RemoteServicesPanel;
 pub use remote_agents::{
     agent_item_id, next_agent_role, remote_agent_item, restore_agent_tabs, RemoteAgentTabs,
@@ -347,16 +351,22 @@ pub struct ServicesPanel {
     confirm: Option<(u64, SharedRun)>,
 }
 
-/// One of a repo's pre-written commands (the config's `shortcuts`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RepoCommand {
-    repo: String,
-    label: String,
-    cmd: String,
-}
-
 impl ServicesPanel {
     pub fn new(context: ServicesContext, root: PathBuf) -> ServicesPanel {
+        Self::build(context.into(), root)
+    }
+
+    /// The panel over `access`, a source other than this machine's runner.
+    pub fn with_access(
+        access: std::sync::Arc<dyn ServicesAccess>,
+        workspace: WorkspaceInfo,
+        waker: std::sync::Arc<dyn Fn() + Send + Sync>,
+        root: PathBuf,
+    ) -> ServicesPanel {
+        Self::build(Context::new(access, workspace, waker), root)
+    }
+
+    fn build(context: Context, root: PathBuf) -> ServicesPanel {
         ServicesPanel {
             model: Model::new(context),
             root,
@@ -391,8 +401,7 @@ impl ServicesPanel {
     /// The last known status of a service (`repo` is `_ws` for a workspace-level one).
     pub fn status(&self, repo: &str, service: &str) -> Status {
         let target = self.model.context.target(repo, service);
-        self.model
-            .status(&self.model.context.runner.holder_name(&target))
+        self.model.status(&self.model.context.holder_name(&target))
     }
 
     /// Shows `repo`/`service` in `status` with the given failure, without running anything (snapshots, tests).
@@ -407,7 +416,6 @@ impl ServicesPanel {
         let holder = self
             .model
             .context
-            .runner
             .holder_name(&self.model.context.target(repo, service));
         if let Ok(mut shared) = self.model.shared.lock() {
             shared.status.insert(holder.clone(), status);
@@ -534,7 +542,7 @@ impl ServicesPanel {
         for (key, group_label, targets) in groups {
             let holders: Vec<String> = targets
                 .iter()
-                .map(|target| context.runner.holder_name(target))
+                .map(|target| context.holder_name(target))
                 .collect();
             let states: Vec<State> = holders.iter().map(|holder| self.state(holder)).collect();
             for ((target, holder), state) in targets.iter().zip(&holders).zip(&states) {
@@ -927,8 +935,7 @@ impl ServicesPanel {
                             .color(colors.text_placeholder)
                             .into(),
                         None if state == State::Running => {
-                            let pidfile = self.model.context.runner.holders().pidfile(holder);
-                            match view::uptime(&pidfile) {
+                            match self.model.context.access.uptime(holder) {
                                 Some(uptime) => label(format!("up {uptime}"))
                                     .size(11.0)
                                     .color(colors.text_placeholder)
@@ -1020,7 +1027,7 @@ impl ServicesPanel {
                             .child(
                                 label(format!(
                                     ":{}",
-                                    self.model.context.runner.shared_host_port(name)
+                                    self.model.context.access.shared_host_port(name)
                                 ))
                                 .size(11.0)
                                 .mono()
@@ -1436,8 +1443,7 @@ impl ServicesPanel {
         if let Some(line) = card.crash.as_ref().and_then(|crash| crash.line.as_ref()) {
             prompt.push_str(&format!(" Its output ended with: {line}"));
         }
-        let log = self.model.context.runner.holders().crash_log(&card.holder);
-        if log.is_file() {
+        if let Some(log) = self.model.context.access.crash_log(&card.holder) {
             prompt.push_str(&format!(" The full output is in {}.", log.display()));
         }
         prompt.push_str(" Find the cause and fix it; do not start or stop services yourself.");
@@ -1456,7 +1462,7 @@ impl ServicesPanel {
             return;
         };
         for target in context.targets(&config) {
-            let holder = context.runner.holder_name(&target);
+            let holder = context.holder_name(&target);
             let running = self.model.status(&holder) == Status::Running;
             if running == (action == Action::Stop) {
                 self.model.run(action, target);
@@ -1472,7 +1478,7 @@ impl ServicesPanel {
 
     fn port(&self, target: &ServiceTarget) -> Option<u16> {
         let config = self.model.context.config()?;
-        self.model.context.runner.port(&config, target)
+        self.model.context.access.port(&config, target)
     }
 
     fn mode(&self, target: &ServiceTarget) -> Option<String> {
@@ -1482,17 +1488,12 @@ impl ServicesPanel {
             .get(&target.repo)?
             .services
             .get(&target.service)?;
-        Some(
-            self.model
-                .context
-                .runner
-                .mode(&target.repo, &target.service, service),
-        )
+        Some(self.model.context.access.mode(target, service))
     }
 
     fn url(&self, target: &ServiceTarget) -> Option<String> {
         let config = self.model.context.config()?;
-        self.model.context.runner.proxy_url(&config, target)
+        self.model.context.access.url(&config, target)
     }
 
     fn row_targets(&self, row: usize) -> Vec<ServiceTarget> {
@@ -1567,14 +1568,9 @@ impl ServicesPanel {
         let own: HashSet<String> = context
             .targets(&config)
             .iter()
-            .map(|target| context.runner.holder_name(target))
+            .map(|target| context.holder_name(target))
             .collect();
-        context
-            .runner
-            .running_holders()
-            .into_iter()
-            .filter(|holder| !own.contains(holder))
-            .count()
+        context.access.others_running(&own)
     }
 
     /// A shared container's tab: its state, how to reach it and its log.
@@ -1596,7 +1592,7 @@ impl ServicesPanel {
         let mut menu = MenuBuilder::new(self.base + MENU_BASE);
         let mut header = service_title(target);
         if running {
-            if let Some(pid) = context.runner.holders().holder_pid(holder) {
+            if let Some(pid) = context.access.pid(holder) {
                 header.push_str(&format!(" - pid {pid}"));
             }
         }
@@ -1664,10 +1660,10 @@ impl ServicesPanel {
         let mut command = String::new();
         if let (Some((dir, service)), Some(config)) = (service, config.as_ref()) {
             modes = service.mode_names();
-            let current_mode = context.runner.mode(&target.repo, &target.service, service);
+            let current_mode = context.access.mode(target, service);
             command = service.active_cmd(&current_mode).trim().to_string();
             profiles = dir.env_profiles(Some(service));
-            let current_profile = context.runner.env_profile(config, target);
+            let current_profile = context.access.env_profile(config, target);
             menu.sep();
             if modes.len() > 1 {
                 let mut sub = MenuBuilder::new(self.base + MENU_BASE + 100);
@@ -1757,7 +1753,7 @@ impl ServicesPanel {
         let targets = self.row_targets(row);
         let states: Vec<State> = targets
             .iter()
-            .map(|target| self.state(&self.model.context.runner.holder_name(target)))
+            .map(|target| self.state(&self.model.context.holder_name(target)))
             .collect();
         let label = if key == WORKSPACE_GROUP {
             "Workspace".to_string()
@@ -1972,7 +1968,7 @@ impl ServicesPanel {
                         .get(&target.repo)?
                         .services
                         .get(&target.service)?;
-                    let mode = context.runner.mode(&target.repo, &target.service, service);
+                    let mode = context.access.mode(target, service);
                     Some(service.active_cmd(&mode).trim().to_string())
                 });
                 if let Some(command) = command {
@@ -1983,12 +1979,9 @@ impl ServicesPanel {
                 let (Some(config), Some(mode)) = (context.config(), menu.modes.get(index)) else {
                     return;
                 };
-                match context
-                    .runner
-                    .set_mode(&config, &target.repo, &target.service, mode)
-                {
+                match context.access.set_mode(&config, target, mode) {
                     Ok(()) => self.restart_if_running(target.clone()),
-                    Err(error) => self.requests.push(PanelRequest::Toast(error.to_string())),
+                    Err(error) => self.requests.push(PanelRequest::Toast(error)),
                 }
             }
             (MenuSubject::Service { target, .. }, MenuAction::Profile(index)) => {
@@ -1996,9 +1989,9 @@ impl ServicesPanel {
                 else {
                     return;
                 };
-                match context.runner.set_env_profile(&config, target, profile) {
+                match context.access.set_env_profile(&config, target, profile) {
                     Ok(()) => self.restart_if_running(target.clone()),
-                    Err(error) => self.requests.push(PanelRequest::Toast(error.to_string())),
+                    Err(error) => self.requests.push(PanelRequest::Toast(error)),
                 }
             }
             (MenuSubject::Service { target, .. }, MenuAction::OpenUrl) => {
@@ -2013,7 +2006,7 @@ impl ServicesPanel {
             }
             (MenuSubject::Repo { row, .. }, MenuAction::RepoAll(run)) => {
                 for target in self.row_targets(*row) {
-                    let holder = context.runner.holder_name(&target);
+                    let holder = context.holder_name(&target);
                     let running = self.model.status(&holder) == Status::Running;
                     let applies = match run {
                         Action::Start => !running,
@@ -2067,7 +2060,7 @@ impl ServicesPanel {
             .repos
             .iter()
             .filter(|(name, _)| repo.is_none_or(|repo| repo == name.as_str()))
-            .filter(|(name, _)| self.root.join(name).is_dir())
+            .filter(|(name, _)| self.model.context.access.checked_out(&self.root, name))
             .flat_map(|(name, dir)| {
                 dir.effective_shortcuts()
                     .into_iter()
@@ -2088,35 +2081,16 @@ impl ServicesPanel {
             .collect()
     }
 
-    /// Runs a repo command in a terminal tab, in the repo's worktree with the workspace's env.
+    /// Runs a repo command in the repo's worktree with the workspace's env.
     fn run_command(&mut self, command: &RepoCommand) {
         let context = self.model.context.clone();
         let Some(config) = context.config() else {
             return;
         };
-        let env = context.runner.workspace_env(&config, &context.branch);
-        if let Err(error) = env.write_env_files() {
-            self.requests
-                .push(PanelRequest::Toast(format!("Env files: {error}")));
-        }
-        let exports: String = env
-            .repo_env(&command.repo)
-            .into_iter()
-            .map(|(key, value)| format!("export {key}={}; ", pom_services::shell_quote(&value)))
-            .collect();
-        let worktree = self.root.join(&command.repo);
-        let script = format!(
-            "export PATH={path}; {exports}cd {dir} && {cmd}; status=$?; printf '\\n[exited with %s]\\n' \"$status\"",
-            path = pom_services::shell_quote(pom_services::tool_path()),
-            dir = pom_services::shell_quote(&worktree.to_string_lossy()),
-            cmd = command.cmd,
-        );
-        self.requests.push(PanelRequest::RunCommand {
-            title: format!("{}: {}", command.repo, command.label),
-            cwd: worktree,
-            argv: pom_shell::Shell::user().login_argv(&script),
-            env: Vec::new(),
-        });
+        let requests = context
+            .access
+            .run_command(&config, &context.branch, &self.root, command);
+        self.requests.extend(requests);
     }
 
     fn toggle_group(&mut self, key: String) {
@@ -2127,7 +2101,7 @@ impl ServicesPanel {
 
     /// A new mode or profile only applies from the next start.
     fn restart_if_running(&mut self, target: ServiceTarget) {
-        let holder = self.model.context.runner.holder_name(&target);
+        let holder = self.model.context.holder_name(&target);
         if self.model.status(&holder) == Status::Running {
             self.model.run(Action::Restart, target);
         }
@@ -2149,8 +2123,7 @@ impl SidePanelView for ServicesPanel {
             .iter()
             .enumerate()
             .map(|(index, target)| {
-                let running =
-                    self.model.status(&context.runner.holder_name(target)) == Status::Running;
+                let running = self.model.status(&context.holder_name(target)) == Status::Running;
                 PaletteEntry {
                     label: format!(
                         "services: {} {}/{}",
@@ -2165,7 +2138,7 @@ impl SidePanelView for ServicesPanel {
         for (index, target) in context.targets(&config).iter().enumerate() {
             let name = format!("{}/{}", target.repo, target.service);
             let index = index as u64;
-            if self.model.status(&context.runner.holder_name(target)) == Status::Running {
+            if self.model.status(&context.holder_name(target)) == Status::Running {
                 entries.push(PaletteEntry {
                     label: format!("services: restart {name}"),
                     id: PALETTE_RESTART_BASE + index,
@@ -2204,7 +2177,7 @@ impl SidePanelView for ServicesPanel {
             let Some(target) = context.targets(&config).get(index).cloned() else {
                 return;
             };
-            let holder = context.runner.holder_name(&target);
+            let holder = context.holder_name(&target);
             match base {
                 PALETTE_RESTART_BASE => self.model.run(Action::Restart, target),
                 PALETTE_LOGS_BASE => self.open_tab(&target, &holder, false),
@@ -2373,7 +2346,7 @@ impl SidePanelView for ServicesPanel {
                     return;
                 }
                 for target in self.row_targets(index) {
-                    let holder = self.model.context.runner.holder_name(&target);
+                    let holder = self.model.context.holder_name(&target);
                     let running = self.model.status(&holder) == Status::Running;
                     if running == (action == Action::Stop) {
                         self.model.run(action, target);
@@ -2528,7 +2501,7 @@ impl SidePanelView for ServicesPanel {
         for request in self.model.take_tab_requests() {
             match request {
                 model::TabRequest::Fix(target) => {
-                    let holder = self.model.context.runner.holder_name(&target);
+                    let holder = self.model.context.holder_name(&target);
                     let error = self.model.error(&holder);
                     let card = Attention {
                         crash: self.model.crash(&holder),
@@ -2545,7 +2518,7 @@ impl SidePanelView for ServicesPanel {
                     self.requests.push(PanelRequest::OpenFile(path))
                 }
                 model::TabRequest::Menu(target) => {
-                    let holder = self.model.context.runner.holder_name(&target);
+                    let holder = self.model.context.holder_name(&target);
                     self.menu = Some(self.service_menu(&target, &holder));
                     self.requests.push(PanelRequest::OpenMenu);
                 }
