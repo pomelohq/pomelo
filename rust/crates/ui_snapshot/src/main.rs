@@ -3864,7 +3864,7 @@ fn main() -> anyhow::Result<()> {
                         .parent()
                         .map(std::path::Path::to_path_buf)
                         .unwrap_or_default();
-                    let mut files = files_ui::FilesView::new(root);
+                    let mut files = files_ui::FilesView::local(root);
                     let base = std::env::var("DIFFBASE")
                         .ok()
                         .and_then(|base| std::fs::read_to_string(base).ok());
@@ -3880,8 +3880,8 @@ fn main() -> anyhow::Result<()> {
                         Ok(root) => std::path::PathBuf::from(root),
                         Err(_) => paths.first()?.parent()?.to_path_buf(),
                     };
-                    let mut files =
-                        files_ui::FilesView::new(root).read_only(std::env::var("READONLY").is_ok());
+                    let mut files = files_ui::FilesView::local(root)
+                        .read_only(std::env::var("READONLY").is_ok());
                     for path in &paths {
                         workspace::FunctionView::open_file_at(&mut files, path, None, None);
                     }

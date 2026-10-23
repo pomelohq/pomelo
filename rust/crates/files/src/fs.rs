@@ -1,0 +1,556 @@
+//! Where a project's files are read from: this machine's disk ([`LocalFs`]), or another machine's through the
+//! server there. The tree comes as a feed: a snapshot that fills in as the walk goes, then patches as files
+//! change.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{BackgroundScan, FileEntry, TreeWatcher, SKIP_DIRS};
+
+/// A read up to this size comes back in its answer; a larger one is streamed.
+pub const INLINE_READ_LIMIT: u64 = 512 * 1024;
+/// Larger files are refused rather than read whole.
+pub const READ_LIMIT: u64 = 64 * 1024 * 1024;
+pub const IMAGE_READ_LIMIT: u64 = 32 * 1024 * 1024;
+const BINARY_SNIFF: usize = 8192;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileStat {
+    pub dir: bool,
+    pub size: u64,
+    pub mtime_ns: u64,
+}
+
+impl FileStat {
+    pub fn modified(&self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_nanos(self.mtime_ns)
+    }
+
+    fn of(metadata: &std::fs::Metadata) -> FileStat {
+        FileStat {
+            dir: metadata.is_dir(),
+            size: if metadata.is_dir() { 0 } else { metadata.len() },
+            mtime_ns: metadata.modified().map(mtime_ns).unwrap_or_default(),
+        }
+    }
+}
+
+pub fn mtime_ns(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
+/// A file as read: its text (`None` for a binary file) and the modification time and size it had.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FileResult {
+    pub text: Option<String>,
+    pub binary: bool,
+    pub mtime_ns: u64,
+    pub size: u64,
+}
+
+impl FileResult {
+    /// Classifies `bytes` the way [`crate::read`] does: a NUL early on means binary.
+    pub fn from_bytes(bytes: Vec<u8>, mtime_ns: u64) -> FileResult {
+        let size = bytes.len() as u64;
+        let binary = is_binary(&bytes);
+        FileResult {
+            text: (!binary).then(|| match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(invalid) => String::from_utf8_lossy(invalid.as_bytes()).into_owned(),
+            }),
+            binary,
+            mtime_ns,
+            size,
+        }
+    }
+
+    pub fn modified(&self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_nanos(self.mtime_ns)
+    }
+}
+
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(BINARY_SNIFF).any(|byte| *byte == 0)
+}
+
+/// A file whose contents may have changed, with what it has now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChangedFile {
+    pub path: String,
+    pub mtime_ns: u64,
+    pub size: u64,
+}
+
+/// Entries to add or replace, paths gone with everything under them, and the files whose contents changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TreePatch {
+    pub upserted: Vec<FileEntry>,
+    pub removed: Vec<String>,
+    pub changed: Vec<ChangedFile>,
+}
+
+impl TreePatch {
+    pub fn is_empty(&self) -> bool {
+        self.upserted.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeEvent {
+    /// Everything found so far, replacing what was there; `complete` once the walk is done.
+    Snapshot {
+        entries: Vec<FileEntry>,
+        complete: bool,
+    },
+    Patch(TreePatch),
+    /// The feed stopped (the machine went away); a fresh snapshot follows once it is back.
+    Interrupted(String),
+}
+
+pub trait TreeFeed: Send {
+    /// What happened since the last call, oldest first.
+    fn poll(&mut self) -> Vec<TreeEvent>;
+}
+
+/// A workspace's files, wherever they are. Paths are '/'-separated and relative to the workspace.
+pub trait ProjectFs: Send + Sync {
+    /// The workspace folder, when it is on this machine.
+    fn local_root(&self) -> Option<&Path>;
+    /// The tree, kept up to date; `wake` runs whenever something new is ready to poll.
+    fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn TreeFeed>;
+    fn stat(&self, path: &str) -> io::Result<FileStat>;
+    fn read(&self, path: &str) -> io::Result<FileResult>;
+    /// The whole file when it is no larger than `limit`.
+    fn read_bytes(&self, path: &str, limit: u64) -> io::Result<Vec<u8>>;
+    /// Every file the finder offers, gitignored ones only when asked.
+    fn project_files(&self, include_ignored: bool) -> io::Result<Vec<String>>;
+}
+
+pub fn too_large(size: u64, limit: u64) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "the file is {} MiB, past the {} MiB that can be opened",
+            size / (1024 * 1024),
+            limit / (1024 * 1024)
+        ),
+    )
+}
+
+/// The files on this machine, read in place.
+pub struct LocalFs {
+    root: PathBuf,
+}
+
+impl LocalFs {
+    pub fn new(root: PathBuf) -> LocalFs {
+        LocalFs { root }
+    }
+}
+
+impl ProjectFs for LocalFs {
+    fn local_root(&self) -> Option<&Path> {
+        Some(&self.root)
+    }
+
+    fn watch(&self, wake: Arc<dyn Fn() + Send + Sync>) -> Box<dyn TreeFeed> {
+        Box::new(LocalFeed::start(self.root.clone(), wake))
+    }
+
+    fn stat(&self, path: &str) -> io::Result<FileStat> {
+        let full = crate::safe_join(&self.root, path)?;
+        Ok(FileStat::of(&std::fs::metadata(full)?))
+    }
+
+    fn read(&self, path: &str) -> io::Result<FileResult> {
+        let full = crate::safe_join(&self.root, path)?;
+        let modified = std::fs::metadata(&full)?.modified().map(mtime_ns)?;
+        Ok(FileResult::from_bytes(std::fs::read(&full)?, modified))
+    }
+
+    fn read_bytes(&self, path: &str, limit: u64) -> io::Result<Vec<u8>> {
+        let full = crate::safe_join(&self.root, path)?;
+        let size = std::fs::metadata(&full)?.len();
+        if size > limit {
+            return Err(too_large(size, limit));
+        }
+        std::fs::read(full)
+    }
+
+    fn project_files(&self, include_ignored: bool) -> io::Result<Vec<String>> {
+        Ok(crate::project_files(&self.root, include_ignored))
+    }
+}
+
+/// The local tree: a parallel walk, then the watcher's batches turned into patches.
+pub struct LocalFeed {
+    root: PathBuf,
+    scan: Option<BackgroundScan>,
+    watcher: Option<TreeWatcher>,
+}
+
+impl LocalFeed {
+    pub fn start(root: PathBuf, wake: Arc<dyn Fn() + Send + Sync>) -> LocalFeed {
+        let scan = BackgroundScan::start(root.clone(), wake.clone());
+        let watcher = TreeWatcher::new(&root, wake)
+            .map_err(|error| eprintln!("file tree watch failed: {error}"))
+            .ok();
+        LocalFeed {
+            root,
+            scan: Some(scan),
+            watcher,
+        }
+    }
+}
+
+impl TreeFeed for LocalFeed {
+    fn poll(&mut self) -> Vec<TreeEvent> {
+        let mut events = Vec::new();
+        if let Some(update) = self.scan.as_ref().and_then(BackgroundScan::latest) {
+            if !update.scanning {
+                self.scan = None;
+            }
+            events.push(TreeEvent::Snapshot {
+                entries: update.entries,
+                complete: !update.scanning,
+            });
+        }
+        let changes = self
+            .watcher
+            .as_ref()
+            .map(TreeWatcher::take_changes)
+            .unwrap_or_default();
+        if !changes.is_empty() {
+            // Mid-walk the snapshot already holds what changed; open files still look again.
+            let patch = if self.scan.is_some() {
+                TreePatch {
+                    changed: changes
+                        .into_iter()
+                        .map(|path| ChangedFile {
+                            path,
+                            ..ChangedFile::default()
+                        })
+                        .collect(),
+                    ..TreePatch::default()
+                }
+            } else {
+                patch_for(&self.root, &changes, Links::Follow)
+            };
+            events.push(TreeEvent::Patch(patch));
+        }
+        events
+    }
+}
+
+/// Whether a walk goes into symlinked folders. A server never does: a link may lead out of the workspace, or
+/// round in a loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Links {
+    Follow,
+    Stay,
+}
+
+fn entry_for(root: &Path, full: &Path, links: Links) -> Option<(FileEntry, bool)> {
+    let path = crate::guard::relative(root, full)?;
+    let metadata = match links {
+        Links::Follow => std::fs::metadata(full).ok()?,
+        Links::Stay => {
+            let own = std::fs::symlink_metadata(full).ok()?;
+            if own.file_type().is_symlink() {
+                let dir = std::fs::metadata(full).is_ok_and(|target| target.is_dir())
+                    && crate::guard::stays_inside(root, full);
+                return Some((
+                    FileEntry {
+                        repo: String::new(),
+                        path,
+                        is_dir: dir,
+                        size: 0,
+                    },
+                    false,
+                ));
+            }
+            own
+        }
+    };
+    let is_dir = metadata.is_dir();
+    let name = full.file_name().map(|name| name.to_string_lossy());
+    if is_dir && name.is_some_and(|name| SKIP_DIRS.contains(&name.as_ref())) {
+        return None;
+    }
+    Some((
+        FileEntry {
+            repo: String::new(),
+            path,
+            is_dir,
+            size: if is_dir { 0 } else { metadata.len() },
+        },
+        is_dir,
+    ))
+}
+
+/// Walks `dir` under `root` breadth first, handing `batch` entries at a time to `found` until it returns false.
+pub fn walk_in_batches(
+    root: &Path,
+    dir: &Path,
+    links: Links,
+    batch: usize,
+    found: &mut dyn FnMut(Vec<FileEntry>) -> bool,
+) -> bool {
+    let mut queue = std::collections::VecDeque::from([dir.to_path_buf()]);
+    let mut pending = Vec::new();
+    while let Some(next) = queue.pop_front() {
+        let Ok(children) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let full = child.path();
+            let Some((entry, descend)) = entry_for(root, &full, links) else {
+                continue;
+            };
+            pending.push(entry);
+            if descend {
+                queue.push_back(full);
+            }
+            if pending.len() >= batch && !found(std::mem::take(&mut pending)) {
+                return false;
+            }
+        }
+    }
+    pending.is_empty() || found(pending)
+}
+
+/// What changed under `root` at `changed` (paths a watcher reported), read again from disk.
+pub fn patch_for(root: &Path, changed: &[String], links: Links) -> TreePatch {
+    let mut changed: Vec<&String> = changed.iter().collect();
+    changed.sort();
+    changed.dedup();
+    let mut tops: Vec<&String> = Vec::new();
+    for path in &changed {
+        if !tops
+            .last()
+            .is_some_and(|parent| path.starts_with(&format!("{parent}/")))
+        {
+            tops.push(path);
+        }
+    }
+    let mut patch = TreePatch::default();
+    for path in tops {
+        if path.split('/').any(|part| SKIP_DIRS.contains(&part)) {
+            continue;
+        }
+        patch.removed.push(path.clone());
+        let full = root.join(path);
+        let Some((entry, descend)) = entry_for(root, &full, links) else {
+            continue;
+        };
+        patch.upserted.push(entry);
+        if descend {
+            walk_in_batches(root, &full, links, usize::MAX, &mut |found| {
+                patch.upserted.extend(found);
+                true
+            });
+        }
+    }
+    for path in changed {
+        let Ok(metadata) = std::fs::metadata(root.join(path)) else {
+            continue;
+        };
+        if metadata.is_file() {
+            patch.changed.push(ChangedFile {
+                path: path.clone(),
+                mtime_ns: metadata.modified().map(mtime_ns).unwrap_or_default(),
+                size: metadata.len(),
+            });
+        }
+    }
+    patch
+}
+
+/// Applies `patch` to a sorted entry list, keeping it sorted.
+pub fn apply_patch(entries: &mut Vec<FileEntry>, patch: &TreePatch) {
+    if patch.removed.is_empty() && patch.upserted.is_empty() {
+        return;
+    }
+    if !patch.removed.is_empty() {
+        let mut removed: Vec<&str> = patch.removed.iter().map(String::as_str).collect();
+        removed.sort_unstable();
+        entries.retain(|entry| !under_any(&removed, &entry.path));
+    }
+    let upserted: std::collections::HashSet<&str> = patch
+        .upserted
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    entries.retain(|entry| !upserted.contains(entry.path.as_str()));
+    entries.extend(patch.upserted.iter().cloned());
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+}
+
+/// Whether `path` is one of the sorted `tops` or lies under one.
+fn under_any(tops: &[&str], path: &str) -> bool {
+    let mut candidate = path;
+    loop {
+        if tops.binary_search(&candidate).is_ok() {
+            return true;
+        }
+        match candidate.rsplit_once('/') {
+            Some((parent, _)) => candidate = parent,
+            None => return false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str, is_dir: bool) -> FileEntry {
+        FileEntry {
+            repo: String::new(),
+            path: path.into(),
+            is_dir,
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn entries_and_reads_round_trip_through_json() -> serde_json::Result<()> {
+        let file = FileEntry {
+            repo: String::new(),
+            path: "src/main.rs".into(),
+            is_dir: false,
+            size: 12,
+        };
+        let json = serde_json::to_string(&file)?;
+        assert_eq!(json, r#"{"path":"src/main.rs","dir":false,"size":12}"#);
+        assert_eq!(serde_json::from_str::<FileEntry>(&json)?, file);
+        let read = FileResult::from_bytes(b"fn main() {}".to_vec(), 7);
+        assert_eq!(
+            serde_json::from_str::<FileResult>(&serde_json::to_string(&read)?)?,
+            read
+        );
+        let binary = FileResult::from_bytes(vec![0, 1, 2], 1);
+        assert!(binary.binary && binary.text.is_none());
+        let stat = FileStat {
+            dir: true,
+            size: 0,
+            mtime_ns: 1_700_000_000_123_456_789,
+        };
+        assert_eq!(
+            serde_json::from_str::<FileStat>(&serde_json::to_string(&stat)?)?,
+            stat
+        );
+        assert_eq!(mtime_ns(stat.modified()), stat.mtime_ns);
+        assert_eq!(serde_json::from_str::<FileStat>("{}")?, FileStat::default());
+        Ok(())
+    }
+
+    #[test]
+    fn a_patch_replaces_whole_subtrees() {
+        let mut entries = vec![
+            entry("a", true),
+            entry("a/b", true),
+            entry("a/b/c.rs", false),
+            entry("ab.rs", false),
+            entry("z.rs", false),
+        ];
+        let patch = TreePatch {
+            removed: vec!["a/b".into(), "z.rs".into()],
+            upserted: vec![
+                entry("a/b", true),
+                entry("a/b/d.rs", false),
+                entry("n.rs", false),
+            ],
+            changed: Vec::new(),
+        };
+        apply_patch(&mut entries, &patch);
+        let paths: Vec<&str> = entries.iter().map(|entry| entry.path.as_str()).collect();
+        assert_eq!(paths, ["a", "a/b", "a/b/d.rs", "ab.rs", "n.rs"]);
+    }
+
+    #[test]
+    fn local_patches_match_a_fresh_walk() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("src/old"))?;
+        std::fs::write(root.join("src/old/a.rs"), "a")?;
+        let mut entries = crate::list(root);
+        std::fs::remove_dir_all(root.join("src/old"))?;
+        std::fs::create_dir_all(root.join("src/new"))?;
+        std::fs::write(root.join("src/new/b.rs"), "bb")?;
+        let patch = patch_for(
+            root,
+            &["src/old".into(), "src/new".into(), "src/new/b.rs".into()],
+            Links::Follow,
+        );
+        assert_eq!(patch.changed.len(), 1);
+        assert_eq!(patch.changed[0].size, 2);
+        apply_patch(&mut entries, &patch);
+        assert_eq!(entries, crate::list(root));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_walk_that_stays_never_follows_a_link_out() -> io::Result<()> {
+        let outside = tempfile::tempdir()?;
+        std::fs::write(outside.path().join("secret.txt"), "x")?;
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        std::fs::create_dir(root.join("src"))?;
+        std::fs::write(root.join("src/a.rs"), "a")?;
+        std::os::unix::fs::symlink(outside.path(), root.join("away"))?;
+        std::os::unix::fs::symlink(root.join("src"), root.join("alias"))?;
+        let mut found = Vec::new();
+        assert!(walk_in_batches(
+            &root,
+            &root,
+            Links::Stay,
+            2,
+            &mut |batch| {
+                assert!(batch.len() <= 2);
+                found.extend(batch);
+                true
+            }
+        ));
+        found.sort_by(|a, b| a.path.cmp(&b.path));
+        let listed: Vec<(&str, bool)> = found
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.is_dir))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("alias", true),
+                ("away", false),
+                ("src", true),
+                ("src/a.rs", false)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_fs_reads_what_the_disk_has() -> io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::write(temp.path().join("a.txt"), "hello")?;
+        let fs = LocalFs::new(temp.path().to_path_buf());
+        let read = fs.read("a.txt")?;
+        assert_eq!(read.text.as_deref(), Some("hello"));
+        assert_eq!(read.size, 5);
+        assert_eq!(fs.stat("a.txt")?.mtime_ns, read.mtime_ns);
+        assert!(fs.read_bytes("a.txt", 4).is_err());
+        assert_eq!(fs.read_bytes("a.txt", 5)?, b"hello");
+        assert!(fs.read("../a.txt").is_err());
+        Ok(())
+    }
+}

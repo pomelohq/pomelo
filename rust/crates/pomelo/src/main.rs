@@ -2372,7 +2372,7 @@ impl App {
                 pom_config::edit::check_edit(&checked_config, text).map(|_| ())
             });
             Box::new(
-                files_ui::FilesView::new(root)
+                files_ui::FilesView::local(root)
                     .read_only(is_main)
                     .writable(writable)
                     .save_check(check),
