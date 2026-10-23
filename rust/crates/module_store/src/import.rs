@@ -61,9 +61,12 @@ pub fn import(source: &Path, target: &Path, method: Method, skip: &[&str]) -> io
     if method == Method::Clone {
         clone_file(source, target)?;
         for name in skip {
-            let cache = target.join(name);
-            if cache.exists() {
-                fs::remove_dir_all(&cache)?;
+            let skipped = target.join(name);
+            match fs::symlink_metadata(&skipped) {
+                Ok(meta) if meta.is_dir() => fs::remove_dir_all(&skipped)?,
+                Ok(_) => fs::remove_file(&skipped)?,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
         }
         return Ok(());

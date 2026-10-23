@@ -17,6 +17,13 @@ impl Config {
                     ));
                 }
             }
+            for name in &dir.modules_private {
+                if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+                    errors.push(format!(
+                        "{context}: modules_private {name:?} must be a folder name inside node_modules"
+                    ));
+                }
+            }
             let mut scan = |place: &str, values: &IndexMap<String, String>| {
                 for (key, value) in values {
                     for (namespace, name) in colon_template_refs(value) {
@@ -240,6 +247,7 @@ mod tests {
             "api".into(),
             crate::Dir {
                 alias: "_api".into(),
+                modules_private: vec![".prisma".into(), "../up".into()],
                 ..crate::Dir::default()
             },
         );
@@ -250,6 +258,8 @@ mod tests {
         let errors = config.validate().expect_err("invalid");
         assert!(errors.contains("the name \"_internal\""), "{errors}");
         assert!(errors.contains("the alias \"_api\""), "{errors}");
+        assert!(errors.contains("modules_private \"../up\""), "{errors}");
+        assert!(!errors.contains("\".prisma\""), "{errors}");
         assert!(errors.contains("sync.on_push"), "{errors}");
 
         config.repos.clear();

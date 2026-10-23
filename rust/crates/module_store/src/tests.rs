@@ -32,6 +32,7 @@ fn a_workspace_matching_main_gets_mains_modules_without_its_cache() {
             &main,
             Some("v20.1.0"),
             &options(Fallback::Copy),
+            &[],
         )
         .unwrap();
     assert!(matches!(restored, Restored::FromStore(_)), "{restored:?}");
@@ -61,26 +62,26 @@ fn a_different_lockfile_or_node_major_installs_and_then_is_kept() {
     let copy = options(Fallback::Copy);
     assert_eq!(
         store
-            .restore("api", &worktree, &main, Some("v20"), &copy)
+            .restore("api", &worktree, &main, Some("v20"), &copy, &[])
             .unwrap(),
         Restored::Install
     );
     let other_node = repo_with(&dir.path().join("other"), "v1", false);
     assert_eq!(
         store
-            .restore("api", &other_node, &main, Some("v22"), &copy)
+            .restore("api", &other_node, &main, Some("v22"), &copy, &[])
             .unwrap(),
         Restored::FromStore(store.supported_method(dir.path()).max_copy()),
         "a new node major fills its own copy from main when main's key matches too"
     );
     repo_with(&worktree, "v2", true);
     store
-        .snapshot("api", &worktree, Some("v20"), &copy)
+        .snapshot("api", &worktree, Some("v20"), &copy, &[])
         .unwrap();
     let next = repo_with(&dir.path().join("next"), "v2", false);
     assert!(matches!(
         store
-            .restore("api", &next, &main, Some("v20"), &copy)
+            .restore("api", &next, &main, Some("v20"), &copy, &[])
             .unwrap(),
         Restored::FromStore(_)
     ));
@@ -108,13 +109,22 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
         ..Options::default()
     };
     assert_eq!(
-        store.restore("api", &worktree, &main, None, &off).unwrap(),
+        store
+            .restore("api", &worktree, &main, None, &off, &[])
+            .unwrap(),
         Restored::Install
     );
     if store.supported_method(dir.path()) != Method::Clone {
         assert_eq!(
             store
-                .restore("api", &worktree, &main, None, &options(Fallback::Install))
+                .restore(
+                    "api",
+                    &worktree,
+                    &main,
+                    None,
+                    &options(Fallback::Install),
+                    &[]
+                )
                 .unwrap(),
             Restored::Install
         );
@@ -122,7 +132,7 @@ fn run_install_fallback_and_disabled_store_leave_the_install_alone() {
     fs::write(worktree.join("pnpm-lock.yaml"), "").unwrap();
     assert_eq!(
         store
-            .restore("api", &worktree, &main, None, &Options::default())
+            .restore("api", &worktree, &main, None, &Options::default(), &[])
             .unwrap(),
         Restored::SelfManaged("pnpm")
     );
@@ -178,6 +188,7 @@ fn hard_linked_copies_are_read_only_and_shared() {
             Manager::Npm,
             &first.join("node_modules"),
             Method::HardLink,
+            &[],
         )
         .unwrap();
     let stored = store.entry_dir("api", "k");
@@ -210,6 +221,7 @@ fn prune_drops_expired_copies_then_the_oldest_over_the_limit() {
                 Manager::Npm,
                 &source.join("node_modules"),
                 Method::Copy,
+                &[],
             )
             .unwrap();
     }
@@ -258,6 +270,7 @@ fn a_scheduled_prune_runs_at_most_once_a_day_and_not_when_the_store_is_off() {
             Manager::Npm,
             &source.join("node_modules"),
             Method::Copy,
+            &[],
         )
         .unwrap();
     let stamp = now();
@@ -338,4 +351,118 @@ fn options_read_the_settings_keys_and_their_defaults_match() {
     );
     assert_eq!(format_size(3 << 30), "3.0 GB");
     assert_eq!(format_size(5 << 20), "5 MB");
+}
+
+fn with_generated_client(root: &Path) {
+    fs::create_dir_all(root.join("node_modules/.prisma/client")).unwrap();
+    fs::write(
+        root.join("node_modules/.prisma/client/index.js"),
+        "main's client",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("node_modules/.generated")).unwrap();
+    fs::write(root.join("node_modules/.generated/out.js"), "out").unwrap();
+}
+
+#[test]
+fn generated_client_folders_are_never_stored_or_linked() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let main = repo_with(&dir.path().join("main"), "v1", false);
+    let source = repo_with(&dir.path().join("source"), "v1", true);
+    with_generated_client(&source);
+    let hard = options(Fallback::HardLink);
+    store.snapshot("api", &source, None, &hard, &[]).unwrap();
+    let key = store.list().unwrap()[0].key.clone();
+    let stored = store.entry_dir("api", &key);
+    assert!(stored.join("left-pad/index.js").is_file());
+    assert!(!stored.join(".prisma").exists());
+    assert!(
+        stored.join(".generated/out.js").is_file(),
+        "only listed folders are private"
+    );
+
+    let first = repo_with(&dir.path().join("first"), "v1", false);
+    let second = repo_with(&dir.path().join("second"), "v1", false);
+    for worktree in [&first, &second] {
+        let restored = store
+            .restore("api", worktree, &main, None, &hard, &[])
+            .unwrap();
+        assert!(matches!(restored, Restored::FromStore(_)), "{restored:?}");
+        assert_eq!(
+            fs::read_to_string(worktree.join("node_modules/left-pad/index.js")).unwrap(),
+            "pad"
+        );
+        assert!(!worktree.join("node_modules/.prisma").exists());
+    }
+    let client = first.join("node_modules/.prisma/client");
+    fs::create_dir_all(&client).unwrap();
+    fs::write(client.join("index.js"), "first's client").unwrap();
+    assert!(!stored.join(".prisma").exists());
+    assert!(!second.join("node_modules/.prisma").exists());
+}
+
+#[test]
+fn a_repos_modules_private_folders_stay_out_of_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let main = repo_with(&dir.path().join("main"), "v1", true);
+    with_generated_client(&main);
+    let worktree = repo_with(&dir.path().join("feat"), "v1", false);
+    let private = vec![".generated".to_string(), "../escape".to_string()];
+    store
+        .restore(
+            "api",
+            &worktree,
+            &main,
+            None,
+            &options(Fallback::Copy),
+            &private,
+        )
+        .unwrap();
+    let key = store.list().unwrap()[0].key.clone();
+    let stored = store.entry_dir("api", &key);
+    for root in [&stored, &worktree.join("node_modules")] {
+        assert!(root.join("left-pad/index.js").is_file());
+        assert!(!root.join(".prisma").exists());
+        assert!(!root.join(".generated").exists());
+    }
+    assert!(
+        main.join("node_modules/.generated/out.js").is_file(),
+        "main keeps its own"
+    );
+}
+
+#[test]
+fn a_copy_stored_before_a_folder_was_private_restores_without_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::at(dir.path().join("store"));
+    let main = repo_with(&dir.path().join("main"), "v1", false);
+    let source = repo_with(&dir.path().join("source"), "v1", true);
+    store
+        .snapshot("api", &source, None, &options(Fallback::Copy), &[])
+        .unwrap();
+    let key = store.list().unwrap()[0].key.clone();
+    let stored = store.entry_dir("api", &key);
+    fs::create_dir_all(stored.join(".prisma/client")).unwrap();
+    fs::write(stored.join(".prisma/client/index.js"), "someone's client").unwrap();
+    fs::create_dir_all(stored.join(".generated")).unwrap();
+
+    let worktree = repo_with(&dir.path().join("feat"), "v1", false);
+    let private = vec![".generated".to_string()];
+    for fallback in [Fallback::HardLink, Fallback::Copy] {
+        remove_tree(&worktree.join("node_modules")).unwrap();
+        store
+            .restore("api", &worktree, &main, None, &options(fallback), &private)
+            .unwrap();
+        assert!(worktree.join("node_modules/left-pad/index.js").is_file());
+        assert!(
+            !worktree.join("node_modules/.prisma").exists(),
+            "{fallback:?}"
+        );
+        assert!(
+            !worktree.join("node_modules/.generated").exists(),
+            "{fallback:?}"
+        );
+    }
 }

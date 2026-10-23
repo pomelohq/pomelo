@@ -240,6 +240,7 @@ pub const FIELDS: &[FieldDoc] = &[
     field(Repo, "seed", "list of commands", "", "Same as `lifecycle.seed`.", ""),
     field(Repo, "pre_delete", "list of commands", "", "Same as `lifecycle.pre_delete`.", ""),
     field(Repo, "copy", "list of globs", "", "Same as `lifecycle.copy`.", ""),
+    field(Repo, "modules_private", "list of folder names", "[.prisma]", "Folders at the top of `node_modules` that a tool generates for each workspace. The shared node_modules store never keeps them and never links them into a workspace, so each workspace's setup generates its own writable copy. `.prisma` (written by `prisma generate`) is always private; list more here.", "modules_private: [.generated-client]"),
     field(Repo, "tasks", "list", "", "Same as `lifecycle.tasks`.", ""),
     field(Repo, "shortcuts", "list", "", "Older name of `tasks`.", ""),
     ignored(Repo, "plugins", "map", "Plugin settings; `config_normalize` deletes them."),
@@ -446,6 +447,7 @@ repos:
     lifecycle: { tasks: [{ key: k, desc: d, cmd: c }] }
     test: { command: c, env_file: .env.test, env: { A: b } }
     shared_services: [{ postgres: { db_name: x } }]
+    modules_private: [.generated]
     services:
       server: { cmd: run, healthcheck: { http: /health, cmd: "true", interval: 1s, timeout: 3s }, queue: { kind: sidekiq, prefix: bull, queues: [default], redis: redis } }
 presets:
