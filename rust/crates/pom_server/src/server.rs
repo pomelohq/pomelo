@@ -125,6 +125,7 @@ impl Shared {
             log_follows: self.dispatcher.ptys().log_follows(),
             jobs: self.dispatcher.jobs().running(),
             retained: self.dispatcher.ptys().sweep(),
+            file_watches: self.dispatcher.files().watched(),
             socket: self.paths.socket.clone(),
             log: self.log.path().to_path_buf(),
         }
@@ -138,6 +139,9 @@ impl Shared {
             return answer;
         }
         if let Some(answer) = self.dispatcher.dispatch_jobs(request, caller) {
+            return answer;
+        }
+        if let Some(answer) = self.dispatcher.dispatch_fs(request, caller) {
             return answer;
         }
         match request.method.as_str() {

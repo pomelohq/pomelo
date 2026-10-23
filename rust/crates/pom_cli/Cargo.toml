@@ -43,5 +43,6 @@ serde_json.workspace = true
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+files = { path = "../files" }
 pom_rpc = { path = "../pom_rpc" }
 tempfile = "3"

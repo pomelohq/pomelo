@@ -9,6 +9,7 @@ description = "Remote machines over SSH: the host list (hosts.json) and the ssh 
 path = "src/pom_remote.rs"
 
 [dependencies]
+files = { path = "../files" }
 pom_paths = { path = "../pom_paths" }
 pom_agent = { path = "../pom_agent" }
 pom_config = { path = "../pom_config" }

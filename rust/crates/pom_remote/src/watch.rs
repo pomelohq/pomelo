@@ -236,6 +236,14 @@ impl Watch {
             .flatten()
     }
 
+    /// The shown workspace's files, when the project's machine serves them.
+    pub fn files(&self) -> Option<Arc<dyn files::ProjectFs>> {
+        let branch = self.shared.snapshot().branch.clone();
+        (!branch.is_empty())
+            .then(|| self.source.files(&branch))
+            .flatten()
+    }
+
     /// Asks only while the window is seen; showing it again looks at once.
     pub fn set_visible(&self, visible: bool) {
         self.shared.poke(|wanted| {
