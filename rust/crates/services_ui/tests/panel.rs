@@ -526,8 +526,9 @@ fn the_list_works_from_the_keyboard() {
     fixture.panel.set_keyboard(true);
     assert!(fixture.panel.list_key(EditKey::Down, false), "onto web");
     assert!(fixture.panel.panel_action(Action::ServicesToggleRunning));
+    // The poller can see the holder up before the start returns, and a stop pressed meanwhile is ignored.
     fixture.wait_for("web to run", |panel| {
-        panel.status("api", "web") == Status::Running
+        panel.status("api", "web") == Status::Running && !panel.busy("api", "web")
     });
     let labels: Vec<String> = fixture
         .panel

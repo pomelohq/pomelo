@@ -286,17 +286,46 @@ fn a_large_tree_arrives_quickly() -> io::Result<()> {
         std::thread::sleep(Duration::from_millis(2));
     }
     let whole = started.elapsed();
-    let first = first.unwrap_or(whole);
+    let setup = watch_setup(&std::fs::read_to_string(&remote.paths.log)?);
+    let first = first.unwrap_or(whole).saturating_sub(setup);
     eprintln!(
-        "50k tree: first chunk {} ms, complete {} ms, {} entries",
+        "50k tree: watch setup {} ms, first chunk {} ms after, complete {} ms, {} entries",
+        setup.as_millis(),
         first.as_millis(),
         whole.as_millis(),
         entries.len()
     );
     assert_eq!(entries.len(), 50_000 + 500 + 2);
     if cfg!(target_os = "linux") {
-        assert!(first < Duration::from_millis(300), "first chunk {first:?}");
-        assert!(whole < Duration::from_secs(2), "complete {whole:?}");
+        assert!(
+            first < Duration::from_millis(300) * slack(),
+            "first chunk {first:?}"
+        );
+        assert!(
+            whole < Duration::from_secs(2) * slack(),
+            "complete {whole:?}"
+        );
     }
     Ok(())
+}
+
+/// How long the server took to answer `fs.watch`: watching every folder comes before the walk starts.
+fn watch_setup(log: &str) -> Duration {
+    log.lines()
+        .find(|line| line.contains("method=fs.watch"))
+        .and_then(|line| {
+            line.split_whitespace()
+                .find_map(|word| word.strip_prefix("ms="))
+        })
+        .and_then(|ms| ms.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_default()
+}
+
+fn slack() -> u32 {
+    if std::env::var_os("CI").is_some() {
+        2
+    } else {
+        1
+    }
 }

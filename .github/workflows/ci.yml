@@ -355,6 +355,7 @@ jobs:
         working-directory: rust
     env:
       CARGO_INCREMENTAL: 0
+      NEXTEST_PROFILE: ci
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
@@ -363,13 +364,16 @@ jobs:
           workspaces: rust
           shared-key: linux-cli
           save-if: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
       # pom_ptyhost builds the holder binary the terminal tests run.
-      - run: cargo test -p pom_server -p pom_rpc -p pom_ptyhost
-      - run: cargo test -p pom_remote server
-      - run: cargo test -p pom_remote watch
-      - run: cargo test -p pom_cli --test remote server
+      - run: cargo nextest run -p pom_server -p pom_rpc -p pom_ptyhost
+      - run: cargo nextest run -p pom_remote -E 'test(server) | test(watch)'
       # Proxies SIGKILLed mid-stream, a killed server and holder, a job followed again, pom updated from a release.
-      - run: cargo test -p pom_cli --test remote -- chaos session_dies reconnected updating_pom --nocapture
+      - run: >-
+          cargo nextest run -p pom_cli --test remote
+          -E 'test(server) | test(chaos) | test(session_dies) | test(reconnected) | test(updating_pom)'
       # sshd and its throwaway key live only on this runner.
       - name: Start a real sshd on this runner
         run: |
@@ -382,13 +386,13 @@ jobs:
           sudo systemctl start ssh || sudo service ssh start
           ssh -o BatchMode=yes localhost true
       - name: Reconnect through the real sshd after its session is killed
-        run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_session -- --nocapture
+        run: POM_REAL_SSH=1 cargo nextest run -p pom_cli --test remote -E 'test(real_sshd_session)' --no-capture
       - name: Forward a port through the real sshd, alone and on a shared connection
-        run: POM_REAL_SSH=1 cargo test -p pom_remote real_sshd_forward -- --nocapture
+        run: POM_REAL_SSH=1 cargo nextest run -p pom_remote -E 'test(real_sshd_forward)' --no-capture
       # Measures keystrokes through a real ssh session without a tty.
       - name: Keystrokes through the real sshd
         continue-on-error: true
-        run: POM_REAL_SSH=1 cargo test -p pom_cli --test remote real_sshd_keystroke -- --nocapture
+        run: POM_REAL_SSH=1 cargo nextest run -p pom_cli --test remote -E 'test(real_sshd_keystroke)' --no-capture
 
   # The macOS runners have no Docker; these tests need a real Postgres (and Redis), so they run here.
   postgres:

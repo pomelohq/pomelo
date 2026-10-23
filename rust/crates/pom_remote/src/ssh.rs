@@ -474,19 +474,15 @@ mod tests {
         assert_eq!(quote("a\\b"), r#"'a'"\\"'b'"#);
     }
 
+    // Checked in rather than written by the tests: a file written while another test thread spawns can fail to
+    // run (ETXTBSY).
+    const FAKE_POM_ARGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-pom-args.sh");
+    const FAKE_POM_WHERE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake-pom-where.sh");
+
     #[test]
     fn the_remote_command_runs_pom_with_every_argument_intact() {
-        let temp = tempfile::tempdir().expect("temp");
-        let fake = temp.path().join("pom");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\0' \"$arg\"; done\n",
-        )
-        .expect("fake pom");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let args: Vec<String> = NASTY.iter().map(|word| word.to_string()).collect();
-        let line = remote_command(Some(&fake.to_string_lossy()), &args);
+        let line = remote_command(Some(FAKE_POM_ARGS), &args);
         let output = Command::new("/bin/sh")
             .arg("-c")
             .arg(&line)
@@ -513,12 +509,8 @@ mod tests {
         std::fs::create_dir_all(&bin).expect("bin");
         let path_dir = temp.path().join("path");
         std::fs::create_dir_all(&path_dir).expect("path");
-        use std::os::unix::fs::PermissionsExt;
-        let write = |path: PathBuf, text: &str| {
-            std::fs::write(&path, format!("#!/bin/sh\necho {text} \"$@\"\n")).expect("write");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        };
-        write(path_dir.join("pom"), "from-path");
+        let link = |path: PathBuf| std::os::unix::fs::symlink(FAKE_POM_WHERE, path).expect("link");
+        link(path_dir.join("pom"));
         let run = |pom_path: Option<&str>| {
             let line = remote_command(pom_path, &["--version".to_string()]);
             let output = Command::new("/bin/sh")
@@ -530,12 +522,12 @@ mod tests {
                 .expect("sh");
             String::from_utf8_lossy(&output.stdout).trim().to_string()
         };
-        assert_eq!(run(None), "from-path --version");
-        write(bin.join("pom"), "from-home");
-        assert_eq!(run(None), "from-home --version");
+        assert_eq!(run(None), "path --version");
+        link(bin.join("pom"));
+        assert_eq!(run(None), "bin --version");
         std::fs::create_dir_all(home.join("opt")).expect("opt");
-        write(home.join("opt/pom"), "from-config");
-        assert_eq!(run(Some("~/opt/pom")), "from-config --version");
+        link(home.join("opt/pom"));
+        assert_eq!(run(Some("~/opt/pom")), "opt --version");
     }
 
     #[test]
