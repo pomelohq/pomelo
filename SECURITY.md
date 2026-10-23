@@ -24,7 +24,7 @@ updated from the app, so the fix for an issue is the next release, not a backpor
 | Surface | Reachable by | Trust assumption | Main controls |
 | --- | --- | --- | --- |
 | Dev proxy, loopback bind (default) | Local processes, and web pages in your browser | Your own processes are trusted; web pages are not | Host allowlist, reserved `/_pom/*`, cross-site checks |
-| Dev proxy, non-loopback bind | Anyone who can reach the address | Only holders of the proxy token | Refuses to start without a token unless `allow_unauthenticated`; token by header, cookie or one-time query |
+| Dev proxy, non-loopback bind or a public `proxy.domain` | Anyone who can reach the address, or the domain through a reverse proxy | Only holders of the proxy token | Refuses to start without a token unless `allow_unauthenticated`; token by header, cookie or one-time query |
 | Webhook relay | Webhook providers, usually through a tunnel | Payload signatures are your app's job; `/_pom/github` checks its own | Token for non-local peers, signatures passed through unchanged, HMAC on `/_pom/github` |
 | Agent control (hooks, `pom agent`, MCP) | Processes running as you, including agents | Agents are guarded against mistakes, not against a hostile process of your own user | Hooks wired by pom, fail-closed policy, per-workspace gate, rate limits |
 | Remote (`pom server`) | Your own user on the host, over ssh | ssh is the authentication | Private Unix socket, peer uid check, no network port, path guards |
@@ -50,13 +50,16 @@ listens on `proxy.bind` (loopback by default).
 - `/_pom/*` is reserved for pom and never routed to a service. A cross-site browser request
   (`Sec-Fetch-Site: cross-site|same-site`, or an `Origin` that is not the request's host, or `Origin: null`)
   gets `403`; the only state-changing endpoint, the fault-rule reload, also requires `POST`, the
-  `x-pom-control: faults` header and a loopback peer (`pom_proxy/src/server.rs`, `handle_control`).
+  `x-pom-control: faults` header and a request from this machine (see "Local" below)
+  (`pom_proxy/src/server.rs`, `handle_control`).
 
 Traffic to your own services is only filtered by the Host allowlist. A page you visit can still send the
 simple cross-site requests any browser allows to a local app; protecting your app against CSRF is the app's
 job, exactly as without pom.
 
-**Bound beyond loopback** (a LAN, VPN or tailnet address, or `0.0.0.0`). The proxy refuses to start unless
+**Bound beyond loopback** (a LAN, VPN or tailnet address, or `0.0.0.0`), **or serving a public domain**
+(`proxy.domain` other than `localhost`, which a reverse proxy on the same machine may forward to loopback). The
+proxy refuses to start unless
 a token is configured (the env var named by `proxy.token_env`, default `POM_PROXY_TOKEN`, or one stored
 encrypted with `pom proxy token new`), or you set `allow_unauthenticated true` to accept the risk
 (`refusal` in `access.rs`). A token must be at least 16 characters from `[A-Za-z0-9._~-]`. A peer that is not
@@ -67,9 +70,11 @@ request is forwarded or logged. `pom doctor` reports a refused or unauthenticate
 
 Gaps and non-goals:
 
-- "Local" means a loopback peer, or a peer whose address equals the listening address. Every local process
-  needs no token, including other users of a shared host and anything behind a reverse proxy or tunnel on
-  the same machine. A reverse proxy in front of pom must do its own authentication.
+- "Local" means a loopback peer, or a peer whose address equals the listening address, that is not in
+  `proxy.trusted_proxies` and asks by a `localhost` name (`localhost`, `*.localhost`, or a loopback IP). A
+  request to the public domain, or one a trusted proxy forwards, always needs the token. List the reverse
+  proxy in `proxy.trusted_proxies`: one that is not listed and rewrites `Host` to a loopback address still
+  counts as local. Every local process needs no token, including other users of a shared host.
 - The token cookie holds the raw token. Rotate with `pom proxy token new`.
 - The in-memory request log (shown in the app) keeps request headers, but replaces the values of credential
   headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, and names containing `token`,
@@ -85,10 +90,11 @@ tunnel (cloudflared, ngrok, a reverse proxy).
 
 - Headers and body are forwarded unchanged, so a provider's own signature still
   verifies in your app. Verifying it is your app's job; the relay does not.
-- A tunnel connects from loopback, so requests through it count as local and need no token. Anyone who learns
-  the public URL can post to the routed services. Keep tunnel URLs private and verify signatures in the app.
-- A non-local peer must present the proxy token, as `?pom_token=` in the webhook URL or `X-Pom-Token`; it is
-  removed before fan-out (`relay_token`).
+- Without a proxy token, anyone who learns a tunnel's public URL can post to the routed services. Keep tunnel
+  URLs private and verify signatures in the app.
+- With a token, a request that is not local (as for the proxy: a `localhost` name from this machine, not from
+  a trusted proxy) must present it, as `?pom_token=` in the webhook URL or `X-Pom-Token`; a tunnel that keeps
+  the public `Host` therefore needs it too. It is removed before fan-out (`relay_token`).
 - Cross-site browser requests are refused with `403` on every relay path.
 - Bodies are capped at 32 MiB and each delivery has a timeout.
 

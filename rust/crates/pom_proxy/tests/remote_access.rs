@@ -121,6 +121,9 @@ fn network(trusted: &[&str]) -> DevNetwork {
     )
 }
 
+const TOKEN: &str = "0123456789abcdef0123";
+const TOKEN_HEADER: &str = "X-Pom-Token: 0123456789abcdef0123\r\n";
+
 fn start(network: DevNetwork, backend: u16) -> DevProxy {
     let lease = Lease {
         key: pom_ports::service_key(&pom_env::port_ws_key("PROJ-101-login"), "web~web"),
@@ -129,7 +132,7 @@ fn start(network: DevNetwork, backend: u16) -> DevProxy {
         state: PortState::Running,
         since_ms: 0,
     };
-    let proxy = DevProxy::start_on(
+    let proxy = DevProxy::start_with(
         Box::new(FakeMachine {
             leases: vec![lease],
         }),
@@ -137,6 +140,13 @@ fn start(network: DevNetwork, backend: u16) -> DevProxy {
         Serve {
             proxy: true,
             webhook: false,
+        },
+        pom_proxy::Initial {
+            token: Some(pom_proxy::ProxyToken {
+                value: TOKEN.into(),
+                source: pom_proxy::TokenSource::Env("POM_PROXY_TOKEN".into()),
+            }),
+            ..pom_proxy::Initial::default()
         },
     )
     .expect("start");
@@ -162,7 +172,7 @@ fn a_trusted_reverse_proxy_reaches_the_workspace_under_its_domain() {
     let response = request(
         proxy.ports().proxy,
         "web.web.proj-101.dev.example.net",
-        "X-Forwarded-Proto: https\r\nX-Forwarded-For: 192.0.2.7\r\n",
+        &format!("X-Forwarded-Proto: https\r\nX-Forwarded-For: 192.0.2.7\r\n{TOKEN_HEADER}"),
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     let head = seen.recv_timeout(Duration::from_secs(5)).expect("upstream");
@@ -192,13 +202,47 @@ fn a_trusted_reverse_proxy_reaches_the_workspace_under_its_domain() {
 }
 
 #[test]
+fn a_request_a_trusted_proxy_on_loopback_forwards_needs_the_token() {
+    let (sender, _seen) = mpsc::channel();
+    let proxy = start(network(&["127.0.0.1"]), backend(sender));
+    let port = proxy.ports().proxy;
+    let forwarded = "X-Forwarded-Proto: https\r\nX-Forwarded-For: 192.0.2.7\r\n";
+    let response = request(port, "web.web.proj-101.dev.example.net", forwarded);
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    let host = format!("web.web.proj-101.localhost:{port}");
+    let response = request(port, &host, forwarded);
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect proxy");
+    let raw = format!("GET /login?pom_token={TOKEN} HTTP/1.1\r\nHost: web.web.proj-101.dev.example.net\r\n{forwarded}Connection: close\r\n\r\n");
+    stream.write_all(raw.as_bytes()).expect("send");
+    let mut response = String::new();
+    if let Err(error) = stream.read_to_string(&mut response) {
+        eprintln!("read: {error}");
+    }
+    assert!(response.starts_with("HTTP/1.1 303"), "{response}");
+}
+
+#[test]
+fn this_machine_needs_no_token_only_under_a_localhost_name() {
+    let (sender, _seen) = mpsc::channel();
+    let proxy = start(network(&["10.0.0.0/8"]), backend(sender));
+    let port = proxy.ports().proxy;
+    let response = request(port, &format!("web.web.proj-101.localhost:{port}"), "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let response = request(port, "web.web.proj-101.dev.example.net", "");
+    assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+}
+
+#[test]
 fn an_untrusted_client_cannot_spoof_forwarded_headers() {
     let (sender, seen) = mpsc::channel();
     let proxy = start(network(&["10.0.0.0/8"]), backend(sender));
     let response = request(
         proxy.ports().proxy,
         "web.web.proj-101.dev.example.net",
-        "X-Forwarded-Proto: https\r\nX-Forwarded-Host: evil.example.org\r\n",
+        &format!(
+            "X-Forwarded-Proto: https\r\nX-Forwarded-Host: evil.example.org\r\n{TOKEN_HEADER}"
+        ),
     );
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     let head = seen.recv_timeout(Duration::from_secs(5)).expect("upstream");
@@ -217,7 +261,7 @@ fn localhost_names_keep_the_local_rewrite_under_a_configured_domain() {
     let (sender, seen) = mpsc::channel();
     let proxy = start(network(&["127.0.0.1"]), backend(sender));
     let host = format!("web.web.proj-101.localhost:{}", proxy.ports().proxy);
-    let response = request(proxy.ports().proxy, &host, "");
+    let response = request(proxy.ports().proxy, &host, TOKEN_HEADER);
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");
     let head = seen.recv_timeout(Duration::from_secs(5)).expect("upstream");
     assert_eq!(upstream_header(&head, "x-forwarded-host"), Some(host));
@@ -298,6 +342,25 @@ fn a_non_loopback_bind_without_a_token_refuses_to_start() {
     );
     assert!(message.contains("pom proxy token new"), "{message}");
     assert!(start_exposed(exposed(false), Some("short")).is_err());
+}
+
+#[test]
+fn a_public_domain_without_a_token_refuses_to_start_unless_accepted() {
+    let public = network(&["127.0.0.1"]);
+    let Err(error) = start_exposed(public.clone(), None) else {
+        panic!("a proxy serving a public domain with no token must not start");
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let message = error.to_string();
+    assert!(
+        message.contains("refusing to serve dev.example.net"),
+        "{message}"
+    );
+    let accepted = DevNetwork {
+        allow_unauthenticated: true,
+        ..public
+    };
+    assert!(start_exposed(accepted, None).expect("flag").proxy_running());
 }
 
 #[test]

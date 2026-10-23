@@ -85,6 +85,22 @@ impl DevNetwork {
         !self.bind.is_loopback()
     }
 
+    /// Services go by a name outside `localhost`, which a reverse proxy on this machine may forward to.
+    pub fn public_domain(&self) -> bool {
+        self.domain != LOCAL_DOMAIN && !self.domain.ends_with(&format!(".{LOCAL_DOMAIN}"))
+    }
+
+    /// What lets someone other than this machine's user reach the proxy, if anything does.
+    pub fn reach(&self) -> Option<String> {
+        if self.exposed() {
+            Some(format!("proxy.bind is {}", self.bind))
+        } else if self.public_domain() {
+            Some(format!("proxy.domain is {}", self.domain))
+        } else {
+            None
+        }
+    }
+
     pub fn trusts(&self, peer: IpAddr) -> bool {
         self.trusted_proxies
             .iter()
@@ -264,6 +280,7 @@ mod tests {
         let network = network_from_settings(&serde_json::json!({}));
         assert_eq!(network, DevNetwork::local(DevPorts::default()));
         assert!(!network.exposed());
+        assert_eq!(network.reach(), None);
         assert_eq!(network.public(), PublicAddress::local(DEFAULT_PROXY_PORT));
         assert_eq!(
             network.public().url("web.web.main.localhost"),
@@ -281,6 +298,7 @@ mod tests {
         settings.proxy.trusted_proxies = vec!["127.0.0.1".into()];
         let network = network_from_settings(&serde_json::to_value(&settings).unwrap());
         assert!(network.exposed());
+        assert!(network.public_domain());
         assert!(network.trusts("127.0.0.1".parse().unwrap()));
         assert!(!network.trusts("10.0.0.1".parse().unwrap()));
         assert_eq!(

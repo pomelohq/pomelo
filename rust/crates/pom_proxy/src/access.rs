@@ -72,25 +72,46 @@ fn token_store(state: &StateDir) -> SecretStore {
 
 /// Why the proxy will not listen where `network` says, if it will not.
 pub fn refusal(network: &pom_env::DevNetwork, token: Option<&ProxyToken>) -> Option<String> {
-    if !network.exposed() {
-        return None;
-    }
+    network.reach()?;
+    let (target, outsiders) = if network.exposed() {
+        (format!("listen on {}", network.bind), "other machines")
+    } else {
+        (
+            format!("serve {}", network.domain),
+            "anyone a reverse proxy forwards",
+        )
+    };
     match token {
         Some(token) if token.value.len() < MIN_TOKEN_LENGTH => Some(format!(
-            "refusing to listen on {}: the proxy token is shorter than {MIN_TOKEN_LENGTH} characters",
-            network.bind
+            "refusing to {target}: the proxy token is shorter than {MIN_TOKEN_LENGTH} characters"
         )),
         Some(token) if !token.value.bytes().all(token_byte) => Some(format!(
-            "refusing to listen on {}: the proxy token may only use letters, digits, `-`, `_`, `.` and `~`",
-            network.bind
+            "refusing to {target}: the proxy token may only use letters, digits, `-`, `_`, `.` and `~`"
         )),
         Some(_) => None,
         None if network.allow_unauthenticated => None,
         None => Some(format!(
-            "refusing to listen on {}: other machines could open every workspace with no token. Run `pom proxy token new` (or set {}), or accept the risk with `pom proxy config set allow_unauthenticated true`",
-            network.bind, network.token_env
+            "refusing to {target}: {outsiders} could open every workspace with no token. Run `pom proxy token new` (or set {}), or accept the risk with `pom proxy config set allow_unauthenticated true`",
+            network.token_env
         )),
     }
+}
+
+/// A `localhost` name or a loopback address: what someone on this machine types, never the public domain a
+/// reverse proxy serves.
+pub(crate) fn localhost_name(host: &str) -> bool {
+    let name = crate::routing::host_name(host)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let bare = name
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(&name);
+    name == crate::routing::DOMAIN
+        || name.ends_with(&format!(".{}", crate::routing::DOMAIN))
+        || bare
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.to_canonical().is_loopback())
 }
 
 fn token_byte(byte: u8) -> bool {
@@ -265,6 +286,47 @@ mod tests {
             ..exposed
         };
         assert_eq!(refusal(&accepted, None), None);
+    }
+
+    #[test]
+    fn a_public_domain_on_loopback_needs_a_token_or_the_risk_flag() {
+        let public = network("127.0.0.1", "dev.example.net");
+        let refused = refusal(&public, None).unwrap_or_default();
+        assert!(
+            refused.contains("refusing to serve dev.example.net"),
+            "{refused}"
+        );
+        assert!(refusal(&public, Some(&token("short"))).is_some());
+        assert_eq!(refusal(&public, Some(&token(&"a".repeat(32)))), None);
+        let accepted = DevNetwork {
+            allow_unauthenticated: true,
+            ..public
+        };
+        assert_eq!(refusal(&accepted, None), None);
+        assert_eq!(refusal(&network("127.0.0.1", "pom.localhost"), None), None);
+    }
+
+    #[test]
+    fn only_localhost_names_count_as_this_machine() {
+        for host in [
+            "localhost:8767",
+            "server.api.feat-login.localhost:8767",
+            "LOCALHOST.",
+            "127.0.0.1:8767",
+            "[::1]:8767",
+            "[::ffff:127.0.0.1]",
+        ] {
+            assert!(localhost_name(host), "{host}");
+        }
+        for host in [
+            "server.api.feat-login.dev.example.net",
+            "dev.example.net:443",
+            "localhost.example.net",
+            "100.64.0.10:8767",
+            "",
+        ] {
+            assert!(!localhost_name(host), "{host}");
+        }
     }
 
     #[test]
