@@ -1,8 +1,7 @@
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use pom_paths::StateDir;
+use pom_paths::{ensure_private_dir, StateDir};
 
 /// Where one server version keeps its socket, pid and lock, and where it logs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,36 +38,6 @@ impl ServerPaths {
     pub fn ensure_dir(&self) -> io::Result<()> {
         ensure_private_dir(&self.dir, crate::peer::current_uid())
     }
-}
-
-pub fn ensure_private_dir(dir: &Path, uid: u32) -> io::Result<()> {
-    match std::fs::symlink_metadata(dir) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Some(parent) = dir.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::DirBuilder::new().mode(0o700).create(dir)?;
-        }
-        Err(error) => return Err(error),
-        Ok(_) => {}
-    }
-    let metadata = std::fs::symlink_metadata(dir)?;
-    if !metadata.file_type().is_dir() {
-        return Err(io::Error::other(format!(
-            "{} is not a directory",
-            dir.display()
-        )));
-    }
-    if metadata.uid() != uid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{} belongs to another user", dir.display()),
-        ));
-    }
-    if metadata.permissions().mode() & 0o077 != 0 {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(())
 }
 
 /// The versions whose server holds its lock in `dir`, each with the pid its pid file names.

@@ -196,9 +196,15 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
 
     let response = request(
         ports.proxy,
-        "GET /_pom_dev/api/server/v1/me HTTP/1.1\r\nHost: web.web.feat-login.localhost:8767\r\nConnection: close\r\n\r\n",
+        "GET /_pom_dev/api/server/v1/me HTTP/1.1\r\nHost: web.web.feat-login.localhost:8767\r\nAuthorization: Bearer abc123\r\nX-Api-Key: k-789\r\nConnection: close\r\n\r\n",
     );
     assert!(response.contains("GET /v1/me HTTP/1.1"), "{response}");
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("authorization: bearer abc123"),
+        "credentials still reach the app: {response}"
+    );
     assert!(
         response.contains("set-cookie: sid=1; Path=/_pom_dev/api/server/\r\n"),
         "{response}"
@@ -217,6 +223,22 @@ fn routes_hosts_and_dev_paths_rewriting_cookies_and_logging() {
         .request_headers
         .iter()
         .any(|(name, value)| name == "host" && value.starts_with("web.web.feat-login")));
+    let logged = |headers: &[(String, String)], wanted: &str| {
+        headers
+            .iter()
+            .find(|(name, _)| name == wanted)
+            .map(|(_, value)| value.clone())
+    };
+    for name in ["authorization", "x-api-key"] {
+        assert_eq!(
+            logged(&dev.request_headers, name).as_deref(),
+            Some(pom_proxy::REDACTED)
+        );
+    }
+    assert_eq!(
+        logged(&dev.response_headers, "set-cookie").as_deref(),
+        Some(pom_proxy::REDACTED)
+    );
     let (sent, answered) = proxy.payloads(dev.seq).expect("payloads");
     assert!(sent.complete && sent.bytes.is_empty());
     assert!(

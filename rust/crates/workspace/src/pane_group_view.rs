@@ -2190,6 +2190,26 @@ impl ItemInput for PaneGroupView {
         }
     }
 
+    fn image_paste_target(&mut self) -> Option<String> {
+        if self.search_focused() {
+            return None;
+        }
+        self.active_item()
+            .filter(|item| item.takes_pasted_images())
+            .and_then(|item| item.id())
+    }
+
+    fn paste_into_item(&mut self, id: &str, text: &str) -> bool {
+        let mut pasted = false;
+        self.for_each_item_mut(&mut |item| {
+            if !pasted && item.id().as_deref() == Some(id) {
+                item.paste(text, None);
+                pasted = true;
+            }
+        });
+        pasted
+    }
+
     fn item_focus_changed(&mut self, focused: bool) {
         if let Some(item) = self
             .active_item_mut()

@@ -61,6 +61,7 @@ pub mod method {
     pub const JIRA_ISSUE: &str = "jira.issue";
     pub const JIRA_BOARDS: &str = "jira.boards";
     pub const JIRA_LIST: &str = "jira.list";
+    pub const PASTE_PUT: &str = "paste.put";
     pub const GIT_REPOS: &str = "git.repos";
     pub const GIT_SCAN: &str = "git.scan";
     pub const GIT_WATCH: &str = "git.watch";
@@ -132,6 +133,7 @@ pub const METHODS: &[&str] = &[
     method::JIRA_ISSUE,
     method::JIRA_BOARDS,
     method::JIRA_LIST,
+    method::PASTE_PUT,
     method::GIT_REPOS,
     method::GIT_SCAN,
     method::GIT_WATCH,
@@ -1049,6 +1051,26 @@ pub struct JiraParams {
 pub struct JiraAccount {
     pub name: String,
     pub email: String,
+}
+
+/// The largest file `paste.put` takes.
+pub const PASTE_LIMIT: u64 = 20 * 1024 * 1024;
+
+/// A file pasted in a terminal on this Mac (a screenshot), for the program there to read: `size` bytes sent as
+/// INPUT on `channel` once the server writes [`WRITE_READY`]. `extension` is the file's type, such as `png`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PasteParams {
+    pub extension: String,
+    pub channel: u32,
+    pub size: u64,
+}
+
+/// Where the pasted file now is on the host.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pasted {
+    pub path: PathBuf,
 }
 
 /// One repo of workspace `branch`, by its name.

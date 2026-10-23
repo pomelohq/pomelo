@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
+use pom_remote::server_api::PasteParams;
 use pom_remote::server_api::{
     method, op_state, ActParams, AgentAnswerParams, AgentHolderParams, AgentListing,
     AgentStartParams, AgentStarted, FollowLogsParams, FsChangeParams, FsFilesParams, FsPathParams,
@@ -27,6 +28,7 @@ use crate::fs::{FsService, WriteScope};
 use crate::git::GitService;
 use crate::jira::JiraService;
 use crate::jobs::{Jobs, JOB_MEMORY};
+use crate::paste::PasteService;
 use crate::pty::{Caller, Ptys};
 use crate::search::SearchService;
 use crate::usage::UsageService;
@@ -257,6 +259,7 @@ pub struct Dispatcher {
     modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
     usage: UsageService,
     jira: JiraService,
+    paste: PasteService,
     git: GitService,
 }
 
@@ -268,6 +271,7 @@ impl Dispatcher {
             jobs: Jobs::new(JOB_MEMORY),
             files: FsService::new(),
             search: SearchService::new(),
+            paste: PasteService::new(state.path("paste")),
             state,
             holders,
             binary,
@@ -401,6 +405,8 @@ impl Dispatcher {
                 self.search.cancel(caller.connection, params.channel);
                 Value::Null
             }),
+            method::PASTE_PUT => params::<PasteParams>(raw)
+                .and_then(|params| to_value(self.paste.put(&self.files, connection, &params)?)),
             _ => return None,
         })
     }

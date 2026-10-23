@@ -744,6 +744,10 @@ pub(crate) fn saved_holder(item: &workspace::persistence::SerializedItem) -> Opt
 const RECENT_LINES: usize = 40;
 
 impl Item for TerminalItem {
+    fn takes_pasted_images(&self) -> bool {
+        true
+    }
+
     fn terminal_context(&self) -> Option<workspace::TerminalContext> {
         let lines = self.terminal.output_lines();
         let recent: Vec<&str> = lines

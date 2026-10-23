@@ -109,6 +109,32 @@ fn a_holder_survives_detach_and_replays_to_the_next_client() {
 }
 
 #[test]
+fn a_loose_holder_folder_is_closed_and_a_symlinked_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let holders = Holders::new();
+    let mode = |path: &Path| {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    std::fs::set_permissions(holders.dir.root(), std::fs::Permissions::from_mode(0o755))
+        .expect("chmod");
+    holders.spawn("appsh-private", &["cat"]);
+    assert_eq!(mode(holders.dir.root()), 0o700);
+
+    let links = tempfile::Builder::new()
+        .prefix("ptl")
+        .tempdir_in("/tmp")
+        .expect("temp dir");
+    let link = links.path().join("l");
+    std::os::unix::fs::symlink(holders.dir.root(), &link).expect("symlink");
+    assert!(pom_ptyhost::attach(&SocketDir::new(&link), "appsh-private", 0).is_err());
+    holders.attach("appsh-private", 0);
+}
+
+#[test]
 fn every_client_gets_the_output() {
     let holders = Holders::new();
     holders.spawn("appsh-fan", &["cat"]);
