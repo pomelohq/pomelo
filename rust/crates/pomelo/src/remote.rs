@@ -103,6 +103,23 @@ impl App {
         self.focus_main_with_modal(id, Box::new(modal));
     }
 
+    /// The title bar's host: the projects on the host this window's project runs on.
+    pub(crate) fn open_host_projects(&mut self, id: WindowId) {
+        let Some(host) = self
+            .mains
+            .get(&id)
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.host.clone())
+        else {
+            return self.open_connect_host(id);
+        };
+        let list: remote_ui::ListProjects = Arc::new(|host: &pom_remote::Host| {
+            pom_remote::remote_projects(&pom_remote::Ssh::system(), host)
+        });
+        let modal = remote_ui::ConnectHostModal::new(hosts(), list).on_host(&host);
+        self.focus_main_with_modal(id, Box::new(modal));
+    }
+
     fn window_with_remote(&self, host: &str, project: &str) -> Option<WindowId> {
         self.mains.iter().find_map(|(window, main)| {
             main.remote
@@ -300,6 +317,7 @@ impl App {
             &update,
         );
         remote.notice_actions = actions;
+        let link = remote_ui::host_link(&snapshot.connection);
         let restarted = snapshot.server_restarts > remote.restarts_told;
         remote.restarts_told = snapshot.server_restarts;
         let restart_notice = restarted.then(|| remote_ui::restart_notice(&remote.host));
@@ -310,6 +328,7 @@ impl App {
             view.update_project(info);
             view.set_agent_states(dots);
             view.set_center_notice(Some(notice));
+            view.set_host_link(link);
             if let Some(message) = restart_notice {
                 view.show_toast(message, None);
             }

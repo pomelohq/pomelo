@@ -547,56 +547,6 @@ impl RemoteServicesPanel {
     }
 }
 
-pub fn connection_line(snapshot: &Snapshot, location: &str) -> (Rgba, String, bool) {
-    let colors = theme();
-    match &snapshot.connection {
-        Connection::Connecting => (
-            colors.text_accent,
-            format!("Connecting to {location}..."),
-            false,
-        ),
-        Connection::Connected => {
-            let ago = snapshot
-                .answered_at
-                .map(|at| format!(" - updated {}", view::ago(at)))
-                .unwrap_or_default();
-            let via = snapshot
-                .transport
-                .as_ref()
-                .map(|transport| format!(" via {}", transport.via.name()))
-                .unwrap_or_default();
-            (
-                colors.success,
-                format!("Connected to {location}{via}{ago}"),
-                false,
-            )
-        }
-        Connection::Reconnecting { attempt, next_in } => (
-            colors.warning,
-            reconnecting_line(location, *attempt, *next_in),
-            false,
-        ),
-        Connection::Disconnected { reason } => (
-            colors.error,
-            format!("Disconnected from {location}: {reason}"),
-            true,
-        ),
-    }
-}
-
-/// The status while a dropped session is being reopened.
-pub fn reconnecting_line(location: &str, attempt: u32, next_in: std::time::Duration) -> String {
-    let when = if next_in.is_zero() {
-        String::new()
-    } else {
-        format!(
-            " (attempt {attempt} in {:.0}s)",
-            next_in.as_secs_f64().ceil()
-        )
-    };
-    format!("Lost connection to {location}. Reconnecting...{when}")
-}
-
 /// Terminal colors and cursor moves a service printed, which a plain label would show as junk.
 fn strip_escapes(line: &str) -> String {
     let mut out = String::with_capacity(line.len());

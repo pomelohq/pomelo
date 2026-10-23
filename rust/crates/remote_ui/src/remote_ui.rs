@@ -8,7 +8,8 @@ use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
 use ui::{div, icon, label, theme, IconKind, Node};
 use workspace::{
     modal_button, modal_footer, modal_frame, modal_header, modal_note, modal_section, ButtonKind,
-    CenterNotice, EditKey, ModalResult, NoticeTone, WindowModal, WINDOW_MODAL_BASE,
+    CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 480.0;
@@ -138,7 +139,6 @@ impl ConnectHostModal {
     fn row(&self, index: usize, kind: IconKind, title: &str, detail: &str, enabled: bool) -> Node {
         let colors = theme();
         let id = ROW_BASE + index as u64;
-        let lit = self.hover == Some(id) || self.highlighted == index;
         let mut row = div()
             .row()
             .items_center()
@@ -171,7 +171,9 @@ impl ConnectHostModal {
             );
         if enabled {
             row = row.on_click(id);
-            if lit {
+            if self.highlighted == index {
+                row = row.bg(colors.overlay_selected);
+            } else if self.hover == Some(id) {
                 row = row.bg(colors.ghost_element_hover);
             }
         }
@@ -183,6 +185,21 @@ impl ConnectHostModal {
             .size(12.5)
             .color(theme().text_muted)
             .wrap(WIDTH - 40.0)
+            .into()
+    }
+
+    fn status(kind: IconKind, tint: ui::Rgba, text: &str) -> Node {
+        div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .child(icon(kind).size(14.0).color(tint))
+            .child(
+                label(text.to_string())
+                    .size(12.5)
+                    .color(theme().text_muted)
+                    .wrap(WIDTH - 62.0),
+            )
             .into()
     }
 
@@ -216,7 +233,7 @@ impl WindowModal for ConnectHostModal {
                     section = section
                         .gap(10.0)
                         .child(Self::line(
-                            "No hosts yet. Name a machine you reach over SSH (your own keys and ~/.ssh/config are used), then check it:",
+                            "No hosts yet. Add a machine you reach over SSH, then check it:",
                         ))
                         .child(Self::command("pom host add dev ssh://dev@dev.example.net"))
                         .child(Self::command("pom host test dev"));
@@ -237,9 +254,11 @@ impl WindowModal for ConnectHostModal {
                 let name = host.map(|host| host.name.clone()).unwrap_or_default();
                 match found {
                     None => {
-                        section = section.child(Self::line(&format!(
-                            "Connecting to {name} and asking for its projects..."
-                        )));
+                        section = section.child(Self::status(
+                            IconKind::LoadCircle,
+                            theme().text_accent,
+                            &format!("Connecting to {name} and asking for its projects..."),
+                        ));
                     }
                     Some(Err(error)) => {
                         let lead = match error {
@@ -248,7 +267,11 @@ impl WindowModal for ConnectHostModal {
                         };
                         section = section
                             .gap(10.0)
-                            .child(Self::line(&format!("{lead}: {error}")))
+                            .child(Self::status(
+                                IconKind::XCircle,
+                                theme().error,
+                                &format!("{lead}: {error}"),
+                            ))
                             .child(Self::command(&format!("pom host test {name}")));
                     }
                     Some(Ok(projects)) if projects.is_empty() => {
@@ -391,17 +414,30 @@ impl WindowModal for ConnectHostModal {
     }
 }
 
-/// Why a remote project shows no editor, file tree or Git, and whether its terminals open here.
-pub fn local_only_reason(host: &str, terminals: bool) -> String {
-    if terminals {
-        format!(
-            "Terminals, service output and agents run on {host} and open here. For the editor, files and Git, open the worktree in an editor that works over SSH."
-        )
+/// What the page says runs here and what stays on the host, in place of the editor, files and Git.
+pub fn local_only_facts(host: &str, terminals: bool, path: &str) -> Vec<NoticeFact> {
+    let here = if terminals {
+        NoticeFact {
+            label: "Here".into(),
+            value: "Terminals, services and agents".into(),
+            detail: String::new(),
+        }
     } else {
-        format!(
-            "The editor, files and Git of a project on {host} stay there: open its worktree in an editor that works over SSH. Terminals open here once {host} runs pom server."
-        )
+        NoticeFact {
+            label: "Here".into(),
+            value: "Services and agents".into(),
+            detail: format!("terminals open once {host} runs pom server"),
+        }
+    };
+    let mut on_host = NoticeFact {
+        label: format!("On {host}"),
+        value: "Editor, files and Git".into(),
+        detail: "Open in Editor reaches them over SSH".into(),
+    };
+    if path.is_empty() {
+        on_host.detail.clear();
     }
+    vec![here, on_host]
 }
 
 /// Updating pom on the host from the app, as the page shows it.
@@ -413,27 +449,56 @@ pub struct PomUpdate {
     pub error: Option<String>,
 }
 
-pub fn transport_lines(snapshot: &Snapshot, host: &str, update: &PomUpdate) -> Vec<String> {
+/// The banners of a host read over ssh, or whose pom is on another minor version than the app; `update_action`
+/// is the index of the page's Update button.
+pub fn transport_banners(
+    snapshot: &Snapshot,
+    host: &str,
+    update: &PomUpdate,
+    update_action: Option<usize>,
+) -> Vec<NoticeBanner> {
     let Some(transport) = &snapshot.transport else {
         return Vec::new();
     };
-    let mut lines = Vec::new();
+    let mut banners = Vec::new();
     if let Some(reason) = &transport.fallback_reason {
-        lines.push(format!("Reading over ssh: {reason}."));
+        banners.push(NoticeBanner {
+            tone: NoticeTone::Info,
+            text: format!("Reading over ssh: {reason}."),
+            ..NoticeBanner::default()
+        });
     }
     if let (true, Some(remote)) = (transport.version_mismatch, &transport.remote_version) {
-        lines.push(version_line(remote, host));
-        match (&update.running, &update.error) {
-            (Some(step), _) => lines.push(format!("Updating pom on {host}: {}...", step.label())),
-            (None, Some(error)) => lines.push(format!("Could not update pom on {host}: {error}")),
-            (None, None) => {}
-        }
-        if !update.can_install {
-            lines.push(format!("To update it, run on {host}:"));
-            lines.extend(pom_remote::update::manual_commands(pom_remote::VERSION));
-        }
+        let version = version_line(remote, host);
+        let banner = match (&update.running, &update.error) {
+            (Some(step), _) => NoticeBanner {
+                tone: NoticeTone::Info,
+                busy: true,
+                text: format!("Updating pom on {host}: {}...", step.label()),
+                ..NoticeBanner::default()
+            },
+            (None, Some(error)) => NoticeBanner {
+                tone: NoticeTone::Error,
+                text: format!("Could not update pom on {host}: {error}"),
+                action: update_action,
+                ..NoticeBanner::default()
+            },
+            (None, None) if !update.can_install => NoticeBanner {
+                tone: NoticeTone::Warning,
+                text: format!("{version} To update it, run on {host}:"),
+                commands: pom_remote::update::manual_commands(pom_remote::VERSION),
+                ..NoticeBanner::default()
+            },
+            (None, None) => NoticeBanner {
+                tone: NoticeTone::Warning,
+                text: version,
+                action: update_action,
+                ..NoticeBanner::default()
+            },
+        };
+        banners.push(banner);
     }
-    lines
+    banners
 }
 
 /// The banner of a host whose pom is on another minor version than the app.
@@ -457,8 +522,59 @@ pub enum NoticeAction {
     UpdatePom,
 }
 
-/// The page in place of the editor for a remote project: the connection, why the editor is not here, and what
-/// to do instead.
+/// The session as the title bar's host shows it.
+pub fn host_link(connection: &Connection) -> workspace::HostLink {
+    match connection {
+        Connection::Connecting => workspace::HostLink::Connecting,
+        Connection::Connected => workspace::HostLink::Connected,
+        Connection::Reconnecting { .. } => workspace::HostLink::Reconnecting,
+        Connection::Disconnected { .. } => workspace::HostLink::Disconnected,
+    }
+}
+
+/// The connection in one line; the host is named by the page's facts and the title bar.
+pub fn status_line(snapshot: &Snapshot, host: &str) -> String {
+    match &snapshot.connection {
+        Connection::Connecting => format!("Connecting to {host}..."),
+        Connection::Connected => {
+            let via = match snapshot.transport.as_ref().map(|transport| transport.via) {
+                Some(pom_remote::Via::Server) => "Connected via pom server",
+                Some(pom_remote::Via::Ssh) => "Connected over ssh",
+                None => "Connected",
+            };
+            match snapshot.answered_at {
+                Some(at) => format!("{via} - updated {}", services_ui::ago(at)),
+                None => via.to_string(),
+            }
+        }
+        Connection::Reconnecting { attempt, next_in } => {
+            let when = if next_in.is_zero() {
+                String::new()
+            } else {
+                format!(
+                    " (attempt {attempt} in {:.0}s)",
+                    next_in.as_secs_f64().ceil()
+                )
+            };
+            format!("Lost connection. Reconnecting...{when}")
+        }
+        Connection::Disconnected { reason } => format!("Disconnected: {reason}"),
+    }
+}
+
+/// `dev@dev.example.net` out of a source's `dev (dev@dev.example.net)`.
+fn address(location: &str, host: &str) -> String {
+    location
+        .strip_prefix(host)
+        .map(str::trim)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(location)
+        .to_string()
+}
+
+/// The page in place of the editor for a remote project: its connection, what needs doing about the host's
+/// pom, where things are, and the buttons that act on it.
 pub fn remote_notice(
     snapshot: &Snapshot,
     location: &str,
@@ -466,7 +582,6 @@ pub fn remote_notice(
     project: &str,
     update: &PomUpdate,
 ) -> (CenterNotice, Vec<NoticeAction>) {
-    let (_, status, retry) = services_ui::connection_line(snapshot, location);
     let tone = match snapshot.connection {
         Connection::Connected => NoticeTone::Good,
         Connection::Connecting => NoticeTone::Info,
@@ -477,41 +592,71 @@ pub fn remote_notice(
         .transport
         .as_ref()
         .is_some_and(|transport| transport.via == pom_remote::Via::Server && transport.terminals);
-    let mut lines = vec![local_only_reason(host, terminals)];
-    lines.extend(transport_lines(snapshot, host, update));
-    if let Some(list) = &snapshot.workspaces {
-        let running: usize = list.workspaces.iter().map(|ws| ws.running).sum();
-        lines.push(format!(
-            "{} workspaces, {running} services running.",
-            list.workspaces.len()
-        ));
+    let mut actions = Vec::new();
+    if matches!(snapshot.connection, Connection::Disconnected { .. }) {
+        actions.push(NoticeAction::Reconnect);
     }
-    let mut actions = vec![NoticeAction::OpenInEditor];
+    actions.push(NoticeAction::OpenInEditor);
     let mismatch = snapshot
         .transport
         .as_ref()
         .is_some_and(|transport| transport.version_mismatch);
-    if mismatch && update.can_install && update.running.is_none() {
-        actions.insert(0, NoticeAction::UpdatePom);
+    let update_action = (mismatch && update.can_install && update.running.is_none()).then(|| {
+        actions.push(NoticeAction::UpdatePom);
+        actions.len() - 1
+    });
+    let mut detail = address(location, host);
+    let workspace = snapshot.workspaces.as_ref().and_then(|list| {
+        let running: usize = list.workspaces.iter().map(|ws| ws.running).sum();
+        detail = format!(
+            "{detail} - {} workspaces, {running} services running",
+            list.workspaces.len()
+        );
+        list.workspaces
+            .iter()
+            .find(|ws| ws.branch == snapshot.branch)
+    });
+    let mut facts = vec![NoticeFact {
+        label: "Host".into(),
+        value: host.to_string(),
+        detail,
+    }];
+    let path = workspace
+        .map(|ws| ws.path.display().to_string())
+        .unwrap_or_default();
+    if let Some(workspace) = workspace {
+        facts.push(NoticeFact {
+            label: "Workspace".into(),
+            value: workspace.branch.clone(),
+            detail: path.clone(),
+        });
     }
-    if retry {
-        actions.insert(0, NoticeAction::Reconnect);
-    }
-    let labels = actions
+    facts.extend(local_only_facts(host, terminals, &path));
+    let buttons = actions
         .iter()
         .map(|action| match action {
-            NoticeAction::OpenInEditor => "Open in Editor".to_string(),
-            NoticeAction::Reconnect => "Reconnect".to_string(),
-            NoticeAction::UpdatePom => format!("Update pom on {host}"),
+            NoticeAction::OpenInEditor => NoticeButton {
+                label: "Open in Editor".into(),
+                primary: false,
+            },
+            NoticeAction::Reconnect => NoticeButton {
+                label: "Reconnect".into(),
+                primary: true,
+            },
+            NoticeAction::UpdatePom => NoticeButton {
+                label: format!("Update pom on {host}"),
+                primary: false,
+            },
         })
         .collect();
     (
         CenterNotice {
-            status,
+            title: project.to_string(),
+            status: status_line(snapshot, host),
             tone,
-            title: format!("{project} on {host}"),
-            lines,
-            actions: labels,
+            actions: buttons,
+            banners: transport_banners(snapshot, host, update, update_action),
+            facts,
         },
         actions,
     )
@@ -609,23 +754,25 @@ mod tests {
             can_install: true,
             ..PomUpdate::default()
         };
-        assert!(transport_lines(&snapshot, "dev", &update).is_empty());
+        assert!(transport_banners(&snapshot, "dev", &update, None).is_empty());
         snapshot.transport = Some(pom_remote::TransportInfo {
             via: pom_remote::Via::Server,
             remote_version: Some("0.1.0".into()),
             version_mismatch: true,
             ..pom_remote::TransportInfo::default()
         });
-        let lines = transport_lines(&snapshot, "dev", &update);
-        assert_eq!(lines, vec![version_line("0.1.0", "dev")]);
-        assert!(lines[0].starts_with("pom 0.1.0 on dev, the app is "));
+        let banners = transport_banners(&snapshot, "dev", &update, Some(1));
+        assert_eq!(banners.len(), 1);
+        assert!(banners[0].text.starts_with("pom 0.1.0 on dev, the app is "));
+        assert_eq!(banners[0].action, Some(1));
         snapshot.connection = Connection::Connected;
         let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
-        assert_eq!(actions.first(), Some(&NoticeAction::UpdatePom));
         assert_eq!(
-            notice.actions.first().map(String::as_str),
-            Some("Update pom on dev")
+            actions,
+            vec![NoticeAction::OpenInEditor, NoticeAction::UpdatePom]
         );
+        assert_eq!(notice.actions[1].label, "Update pom on dev");
+        assert_eq!(notice.banners[0].action, Some(1), "the banner holds Update");
 
         let running = PomUpdate {
             running: Some(pom_remote::update::UpdateStep::Download),
@@ -636,16 +783,18 @@ mod tests {
             !actions.contains(&NoticeAction::UpdatePom),
             "one update at a time"
         );
-        assert!(notice
-            .lines
-            .contains(&"Updating pom on dev: downloading...".to_string()));
+        assert_eq!(
+            notice.banners[0].text,
+            "Updating pom on dev: downloading..."
+        );
+        assert!(notice.banners[0].busy);
         let failed = PomUpdate {
             error: Some("pom-1.0.0-linux-x86_64.tar.gz does not match".into()),
             ..update.clone()
         };
-        assert!(transport_lines(&snapshot, "dev", &failed)
-            .iter()
-            .any(|line| line.starts_with("Could not update pom on dev:")));
+        assert!(transport_banners(&snapshot, "dev", &failed, None)[0]
+            .text
+            .starts_with("Could not update pom on dev:"));
 
         let dev_build = PomUpdate::default();
         let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &dev_build);
@@ -653,21 +802,17 @@ mod tests {
             !actions.contains(&NoticeAction::UpdatePom),
             "a dev build shows the commands"
         );
-        assert!(notice
-            .lines
+        assert!(notice.banners[0]
+            .commands
             .iter()
             .any(|line| line.contains("install.sh --cli-only")));
         snapshot.transport = Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Ssh,
             fallback_reason: Some(
                 "its pom is older than pom server; update pom on the VM to get terminals".into(),
             ),
             ..pom_remote::TransportInfo::default()
         });
-        assert_eq!(
-            transport_lines(&snapshot, "dev", &update),
-            vec!["Reading over ssh: its pom is older than pom server; update pom on the VM to get terminals.".to_string()]
-        );
-        snapshot.connection = Connection::Connected;
         let (notice, _) = remote_notice(
             &snapshot,
             "dev (dev@dev.example.net)",
@@ -675,16 +820,34 @@ mod tests {
             "myproject",
             &update,
         );
-        assert!(
-            notice
-                .status
-                .starts_with("Connected to dev (dev@dev.example.net) via ssh"),
-            "{}",
-            notice.status
+        assert_eq!(notice.status, "Connected over ssh");
+        assert_eq!(notice.facts[0].detail, "dev@dev.example.net");
+        assert_eq!(
+            notice.banners[0].text,
+            "Reading over ssh: its pom is older than pom server; update pom on the VM to get terminals."
         );
-        assert!(notice
-            .lines
-            .iter()
-            .any(|line| line.starts_with("Reading over ssh")));
+        assert_eq!(notice.facts[1].value, "Services and agents");
+    }
+
+    #[test]
+    fn a_dropped_session_offers_reconnect_first() {
+        let snapshot = Snapshot {
+            connection: Connection::Disconnected {
+                reason: "Connection refused".into(),
+            },
+            ..Snapshot::default()
+        };
+        let (notice, actions) =
+            remote_notice(&snapshot, "dev", "dev", "myproject", &PomUpdate::default());
+        assert_eq!(
+            actions,
+            vec![NoticeAction::Reconnect, NoticeAction::OpenInEditor]
+        );
+        assert!(notice.actions[0].primary);
+        assert_eq!(notice.status, "Disconnected: Connection refused");
+        assert_eq!(
+            host_link(&snapshot.connection),
+            workspace::HostLink::Disconnected
+        );
     }
 }

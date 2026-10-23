@@ -30,6 +30,8 @@ struct Board {
     restarts: u64,
     /// The host's pom, when it is on another minor version than the app.
     older_pom: Option<String>,
+    /// Its server opens terminals, whether or not the scene opens one.
+    serves_terminals: bool,
 }
 
 const DEV_AGENT: &str = "ws-myproject-feat-login-claude-raw";
@@ -90,8 +92,12 @@ fn serve_shell(
     } else {
         SHELL_OUTPUT
     };
-    sender.write(output).map_err(failed)?;
+    // Written once the dock has laid out and sized the terminal, so no line scrolls off a smaller first size.
     std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        if let Err(error) = sender.write(output) {
+            eprintln!("remote fixture: {error}");
+        }
         std::thread::sleep(Duration::from_secs(30));
         drop(sender);
     });
@@ -272,7 +278,7 @@ impl ProjectSource for Board {
     fn transport(&self) -> Option<pom_remote::TransportInfo> {
         Some(pom_remote::TransportInfo {
             via: pom_remote::Via::Server,
-            terminals: self.shell.is_some(),
+            terminals: self.serves_terminals,
             pushes: self.pushes,
             agents: self.pushes,
             version_mismatch: self.older_pom.is_some(),
@@ -401,29 +407,46 @@ fn hosts() -> Vec<Host> {
     .collect()
 }
 
-fn connect_modal(on_host: bool) -> remote_ui::ConnectHostModal {
-    let list: remote_ui::ListProjects = Arc::new(|host: &Host| {
-        Ok(["myproject", "storefront"]
-            .iter()
-            .map(|name| ProjectEntry {
-                name: name.to_string(),
-                path: format!("/home/{}/pom/{name}", host.name).into(),
-                config: format!("/home/{}/pom/{name}/pom.yml", host.name).into(),
-                ..ProjectEntry::default()
-            })
-            .collect())
-    });
-    let modal = remote_ui::ConnectHostModal::new(Ok(hosts()), list);
-    if !on_host {
-        return modal;
-    }
+/// Connect to Host in the state a board shows: `hosts`, `empty`, `loading`, `error` or `projects`.
+pub fn connect_modal(step: &str) -> Option<remote_ui::ConnectHostModal> {
+    let list: remote_ui::ListProjects = match step {
+        "loading" => Arc::new(|_: &Host| {
+            std::thread::sleep(Duration::from_secs(60));
+            Ok(Vec::new())
+        }),
+        "error" => Arc::new(|_: &Host| {
+            Err(SourceError::Unreachable(
+                "dev.example.net port 22: Operation timed out".into(),
+            ))
+        }),
+        _ => Arc::new(|host: &Host| {
+            Ok(["myproject", "storefront"]
+                .iter()
+                .map(|name| ProjectEntry {
+                    name: name.to_string(),
+                    path: format!("/home/{}/pom/{name}", host.name).into(),
+                    config: format!("/home/{}/pom/{name}/pom.yml", host.name).into(),
+                    ..ProjectEntry::default()
+                })
+                .collect())
+        }),
+    };
+    let modal = match step {
+        "hosts" => return Some(remote_ui::ConnectHostModal::new(Ok(hosts()), list)),
+        "empty" => return Some(remote_ui::ConnectHostModal::new(Ok(Vec::new()), list)),
+        "loading" => {
+            return Some(remote_ui::ConnectHostModal::new(Ok(hosts()), list).on_host("dev"))
+        }
+        "error" | "projects" => remote_ui::ConnectHostModal::new(Ok(hosts()), list),
+        _ => return None,
+    };
     let mut modal = modal.on_host("dev");
     let deadline = Instant::now() + Duration::from_secs(5);
     while workspace::WindowModal::busy(&modal) && Instant::now() < deadline {
         workspace::WindowModal::tick(&mut modal);
         std::thread::sleep(Duration::from_millis(5));
     }
-    modal
+    Some(modal)
 }
 
 pub fn render(
@@ -432,6 +455,7 @@ pub fn render(
     (width, height): (f32, f32),
     scale: f32,
     renderer: &mut ui::UiRenderer,
+    crop: Option<(u32, u32, u32, u32)>,
 ) -> anyhow::Result<()> {
     let agents = mode == "agents";
     let dropped = match mode {
@@ -464,6 +488,7 @@ pub fn render(
         restarts: u64::from(mode == "restarted"),
         older_pom: matches!(mode, "version" | "version-commands" | "version-updating")
             .then(|| "0.1.0".to_string()),
+        serves_terminals: mode != "disconnected",
         ..Board::default()
     });
     let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
@@ -508,6 +533,8 @@ pub fn render(
             ..workspace::Session::default()
         },
     ];
+    terminal_ui::set_terminal_defaults(15.0, "/bin/sh", 10_000);
+    terminal_ui::set_agent_font_size(15.0);
     let mut app = ui::Application::new();
     let (handle, entity) = app.open_raw_window(
         ui::WindowOptions {
@@ -524,13 +551,23 @@ pub fn render(
             layout.left.width = 256.0;
             layout.right.width = 380.0;
             layout.bottom.collapsed = true;
+            layout.bottom.width = 360.0;
             workspace::WorkspaceView::new(layout)
         },
     );
     entity.update(app.app_mut(), |view, _| {
         view.set_sessions(sessions, (!connect).then_some(0));
+        view.set_usage(crate::window_usage());
+        view.set_host_link(remote_ui::host_link(&snapshot.connection));
         if connect {
-            view.open_window_modal(Box::new(connect_modal(mode == "connect-projects")));
+            let step = if mode == "connect" {
+                "hosts"
+            } else {
+                "projects"
+            };
+            if let Some(modal) = connect_modal(step) {
+                view.open_window_modal(Box::new(modal));
+            }
             return;
         }
         if mode == "create" {
@@ -594,6 +631,7 @@ pub fn render(
         }
     }
     let frame = app.draw(handle).expect("frame");
+    let lights = crate::scene_lights();
     let mut layers: Vec<ui::Layer> = vec![(
         frame.base.rects.as_slice(),
         frame.base.tris.as_slice(),
@@ -610,8 +648,13 @@ pub fn render(
             overlay.clip.map(|clip| (clip.x, clip.y, clip.w, clip.h)),
         ));
     }
+    layers.push((lights.as_slice(), &[], &[], &[], None));
     renderer.render_frame(ui::theme().background, &layers)?;
     let (w, h, rgba) = renderer.read_rgba()?;
+    let (w, h, rgba) = match crop {
+        Some(rect) => crate::crop_rgba(w, &rgba, rect),
+        None => (w, h, rgba),
+    };
     let file = std::fs::File::create(out)?;
     let mut encoder = png::Encoder::new(BufWriter::new(file), w, h);
     encoder.set_color(png::ColorType::Rgba);

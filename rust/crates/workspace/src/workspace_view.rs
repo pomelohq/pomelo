@@ -144,6 +144,7 @@ pub struct WorkspaceRequests {
 
 const CENTER_PAGE_PAD: f32 = 40.0;
 const CENTER_PAGE_MAX_W: f32 = 760.0;
+const CENTER_PAGE_BOTTOM: f32 = 16.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionRequest {
@@ -160,6 +161,8 @@ pub enum SessionRequest {
     ConnectHost,
     /// A button of the page shown in place of the editor, by index.
     NoticeAction(usize),
+    /// The title bar's host: the projects on that host.
+    HostProjects,
 }
 
 /// A workspace's views and dock visibility while another workspace has the window.
@@ -953,6 +956,15 @@ impl WorkspaceView {
     }
 
     /// The page in place of the editor for a project whose files are elsewhere; returns whether it changed.
+    /// The session to a remote project's host, for the title bar's host; returns whether it changed.
+    pub fn set_host_link(&mut self, link: crate::HostLink) -> bool {
+        if self.layout.host_link == link {
+            return false;
+        }
+        self.layout.host_link = link;
+        true
+    }
+
     pub fn set_center_notice(&mut self, notice: Option<crate::CenterNotice>) -> bool {
         if self.center_notice == notice {
             return false;
@@ -2161,12 +2173,17 @@ impl WorkspaceView {
                 left,
                 cr.y + strip_h,
                 width * scale,
-                (cr.h - strip_h).max(0.0),
+                (cr.h - strip_h - CENTER_PAGE_BOTTOM * scale).max(0.0),
                 Rgba::TRANSPARENT,
             );
             self.center_body = Some(body);
             if let Some(panel) = self.layout.side_panel_mut(PaneKind::Services) {
-                let p = ui::render(&panel.render(body.w / scale, body.h / scale), body);
+                let card = ui::div()
+                    .col()
+                    .rounded(10.0)
+                    .bg(ui::theme().panel_background)
+                    .child(panel.render(body.w / scale, body.h / scale));
+                let p = ui::render(&card.into(), body);
                 panel_hits.extend(p.hits.iter().copied());
                 blit(p);
             }
@@ -2701,7 +2718,7 @@ impl WorkspaceView {
             let mut painted = Painted::default();
             painted
                 .rects
-                .extend(elevation_shadow(rect, crate::Elevation::Modal));
+                .extend(elevation_shadow(rect, crate::Elevation::Overlay));
             let p = ui::render(&row, rect);
             header_hits.extend(p.hits.iter().copied());
             painted.rects.extend(p.rects);
@@ -8008,6 +8025,8 @@ impl WorkspaceView {
             self.pending.persist = true;
         } else if id == crate::ATTENTION_PILL {
             self.next_workspace_needing_you();
+        } else if id == crate::HOST_INDICATOR {
+            self.pending.session = Some(SessionRequest::HostProjects);
         } else if id == SESSION_TRIGGER {
             self.layout.session_menu = !self.layout.session_menu;
             self.session_search_query.clear();
@@ -9562,7 +9581,7 @@ mod tests {
     }
 
     #[test]
-    fn connecting_to_a_host_starts_from_the_menu_the_welcome_page_or_the_remote_page() {
+    fn connecting_to_a_host_starts_from_the_menu_the_welcome_page_the_remote_page_or_its_host() {
         let (mut app, h, e) = open();
         app.draw(h);
         for (id, expected) in [
@@ -9572,6 +9591,7 @@ mod tests {
                 crate::NOTICE_ACTION_BASE + 1,
                 SessionRequest::NoticeAction(1),
             ),
+            (crate::HOST_INDICATOR, SessionRequest::HostProjects),
         ] {
             let effects = e.update(app.app_mut(), |v, _| {
                 v.header_click(id);

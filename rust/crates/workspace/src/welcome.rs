@@ -331,88 +331,256 @@ pub enum NoticeTone {
     Error,
 }
 
-/// A page in place of the editor, for a project whose files are not on this machine: a status line (such as
-/// the connection to its host), a title, a few lines and buttons.
+/// A button of the page in place of the editor; the first primary one reads as the thing to do now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CenterNotice {
-    pub status: String,
-    pub tone: NoticeTone,
-    pub title: String,
-    pub lines: Vec<String>,
-    /// Button labels; a click comes back as `NOTICE_ACTION_BASE + index`.
-    pub actions: Vec<String>,
+pub struct NoticeButton {
+    pub label: String,
+    pub primary: bool,
 }
 
-/// The top of the page in place of the editor, `width` wide: the status line, the title, a few lines and
-/// buttons. The window draws the project's Services panel under it.
-pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let (dot, ink) = match notice.tone {
-        NoticeTone::Info => (colors.text_accent, colors.text_muted),
-        NoticeTone::Good => (colors.success, colors.text_muted),
-        NoticeTone::Warning => (colors.warning, colors.text),
-        NoticeTone::Error => (colors.error, colors.text),
+/// Something about the project's machine that needs a hand (its pom is on another version, or updating).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoticeBanner {
+    pub tone: NoticeTone,
+    pub busy: bool,
+    pub text: String,
+    /// The index into `CenterNotice::actions` of the button at its end.
+    pub action: Option<usize>,
+    /// Commands to run by hand, under the text.
+    pub commands: Vec<String>,
+}
+
+/// A labeled line of the page's facts card: what it is, then a muted detail.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoticeFact {
+    pub label: String,
+    pub value: String,
+    pub detail: String,
+}
+
+/// A page in place of the editor, for a project whose files are not on this machine: its name and connection,
+/// banners, a facts card and buttons. The window draws the project's Services panel on a card under it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CenterNotice {
+    pub title: String,
+    pub status: String,
+    pub tone: NoticeTone,
+    /// Every button; a click comes back as `NOTICE_ACTION_BASE + index`. The ones no banner holds sit by the
+    /// title.
+    pub actions: Vec<NoticeButton>,
+    pub banners: Vec<NoticeBanner>,
+    pub facts: Vec<NoticeFact>,
+}
+
+const NOTICE_CARD_RADIUS: f32 = 10.0;
+const FACT_LABEL_W: f32 = 88.0;
+
+fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> Option<Node> {
+    let button = notice.actions.get(index)?;
+    let kind = if button.primary {
+        crate::ButtonKind::Primary
+    } else {
+        crate::ButtonKind::Secondary
     };
-    let banner = div()
+    Some(crate::small_button(
+        NOTICE_ACTION_BASE + index as u64,
+        None,
+        &button.label,
+        None,
+        kind,
+        true,
+        hovered,
+    ))
+}
+
+fn notice_banner(
+    notice: &CenterNotice,
+    banner: &NoticeBanner,
+    width: f32,
+    hovered: Option<u64>,
+) -> Node {
+    let colors = theme();
+    let (kind, tint) = match (banner.tone, banner.busy) {
+        (_, true) => (IconKind::LoadCircle, colors.text_accent),
+        (NoticeTone::Error, false) => (IconKind::XCircle, colors.error),
+        (NoticeTone::Warning, false) => (IconKind::Warning, colors.warning),
+        (NoticeTone::Info | NoticeTone::Good, false) => (IconKind::Info, colors.text_accent),
+    };
+    let mut line = div()
         .row()
         .items_center()
         .gap(10.0)
-        .pt(10.0)
-        .pb(10.0)
-        .pl(14.0)
-        .pr(14.0)
-        .rounded(10.0)
-        .bg(colors.element_background)
-        .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(dot))
+        .h_px(24.0)
+        .child(icon(kind).size(16.0).color(tint))
         .child(
             div().row().flex(1.0).child(
-                label(notice.status.clone())
+                label(banner.text.clone())
                     .size(12.0)
-                    .color(ink)
+                    .color(colors.text_muted)
                     .truncate(),
             ),
         );
-    let mut body = div().col().gap(8.0).px(4.0).child(
-        label(notice.title.clone())
-            .size(16.0)
-            .weight(600)
-            .color(colors.text),
-    );
-    for line in &notice.lines {
-        body = body.child(
-            label(line.clone())
-                .size(12.5)
-                .color(colors.text_muted)
-                .wrap(width - 8.0),
+    if let Some(button) = banner
+        .action
+        .and_then(|index| notice_button(notice, index, hovered))
+    {
+        line = line.child(button);
+    }
+    let mut card = div()
+        .col()
+        .gap(8.0)
+        .pt(10.0)
+        .pb(10.0)
+        .pl(14.0)
+        .pr(10.0)
+        .rounded(NOTICE_CARD_RADIUS)
+        .bg(colors.element_background)
+        .child(line);
+    if !banner.commands.is_empty() {
+        let mut block = div()
+            .col()
+            .gap(4.0)
+            .px(10.0)
+            .py(8.0)
+            .rounded(6.0)
+            .bg(colors.editor_background);
+        for command in &banner.commands {
+            block = block.child(
+                div().row().h_px(16.0).items_center().child(
+                    label(command.clone())
+                        .size(12.0)
+                        .mono()
+                        .color(colors.text)
+                        .truncate(),
+                ),
+            );
+        }
+        card = card.child(
+            div()
+                .row()
+                .pl(26.0)
+                .child(div().col().w_px((width - 50.0).max(40.0)).child(block)),
         );
     }
-    let mut buttons = div().row().gap(8.0);
-    for (index, text) in notice.actions.iter().enumerate() {
-        let kind = if index == 0 {
-            crate::ButtonKind::Secondary
-        } else {
-            crate::ButtonKind::Ghost
-        };
-        buttons = buttons.child(crate::small_button(
-            NOTICE_ACTION_BASE + index as u64,
-            None,
-            text,
-            None,
-            kind,
-            true,
-            hovered,
-        ));
+    card.into()
+}
+
+fn notice_facts(facts: &[NoticeFact]) -> Node {
+    let colors = theme();
+    let mut card = div()
+        .col()
+        .py(6.0)
+        .px(14.0)
+        .rounded(NOTICE_CARD_RADIUS)
+        .bg(colors.element_background);
+    for fact in facts {
+        let mut row = div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .h_px(26.0)
+            .child(
+                div().row().w_px(FACT_LABEL_W).child(
+                    label(fact.label.to_uppercase())
+                        .size(11.0)
+                        .weight(600)
+                        .color(colors.text_placeholder),
+                ),
+            )
+            .child(label(fact.value.clone()).size(12.0).color(colors.text));
+        if !fact.detail.is_empty() {
+            row = row.child(
+                div().row().flex(1.0).child(
+                    label(fact.detail.clone())
+                        .size(12.0)
+                        .color(colors.text_placeholder)
+                        .truncate(),
+                ),
+            );
+        }
+        card = card.child(row);
     }
+    card.into()
+}
+
+/// The top of the page in place of the editor, `width` wide: the project and its connection, banners, the
+/// facts card. The window draws the Services panel on a card under it, its own gap below.
+pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> Node {
+    let colors = theme();
+    let dot = match notice.tone {
+        NoticeTone::Info => colors.text_accent,
+        NoticeTone::Good => colors.success,
+        NoticeTone::Warning => colors.warning,
+        NoticeTone::Error => colors.error,
+    };
+    let held: Vec<usize> = notice
+        .banners
+        .iter()
+        .filter_map(|banner| banner.action)
+        .collect();
+    let mut buttons = div().row().items_center().gap(8.0);
+    for index in (0..notice.actions.len()).filter(|index| !held.contains(index)) {
+        if let Some(button) = notice_button(notice, index, hovered) {
+            buttons = buttons.child(button);
+        }
+    }
+    let tile = div()
+        .row()
+        .w_px(40.0)
+        .h_px(40.0)
+        .items_center()
+        .justify_center()
+        .rounded(NOTICE_CARD_RADIUS)
+        .bg(colors.element_background)
+        .child(icon(IconKind::Server).size(18.0).color(colors.text_accent));
+    let text = div()
+        .col()
+        .flex(1.0)
+        .gap(4.0)
+        .child(
+            div().row().h_px(20.0).items_center().child(
+                label(notice.title.clone())
+                    .size(16.0)
+                    .weight(600)
+                    .color(colors.text)
+                    .truncate(),
+            ),
+        )
+        .child(
+            div()
+                .row()
+                .h_px(16.0)
+                .items_center()
+                .gap(6.0)
+                .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(dot))
+                .child(
+                    div().row().flex(1.0).child(
+                        label(notice.status.clone())
+                            .size(12.0)
+                            .color(colors.text_muted)
+                            .truncate(),
+                    ),
+                ),
+        );
+    let head = div()
+        .row()
+        .items_center()
+        .gap(12.0)
+        .child(tile)
+        .child(text)
+        .child(buttons);
     let mut column = div()
         .col()
         .w_px(width)
         .pt(28.0)
         .pb(16.0)
         .gap(16.0)
-        .child(banner)
-        .child(body);
-    if !notice.actions.is_empty() {
-        column = column.child(buttons);
+        .child(head);
+    for banner in &notice.banners {
+        column = column.child(notice_banner(notice, banner, width, hovered));
+    }
+    if !notice.facts.is_empty() {
+        column = column.child(notice_facts(&notice.facts));
     }
     column.into()
 }
