@@ -1334,14 +1334,6 @@ impl PtyProvider for Terminals {
         self.inner.link_state()
     }
 
-    fn host(&self) -> String {
-        self.inner.host.name.clone()
-    }
-
-    fn reconnect_now(&self) {
-        self.inner.kick();
-    }
-
     fn close(&self, holder: &str) -> Result<(), String> {
         let connection = self.connection()?;
         let params = pty::CloseParams {

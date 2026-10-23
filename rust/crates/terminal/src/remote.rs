@@ -92,18 +92,6 @@ impl RemoteBackend {
         }
     }
 
-    pub(crate) fn link(&self) -> LinkState {
-        self.terminal.link()
-    }
-
-    pub(crate) fn host(&self) -> String {
-        self.terminal.provider().host()
-    }
-
-    pub(crate) fn reconnect_now(&self) {
-        self.terminal.provider().reconnect_now();
-    }
-
     /// Ends the holder and its command on the other machine, off this thread.
     pub(crate) fn close(&self) {
         self.detach();
