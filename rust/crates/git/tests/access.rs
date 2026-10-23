@@ -26,6 +26,8 @@ fn git(root: &Path, args: &[&str]) {
 fn repo(root: &Path) -> RepoSource {
     git(root, &["init", "--quiet", "-b", "main"]);
     git(root, &["config", "commit.gpgsign", "false"]);
+    git(root, &["config", "user.name", "Dev"]);
+    git(root, &["config", "user.email", "dev@example.com"]);
     std::fs::write(root.join("a.txt"), "one\n").expect("write");
     git(root, &["add", "."]);
     git(root, &["commit", "--quiet", "-m", "first"]);
