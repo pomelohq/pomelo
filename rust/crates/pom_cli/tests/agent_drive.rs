@@ -994,3 +994,54 @@ fn read_live_and_watch_live_show_the_reply_while_it_is_written() {
         && line["running"] == false
         && line["phase"] == "idle"));
 }
+
+#[test]
+fn send_never_presses_its_second_enter_into_a_dialog_drawn_while_the_prompt_hook_is_slow() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("slow-dialog", &["--as-person"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    assert_eq!(stdout_json(&sent)["turn"], 1);
+    fixture.until("the dialog", |fixture| {
+        fixture.pending()["answer_by"] == "terminal"
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        fixture.pending()["answer_by"],
+        "terminal",
+        "the dialog still waits"
+    );
+    let reviewer = fixture.reviewer();
+    assert_eq!(reviewer["reason"], "pending_approval");
+    assert_ne!(reviewer["last_event"], "PostToolUse");
+    let transcript =
+        std::fs::read_to_string(fixture.temp.path().join("s1.jsonl")).expect("transcript");
+    assert!(
+        transcript.contains("slow-dialog") && !transcript.contains("ran make test"),
+        "the tool did not run: {transcript}"
+    );
+}
+
+#[test]
+fn a_prompt_left_in_the_input_box_is_submitted_by_exactly_one_more_enter() {
+    let fixture = Fixture::new();
+    let sent = fixture.send("lost-enter", &["--take"]);
+    assert_eq!(
+        sent.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&sent.stderr)
+    );
+    assert_eq!(stdout_json(&sent)["turn"], 1);
+    let (code, _) = fixture.wait(&["--timeout", "10s"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(fixture.last_text(), "echo: lost-enter");
+    let enters = std::fs::read_to_string(fixture.temp.path().join("s1.jsonl.enters"))
+        .expect("the stand-in counted the Enters it got after the first");
+    assert_eq!(enters, "1");
+    assert_eq!(fixture.reviewer()["turn"], 1);
+}

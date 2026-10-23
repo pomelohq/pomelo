@@ -48,12 +48,53 @@ ask_permission() {
     deny) reply "$1" "not allowed: $(printf '%s' "$out" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p')" ;;
     esac
 }
+# One key within $1 tenths of a second, counted in bytes: an Enter reads back as an empty string.
+key_within() {
+    stty -icanon min 0 time "$1" 2>/dev/null
+    got=$(dd bs=1 count=1 2>/dev/null | wc -c | tr -d ' ')
+    stty icanon 2>/dev/null
+    [ "$got" -gt 0 ]
+}
+rule='\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200'
+# Like the agent when its UI drops the Enter: the prompt stays in the input box until another Enter.
+lost_enter() {
+    printf "$rule\r\n\342\235\257\302\240%s\r\n$rule\r\n" "$1"
+    key_within 80 || return 1
+    enters=1
+    while key_within 5; do enters=$((enters + 1)); done
+    printf '%s' "$enters" >"$transcript.enters"
+    printf '\033[3A\033[J'
+}
+# Like the agent whose prompt hook is slow while it already shows a permission dialog: a key in that
+# window answers the dialog's highlighted yes and runs the tool.
+slow_dialog() {
+    printf 'Bash command\r\nmake test\r\nDo you want to proceed?\r\n'
+    printf '\342\235\257 1. Yes\r\n  2. Yes, and always allow access to %s from this project\r\n  3. Yes, and switch to auto mode\r\n  4. No\r\nEsc to cancel - Tab to amend\r\n' "$PWD"
+    if key_within 30; then
+        printf '\033[8A\033[J'
+        event UserPromptSubmit ",\"prompt\":\"$1\""
+        event PostToolUse ",$tool,\"tool_response\":{\"stdout\":\"ok\"}"
+        reply "$1" "ran make test"
+        return
+    fi
+    printf '\033[8A\033[J'
+    event UserPromptSubmit ",\"prompt\":\"$1\""
+    printf '{"type":"user","uuid":"u-%s","message":{"role":"user","content":"%s"}}\n' "$1" "$1" >>"$transcript"
+    ask_permission "$1"
+}
 : >"$transcript"
 event SessionStart ""
 stty -echo 2>/dev/null
 while IFS= read -r line; do
     text=$(printf '%s' "$line" | tr -d '\033\r' | sed -e 's/\[200~//' -e 's/\[201~//')
     [ -z "$text" ] && continue
+    case "$text" in
+    *lost-enter*) lost_enter "$text" || continue ;;
+    *slow-dialog*)
+        slow_dialog "$text"
+        continue
+        ;;
+    esac
     event UserPromptSubmit ",\"prompt\":\"$text\""
     printf '{"type":"user","uuid":"u-%s","message":{"role":"user","content":"%s"}}\n' "$text" "$text" >>"$transcript"
     case "$text" in

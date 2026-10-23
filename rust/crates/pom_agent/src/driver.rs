@@ -33,6 +33,10 @@ pub trait AgentDriver: Send + Sync {
     fn permission_dialog(&self, lines: &[String]) -> Option<PermissionDialog>;
     /// The writes that answer that dialog: its highlighted first choice, or its deny key.
     fn answer_permission(&self, allow: bool) -> Vec<Keystrokes>;
+    /// Whether the rendered screen shows any dialog that Enter would answer, known or not.
+    fn shows_choices(&self, lines: &[String]) -> bool;
+    /// Whether the agent's input box still holds `text`, typed but not yet submitted.
+    fn holds_unsent(&self, lines: &[String], text: &str) -> bool;
 }
 
 /// The agent's permission dialog as it is drawn.
@@ -213,7 +217,63 @@ impl AgentDriver for ClaudeDriver {
             pause_ms: 0,
         }
     }
+
+    fn shows_choices(&self, lines: &[String]) -> bool {
+        let bottom = &lines[lines.len().saturating_sub(DIALOG_TAIL_LINES)..];
+        self.permission_dialog(lines).is_some()
+            || self.trust_dialog(lines).is_some()
+            || bottom.iter().any(|line| {
+                DIALOG_FOOTERS.iter().any(|footer| line.contains(footer))
+                    || line
+                        .trim_start()
+                        .strip_prefix(SELECTION_MARK)
+                        .and_then(|rest| rest.trim_start().split_once(". "))
+                        .is_some_and(|(number, _)| {
+                            !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+                        })
+            })
+    }
+
+    fn holds_unsent(&self, lines: &[String], text: &str) -> bool {
+        // The input box is the prompt line right under a rule; a sent turn's echo above it has no rule.
+        let Some(input) = lines.iter().enumerate().rev().find_map(|(at, line)| {
+            let rest = line.trim_start().strip_prefix(SELECTION_MARK)?;
+            let ruled = at
+                .checked_sub(1)
+                .and_then(|above| lines.get(above))
+                .is_some_and(|above| {
+                    let above = above.trim();
+                    !above.is_empty() && above.chars().all(|c| c == INPUT_RULE)
+                });
+            ruled.then(|| rest.split_whitespace().collect::<Vec<_>>().join(" "))
+        }) else {
+            return false;
+        };
+        if input.starts_with(PASTED_PLACEHOLDER) {
+            return true;
+        }
+        let first_line = text
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or_default();
+        let wanted: String = first_line
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(UNSENT_PREFIX_CHARS)
+            .collect();
+        !wanted.is_empty() && input.starts_with(&wanted)
+    }
 }
+
+/// Footers only a dialog draws under its choices.
+const DIALOG_FOOTERS: [&str; 2] = ["Esc to cancel", "Enter to confirm"];
+const INPUT_RULE: char = '\u{2500}';
+/// What the input box shows in place of a long paste.
+const PASTED_PLACEHOLDER: &str = "[Pasted text";
+/// The input box wraps a long prompt, so only its start is compared.
+const UNSENT_PREFIX_CHARS: usize = 16;
 
 const DIALOG_QUESTION: &str = "Do you want to proceed?";
 const DIALOG_PLAIN_YES: &str = "Yes";
