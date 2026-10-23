@@ -414,6 +414,7 @@ pub(crate) fn parse_duration(text: &str) -> Result<Duration, String> {
 fn drive(session: &Session) -> Drive {
     Drive {
         limits: session.config.limits.clone(),
+        agents: session.config.agents.clone().unwrap_or_default(),
         state: session.state.clone(),
         holders: SocketDir::from_env(),
         project: session.config.session.clone(),

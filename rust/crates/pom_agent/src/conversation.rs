@@ -676,6 +676,9 @@ impl Drive {
         scope: ApproveScope,
     ) -> Result<(), DriveError> {
         gate.approve(&view.holder, scope)?;
+        if scope != ApproveScope::Deny {
+            gate.allow_prompt(self.agents.peer_approve)?;
+        }
         if view.session_id.is_empty() {
             return Err(DriveError::NotFound(format!(
                 "{} has no session yet",
@@ -723,6 +726,9 @@ impl Drive {
         send_as: SendAs,
     ) -> Result<PermissionAnswer, DriveError> {
         gate.drivable_target(&view.holder)?;
+        if allow {
+            gate.allow_prompt(self.agents.peer_approve)?;
+        }
         if view.session_id.is_empty() {
             return Err(DriveError::NotFound(format!(
                 "{} has no session yet",
@@ -1296,6 +1302,7 @@ mod tests {
             binary: "/bin/false".into(),
             tool_path: String::new(),
             limits: Default::default(),
+            agents: Default::default(),
         };
         let view = |session: &str, holder: &str| SessionView {
             handle: format!("feat-login/{session}"),
@@ -1356,6 +1363,7 @@ mod tests {
             binary: "/bin/false".into(),
             tool_path: String::new(),
             limits: Default::default(),
+            agents: Default::default(),
         };
         let holder = "ws-myproject-feat-login-claude-reviewer";
         std::fs::create_dir_all(temp.join("s")).expect("dir");
@@ -1439,6 +1447,60 @@ mod tests {
         assert!(matches!(
             drive.typing_lease(&gate, &view, SendAs::LeaseHolder),
             Err(DriveError::Refused(Refusal::LeaseHeld { .. }))
+        ));
+    }
+
+    #[test]
+    fn an_agent_only_denies_a_peers_prompt_unless_the_project_lets_it_allow() {
+        let temp = tempfile::tempdir().expect("temp");
+        let (mut drive, view) = live_session(temp.path());
+        let id = ask_at_terminal(&drive, &view);
+        let workspace = crate::gate::Workspace {
+            project: "myproject".into(),
+            branch: "feat-login".into(),
+        };
+        let caller = Caller::Agent {
+            holder: "ws-myproject-feat-login-claude-lead".into(),
+        };
+        let gate = Gate::open(
+            &drive.state,
+            caller,
+            workspace,
+            crate::gate::Limits::OPERATOR,
+        )
+        .expect("gate");
+        let refused = |result: Result<(), DriveError>| {
+            matches!(result, Err(DriveError::Refused(Refusal::AllowNeedsPerson)))
+        };
+        assert!(refused(drive.approve(
+            &gate,
+            &view,
+            &id,
+            ApproveScope::Once
+        )));
+        assert!(refused(
+            drive
+                .answer_permission(&gate, &view, Some(&id), true, "", SendAs::LeaseHolder)
+                .map(|_| ())
+        ));
+        assert!(!refused(drive.approve(
+            &gate,
+            &view,
+            &id,
+            ApproveScope::Deny
+        )));
+
+        drive.agents.peer_approve = true;
+        assert!(!refused(drive.approve(
+            &gate,
+            &view,
+            &id,
+            ApproveScope::Once
+        )));
+        assert!(!refused(
+            drive
+                .answer_permission(&gate, &view, Some(&id), true, "", SendAs::LeaseHolder)
+                .map(|_| ())
         ));
     }
 

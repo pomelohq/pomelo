@@ -275,6 +275,7 @@ impl DriveAgents {
                 binary: context.runner.binary().to_path_buf(),
                 tool_path: pom_services::tool_path().to_string(),
                 limits: context.config.limits.clone(),
+                agents: context.config.agents.clone().unwrap_or_default(),
             },
         }
     }
