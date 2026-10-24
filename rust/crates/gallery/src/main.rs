@@ -601,12 +601,14 @@ impl Gallery {
                 interaction,
             ));
             let menu = match self.menu {
-                Some(Menu::Pages) => {
-                    Some((chrome::page_menu(&self.pages, self.page), chrome::PAGES))
-                }
-                Some(Menu::Themes) => {
-                    Some((chrome::theme_menu(&self.themes, self.theme), chrome::THEMES))
-                }
+                Some(Menu::Pages) => Some((
+                    chrome::page_menu(&self.pages, self.page, self.chrome_hovered),
+                    chrome::PAGES,
+                )),
+                Some(Menu::Themes) => Some((
+                    chrome::theme_menu(&self.themes, self.theme, self.chrome_hovered),
+                    chrome::THEMES,
+                )),
                 None => None,
             };
             let anchor = |id: u64| {
