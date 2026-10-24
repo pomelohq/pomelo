@@ -5300,13 +5300,9 @@ mod tests {
         for expected in ["Start at Login", "Pomelo 0.9.0"] {
             assert!(general.iter().any(|t| t.text == expected), "{expected}");
         }
-        assert_eq!(
-            general
-                .iter()
-                .any(|t| t.text == "Check for Updates Automatically"),
-            cfg!(target_os = "macos"),
-            "only the macOS app updates itself"
-        );
+        for expected in ["Check for Updates Automatically", "Update Channel"] {
+            assert!(general.iter().any(|t| t.text == expected), "{expected}");
+        }
         let editor = texts_of(EDITOR, &state, &settings);
         for expected in ["None", "Split", "Auto"] {
             assert!(editor.iter().any(|t| t.text == expected), "{expected}");
