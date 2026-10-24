@@ -4859,7 +4859,7 @@ fn status_chip(running: bool) -> Node {
         .row()
         .items_center()
         .gap(6.0)
-        .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
+        .child(ui::dot(color, 7.0))
         .child(label(text).size(12.0).color(color))
         .into()
 }

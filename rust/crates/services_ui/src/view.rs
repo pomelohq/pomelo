@@ -28,12 +28,7 @@ pub(crate) fn ai_tint() -> Rgba {
 pub(crate) fn status_icon(state: &State) -> Node {
     let colors = theme();
     let inner: Node = match state {
-        State::Running => div()
-            .w_px(8.0)
-            .h_px(8.0)
-            .rounded(4.0)
-            .bg(colors.success)
-            .into(),
+        State::Running => ui::dot(colors.success, 8.0).into(),
         State::Busy(_) => icon(IconKind::RotateCw)
             .size(11.0)
             .color(colors.text_accent)
@@ -46,12 +41,7 @@ pub(crate) fn status_icon(state: &State) -> Node {
             .size(12.0)
             .color(colors.warning)
             .into(),
-        State::Stopped => div()
-            .w_px(8.0)
-            .h_px(8.0)
-            .rounded(4.0)
-            .border(1.5, colors.icon_muted)
-            .into(),
+        State::Stopped => ui::ring(colors.icon_muted, 8.0).into(),
     };
     div()
         .row()
@@ -60,16 +50,6 @@ pub(crate) fn status_icon(state: &State) -> Node {
         .items_center()
         .justify_center()
         .child(inner)
-        .into()
-}
-
-/// A small dot in `color`, for legends and repo pips.
-pub(crate) fn dot(color: Rgba, size: f32) -> Node {
-    div()
-        .w_px(size)
-        .h_px(size)
-        .rounded(size / 2.0)
-        .bg(color)
         .into()
 }
 

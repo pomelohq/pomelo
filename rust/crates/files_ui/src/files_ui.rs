@@ -7589,7 +7589,7 @@ impl FilesView {
             .px(12.0)
             .gap(8.0)
             .items_center()
-            .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(theme().warning))
+            .child(ui::dot(theme().warning, 8.0))
             .child(
                 div()
                     .col()

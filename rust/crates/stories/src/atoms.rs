@@ -317,6 +317,34 @@ pub fn stories() -> Vec<StoryDef> {
         story("divider-faded", "Divider", "Faded", CONTROL, || {
             still(|_, _| alone(div().col().w_px(200.0).child(ui::divider_faded())))
         }),
+        story("dot-states", "Status dot", "States", CONTROL, || {
+            still(|_, _| {
+                let colors = theme();
+                alone(
+                    div()
+                        .items_center()
+                        .gap(12.0)
+                        .child(ui::dot(colors.success, 7.0))
+                        .child(ui::dot(colors.warning, 7.0))
+                        .child(ui::dot(colors.error, 7.0))
+                        .child(ui::dot(colors.text_accent, 7.0))
+                        .child(ui::ring(colors.icon_muted, 8.0)),
+                )
+            })
+        }),
+        story("dot-sizes", "Status dot", "Sizes", CONTROL, || {
+            still(|_, _| {
+                let color = theme().success;
+                alone(
+                    div()
+                        .items_center()
+                        .gap(12.0)
+                        .child(ui::dot(color, 6.0))
+                        .child(ui::dot(color, 7.0))
+                        .child(ui::dot(color, 8.0)),
+                )
+            })
+        }),
         story("input-empty", "Input", "Empty", INPUT, || {
             still(|_, _| {
                 input(

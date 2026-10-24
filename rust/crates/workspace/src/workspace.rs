@@ -1146,12 +1146,7 @@ pub fn host_indicator(host: &str, link: HostLink, hot: bool, ring: Rgba) -> Node
         HostLink::Reconnecting => (colors.warning, colors.warning),
         HostLink::Disconnected => (colors.error, colors.error),
     };
-    let marker = div()
-        .w_px(6.0)
-        .h_px(6.0)
-        .rounded(3.0)
-        .bg(dot)
-        .ring(1.5, ring);
+    let marker = ui::dot(dot, 6.0).ring(1.5, ring);
     let glyph = div()
         .row()
         .w_px(14.0)
@@ -3602,7 +3597,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     .col()
                     .h_px(13.0)
                     .justify_end()
-                    .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(theme().success)),
+                    .child(ui::dot(theme().success, 6.0)),
             );
         }
         let mut b = div()
@@ -3705,7 +3700,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             .col()
                             .h_px(14.0)
                             .justify_end()
-                            .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(dot)),
+                            .child(ui::dot(dot, 6.0)),
                     );
                 }
                 let mut button = div()

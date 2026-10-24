@@ -273,7 +273,7 @@ impl GitPanel {
                 );
             }
             if dot {
-                cell = cell.child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(colors.error));
+                cell = cell.child(ui::dot(colors.error, 6.0));
             }
             cell.into()
         };

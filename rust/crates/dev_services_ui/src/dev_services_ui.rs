@@ -370,7 +370,7 @@ fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node
         .row()
         .items_center()
         .gap(6.0)
-        .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color))
+        .child(ui::dot(color, 7.0))
         .child(small(format!("{name} :{}", server.port), colors.text_muted))
         .into()
 }
@@ -743,11 +743,7 @@ fn delivery_row(delivery: &Delivery) -> Node {
         .items_center()
         .gap(10.0)
         .h_px(26.0)
-        .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(if ok {
-            colors.success
-        } else {
-            colors.error
-        }))
+        .child(ui::dot(if ok { colors.success } else { colors.error }, 8.0))
         .child(
             div()
                 .row()

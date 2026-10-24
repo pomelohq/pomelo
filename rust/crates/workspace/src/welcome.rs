@@ -537,7 +537,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
                 .h_px(16.0)
                 .items_center()
                 .gap(6.0)
-                .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(dot))
+                .child(ui::dot(dot, 8.0))
                 .child(
                     div().row().flex(1.0).child(
                         label(notice.status.clone())

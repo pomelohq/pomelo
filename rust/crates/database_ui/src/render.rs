@@ -158,18 +158,10 @@ fn trailing(text: String) -> Node {
 fn dot(status: Status) -> Node {
     let colors = theme();
     let mark = match status {
-        Status::Connected => div().w_px(7.0).h_px(7.0).rounded(3.5).bg(colors.success),
-        Status::Failed { warning: true } => {
-            div().w_px(7.0).h_px(7.0).rounded(3.5).bg(colors.warning)
-        }
-        Status::Failed { warning: false } => {
-            div().w_px(7.0).h_px(7.0).rounded(3.5).bg(colors.error)
-        }
-        Status::NotConnected | Status::Loading => div()
-            .w_px(8.0)
-            .h_px(8.0)
-            .rounded(4.0)
-            .border(1.5, colors.text_placeholder),
+        Status::Connected => ui::dot(colors.success, 7.0),
+        Status::Failed { warning: true } => ui::dot(colors.warning, 7.0),
+        Status::Failed { warning: false } => ui::dot(colors.error, 7.0),
+        Status::NotConnected | Status::Loading => ui::ring(colors.text_placeholder, 8.0),
     };
     div()
         .row()
