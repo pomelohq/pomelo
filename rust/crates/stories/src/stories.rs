@@ -66,6 +66,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
         "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions. Small in panels and toolbars, Medium in dialogs and forms.",
         "Link" => "A text-only action that reads like a link, beside the value it acts on: Open in browser, Change.",
+        "Select" => "Pick one of a few known values: a theme, a profile, a database. Opens the screen's menu of choices; a placeholder shows while nothing is chosen.",
         "Checkbox" => "An on or off choice in a form.",
         "Segmented" => "Compact filters on a toolbar, such as All, Running, Failed.",
         "Toggle group" => "Mutually exclusive choices inside a form, with icons.",

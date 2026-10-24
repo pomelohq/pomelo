@@ -18,8 +18,8 @@ pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
 use ui::{
-    chevron_down, chevron_right, chevron_up_down, close_icon, div, label, render, search_icon,
-    theme, Div, LabelSize, Node, Rect, Rgba,
+    chevron_down, chevron_right, close_icon, div, label, render, search_icon, theme, Div,
+    LabelSize, Node, Rect, Rgba,
 };
 
 // Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
@@ -4757,25 +4757,7 @@ fn display_value(value: &str) -> String {
 }
 
 fn dropdown(value: &str, id: u64) -> Node {
-    let value = display_value(value);
-    let value = value.as_str();
-    let text_w = ui::measure_text_width(value, 13.0, false, ui::ui_font_weight());
-    let w = (10.0 + text_w + 10.0 + 12.0 + 8.0).max(188.0);
-    div()
-        .row()
-        .w_px(w)
-        .h_px(28.0)
-        .pl(10.0)
-        .pr(8.0)
-        .items_center()
-        .justify_between()
-        .rounded(ROUND)
-        .bg(chip_c())
-        .border(1.0, border_c())
-        .on_click(id)
-        .child(label(value).size(13.0).color(title_c()))
-        .child(chevron_up_down().size(12.0).color(dim_c()))
-        .into()
+    ui::select(id, display_value(value)).min_width(188.0).into()
 }
 
 fn toggle_switch(on: bool, id: u64) -> Node {

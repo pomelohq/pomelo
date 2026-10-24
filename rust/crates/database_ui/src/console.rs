@@ -154,28 +154,13 @@ impl ConsoleFooter {
     fn toolbar(&self) -> Node {
         let colors = theme();
         let database = self.database();
-        let picker = div()
-            .row()
-            .h_px(22.0)
-            .px(6.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .border(1.0, colors.border_variant)
-            .on_click(DATABASE_PICKER)
-            .child(icon(IconKind::Cylinder).size(12.0).color(colors.icon_muted))
-            .child(
-                label(
-                    database.map_or_else(|| "Select database".to_string(), crate::tree::readable),
-                )
-                .size(12.0)
-                .color(colors.text),
-            )
-            .child(
-                icon(IconKind::ChevronUpDown)
-                    .size(10.0)
-                    .color(colors.icon_muted),
-            );
+        let picker = ui::select(
+            DATABASE_PICKER,
+            database.map(crate::tree::readable).unwrap_or_default(),
+        )
+        .placeholder("Select database")
+        .icon(Some(IconKind::Cylinder))
+        .size(ui::ButtonSize::Small);
         let running = self.running.busy();
         let run = div()
             .row()
