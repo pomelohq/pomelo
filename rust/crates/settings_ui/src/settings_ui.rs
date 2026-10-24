@@ -2950,21 +2950,15 @@ fn update_channel_row(s: &Settings) -> PageItem {
     })
 }
 
-/// The app replaces itself only on macOS; elsewhere a new release is installed from its tarball.
+/// Only an install the updater may replace checks for updates: Pomelo.app on macOS, an install.sh install on
+/// Linux.
 fn update_items(s: &Settings, general: &GeneralPage) -> Vec<PageItem> {
     let version = format!("Pomelo {}", general.version);
-    if !cfg!(target_os = "macos") {
-        return vec![PageItem::Row(SettingRow {
-            title: version.into(),
-            description:
-                "New releases are on GitHub: install the newer tarball with its install.sh to update."
-                    .into(),
-            control: Control::Value {
-                text: String::new(),
-            },
-            reset: None,
-        })];
-    }
+    let not_replaced = if cfg!(target_os = "macos") {
+        "Only the installed Pomelo updates itself; this build does not."
+    } else {
+        "Only a Pomelo install.sh installed updates itself; update this one the way it was installed."
+    };
     vec![
         PageItem::Row(SettingRow {
             title: "Check for Updates Automatically".into(),
@@ -2981,9 +2975,7 @@ fn update_items(s: &Settings, general: &GeneralPage) -> Vec<PageItem> {
             description: match (&general.update_note, general.updates_apply) {
                 (Some(note), true) => note.clone().into(),
                 (None, true) => "Looks for a newer release right away.".into(),
-                (_, false) => {
-                    "Only the installed Pomelo updates itself; this build does not.".into()
-                }
+                (_, false) => not_replaced.into(),
             },
             control: Control::Button {
                 id: CTRL_CHECK_UPDATES,
@@ -5308,13 +5300,9 @@ mod tests {
         for expected in ["Start at Login", "Pomelo 0.9.0"] {
             assert!(general.iter().any(|t| t.text == expected), "{expected}");
         }
-        assert_eq!(
-            general
-                .iter()
-                .any(|t| t.text == "Check for Updates Automatically"),
-            cfg!(target_os = "macos"),
-            "only the macOS app updates itself"
-        );
+        for expected in ["Check for Updates Automatically", "Update Channel"] {
+            assert!(general.iter().any(|t| t.text == expected), "{expected}");
+        }
         let editor = texts_of(EDITOR, &state, &settings);
         for expected in ["None", "Split", "Auto"] {
             assert!(editor.iter().any(|t| t.text == expected), "{expected}");

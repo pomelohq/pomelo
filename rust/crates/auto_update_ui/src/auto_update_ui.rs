@@ -149,11 +149,12 @@ pub fn settings_row(snapshot: &Snapshot, now: SystemTime) -> SettingsRow {
         enabled,
     };
     if !snapshot.supported {
-        return row(
-            "Only the installed Pomelo updates itself; this build does not.".into(),
-            "Check Now",
-            false,
-        );
+        let note = if cfg!(target_os = "macos") {
+            "Only the installed Pomelo updates itself; this build does not."
+        } else {
+            "Only a Pomelo install.sh installed updates itself; update this one the way it was installed."
+        };
+        return row(note.into(), "Check Now", false);
     }
     match &snapshot.status {
         Status::Idle | Status::UpToDate => row(

@@ -8,6 +8,7 @@ name: Release
 #   appcast.xml                    the Sparkle feed apps from before the rewrite poll
 #   Pomelo-<v>-linux-<arch>.tar.gz the Linux app and pom with install.sh (x86_64, aarch64)
 #   pom-<v>-linux-<arch>.tar.gz    pom alone with install.sh, for a server without a desktop
+#   a .sig beside each tarball     what the updaters (app, pom self-update, the host update) verify
 # Run by hand (workflow_dispatch) it builds and signs the current version and publishes nothing.
 # Secrets: MACOS_CERT_P12, MACOS_CERT_PASSWORD, MACOS_SIGN_IDENTITY, KEYCHAIN_PASSWORD, NOTARY_APPLE_ID,
 # NOTARY_APP_PASSWORD, NOTARY_TEAM_ID, SPARKLE_ED_PRIVATE_KEY; DOCS_DISPATCH_TOKEN is optional.
@@ -94,8 +95,12 @@ jobs:
           if [ "${#FILES[@]}" -eq 0 ]; then
             echo "::error::no Linux tarball for $VERSION"; exit 1
           fi
+          for FILE in "${FILES[@]}"; do
+            [ -s "$FILE.sig" ] || { echo "::error::$FILE has no signature"; exit 1; }
+          done
           sha256sum "${FILES[@]}" > checksums-linux.txt
-          gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber "${FILES[@]}" checksums-linux.txt
+          gh release upload "v$VERSION" --repo "$GITHUB_REPOSITORY" --clobber "${FILES[@]}" \
+            "${FILES[@]/%/.sig}" checksums-linux.txt
 
   # The docs site mirrors this repo's CHANGELOG at build time but only rebuilds on its own pushes: kick its
   # deploy so the Changelog page shows this release. Skips quietly without DOCS_DISPATCH_TOKEN.

@@ -65,6 +65,7 @@ pub(crate) const COMMANDS: &[(&str, &[&str])] = &[
     ("onboard", &[]),
     ("mcp", &[]),
     ("completion", &["bash", "zsh", "fish"]),
+    ("self-update", &["--channel", "--version", "--check"]),
     ("version", &[]),
     ("help", &[]),
 ];
