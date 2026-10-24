@@ -109,7 +109,8 @@ impl Ports {
 pub struct Initial {
     pub projects: Vec<ProjectRoute>,
     pub github: Option<GithubHook>,
-    /// What other machines must present; without one a non-loopback bind is refused (see `refusal`).
+    /// What requests from outside this machine must present; without one a non-loopback bind or a public domain
+    /// is refused (see `refusal`).
     pub token: Option<ProxyToken>,
 }
 
@@ -370,6 +371,7 @@ impl DevProxy {
             .thread_name("pom-proxy")
             .enable_all()
             .build()?;
+        let initial_token_missing = initial.token.is_none();
         let router = Arc::new(Router::new(machine).with_domain(&network.domain));
         let log = Arc::new(ProxyLog::default());
         let shared = Arc::new(server::Shared::new(
@@ -419,7 +421,11 @@ impl DevProxy {
                 Err(error) => eprintln!("webhook relay: {address} unavailable: {error}"),
             }
         }
-        if network.exposed() && network.allow_unauthenticated && (proxy_bound || webhook_bound) {
+        if network.reach().is_some()
+            && network.allow_unauthenticated
+            && initial_token_missing
+            && (proxy_bound || webhook_bound)
+        {
             eprintln!("dev proxy: {}", exposure_warning(&network));
         }
         drop(_entered);
@@ -488,16 +494,26 @@ pub fn listening(port: u16) -> bool {
     .is_ok()
 }
 
-/// Other machines can reach the proxy with no token: say so.
+/// Someone other than this machine's user can reach the proxy with no token: say so.
 pub fn exposure_warning(network: &pom_env::DevNetwork) -> String {
     let trust = if network.trusted_proxies.is_empty() {
         " and no proxy.trusted_proxies, so forwarded headers are ignored"
     } else {
         ""
     };
+    let reach = if network.exposed() {
+        format!(
+            "listening on {}, reachable from other machines",
+            network.bind
+        )
+    } else {
+        format!(
+            "serving {}, reachable through a reverse proxy",
+            network.domain
+        )
+    };
     format!(
-        "listening on {}, reachable from other machines{trust}. proxy.allow_unauthenticated is on, so no token is asked for: keep it on a private network (Tailscale, a LAN) or behind an authenticating reverse proxy, or run `pom proxy token new`",
-        network.bind
+        "{reach}{trust}. proxy.allow_unauthenticated is on, so no token is asked for: keep it on a private network (Tailscale, a LAN) or behind an authenticating reverse proxy, or run `pom proxy token new`"
     )
 }
 

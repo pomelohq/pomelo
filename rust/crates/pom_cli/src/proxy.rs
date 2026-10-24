@@ -341,7 +341,7 @@ fn show_network(
     let token = pom_proxy::proxy_token(network, &StateDir::from_env());
     if let Some(reason) = pom_proxy::refusal(network, token.as_ref()) {
         crate::say(out, &format!("error: {reason}"))?;
-    } else if network.exposed() && token.is_none() {
+    } else if network.reach().is_some() && token.is_none() {
         crate::say(
             out,
             &format!("warning: {}", pom_proxy::exposure_warning(network)),

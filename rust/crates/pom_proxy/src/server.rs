@@ -164,13 +164,29 @@ pub(crate) enum Kind {
 #[derive(Clone, Copy)]
 pub(crate) struct Peer {
     address: SocketAddr,
-    /// Connected from this machine: loopback, or one of its own addresses (a service calling a public URL).
+    /// Connected from this machine (loopback, or one of its own addresses) and not from a trusted proxy, which
+    /// forwards someone else's request.
     local: bool,
+}
+
+impl Peer {
+    /// Someone on this machine asked for it by a `localhost` name, so the token is not needed.
+    fn this_machine(&self, host: &str) -> bool {
+        self.local && crate::access::localhost_name(host)
+    }
 }
 
 fn same_machine(client: SocketAddr, local: Option<SocketAddr>) -> bool {
     let client = client.ip().to_canonical();
     client.is_loopback() || local.is_some_and(|local| local.ip().to_canonical() == client)
+}
+
+fn local_peer(
+    client: SocketAddr,
+    local: Option<SocketAddr>,
+    network: &pom_env::DevNetwork,
+) -> bool {
+    same_machine(client, local) && !network.trusts(client.ip().to_canonical())
 }
 
 pub(crate) async fn accept(listener: TcpListener, shared: Arc<Shared>, kind: Kind) {
@@ -185,7 +201,7 @@ pub(crate) async fn accept(listener: TcpListener, shared: Arc<Shared>, kind: Kin
         };
         let peer = Peer {
             address: client,
-            local: same_machine(client, stream.local_addr().ok()),
+            local: local_peer(client, stream.local_addr().ok(), &shared.network),
         };
         let shared = shared.clone();
         tokio::spawn(async move {
@@ -400,7 +416,7 @@ fn handle_control(
     if request.uri().path() != crate::faults::RELOAD_PATH {
         return text_response(404, "dev-proxy: no such pom endpoint");
     }
-    if !is_fault_reload(request, peer.address) {
+    if !is_fault_reload(request, peer.this_machine(host)) {
         return text_response(
             405,
             "dev-proxy: `pom proxy fault` reloads the rules here (POST from this machine)",
@@ -477,7 +493,7 @@ async fn handle_proxy(
     let query = match check_token(
         shared.token.as_deref(),
         &shared.network,
-        peer.local,
+        peer.this_machine(&host),
         &mut request,
         &host,
     ) {
@@ -857,7 +873,11 @@ async fn handle_webhook(
     if request.uri().path().trim_end_matches('/') == GITHUB_PATH {
         return handle_github(shared, request).await;
     }
-    let query = match relay_token(shared.token.as_deref(), peer.local, &mut request) {
+    let query = match relay_token(
+        shared.token.as_deref(),
+        peer.this_machine(&host),
+        &mut request,
+    ) {
         Ok(query) => query,
         Err(response) => return *response,
     };
@@ -1020,14 +1040,14 @@ fn no_webhook_route(path: &str) -> Response<Body> {
 
 const CONTROL_PREFIX: &str = "/_pom/";
 
-fn is_fault_reload(request: &Request<Incoming>, client: SocketAddr) -> bool {
+fn is_fault_reload(request: &Request<Incoming>, this_machine: bool) -> bool {
     request.method() == hyper::Method::POST
         && request.uri().path() == crate::faults::RELOAD_PATH
         && request
             .headers()
             .get(crate::faults::RELOAD_HEADER)
             .is_some_and(|value| value.as_bytes() == b"faults")
-        && client.ip().to_canonical().is_loopback()
+        && this_machine
 }
 
 fn json_response(status: u16, body: String) -> Response<Body> {
@@ -1247,5 +1267,35 @@ mod tests {
             peer("100.64.0.11:5000"),
             address("100.64.0.10:8767")
         ));
+    }
+
+    #[test]
+    fn a_trusted_proxy_on_this_machine_is_never_this_machine() {
+        let peer = |text: &str| {
+            text.parse::<SocketAddr>()
+                .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 0)))
+        };
+        let trusting = pom_env::DevNetwork::new(
+            pom_env::DevPorts::default(),
+            &pom_env::ProxySettings {
+                trusted_proxies: vec!["127.0.0.1".into()],
+                ..pom_env::ProxySettings::default()
+            },
+        );
+        assert!(!local_peer(peer("127.0.0.1:5000"), None, &trusting));
+        assert!(!local_peer(
+            peer("[::ffff:127.0.0.1]:5000"),
+            None,
+            &trusting
+        ));
+        assert!(local_peer(peer("[::1]:5000"), None, &trusting));
+        assert!(local_peer(peer("127.0.0.1:5000"), None, &network()));
+        let local = Peer {
+            address: peer("127.0.0.1:5000"),
+            local: true,
+        };
+        assert!(local.this_machine("web.web.main.localhost:8767"));
+        assert!(local.this_machine("127.0.0.1:8767"));
+        assert!(!local.this_machine(HOST));
     }
 }

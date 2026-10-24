@@ -1431,7 +1431,7 @@ impl App {
                 let network = pom_env::dev_network();
                 let token = pom_proxy::proxy_token(&network, &pom_paths::StateDir::from_env());
                 if let Some(finding) = pom_doctor::proxy_exposure(
-                    network.bind,
+                    network.reach(),
                     network.trusted_proxies.len(),
                     token.is_some(),
                     pom_proxy::refusal(&network, token.as_ref()),

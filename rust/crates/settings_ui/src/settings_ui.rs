@@ -3678,7 +3678,7 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
         }),
         PageItem::Row(SettingRow {
             title: "Domain".into(),
-            description: "Service hosts end in it, beside localhost: <service>.<repo>.<ticket or branch>.<domain>. Changing it rewrites the env files; restart running services.".into(),
+            description: "Service hosts end in it, beside localhost: <service>.<repo>.<ticket or branch>.<domain>. A domain other than localhost needs the proxy token for every request to it, even through a reverse proxy here. Changing it rewrites the env files; restart running services.".into(),
             control: Control::TextInput {
                 id: CTRL_PROXY_DOMAIN,
                 value: s.proxy.domain.clone(),
@@ -3709,7 +3709,7 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
         }),
         PageItem::Row(SettingRow {
             title: "Trusted Proxies".into(),
-            description: "Addresses or ranges, comma separated, whose X-Forwarded-Proto and X-Forwarded-Host are believed; anyone else's are replaced.".into(),
+            description: "Addresses or ranges, comma separated, whose X-Forwarded-Proto and X-Forwarded-Host are believed; anyone else's are replaced. Requests they forward always need the proxy token.".into(),
             control: Control::TextInput {
                 id: CTRL_PROXY_TRUSTED,
                 value: proxy_text(CTRL_PROXY_TRUSTED, s),

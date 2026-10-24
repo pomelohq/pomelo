@@ -778,7 +778,7 @@ pub(crate) fn doctor(
             let network = pom_env::dev_network();
             let token = pom_proxy::proxy_token(&network, &StateDir::from_env());
             pom_doctor::proxy_exposure(
-                network.bind,
+                network.reach(),
                 network.trusted_proxies.len(),
                 token.is_some(),
                 pom_proxy::refusal(&network, token.as_ref()),
