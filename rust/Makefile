@@ -1,6 +1,6 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
 .PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test test-cargo fmt fmt-check hakari-check lint check check-changed clean gc trim \
-        patch minor major hotfix hotfix-release version
+        patch minor major hotfix hotfix-release nightly version
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
@@ -100,6 +100,10 @@ version:
 
 patch minor major:
 	HOTFIX=$(HOTFIX) scripts/bump-version.sh $@
+
+nightly:
+	gh workflow run nightly.yml --repo pomelohq/pomelo --ref main -f dry_run=false -f force=true
+	@echo "nightly of main dispatched; watch it with: gh run watch --repo pomelohq/pomelo"
 
 hotfix:
 	scripts/hotfix.sh start

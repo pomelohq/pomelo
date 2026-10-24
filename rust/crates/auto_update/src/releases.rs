@@ -363,6 +363,9 @@ mod tests {
         assert!(version("0.9.9") > version("0.9.9-nightly.20261024"));
         assert!(version("0.9.9-nightly.20261025") > version("0.9.9-nightly.20261024"));
         assert!(version("0.9.9-nightly.20261024") > version("0.9.8"));
+        assert!(version("0.9.9-nightly.20261024.42") > version("0.9.9-nightly.20261024.41"));
+        assert!(version("0.9.9-nightly.20261025.1") > version("0.9.9-nightly.20261024.42"));
+        assert!(version("0.9.9") > version("0.9.9-nightly.20261024.42"));
         assert!(version("1.0.0-alpha.2") > version("1.0.0-alpha.1"));
         assert!(version("1.0.0-alpha.beta") > version("1.0.0-alpha.1"));
         assert_eq!(
