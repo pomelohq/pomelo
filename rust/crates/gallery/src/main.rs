@@ -404,7 +404,7 @@ impl Gallery {
                     bh + spread * 2.0,
                     ui::Rgba::new(0.0, 0.0, 0.0, alpha),
                 );
-                shadow.radius = spread + 4.0;
+                shadow.radius = spread;
                 base.rects.push(shadow);
             }
             let mut frame = ui::Rect::new(
@@ -414,7 +414,6 @@ impl Gallery {
                 bh + 2.0,
                 theme.panel_background,
             );
-            frame.radius = 4.0;
             frame.border = if self.focused == Some(index) {
                 2.0
             } else {
