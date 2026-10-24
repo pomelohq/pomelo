@@ -1,0 +1,33 @@
+[package]
+name = "stories"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real UI built from fixture data, shared by the gallery, snapshot tests and the design canvas."
+
+[lib]
+path = "src/stories.rs"
+
+[dependencies]
+anyhow.workspace = true
+png = "0.17"
+serde_json.workspace = true
+files = { path = "../files" }
+files_ui = { path = "../files_ui" }
+pom_agent = { path = "../pom_agent" }
+pom_config = { path = "../pom_config" }
+pom_env = { path = "../pom_env" }
+pom_paths = { path = "../pom_paths" }
+pom_ports = { path = "../pom_ports" }
+pom_ptyhost = { path = "../pom_ptyhost" }
+pom_remote = { path = "../pom_remote" }
+pom_rpc = { path = "../pom_rpc" }
+pom_services = { path = "../pom_services" }
+pom_workspace = { path = "../pom_workspace" }
+workspaces_ui = { path = "../workspaces_ui" }
+remote_ui = { path = "../remote_ui" }
+services_ui = { path = "../services_ui" }
+terminal_ui = { path = "../terminal_ui" }
+ui = { path = "../ui" }
+workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

@@ -178,8 +178,8 @@ fn host_files(mode: HostFilesMode) -> anyhow::Result<files_ui::FilesView> {
 
 /// The host's files, `open` with that file open, else with no tab.
 fn host_files_opening(mode: HostFilesMode, open: bool) -> anyhow::Result<files_ui::FilesView> {
-    let root = crate::fixture_dir().join("remote");
-    crate::editor_fixture::create(&root)?;
+    let root = super::fixture_dir().join("remote");
+    super::editor::create(&root)?;
     if mode == HostFilesMode::TooLarge {
         let log = root.join(LOG);
         if let Some(folder) = log.parent() {
@@ -799,7 +799,7 @@ pub fn render(
     );
     entity.update(app.app_mut(), |view, _| {
         view.set_sessions(sessions, Some(0));
-        view.set_usage(crate::window_usage());
+        view.set_usage(super::window_usage());
         view.set_host_link(remote_ui::host_link(&snapshot.connection));
         if mode == "create" {
             view.set_workspace_ops(vec![creating_on_host()]);
@@ -858,7 +858,7 @@ pub fn render(
         }
     }
     let frame = app.draw(handle).expect("frame");
-    let lights = crate::scene_lights();
+    let lights = super::scene_lights();
     let mut layers: Vec<ui::Layer> = vec![(
         frame.base.rects.as_slice(),
         frame.base.tris.as_slice(),
@@ -879,7 +879,7 @@ pub fn render(
     renderer.render_frame(ui::theme().background, &layers)?;
     let (w, h, rgba) = renderer.read_rgba()?;
     let (w, h, rgba) = match crop {
-        Some(rect) => crate::crop_rgba(w, &rgba, rect),
+        Some(rect) => super::crop_rgba(w, &rgba, rect),
         None => (w, h, rgba),
     };
     let file = std::fs::File::create(out)?;

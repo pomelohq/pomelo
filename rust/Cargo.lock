@@ -5123,6 +5123,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stories"
+version = "0.9.9"
+dependencies = [
+ "anyhow",
+ "files",
+ "files_ui",
+ "png 0.17.16",
+ "pom_agent",
+ "pom_config",
+ "pom_env",
+ "pom_paths",
+ "pom_ports",
+ "pom_ptyhost",
+ "pom_remote",
+ "pom_rpc",
+ "pom_services",
+ "pom_workspace",
+ "remote_ui",
+ "serde_json",
+ "services_ui",
+ "terminal_ui",
+ "ui",
+ "workspace",
+ "workspace_hack",
+ "workspaces_ui",
+]
+
+[[package]]
 name = "str_indices"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5992,6 +6020,7 @@ dependencies = [
  "services_ui",
  "settings",
  "settings_ui",
+ "stories",
  "terminal",
  "terminal_ui",
  "ui",

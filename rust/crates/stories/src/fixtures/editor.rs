@@ -187,7 +187,7 @@ pub fn create(root: &Path) -> anyhow::Result<()> {
     write(
         &web,
         "public/logo.png",
-        include_bytes!("../../workspace/assets/logo.png"),
+        include_bytes!("../../../workspace/assets/logo.png"),
     )?;
     write(&web, "public/broken.png", b"not a png")?;
     write(root, "pom.yml", "name: myproject\n")?;
