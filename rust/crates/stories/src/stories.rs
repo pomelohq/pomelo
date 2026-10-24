@@ -7,8 +7,22 @@ pub mod services;
 use std::io::BufWriter;
 use std::path::Path;
 
+/// A story draws at a size; one that is stepped into takes pointer and keys as the app's dock would give them.
 pub trait Story {
     fn render(&mut self, width: f32, height: f32) -> ui::Node;
+    fn click(&mut self, _id: u64) {}
+    fn hover(&mut self, _id: Option<u64>) -> bool {
+        false
+    }
+    fn scroll(&mut self, _dy: f32) -> bool {
+        false
+    }
+    fn text(&mut self, _text: &str) -> bool {
+        false
+    }
+    fn key(&mut self, _key: workspace::EditKey, _shift: bool) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy)]

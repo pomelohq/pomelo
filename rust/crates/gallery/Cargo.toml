@@ -1,0 +1,23 @@
+[package]
+name = "gallery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browse every story on an endless canvas, drawn by the app's own code; step into one to use it."
+
+[[bin]]
+name = "gallery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+stories = { path = "../stories" }
+ui = { path = "../ui" }
+winit.workspace = true
+workspace = { path = "../workspace" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"

@@ -217,6 +217,8 @@ pub struct Shared {
     /// What a service's tab asked the panel to do (it cannot talk to the workspace itself).
     pub tab_requests: Vec<TabRequest>,
     drawn_at: Option<Instant>,
+    /// Statuses a snapshot or story set by hand; polling must not replace them with what really runs.
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -468,7 +470,7 @@ fn refresh_shared(context: &Context, shared: &Mutex<Shared>) -> bool {
     let Ok(mut shared) = shared.lock() else {
         return false;
     };
-    if shared.shared_running == running {
+    if shared.pinned || shared.shared_running == running {
         return false;
     }
     shared.shared_running = running;
@@ -492,7 +494,7 @@ fn refresh(context: &Context, shared: &Mutex<Shared>) -> bool {
     let Ok(mut shared) = shared.lock() else {
         return false;
     };
-    if shared.status == fresh {
+    if shared.pinned || shared.status == fresh {
         return false;
     }
     // A service that came back up no longer has the error of its last failed start.

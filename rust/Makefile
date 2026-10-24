@@ -1,6 +1,6 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
 .PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test test-cargo fmt fmt-check hakari-check lint check check-changed clean gc trim \
-        patch minor major hotfix hotfix-release nightly version
+        patch minor major hotfix hotfix-release nightly version snapshot gallery gallery-watch
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
@@ -110,6 +110,14 @@ hotfix:
 
 hotfix-release:
 	scripts/hotfix.sh release
+
+# Every story on an endless canvas, drawn by the app's own code; release so rasterizing keeps up with zooming.
+gallery:
+	cargo run --release -p gallery
+
+# Rebuilds and reopens the gallery on every Rust change; it comes back on the same page, camera and story.
+gallery-watch:
+	watchexec --restart --watch crates --exts rs -- cargo run --release -p gallery
 
 snapshot:
 	cargo run -p ui_snapshot -- /tmp/pomelo-ui.png "$${CAT:-1}"

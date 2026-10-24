@@ -1,0 +1,1073 @@
+//! Every story on an endless canvas, drawn by the app's own code. Pan with the wheel or a space-drag, zoom
+//! with a pinch or cmd-wheel, double-click a story to step into it and use it, Escape to step out.
+
+mod chrome;
+mod scene;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use scene::{Board, Camera, Group, Rasterizer};
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::window::{CursorIcon, Window, WindowId};
+use workspace::EditKey;
+
+// Zooming re-rasterizes only once the camera has been still this long.
+const SETTLE: Duration = Duration::from_millis(150);
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+// A story is rasterized at no more than this many device pixels per point, however far in you zoom.
+const MAX_RASTER: f32 = 4.0;
+// The renderer draws no finer than half a device pixel per point.
+const MIN_RASTER: f32 = 0.5;
+const GRID: f32 = 24.0;
+// Rasterizing past this in one frame would drop it; the rest wait for the next.
+const RASTER_BUDGET: Duration = Duration::from_millis(10);
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Saved {
+    page: String,
+    theme: String,
+    camera: Option<Camera>,
+    focused: Option<String>,
+}
+
+fn saved_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(|home| std::path::PathBuf::from(home).join(".local/state/pom/gallery.json"))
+}
+
+fn load_saved() -> Saved {
+    saved_path()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+struct Gallery {
+    window: Option<Arc<Window>>,
+    renderer: Option<ui::UiRenderer>,
+    rasterizer: Rasterizer,
+    defs: Vec<stories::StoryDef>,
+    pages: Vec<&'static str>,
+    page: usize,
+    boards: Vec<Board>,
+    groups: Vec<Group>,
+    camera: Camera,
+    moved_at: Instant,
+    cursor: (f32, f32),
+    modifiers: ModifiersState,
+    space: bool,
+    dragging: Option<(f32, f32)>,
+    last_click: Option<(Instant, usize)>,
+    focused: Option<usize>,
+    focused_hits: Vec<(ui::Rect, u64)>,
+    hovered: Option<u64>,
+    chrome: bool,
+    chrome_hits: Vec<(ui::Rect, u64)>,
+    themes: Vec<(&'static str, ui::Appearance)>,
+    theme: &'static str,
+    pending_focus: Option<String>,
+    collapsed: Vec<&'static str>,
+    menu: Option<Menu>,
+    chrome_hovered: Option<u64>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Menu {
+    Pages,
+    Themes,
+}
+
+impl Gallery {
+    fn new() -> Self {
+        let saved = load_saved();
+        let defs = stories::all();
+        let pages = scene::pages(&defs);
+        let page = pages
+            .iter()
+            .position(|name| *name == saved.page)
+            .unwrap_or(0);
+        let themes = ui::builtin_theme_names();
+        let theme = themes
+            .iter()
+            .map(|(name, _)| *name)
+            .find(|name| *name == saved.theme)
+            .unwrap_or("Pomelo Dark");
+        ui::set_theme(ui::by_name(theme));
+        let mut gallery = Gallery {
+            window: None,
+            renderer: None,
+            rasterizer: Rasterizer::new(),
+            defs,
+            pages,
+            page,
+            boards: Vec::new(),
+            groups: Vec::new(),
+            camera: saved.camera.unwrap_or_default(),
+            moved_at: Instant::now(),
+            cursor: (0.0, 0.0),
+            modifiers: ModifiersState::empty(),
+            space: false,
+            dragging: None,
+            last_click: None,
+            focused: None,
+            focused_hits: Vec::new(),
+            hovered: None,
+            chrome: true,
+            chrome_hits: Vec::new(),
+            themes,
+            theme,
+            pending_focus: saved.focused,
+            collapsed: Vec::new(),
+            menu: None,
+            chrome_hovered: None,
+        };
+        gallery.open_page(page, saved.camera.is_none());
+        gallery
+    }
+
+    fn save(&self) {
+        let saved = Saved {
+            page: self
+                .pages
+                .get(self.page)
+                .copied()
+                .unwrap_or_default()
+                .into(),
+            theme: self.theme.into(),
+            camera: Some(self.camera),
+            focused: self
+                .focused
+                .and_then(|index| self.boards.get(index))
+                .map(|board| board.def.id.into()),
+        };
+        let Some(path) = saved_path() else {
+            return;
+        };
+        if let Some(dir) = path.parent() {
+            if let Err(error) = std::fs::create_dir_all(dir) {
+                eprintln!("gallery: {}: {error}", dir.display());
+                return;
+            }
+        }
+        match serde_json::to_vec_pretty(&saved) {
+            Ok(bytes) => {
+                if let Err(error) = std::fs::write(&path, bytes) {
+                    eprintln!("gallery: {}: {error}", path.display());
+                }
+            }
+            Err(error) => eprintln!("gallery: {error}"),
+        }
+    }
+
+    fn open_page(&mut self, page: usize, fit: bool) {
+        self.page = page.min(self.pages.len().saturating_sub(1));
+        self.focused = None;
+        let Some(name) = self.pages.get(self.page) else {
+            return;
+        };
+        let (boards, groups) = scene::lay_out(&self.defs, name);
+        self.boards = boards;
+        self.groups = groups;
+        if fit {
+            self.fit();
+        }
+    }
+
+    fn view_size(&self) -> (f32, f32) {
+        self.renderer
+            .as_ref()
+            .map(|r| r.size())
+            .unwrap_or((1440.0, 900.0))
+    }
+
+    fn canvas(&self) -> ui::Rect {
+        let (w, h) = self.view_size();
+        let (left, right) = if self.chrome {
+            (chrome::LEFT, chrome::RIGHT)
+        } else {
+            (0.0, 0.0)
+        };
+        ui::Rect::new(
+            left,
+            0.0,
+            (w - left - right).max(1.0),
+            h,
+            ui::Rgba::TRANSPARENT,
+        )
+    }
+
+    fn fit(&mut self) {
+        let canvas = self.canvas();
+        self.camera = Camera::fit(scene::bounds(&self.boards), canvas.w, canvas.h);
+        self.moved();
+    }
+
+    fn moved(&mut self) {
+        self.moved_at = Instant::now();
+    }
+
+    fn settled(&self) -> bool {
+        self.moved_at.elapsed() >= SETTLE
+    }
+
+    fn scale(&self) -> f32 {
+        self.window
+            .as_ref()
+            .map(|w| w.scale_factor() as f32)
+            .unwrap_or(2.0)
+    }
+
+    fn redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    /// The board under a point of the canvas (canvas-local coordinates).
+    fn board_at(&self, x: f32, y: f32) -> Option<usize> {
+        self.boards.iter().position(|board| {
+            let (sx, sy) = self.camera.to_screen(board.x, board.y);
+            let (w, h) = (board.w() * self.camera.zoom, board.h() * self.camera.zoom);
+            x >= sx && x < sx + w && y >= sy && y < sy + h
+        })
+    }
+
+    fn focus(&mut self, index: usize) {
+        let canvas = self.canvas();
+        let Some(board) = self.boards.get(index) else {
+            return;
+        };
+        let x = ((canvas.w - board.w()) / 2.0).max(32.0) - board.x;
+        let y = ((canvas.h - board.h()) / 2.0).max(32.0) - board.y;
+        self.camera = Camera { x, y, zoom: 1.0 };
+        self.focused = Some(index);
+        self.moved();
+    }
+
+    fn unfocus(&mut self) {
+        if let Some(board) = self
+            .focused
+            .take()
+            .and_then(|index| self.boards.get_mut(index))
+        {
+            board.stale = true;
+        }
+        self.focused_hits.clear();
+        self.hovered = None;
+    }
+
+    fn set_theme(&mut self, name: &'static str) {
+        self.theme = name;
+        ui::set_theme(ui::by_name(name));
+        for board in &mut self.boards {
+            board.stale = true;
+        }
+        self.save();
+    }
+
+    fn raster_scale(&self) -> f32 {
+        (self.scale() * self.camera.zoom).clamp(MIN_RASTER, MAX_RASTER)
+    }
+
+    /// Rasters go one power of two past what the zoom needs, so zooming in a little stays sharp without a redraw.
+    fn raster_target(&self) -> f32 {
+        self.raster_scale()
+            .log2()
+            .ceil()
+            .exp2()
+            .clamp(MIN_RASTER, MAX_RASTER)
+    }
+
+    /// Re-rasterizes a few visible boards a frame, nearest the canvas center first; true while more wait.
+    fn rasterize(&mut self) -> bool {
+        let canvas = self.canvas();
+        let needed = self.raster_scale();
+        let wanted = self.raster_target();
+        let settled = self.settled();
+        let mut waiting: Vec<(f32, usize)> = self
+            .boards
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| Some(*index) != self.focused)
+            .filter_map(|(index, board)| {
+                let (sx, sy) = self.camera.to_screen(board.x, board.y);
+                let (w, h) = (board.w() * self.camera.zoom, board.h() * self.camera.zoom);
+                let visible = sx + w >= 0.0 && sy + h >= 0.0 && sx <= canvas.w && sy <= canvas.h;
+                if !visible || board.error.is_some() {
+                    return None;
+                }
+                let off_scale = board.image.as_ref().is_none_or(|raster| {
+                    raster.scale < needed * 0.95 || raster.scale > wanted * 2.0
+                });
+                (board.stale || board.image.is_none() || (settled && off_scale)).then(|| {
+                    let dx = sx + w / 2.0 - canvas.w / 2.0;
+                    let dy = sy + h / 2.0 - canvas.h / 2.0;
+                    (dx * dx + dy * dy, index)
+                })
+            })
+            .collect();
+        waiting.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let started = Instant::now();
+        let mut drawn = 0;
+        for (_, index) in &waiting {
+            if drawn > 0 && started.elapsed() >= RASTER_BUDGET {
+                break;
+            }
+            if let Some(board) = self.boards.get_mut(*index) {
+                if let Err(error) = self.rasterizer.draw(board, wanted) {
+                    board.error = Some(error.to_string());
+                }
+            }
+            drawn += 1;
+        }
+        waiting.len() > drawn
+    }
+
+    fn draw(&mut self) {
+        let more = self.rasterize();
+        let Some((w, h)) = self.renderer.as_ref().map(|r| r.size()) else {
+            return;
+        };
+        let canvas = self.canvas();
+        let theme = ui::theme();
+        let zoom = self.camera.zoom;
+
+        let mut base = ui::Painted::default();
+        base.rects.push(ui::Rect::new(
+            canvas.x,
+            0.0,
+            canvas.w,
+            canvas.h,
+            canvas_color(&theme),
+        ));
+        let mut step = GRID * zoom;
+        while step < 12.0 {
+            step *= 2.0;
+        }
+        let dot = ui::Rgba::new(
+            theme.text_muted.r,
+            theme.text_muted.g,
+            theme.text_muted.b,
+            0.22,
+        );
+        let mut gy = self.camera.y.rem_euclid(step);
+        while gy < canvas.h {
+            let mut gx = self.camera.x.rem_euclid(step);
+            while gx < canvas.w {
+                base.rects
+                    .push(ui::Rect::new(canvas.x + gx - 1.0, gy - 1.0, 2.0, 2.0, dot));
+                gx += step;
+            }
+            gy += step;
+        }
+        // Titles keep their screen size, so at low zoom one is pushed below the row above it and the
+        // board titles under it give way.
+        let mut title_floor = f32::MIN;
+        let mut board_title_floor = Vec::with_capacity(self.groups.len());
+        for group in &self.groups {
+            let (sx, sy) = self.camera.to_screen(0.0, group.top);
+            let title_y = (sy - 52.0).max(title_floor);
+            base.append(ui::render(
+                &chrome::group_title(group.title),
+                ui::Rect::new(canvas.x + sx, title_y, 600.0, 24.0, ui::Rgba::TRANSPARENT),
+            ));
+            board_title_floor.push((group.title, title_y + 26.0));
+            title_floor = self.camera.to_screen(0.0, group.bottom).1 + 12.0;
+        }
+        for (index, board) in self.boards.iter().enumerate() {
+            let (sx, sy) = self.camera.to_screen(board.x, board.y);
+            let (bx, by, bw, bh) = (canvas.x + sx, sy, board.w() * zoom, board.h() * zoom);
+            if bx > canvas.x + canvas.w || by > canvas.h || bx + bw < canvas.x || by + bh < -40.0 {
+                continue;
+            }
+            let floor = board_title_floor
+                .iter()
+                .find(|(title, _)| *title == board.def.group)
+                .map_or(f32::MIN, |(_, floor)| *floor);
+            if bw >= 48.0 && by - 20.0 >= floor {
+                let note = board.error.as_deref();
+                base.append(ui::render(
+                    &chrome::board_title(board.def.title, note, bw - 8.0),
+                    ui::Rect::new(bx, by - 20.0, bw, 16.0, ui::Rgba::TRANSPARENT),
+                ));
+            }
+            // Rects have no blur, so the shadow is a few thin square steps that fade out under the frame.
+            for (spread, alpha) in [(3.0, 0.04), (2.0, 0.06), (1.0, 0.1)] {
+                base.rects.push(ui::Rect::new(
+                    bx - spread,
+                    by - spread + 1.0,
+                    bw + spread * 2.0,
+                    bh + spread * 2.0,
+                    ui::Rgba::new(0.0, 0.0, 0.0, alpha),
+                ));
+            }
+            let mut frame = ui::Rect::new(
+                bx - 1.0,
+                by - 1.0,
+                bw + 2.0,
+                bh + 2.0,
+                theme.panel_background,
+            );
+            frame.border = if self.focused == Some(index) {
+                2.0
+            } else {
+                1.0
+            };
+            frame.border_color = if self.focused == Some(index) {
+                theme.border_focused
+            } else {
+                theme.border
+            };
+            base.rects.push(frame);
+            if self.focused == Some(index) {
+                continue;
+            }
+            if let Some(raster) = &board.image {
+                base.icons.push(ui::IconQuad {
+                    x: bx,
+                    y: by,
+                    w: bw,
+                    h: bh,
+                    kind: ui::IconKind::Close,
+                    color: ui::Rgba::TRANSPARENT,
+                    material: None,
+                    image: Some(raster.id),
+                    stretch: true,
+                });
+            }
+        }
+
+        let mut live = ui::Painted::default();
+        let mut live_clip = None;
+        if let Some(index) = self.focused {
+            let canvas_x = canvas.x;
+            let camera = self.camera;
+            let hovered = self.hovered;
+            if let Some(board) = self.boards.get_mut(index) {
+                let (sx, sy) = camera.to_screen(board.x, board.y);
+                let area = ui::Rect::new(
+                    canvas_x + sx,
+                    sy,
+                    board.w(),
+                    board.h(),
+                    ui::Rgba::TRANSPARENT,
+                );
+                if let Some(story) = board.story() {
+                    let node = ui::div()
+                        .bg(ui::theme().panel_background)
+                        .child(story.render(area.w, area.h))
+                        .into();
+                    live = ui::render_interactive(
+                        &node,
+                        area,
+                        ui::Interaction {
+                            hovered,
+                            pressed: None,
+                        },
+                    );
+                }
+                let x0 = area.x.max(canvas.x);
+                let y0 = area.y.max(0.0);
+                let x1 = (area.x + area.w).min(canvas.x + canvas.w);
+                let y1 = (area.y + area.h).min(canvas.h);
+                live_clip = Some((x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)));
+            }
+        }
+        self.focused_hits = live.hits.clone();
+
+        let mut side = ui::Painted::default();
+        let mut overlay = ui::Painted::default();
+        if self.chrome {
+            let left = chrome::left(
+                h,
+                &self.pages,
+                self.page,
+                &self.groups,
+                &self.boards,
+                self.focused,
+                &self.collapsed,
+            );
+            let interaction = ui::Interaction {
+                hovered: self.chrome_hovered,
+                pressed: None,
+            };
+            side.append(ui::render_interactive(
+                &left,
+                ui::Rect::new(0.0, 0.0, chrome::LEFT, h, ui::Rgba::TRANSPARENT),
+                interaction,
+            ));
+            let right = chrome::right(h, &self.themes, self.theme, zoom);
+            side.append(ui::render_interactive(
+                &right,
+                ui::Rect::new(
+                    w - chrome::RIGHT,
+                    0.0,
+                    chrome::RIGHT,
+                    h,
+                    ui::Rgba::TRANSPARENT,
+                ),
+                interaction,
+            ));
+            side.rects
+                .push(ui::Rect::new(chrome::LEFT - 1.0, 0.0, 1.0, h, theme.border));
+            side.rects
+                .push(ui::Rect::new(w - chrome::RIGHT, 0.0, 1.0, h, theme.border));
+        } else {
+            let mini = chrome::mini(self.pages.get(self.page).copied().unwrap_or_default());
+            let (mini_w, mini_h) = ui::measure(&mini);
+            let (mini_w, mini_h) = (mini_w.ceil(), mini_h.ceil());
+            let interaction = ui::Interaction {
+                hovered: self.chrome_hovered,
+                pressed: None,
+            };
+            side.append(ui::render_interactive(
+                &mini,
+                ui::Rect::new(12.0, 12.0, mini_w, mini_h, ui::Rgba::TRANSPARENT),
+                interaction,
+            ));
+            let pill = chrome::theme_pill(self.theme);
+            let (pill_w, pill_h) = ui::measure(&pill);
+            let pill_x = 12.0 + mini_w + 8.0;
+            side.append(ui::render_interactive(
+                &pill,
+                ui::Rect::new(
+                    pill_x,
+                    12.0,
+                    pill_w.ceil(),
+                    pill_h.ceil(),
+                    ui::Rgba::TRANSPARENT,
+                ),
+                interaction,
+            ));
+            let menu = match self.menu {
+                Some(Menu::Pages) => {
+                    Some((chrome::page_menu(&self.pages, self.page), chrome::PAGES))
+                }
+                Some(Menu::Themes) => {
+                    Some((chrome::theme_menu(&self.themes, self.theme), chrome::THEMES))
+                }
+                None => None,
+            };
+            let anchor = |id: u64| {
+                side.hits
+                    .iter()
+                    .find(|(_, hit)| *hit == id)
+                    .map_or(12.0, |(rect, _)| rect.x - 6.0)
+            };
+            if let Some((menu, x)) = menu.map(|(menu, id)| (menu, anchor(id))) {
+                let (menu_w, menu_h) = ui::measure(&menu);
+                overlay.append(ui::render_interactive(
+                    &menu,
+                    ui::Rect::new(
+                        x,
+                        12.0 + mini_h + 6.0,
+                        menu_w.ceil(),
+                        menu_h.ceil(),
+                        ui::Rgba::TRANSPARENT,
+                    ),
+                    interaction,
+                ));
+            }
+        }
+        if self.chrome_hovered == Some(chrome::HIDE) {
+            if let Some((button, _)) = side.hits.iter().find(|(_, id)| *id == chrome::HIDE) {
+                let tip = chrome::shortcut_tip(if self.chrome {
+                    "Hide panels"
+                } else {
+                    "Show panels"
+                });
+                let (tip_w, tip_h) = ui::measure(&tip);
+                let x = (button.x + button.w / 2.0 - tip_w / 2.0).clamp(8.0, w - tip_w - 8.0);
+                let tip = ui::render(
+                    &tip,
+                    ui::Rect::new(
+                        x,
+                        button.y + button.h + 8.0,
+                        tip_w.ceil(),
+                        tip_h.ceil(),
+                        ui::Rgba::TRANSPARENT,
+                    ),
+                );
+                overlay.append(tip);
+            }
+        }
+        self.chrome_hits = side.hits.clone();
+        self.chrome_hits.extend(overlay.hits.iter().copied());
+
+        let canvas_clip = Some((canvas.x, 0.0, canvas.w, canvas.h));
+        let layers: [ui::Layer; 4] = [
+            (
+                base.rects.as_slice(),
+                base.tris.as_slice(),
+                base.texts.as_slice(),
+                base.icons.as_slice(),
+                canvas_clip,
+            ),
+            (
+                live.rects.as_slice(),
+                live.tris.as_slice(),
+                live.texts.as_slice(),
+                live.icons.as_slice(),
+                live_clip,
+            ),
+            (
+                side.rects.as_slice(),
+                side.tris.as_slice(),
+                side.texts.as_slice(),
+                side.icons.as_slice(),
+                None,
+            ),
+            (
+                overlay.rects.as_slice(),
+                overlay.tris.as_slice(),
+                overlay.texts.as_slice(),
+                overlay.icons.as_slice(),
+                None,
+            ),
+        ];
+        if let Some(renderer) = self.renderer.as_mut() {
+            if let Err(error) = renderer.render_frame(theme.background, &layers) {
+                eprintln!("gallery: draw: {error}");
+            }
+        }
+        if more || !self.settled() {
+            self.redraw();
+        }
+    }
+
+    fn click(&mut self) {
+        let (x, y) = self.cursor;
+        if let Some(id) = ui::topmost_hit(&self.chrome_hits, x, y) {
+            self.chrome_click(id);
+            return;
+        }
+        if self.menu.take().is_some() {
+            self.redraw();
+            return;
+        }
+        let canvas = self.canvas();
+        if let Some(index) = self.focused {
+            if let Some(id) = ui::topmost_hit(&self.focused_hits, x, y) {
+                if let Some(story) = self.boards.get_mut(index).and_then(Board::story) {
+                    story.click(id);
+                }
+                return;
+            }
+            if self.board_at(x - canvas.x, y) == Some(index) {
+                return;
+            }
+            self.unfocus();
+        }
+        let Some(index) = self.board_at(x - canvas.x, y) else {
+            self.last_click = None;
+            return;
+        };
+        let now = Instant::now();
+        let double = self
+            .last_click
+            .is_some_and(|(at, last)| last == index && now.duration_since(at) < DOUBLE_CLICK);
+        self.last_click = Some((now, index));
+        if double {
+            self.focus(index);
+        }
+    }
+
+    fn chrome_click(&mut self, id: u64) {
+        match chrome::decode(id) {
+            Some(chrome::Click::Page(page)) => {
+                self.menu = None;
+                self.open_page(page, true);
+                self.save();
+            }
+            Some(chrome::Click::Board(index)) => self.focus(index),
+            Some(chrome::Click::Theme(index)) => {
+                if let Some((name, _)) = self.themes.get(index).copied() {
+                    self.set_theme(name);
+                }
+            }
+            Some(chrome::Click::Fit) => {
+                self.unfocus();
+                self.fit();
+            }
+            Some(chrome::Click::Actual) => {
+                let canvas = self.canvas();
+                self.camera
+                    .zoom_at(1.0 / self.camera.zoom, canvas.w / 2.0, canvas.h / 2.0);
+                self.moved();
+            }
+            Some(chrome::Click::ZoomIn) => {
+                let canvas = self.canvas();
+                self.zoom(1.25, canvas.w / 2.0, canvas.h / 2.0);
+            }
+            Some(chrome::Click::ZoomOut) => {
+                let canvas = self.canvas();
+                self.zoom(0.8, canvas.w / 2.0, canvas.h / 2.0);
+            }
+            Some(chrome::Click::Hide) => self.toggle_chrome(),
+            Some(chrome::Click::Themes) => self.toggle_menu(Menu::Themes),
+            Some(chrome::Click::Pages) => self.toggle_menu(Menu::Pages),
+            Some(chrome::Click::Group(index)) => {
+                if let Some(title) = self.groups.get(index).map(|group| group.title) {
+                    if let Some(at) = self.collapsed.iter().position(|name| *name == title) {
+                        self.collapsed.remove(at);
+                    } else {
+                        self.collapsed.push(title);
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn hover(&mut self) {
+        let (x, y) = self.cursor;
+        let chrome_hovered = ui::topmost_hit(&self.chrome_hits, x, y);
+        let mut pointer = chrome_hovered.is_some();
+        if chrome_hovered != self.chrome_hovered {
+            self.chrome_hovered = chrome_hovered;
+            self.redraw();
+        }
+        if let Some(index) = self.focused {
+            let id = ui::topmost_hit(&self.focused_hits, x, y);
+            pointer |= id.is_some();
+            if id != self.hovered {
+                self.hovered = id;
+                if let Some(story) = self.boards.get_mut(index).and_then(Board::story) {
+                    story.hover(id);
+                }
+                self.redraw();
+            }
+        }
+        if let Some(window) = &self.window {
+            window.set_cursor(if self.space || self.dragging.is_some() {
+                CursorIcon::Grab
+            } else if pointer {
+                CursorIcon::Pointer
+            } else {
+                CursorIcon::Default
+            });
+        }
+    }
+
+    fn wheel(&mut self, dx: f32, dy: f32) {
+        let canvas = self.canvas();
+        let (x, y) = self.cursor;
+        if self.modifiers.super_key() || self.modifiers.control_key() {
+            self.zoom(1.0 + dy * 0.01, x - canvas.x, y);
+            return;
+        }
+        if let Some(index) = self.focused {
+            if self.board_at(x - canvas.x, y) == Some(index) {
+                if let Some(story) = self.boards.get_mut(index).and_then(Board::story) {
+                    story.scroll(dy);
+                }
+                self.redraw();
+                return;
+            }
+        }
+        self.camera.x += dx;
+        self.camera.y += dy;
+        self.moved();
+        self.redraw();
+    }
+
+    fn zoom(&mut self, factor: f32, x: f32, y: f32) {
+        if self.focused.is_some() {
+            self.unfocus();
+        }
+        self.camera.zoom_at(factor, x, y);
+        self.moved();
+        self.redraw();
+    }
+
+    fn toggle_chrome(&mut self) {
+        self.chrome = !self.chrome;
+        self.menu = None;
+    }
+
+    /// Arrows walk the open menu in the order it lists its rows, applying each one as they land on it.
+    fn step_menu(&mut self, by: isize) {
+        let step = |at: usize, len: usize| (at as isize + by).clamp(0, len as isize - 1) as usize;
+        match self.menu {
+            Some(Menu::Pages) if !self.pages.is_empty() => {
+                let page = step(self.page, self.pages.len());
+                if page != self.page {
+                    self.open_page(page, true);
+                    self.save();
+                }
+            }
+            Some(Menu::Themes) => {
+                let order: Vec<&'static str> = [ui::Appearance::Dark, ui::Appearance::Light]
+                    .iter()
+                    .flat_map(|appearance| {
+                        self.themes
+                            .iter()
+                            .filter(move |(_, kind)| kind == appearance)
+                            .map(|(name, _)| *name)
+                    })
+                    .collect();
+                let next = order
+                    .iter()
+                    .position(|name| *name == self.theme)
+                    .and_then(|at| order.get(step(at, order.len())).copied());
+                if let Some(next) = next.filter(|next| *next != self.theme) {
+                    self.set_theme(next);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn toggle_menu(&mut self, menu: Menu) {
+        self.menu = if self.menu == Some(menu) {
+            None
+        } else {
+            Some(menu)
+        };
+    }
+
+    fn key(&mut self, event: &winit::event::KeyEvent) {
+        let pressed = event.state == ElementState::Pressed;
+        if let Key::Named(NamedKey::Space) = event.logical_key {
+            if self.focused.is_none() {
+                self.space = pressed;
+                self.hover();
+                return;
+            }
+        }
+        if !pressed {
+            return;
+        }
+        let command = self.modifiers.super_key() || self.modifiers.control_key();
+        match &event.logical_key {
+            _ if command
+                && self.modifiers.shift_key()
+                && event.physical_key == PhysicalKey::Code(KeyCode::Backslash) =>
+            {
+                self.toggle_chrome();
+                self.redraw();
+                return;
+            }
+            Key::Character(c) if command && c.as_str() == "0" => {
+                let canvas = self.canvas();
+                self.zoom(1.0 / self.camera.zoom, canvas.w / 2.0, canvas.h / 2.0);
+                return;
+            }
+            Key::Character(c) if self.modifiers.shift_key() && c.as_str() == "!" => {
+                self.unfocus();
+                self.fit();
+                return;
+            }
+            Key::Named(step @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) if self.menu.is_some() => {
+                self.step_menu(if *step == NamedKey::ArrowUp { -1 } else { 1 });
+                self.redraw();
+                return;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Escape) if self.menu.is_some() => {
+                self.menu = None;
+                self.redraw();
+                return;
+            }
+            Key::Named(NamedKey::Escape) if self.focused.is_some() => {
+                self.unfocus();
+                return;
+            }
+            _ => {}
+        }
+        let Some(index) = self.focused else {
+            return;
+        };
+        let shift = self.modifiers.shift_key();
+        let Some(story) = self.boards.get_mut(index).and_then(Board::story) else {
+            return;
+        };
+        let edit = match &event.logical_key {
+            Key::Named(NamedKey::ArrowLeft) => Some(EditKey::Left),
+            Key::Named(NamedKey::ArrowRight) => Some(EditKey::Right),
+            Key::Named(NamedKey::ArrowUp) => Some(EditKey::Up),
+            Key::Named(NamedKey::ArrowDown) => Some(EditKey::Down),
+            Key::Named(NamedKey::Home) => Some(EditKey::Home),
+            Key::Named(NamedKey::End) => Some(EditKey::End),
+            Key::Named(NamedKey::Backspace) => Some(EditKey::Backspace),
+            Key::Named(NamedKey::Delete) => Some(EditKey::Delete),
+            _ => None,
+        };
+        match edit {
+            Some(key) => {
+                story.key(key, shift);
+            }
+            None if !command => {
+                if let Some(text) = event.text.as_ref() {
+                    story.text(text);
+                }
+            }
+            None => {}
+        }
+    }
+}
+
+/// The canvas sits a step darker than the app's own surfaces (lighter on a light theme), so every story stands out.
+fn canvas_color(theme: &ui::ThemeColors) -> ui::Rgba {
+    let base = theme.background;
+    let toward = if matches!(theme.appearance, ui::Appearance::Light) {
+        0.07
+    } else {
+        0.38
+    };
+    ui::Rgba::new(
+        base.r * (1.0 - toward),
+        base.g * (1.0 - toward),
+        base.b * (1.0 - toward),
+        1.0,
+    )
+}
+
+impl ApplicationHandler for Gallery {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
+        let attributes = Window::default_attributes()
+            .with_title("Pomelo Gallery")
+            .with_inner_size(LogicalSize::new(1440.0, 900.0));
+        let window = Arc::new(
+            event_loop
+                .create_window(attributes)
+                .expect("gallery window"),
+        );
+        self.renderer = Some(ui::UiRenderer::new(window.clone()).expect("gallery renderer"));
+        self.window = Some(window);
+        if let Some(id) = self.pending_focus.take() {
+            if let Some(index) = self.boards.iter().position(|board| board.def.id == id) {
+                self.focus(index);
+            }
+        }
+        self.redraw();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        self.redraw();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        let scale = self.scale();
+        match event {
+            WindowEvent::CloseRequested => {
+                self.save();
+                event_loop.exit();
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(renderer) = self.renderer.as_mut() {
+                    renderer.resize(size.width, size.height);
+                }
+                self.redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let (Some(renderer), Some(window)) =
+                    (self.renderer.as_mut(), self.window.as_ref())
+                {
+                    renderer.set_scale(scale_factor as f32);
+                    let size = window.inner_size();
+                    renderer.resize(size.width, size.height);
+                }
+                self.redraw();
+            }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                let (x, y) = (position.x as f32 / scale, position.y as f32 / scale);
+                if let Some((last_x, last_y)) = self.dragging {
+                    self.camera.x += x - last_x;
+                    self.camera.y += y - last_y;
+                    self.dragging = Some((x, y));
+                    self.moved();
+                    self.redraw();
+                }
+                self.cursor = (x, y);
+                self.hover();
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (x * 30.0, y * 30.0),
+                    MouseScrollDelta::PixelDelta(p) => (p.x as f32 / scale, p.y as f32 / scale),
+                };
+                self.wheel(dx, dy);
+            }
+            WindowEvent::PinchGesture { delta, .. } => {
+                let canvas = self.canvas();
+                self.zoom(1.0 + delta as f32, self.cursor.0 - canvas.x, self.cursor.1);
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let pan =
+                    button == MouseButton::Middle || (button == MouseButton::Left && self.space);
+                match (state, pan) {
+                    (ElementState::Pressed, true) => self.dragging = Some(self.cursor),
+                    (ElementState::Released, true) => {
+                        self.dragging = None;
+                        self.save();
+                    }
+                    (ElementState::Pressed, false) if button == MouseButton::Left => self.click(),
+                    _ => {}
+                }
+                self.hover();
+                self.redraw();
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                self.key(&event);
+                self.redraw();
+            }
+            WindowEvent::RedrawRequested => {
+                let was_moving = !self.settled();
+                self.draw();
+                if was_moving && self.settled() {
+                    self.save();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A bare binary has no bundle, so the Dock would show a blank document without this.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    const ICON: &[u8] = include_bytes!("../../pomelo/assets/AppIcon.icns");
+    // SAFETY: plain AppKit class messages on the main thread; a null image is checked before use.
+    unsafe {
+        let data: *mut AnyObject = msg_send![
+            class!(NSData),
+            dataWithBytes: ICON.as_ptr() as *const std::ffi::c_void,
+            length: ICON.len(),
+        ];
+        let image: *mut AnyObject = msg_send![class!(NSImage), alloc];
+        let image: *mut AnyObject = msg_send![image, initWithData: data];
+        if image.is_null() {
+            eprintln!("gallery: the Dock icon did not load");
+            return;
+        }
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, setApplicationIconImage: image];
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let event_loop = EventLoop::new()?;
+    let proxy = event_loop.create_proxy();
+    ui::set_waker(move || {
+        if let Err(error) = proxy.send_event(()) {
+            eprintln!("gallery: wake after the window closed: {error}");
+        }
+    });
+    let mut gallery = Gallery::new();
+    event_loop.run_app(&mut gallery)?;
+    Ok(())
+}

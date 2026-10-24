@@ -1,8 +1,8 @@
 # Pomelo lives in rust/; these targets forward there so the usual commands work from the repo root.
-.PHONY: help build run dev prod dmg check check-changed test test-cargo fmt lint clean gc snapshot patch minor major version \
+.PHONY: help build run dev prod dmg check check-changed test test-cargo fmt lint clean gc snapshot gallery gallery-watch patch minor major version \
         hotfix hotfix-release nightly
 
-help build run dev prod dmg check check-changed test test-cargo fmt lint clean gc snapshot version:
+help build run dev prod dmg check check-changed test test-cargo fmt lint clean gc snapshot gallery gallery-watch version:
 	@$(MAKE) --no-print-directory -C rust $@
 
 # Release: bump the version, commit, tag v<x> and push; CI builds, signs, notarizes and publishes.

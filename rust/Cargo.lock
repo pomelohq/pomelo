@@ -1637,6 +1637,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "gallery"
+version = "0.9.9"
+dependencies = [
+ "anyhow",
+ "objc2 0.5.2",
+ "serde",
+ "serde_json",
+ "stories",
+ "ui",
+ "winit",
+ "workspace",
+ "workspace_hack",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

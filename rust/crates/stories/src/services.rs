@@ -160,6 +160,28 @@ impl Story for ServicesStory {
             View::Shared(name) => panel.shared_tab_preview(name, SHARED_LOG, width, height),
         }
     }
+
+    fn click(&mut self, id: u64) {
+        if matches!(self.view, View::Panel) {
+            self.fixture.panel.click(id);
+        }
+    }
+
+    fn hover(&mut self, id: Option<u64>) -> bool {
+        matches!(self.view, View::Panel) && self.fixture.panel.set_hover(id)
+    }
+
+    fn scroll(&mut self, dy: f32) -> bool {
+        matches!(self.view, View::Panel) && self.fixture.panel.scroll(dy)
+    }
+
+    fn text(&mut self, text: &str) -> bool {
+        matches!(self.view, View::Panel) && self.fixture.panel.text(text)
+    }
+
+    fn key(&mut self, key: workspace::EditKey, shift: bool) -> bool {
+        matches!(self.view, View::Panel) && self.fixture.panel.key(key, shift)
+    }
 }
 
 fn build(on_host: bool, stopped: Option<&str>, view: View) -> anyhow::Result<Box<dyn Story>> {
