@@ -64,24 +64,6 @@ pub(crate) fn state_color(state: &State) -> Rgba {
     }
 }
 
-/// A mono tag with a thin border (a service's mode).
-pub(crate) fn tag(text: &str) -> Node {
-    div()
-        .row()
-        .h_px(16.0)
-        .px(4.0)
-        .items_center()
-        .rounded(3.0)
-        .border(1.0, theme().border_variant)
-        .child(
-            label(text.to_string())
-                .size(10.5)
-                .mono()
-                .color(theme().text_placeholder),
-        )
-        .into()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
     Plain,

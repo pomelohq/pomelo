@@ -4536,16 +4536,8 @@ fn binding_row(action: Node, name: Node, keys: Node, height: f32, last: bool) ->
     div()
         .col()
         .child(row)
-        .child(if last {
-            div().h_px(1.0).into()
-        } else {
-            divider()
-        })
+        .child(if last { div().h_px(1.0) } else { ui::divider() })
         .into()
-}
-
-fn divider() -> Node {
-    div().h_px(1.0).bg(line_c()).into()
 }
 
 /// The control a row's error is keyed by: the one its value is edited with.
@@ -4614,11 +4606,7 @@ fn row_frame(
     div()
         .col()
         .child(div().col().py(10.0).child(row))
-        .child(if last {
-            div().h_px(1.0).into()
-        } else {
-            divider()
-        })
+        .child(if last { div().h_px(1.0) } else { ui::divider() })
         .into()
 }
 
@@ -4831,19 +4819,7 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
 }
 
 fn action_button(id: u64, text: &str, enabled: bool) -> Node {
-    if enabled {
-        ui::button(id, text).into()
-    } else {
-        div()
-            .row()
-            .h_px(24.0)
-            .px(8.0)
-            .items_center()
-            .rounded(ROUND)
-            .border(1.0, theme().border_variant)
-            .child(label(text).size(12.0).color(theme().text_disabled))
-            .into()
-    }
+    ui::button(id, text).enabled(enabled).into()
 }
 
 fn status_chip(running: bool) -> Node {

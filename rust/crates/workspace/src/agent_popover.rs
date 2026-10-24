@@ -1,7 +1,7 @@
 //! The agent dock's popovers: the "+" one that starts a side agent (what it is for, what it starts with),
 //! and the history of archived side agents to reopen.
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 use crate::{SideAgentRole, SideAgentStart};
 
@@ -58,18 +58,6 @@ fn role_note(role: SideAgentRole) -> &'static str {
         SideAgentRole::SecondOpinion => "Same question to another CLI",
         SideAgentRole::Fix => "Fix a bug or a failing check",
     }
-}
-
-fn tag(text: &str, color: Rgba, border: Rgba) -> Node {
-    div()
-        .row()
-        .h_px(20.0)
-        .px(6.0)
-        .items_center()
-        .rounded(4.0)
-        .border(1.0, border)
-        .child(label(text.to_string()).size(12.0).color(color))
-        .into()
 }
 
 fn hot(hover: Option<u64>, id: u64) -> bool {
@@ -141,7 +129,7 @@ pub fn new_agent(
                     .child(label(note).size(12.5).color(colors.text_muted).truncate()),
             )
             .child(div().flex(1.0))
-            .child(tag(tag_text, tag_color, tag_border));
+            .child(ui::chip(tag_text).color(tag_color).border(tag_border));
         if !unavailable {
             row = row.on_click(id);
         }

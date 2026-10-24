@@ -686,7 +686,7 @@ impl ServiceItem {
                         .medium()
                         .color(colors.text),
                 )
-                .child(view::tag("shared"))
+                .child(ui::chip("shared").color(theme().text_muted))
         } else if self.target.is_workspace_level() {
             title.child(
                 label(self.target.service.clone())
@@ -714,7 +714,7 @@ impl ServiceItem {
             .map(|(_, service)| self.context.access.mode(&self.target, &service))
             .filter(|mode| !mode.is_empty())
         {
-            title = title.child(view::tag(&mode));
+            title = title.child(ui::chip(mode).color(theme().text_muted));
         }
         let mut buttons = Vec::new();
         let controls = self.container.is_none() || self.offers(ServiceControl::Shared);
