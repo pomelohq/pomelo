@@ -113,11 +113,11 @@ hotfix-release:
 
 # Every story on an endless canvas, drawn by the app's own code; release so rasterizing keeps up with zooming.
 gallery:
-	cargo run --release -p gallery
+	scripts/run-gallery.sh
 
 # Rebuilds and reopens the gallery on every Rust change; it comes back on the same page, camera and story.
 gallery-watch:
-	watchexec --restart --watch crates --exts rs -- cargo run --release -p gallery
+	watchexec --restart --watch crates --exts rs -- scripts/run-gallery.sh
 
 snapshot:
 	cargo run -p ui_snapshot -- /tmp/pomelo-ui.png "$${CAT:-1}"
