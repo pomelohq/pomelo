@@ -1,6 +1,6 @@
 # Pomelo - macOS / Apple Silicon. Dev bundle is PomeloDev.app (runs alongside Pomelo.app).
 .PHONY: help build run dev prod bundle-dev bundle-prod dmg linux-tarball appcast test test-cargo fmt fmt-check hakari-check lint check check-changed clean gc trim \
-        patch minor major version
+        patch minor major hotfix hotfix-release version
 
 VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
@@ -18,7 +18,9 @@ help:
 	@echo "  make check-changed  fmt-check, then lint + test only the crates changed since origin/main and their dependents"
 	@echo "  make gc           drop the dev/test build cache (target/debug); keeps release builds and the apps"
 	@echo "  make test / test-cargo / fmt / lint / clean"
-	@echo "  make patch|minor|major   bump version, commit, tag v<x>, push (on main)"
+	@echo "  make patch|minor|major   bump version, commit, tag v<x>, push (on main, from a commit a green nightly built;"
+	@echo "                           HOTFIX=1 skips that for an urgent fix)"
+	@echo "  make hotfix / hotfix-release   branch from the last tag, cherry-pick, then tag the next patch"
 
 # Dev builds first drop a cache left useless by a toolchain change or grown past its limit.
 trim:
@@ -96,14 +98,14 @@ gc:
 version:
 	@echo $(VERSION)
 
-patch:
-	scripts/bump-version.sh patch
+patch minor major:
+	HOTFIX=$(HOTFIX) scripts/bump-version.sh $@
 
-minor:
-	scripts/bump-version.sh minor
+hotfix:
+	scripts/hotfix.sh start
 
-major:
-	scripts/bump-version.sh major
+hotfix-release:
+	scripts/hotfix.sh release
 
 snapshot:
 	cargo run -p ui_snapshot -- /tmp/pomelo-ui.png "$${CAT:-1}"
