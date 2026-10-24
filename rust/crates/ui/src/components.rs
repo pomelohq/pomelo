@@ -390,3 +390,223 @@ pub fn divider_faded() -> Div {
     let b = theme().border;
     div().h_px(1.0).bg(Rgba::new(b.r, b.g, b.b, b.a * 0.6))
 }
+
+/// One row of a menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
+#[derive(Clone, Debug)]
+pub struct MenuItem {
+    pub id: u64,
+    pub label: std::borrow::Cow<'static, str>,
+    pub checked: bool,
+    pub sep: bool,
+    pub disabled: bool,
+    /// Loses data: drawn in the error color.
+    pub danger: bool,
+    /// Shown before the label when the item is not checked.
+    pub icon: Option<IconKind>,
+    /// Muted text at the right: its key, or what a submenu is set to.
+    pub hint: Option<std::borrow::Cow<'static, str>>,
+    /// The icon's color, over the default for its kind.
+    pub color: Option<Rgba>,
+    /// A group's title: small, muted and not clickable.
+    pub header: bool,
+}
+
+impl MenuItem {
+    pub fn new(id: u64, label: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        MenuItem {
+            id,
+            label: label.into(),
+            checked: false,
+            sep: false,
+            disabled: false,
+            danger: false,
+            icon: None,
+            hint: None,
+            color: None,
+            header: false,
+        }
+    }
+}
+
+const MENU_ROW: f32 = 26.0;
+const MENU_PAD: f32 = 4.0;
+const MENU_MIN_WIDTH: f32 = 200.0;
+
+/// A list of choices on a raised card: context menus and the list a select opens.
+pub struct Menu<'a> {
+    items: &'a [MenuItem],
+    hovered: Option<u64>,
+    opens_submenu: fn(u64) -> bool,
+}
+
+pub fn menu(items: &[MenuItem]) -> Menu<'_> {
+    Menu {
+        items,
+        hovered: None,
+        opens_submenu: |_| false,
+    }
+}
+
+impl Menu<'_> {
+    pub fn hovered(mut self, hovered: Option<u64>) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    /// Rows whose id this returns true for show a chevron, with their hint as the value they are set to.
+    pub fn submenus(mut self, opens_submenu: fn(u64) -> bool) -> Self {
+        self.opens_submenu = opens_submenu;
+        self
+    }
+
+    /// The card and its width and height in points.
+    pub fn render(self) -> (Node, f32, f32) {
+        let colors = theme();
+        let weight = crate::ui_font_weight();
+        let marks = self
+            .items
+            .iter()
+            .any(|item| item.checked || item.icon.is_some());
+        let mark_width = if marks { 12.0 + 6.0 } else { 0.0 };
+        let mut content_width = 0.0_f32;
+        for item in self.items {
+            let label_width = crate::measure_text_width(&item.label, 13.0, false, weight);
+            let right = match (&item.hint, (self.opens_submenu)(item.id)) {
+                (Some(hint), true) => {
+                    14.0 + crate::measure_text_width(hint, 12.0, false, weight) + 12.0
+                }
+                (None, true) => 14.0,
+                (Some(key), false) if !key.is_empty() => {
+                    crate::measure(&crate::render_keystroke(key, 12.0)).0 + 24.0
+                }
+                _ => 0.0,
+            };
+            content_width = content_width.max(label_width + right);
+        }
+        let width = (16.0 + mark_width + content_width + 2.0 * MENU_PAD).max(MENU_MIN_WIDTH);
+        // A leading separator is not drawn, so it takes no height.
+        let separators = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(index, item)| item.sep && *index > 0)
+            .count() as f32;
+        let height = MENU_PAD * 2.0 + MENU_ROW * self.items.len() as f32 + 5.0 * separators;
+        let mut card = div()
+            .col()
+            .p(MENU_PAD)
+            .rounded(8.0)
+            .bg(colors.elevated_surface_background)
+            .border(1.0, colors.border);
+        for (index, item) in self.items.iter().enumerate() {
+            if item.sep && index > 0 {
+                card = card.child(
+                    div().h_px(5.0).py(2.0).child(
+                        div()
+                            .h_px(1.0)
+                            .w_px(width - 2.0 * MENU_PAD)
+                            .bg(colors.border),
+                    ),
+                );
+            }
+            if item.header {
+                card = card.child(
+                    div().row().h_px(MENU_ROW).px(8.0).items_center().child(
+                        crate::label(item.label.to_string())
+                            .size(12.0)
+                            .color(colors.text_muted),
+                    ),
+                );
+                continue;
+            }
+            card = card.child(self.row(item, marks));
+        }
+        (card.w_px(width).into(), width, height)
+    }
+
+    fn row(&self, item: &MenuItem, marks: bool) -> Div {
+        let colors = theme();
+        let mut row = div()
+            .row()
+            .h_px(MENU_ROW)
+            .px(8.0)
+            .gap(6.0)
+            .items_center()
+            .rounded(5.0)
+            .on_click(item.id);
+        if self.hovered == Some(item.id) && !item.disabled {
+            row = row.bg(menu_hover());
+        }
+        let label_color = if item.disabled {
+            colors.text_disabled
+        } else if item.danger {
+            colors.error
+        } else {
+            colors.text
+        };
+        if marks {
+            row = row.child(match (item.checked, item.icon) {
+                (true, _) => crate::check_icon().size(12.0),
+                (false, Some(kind)) => {
+                    crate::icon(kind)
+                        .size(12.0)
+                        .color(if let Some(color) = item.color {
+                            color
+                        } else if item.disabled {
+                            colors.text_disabled
+                        } else if item.danger {
+                            colors.error
+                        } else if kind == IconKind::Sparkle {
+                            colors.icon_accent
+                        } else {
+                            colors.icon_muted
+                        })
+                }
+                (false, None) => crate::icon(IconKind::Check)
+                    .size(12.0)
+                    .color(Rgba::TRANSPARENT),
+            });
+        }
+        row = row.child(
+            crate::label(item.label.to_string())
+                .size(13.0)
+                .color(label_color),
+        );
+        if (self.opens_submenu)(item.id) {
+            row = row.child(div().flex(1.0));
+            if let Some(hint) = &item.hint {
+                row = row.child(
+                    crate::label(hint.to_string())
+                        .size(12.0)
+                        .color(colors.text_muted),
+                );
+            }
+            row.child(
+                crate::icon(IconKind::ChevronRight)
+                    .size(12.0)
+                    .color(colors.icon_muted),
+            )
+        } else {
+            match item.hint.as_deref() {
+                Some(key) if !key.is_empty() => row
+                    .child(div().flex(1.0))
+                    .child(crate::render_keystroke(key, 12.0)),
+                _ => row,
+            }
+        }
+    }
+}
+
+impl From<Menu<'_>> for Node {
+    fn from(menu: Menu<'_>) -> Node {
+        menu.render().0
+    }
+}
+
+// On the raised card the element fill is not under the row, so tint toward the text instead.
+fn menu_hover() -> Rgba {
+    match theme().appearance {
+        crate::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+        crate::Appearance::Light => Rgba::new(0.0, 0.0, 0.0, 0.04),
+    }
+}
