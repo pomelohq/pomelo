@@ -324,6 +324,12 @@ pub fn stories() -> Vec<StoryDef> {
         story("divider-faded", "Divider", "Faded", CONTROL, || {
             still(|_, _| alone(div().col().w_px(200.0).child(ui::divider_faded())))
         }),
+        story("tooltip", "Tooltip", "Text", CONTROL, || {
+            still(|_, _| alone(ui::tooltip_bubble("Open in Browser", None)))
+        }),
+        story("tooltip-keys", "Tooltip", "With keys", CONTROL, || {
+            still(|_, _| alone(ui::tooltip_bubble("Toggle Left Dock", Some("cmd-b"))))
+        }),
         story("dot-states", "Status dot", "States", CONTROL, || {
             still(|_, _| {
                 let colors = theme();

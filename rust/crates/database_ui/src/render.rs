@@ -4,10 +4,7 @@ use std::ops::Range;
 
 use pom_db::object_storage::format_size;
 use pom_db::{Engine, TableKind};
-use ui::{
-    deferred, div, icon, label, material_icon, theme, Corner, Div, IconKind, MaterialIcon, Node,
-    Rgba,
-};
+use ui::{div, icon, label, material_icon, theme, Div, IconKind, MaterialIcon, Node, Rgba};
 use workspace::text_field::FieldFont;
 
 use crate::panel::{
@@ -18,7 +15,6 @@ use crate::panel::{
 use crate::tree::{format_count, prefix_name, Row, Section, Status, OTHER_SERVICES};
 
 pub(crate) const INDENT: f32 = 16.0;
-const TOOLTIP_H: f32 = 24.0;
 const BUTTON: f32 = 24.0;
 
 /// The engine's logo and a brand color that reads on a dark panel.
@@ -59,29 +55,6 @@ fn object_icon(name: &str) -> MaterialIcon {
 }
 
 /// A bubble under the hovered control, kept inside the window.
-fn tooltip(target: Div, text: &str) -> Div {
-    let width = ui::measure_text_width(text, 12.0, false, ui::ui_font_weight())
-        / ui::ui_text_scale()
-        + 16.0;
-    let bubble = div()
-        .row()
-        .items_center()
-        .px(8.0)
-        .h_px(TOOLTIP_H)
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
-        .child(label(text.to_string()).size(12.0).color(theme().text));
-    target.pin(
-        Corner::BottomLeft,
-        0.0,
-        TOOLTIP_H + 4.0,
-        width,
-        TOOLTIP_H,
-        deferred(bubble).priority(5).snap_to_window(),
-    )
-}
-
 /// One vertical guide per tree level above `depth`, 16px apart like the Files and Git panels.
 fn with_guides(mut row: Div, depth: usize) -> Div {
     for level in 0..depth {
@@ -346,7 +319,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 )
                 .child(dot(*status));
             if panel.hover == Some(id) && !detail.tooltip.is_empty() {
-                tooltip(line, &detail.tooltip).into()
+                ui::with_tooltip(line, &detail.tooltip, false).into()
             } else {
                 line.into()
             }
@@ -555,7 +528,7 @@ fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) 
                 .color(if hot { colors.icon } else { colors.icon_muted }),
         );
     if hot {
-        tooltip(button, tip).into()
+        ui::with_tooltip(button, tip, false).into()
     } else {
         button.into()
     }
