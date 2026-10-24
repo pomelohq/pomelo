@@ -32,6 +32,20 @@ trap cleanup EXIT
 step "pom --version"
 pom --version
 
+step "install.sh marks its install; pom self-update refuses a pom it did not install"
+stage="$work/tarball/pom-smoke"
+mkdir -p "$stage/bin"
+cp "$(command -v pom)" "$stage/bin/pom"
+cp "$here/install-linux.sh" "$stage/install.sh"
+PREFIX="$work/prefix" "$stage/install.sh" --cli-only
+test -x "$work/prefix/bin/pom"
+grep -q install.sh "$work/prefix/share/pomelo/installed-by"
+if pom self-update --check 2>"$work/refused.txt"; then
+  echo "self-update ran for a pom install.sh did not install" >&2
+  exit 1
+fi
+grep -q "not installed by install.sh" "$work/refused.txt"
+
 mkdir -p "$project/workspace--main/api"
 git -C "$project/workspace--main/api" init -q -b main
 git -C "$project/workspace--main/api" config user.email smoke@example.com
