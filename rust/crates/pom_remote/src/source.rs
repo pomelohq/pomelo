@@ -132,14 +132,16 @@ pub enum SourceError {
     Unreachable(String),
     /// It answered, and the command failed.
     Failed(String),
+    /// It answered that the request asks for something it does not take, such as a setting's value out of range.
+    Refused(String),
 }
 
 impl std::fmt::Display for SourceError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SourceError::Unreachable(message) | SourceError::Failed(message) => {
-                formatter.write_str(message)
-            }
+            SourceError::Unreachable(message)
+            | SourceError::Failed(message)
+            | SourceError::Refused(message) => formatter.write_str(message),
         }
     }
 }

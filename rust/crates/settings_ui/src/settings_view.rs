@@ -5,12 +5,18 @@
 //! (theme, UI font, text scale/weight) are applied to the shared `ui` globals here and flagged in
 //! `SideEffects` for the shell to re-apply to each window's renderer and repaint.
 
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 
 use crate as settings_ui;
+use crate::host_tab;
 use pom_paths::StateDir;
+use serde_json::{Map, Value};
 use settings::Settings;
-use settings_ui::{ConnectionStatus, IntegrationsPage, TokenSource};
+use settings_ui::{
+    ConnectionStatus, HostAnswer, HostError, HostLink, HostLoad, HostPage, HostSettingsStore,
+    IntegrationsPage, TokenSource,
+};
 use ui::{Context, Frame, Overlay, Painted, RawView, Rect, Window};
 
 const JIRA_FIELDS: [u64; 3] = [
@@ -66,7 +72,23 @@ pub struct SideEffects {
     /// The repo whose alias to change, or to take out of the project.
     pub rename_repo: Option<String>,
     pub remove_repo: Option<String>,
+    /// The host's pom is too old for its tab: update it there.
+    pub update_host_pom: bool,
+    /// The host's settings.json, to open in the remote editor.
+    pub edit_host_settings: Option<String>,
 }
+
+/// A request to the host tab's machine, answered on its own thread.
+enum HostAsk {
+    Read,
+    /// The keys changed, and the values before, to put back when the host refuses them.
+    Change {
+        change: Map<String, Value>,
+        before: Box<Settings>,
+    },
+}
+
+type HostReply = (HostAsk, Result<HostAnswer, HostError>);
 
 /// The project of a remote window, whose Jira settings the Integrations page edits.
 #[derive(Clone)]
@@ -139,6 +161,13 @@ pub struct SettingsView {
     jira_test: Option<Receiver<Result<String, String>>>,
     /// The project's `pom.yml`, whose `sync:` applies until this window sets refresh-main.
     project_config: Option<std::sync::Arc<pom_config::Config>>,
+    /// The host tab's machine, its answers, how many are still out, and the request before the latest.
+    host_store: Option<Arc<dyn HostSettingsStore>>,
+    host_replies: (Sender<HostReply>, Receiver<HostReply>),
+    host_pending: usize,
+    host_last: Option<std::thread::JoinHandle<()>>,
+    /// An input on the host tab is being handled: `settings` holds the host's values meanwhile.
+    in_host_scope: bool,
 }
 
 impl SettingsView {
@@ -182,7 +211,164 @@ impl SettingsView {
             pages: settings_ui::PageState::default(),
             jira_test: None,
             project_config: None,
+            host_store: None,
+            host_replies: mpsc::channel(),
+            host_pending: 0,
+            host_last: None,
+            in_host_scope: false,
         }
+    }
+
+    /// Opened from a remote window: a tab for its host beside This Mac, its settings read from there.
+    pub fn set_remote_host(&mut self, host: Option<settings_ui::RemoteHost>) {
+        match host {
+            None => {
+                self.pages.host = None;
+                self.host_store = None;
+            }
+            Some(host) => {
+                self.pages.host = Some(HostPage::new(&host.name, &host.version));
+                self.host_store = Some(host.store);
+                self.read_host();
+            }
+        }
+    }
+
+    /// The remote window's session and its host's pom; returns whether the tab changed.
+    pub fn set_host_status(&mut self, link: HostLink, version: &str) -> bool {
+        let Some(host) = self.pages.host.as_mut() else {
+            return false;
+        };
+        let changed = host.link != link || host.version != version;
+        host.link = link;
+        host.version = version.to_string();
+        changed
+    }
+
+    fn host_shown(&self) -> bool {
+        self.pages.host.as_ref().is_some_and(|host| host.shown)
+    }
+
+    /// The settings the shown tab edits.
+    fn active_settings(&self) -> &Settings {
+        match self.pages.host.as_ref() {
+            Some(host) if host.shown && !self.in_host_scope => &host.settings,
+            _ => &self.settings,
+        }
+    }
+
+    fn read_host(&mut self) {
+        if let Some(host) = self.pages.host.as_mut() {
+            host.load = HostLoad::Reading;
+        }
+        self.ask_host_settings(HostAsk::Read, |store| store.read());
+    }
+
+    fn ask_host_settings(
+        &mut self,
+        ask: HostAsk,
+        job: impl FnOnce(&dyn HostSettingsStore) -> Result<HostAnswer, HostError> + Send + 'static,
+    ) {
+        let Some(store) = self.host_store.clone() else {
+            return;
+        };
+        let sender = self.host_replies.0.clone();
+        let previous = self.host_last.take();
+        self.host_pending += 1;
+        self.host_last = Some(std::thread::spawn(move || {
+            if let Some(previous) = previous {
+                if previous.join().is_err() {
+                    eprintln!("settings: an earlier request to the host failed");
+                }
+            }
+            if sender.send((ask, job(&*store))).is_err() {
+                eprintln!("settings: the host answered after the window closed");
+            }
+        }));
+    }
+
+    /// Runs an input on the host tab against the host's values, then sends the host what it changed.
+    fn in_host<R>(&mut self, act: impl FnOnce(&mut Self) -> R) -> R {
+        if self.in_host_scope || !self.host_shown() {
+            return act(self);
+        }
+        let Some(host) = self.pages.host.as_mut() else {
+            return act(self);
+        };
+        std::mem::swap(&mut self.settings, &mut host.settings);
+        let before = self.settings.clone();
+        self.in_host_scope = true;
+        let result = act(self);
+        self.in_host_scope = false;
+        let after = self.settings.clone();
+        if let Some(host) = self.pages.host.as_mut() {
+            std::mem::swap(&mut self.settings, &mut host.settings);
+        }
+        if let Some(change) = host_tab::host_change(&before, &after) {
+            if let Some(host) = self.pages.host.as_mut() {
+                host.errors.retain(|(key, _)| !change.contains_key(key));
+            }
+            let values = Value::Object(change.clone());
+            let before = Box::new(before);
+            self.ask_host_settings(HostAsk::Change { change, before }, move |store| {
+                store.change(values)
+            });
+        }
+        result
+    }
+
+    /// A value typed on the host tab that this app already knows the host would not take.
+    fn refuse_on_host(&mut self, control: u64, message: String) {
+        let Some(key) = host_tab::key_of_control(control) else {
+            return;
+        };
+        if let Some(host) = self.pages.host.as_mut() {
+            host.errors.retain(|(errored, _)| errored != key);
+            host.errors.push((key.to_string(), message));
+        }
+    }
+
+    /// Takes the host's answers; returns whether the tab changed.
+    fn tick_host_settings(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok((ask, answer)) = self.host_replies.1.try_recv() {
+            self.host_pending = self.host_pending.saturating_sub(1);
+            changed = true;
+            let Some(host) = self.pages.host.as_mut() else {
+                continue;
+            };
+            match (ask, answer) {
+                (HostAsk::Read, Ok(answer)) => {
+                    host.errors.clear();
+                    host.take_answer(answer);
+                }
+                (HostAsk::Change { .. }, Ok(answer)) => {
+                    host.take_answer(answer);
+                }
+                (HostAsk::Read, Err(error)) => {
+                    host.load = match error {
+                        HostError::Unreachable(message) => HostLoad::Unreachable(message),
+                        HostError::Outdated(message) => HostLoad::Outdated(message),
+                        HostError::Refused(message) | HostError::Failed(message) => {
+                            HostLoad::Failed(message)
+                        }
+                    }
+                }
+                (_, Err(HostError::Outdated(message))) => host.load = HostLoad::Outdated(message),
+                (HostAsk::Change { change, before }, Err(error)) => {
+                    host_tab::restore(&mut host.settings, &before, &change);
+                    let message = error.to_string();
+                    for key in change.keys() {
+                        let said = message
+                            .strip_prefix(&format!("{key}: "))
+                            .unwrap_or(&message);
+                        host.errors.retain(|(errored, _)| errored != key);
+                        host.errors.push((key.clone(), said.to_string()));
+                    }
+                }
+            }
+        }
+        changed
     }
 
     /// The settings file was edited by hand; the pages show the new values.
@@ -204,11 +390,14 @@ impl SettingsView {
         changed
     }
 
-    /// Shows a page (by its index in the navbar), as a key binding asks.
+    /// Shows a page of This Mac (by its index in the navbar), as a key binding asks.
     pub fn select_category(&mut self, category: usize) {
         if category < settings_ui::CATEGORY_COUNT {
             self.commit_edit();
             self.close_popover();
+            if let Some(host) = self.pages.host.as_mut() {
+                host.shown = false;
+            }
             self.selected = category;
             self.pages.language = None;
             self.page_scroll = 0.0;
@@ -252,6 +441,9 @@ impl SettingsView {
     }
 
     fn persist(&mut self) {
+        if self.in_host_scope {
+            return;
+        }
         if let Err(error) = self.settings.save() {
             eprintln!("settings: save: {error}");
         }
@@ -485,7 +677,7 @@ impl SettingsView {
 
     /// Picks up a finished connection check; returns whether the page changed.
     pub fn tick(&mut self) -> bool {
-        let loaded = self.tick_host();
+        let loaded = self.tick_host() | self.tick_host_settings();
         let Some(receiver) = &self.jira_test else {
             return loaded;
         };
@@ -523,7 +715,7 @@ impl SettingsView {
     }
 
     pub fn busy(&self) -> bool {
-        self.jira_test.is_some() || self.jira_load.is_some()
+        self.jira_test.is_some() || self.jira_load.is_some() || self.host_pending > 0
     }
 
     /// Pastes into the field being edited (one line; newlines dropped).
@@ -575,6 +767,10 @@ impl SettingsView {
 
     /// Commit an in-progress numeric edit (parse, clamp, persist, re-apply the global). No-op if idle.
     fn commit_edit(&mut self) {
+        self.in_host(Self::commit_edit_here)
+    }
+
+    fn commit_edit_here(&mut self) {
         let Some((id, buf)) = self.editing.take() else {
             return;
         };
@@ -586,7 +782,19 @@ impl SettingsView {
             match settings_ui::set_proxy_text(id, &buf, &mut self.settings) {
                 Ok(true) => self.persist(),
                 Ok(false) => {}
+                Err(error) if self.in_host_scope => self.refuse_on_host(id, error),
                 Err(error) => eprintln!("settings: {error}"),
+            }
+            return;
+        }
+        if host_tab::is_host_number_edit(id) {
+            match buf.trim().parse::<u64>() {
+                Ok(typed) => {
+                    if let Some((value, _, max)) = host_tab::host_number(id, &mut self.settings) {
+                        *value = typed.min(max);
+                    }
+                }
+                Err(_) => self.refuse_on_host(id, format!("{} is not a whole number", buf.trim())),
             }
             return;
         }
@@ -698,7 +906,7 @@ impl SettingsView {
             c
         };
         if changed {
-            let _ = self.settings.save();
+            self.persist();
             self.pending.redraw_others = true;
         }
     }
@@ -765,6 +973,7 @@ impl SettingsView {
             self.nav_scroll,
             &self.pages.project,
             self.pages.language,
+            self.pages.host.as_ref(),
         );
         self.nav_clip = chrome.nav_clip;
         self.nav_max = (chrome.nav_height - chrome.nav_clip.h).max(0.0);
@@ -790,7 +999,7 @@ impl SettingsView {
                 .find(|(_, id)| *id == cid)
                 .map(|(r, _)| *r)?;
             let items = settings_ui::control_items(cid, &self.fonts);
-            let current = settings_ui::control_value(cid, &self.settings);
+            let current = settings_ui::control_value(cid, self.active_settings());
             Some(settings_ui::popover(
                 anchor,
                 &current,
@@ -1103,16 +1312,34 @@ impl SettingsView {
         if self.key_focus.is_some() {
             return self.key_tab(!down);
         }
+        let pages = self.pages_shown();
+        let at = pages
+            .iter()
+            .position(|page| *page == self.selected)
+            .unwrap_or(0);
         let next = if down {
-            (self.selected + 1).min(settings_ui::CATEGORY_COUNT - 1)
+            (at + 1).min(pages.len().saturating_sub(1))
         } else {
-            self.selected.saturating_sub(1)
+            at.saturating_sub(1)
         };
-        if next == self.selected {
+        let Some(next) = pages
+            .get(next)
+            .copied()
+            .filter(|next| *next != self.selected)
+        else {
             return false;
-        }
+        };
         self.click(next as u64);
         true
+    }
+
+    /// The navbar's pages of the shown tab, in order.
+    fn pages_shown(&self) -> Vec<usize> {
+        if self.host_shown() {
+            settings_ui::HOST_CATEGORIES.to_vec()
+        } else {
+            (0..settings_ui::CATEGORY_COUNT).collect()
+        }
     }
 
     /// Home or End: the first or last page (or dropdown item).
@@ -1134,10 +1361,9 @@ impl SettingsView {
             };
             return true;
         }
-        let page = if end {
-            settings_ui::CATEGORY_COUNT - 1
-        } else {
-            0
+        let pages = self.pages_shown();
+        let Some(page) = (if end { pages.last() } else { pages.first() }).copied() else {
+            return false;
         };
         self.click(page as u64);
         true
@@ -1226,12 +1452,70 @@ impl SettingsView {
     }
 
     fn click(&mut self, id: u64) {
+        match id {
+            settings_ui::CTRL_TAB_MAC | settings_ui::CTRL_TAB_HOST => {
+                self.show_tab(id == settings_ui::CTRL_TAB_HOST);
+                return;
+            }
+            settings_ui::CTRL_HOST_RETRY => {
+                self.read_host();
+                return;
+            }
+            settings_ui::CTRL_HOST_UPDATE_POM => {
+                self.pending.update_host_pom = true;
+                return;
+            }
+            settings_ui::CTRL_HOST_OPEN_JSON => {
+                self.commit_edit();
+                self.close_popover();
+                self.pending.edit_host_settings =
+                    self.pages.host.as_ref().map(HostPage::settings_path);
+                return;
+            }
+            _ => {}
+        }
+        self.in_host(|view| view.click_here(id));
+    }
+
+    /// This Mac's tab or the host's; a host that could not answer is asked again.
+    fn show_tab(&mut self, host_tab: bool) {
+        self.commit_edit();
+        self.close_popover();
+        self.key_focus = None;
+        let Some(host) = self.pages.host.as_mut() else {
+            return;
+        };
+        if host.shown == host_tab {
+            return;
+        }
+        host.shown = host_tab;
+        let ask_again = host_tab
+            && matches!(
+                host.load,
+                HostLoad::Unreachable(_) | HostLoad::Outdated(_) | HostLoad::Failed(_)
+            );
+        if host_tab && !settings_ui::HOST_CATEGORIES.contains(&self.selected) {
+            self.selected = settings_ui::GENERAL;
+        }
+        if let Some(expanded) = self.expanded.get_mut(self.selected) {
+            *expanded = true;
+        }
+        self.pages.language = None;
+        self.page_scroll = 0.0;
+        self.nav_scroll = 0.0;
+        self.active_section = None;
+        if ask_again {
+            self.read_host();
+        }
+    }
+
+    fn click_here(&mut self, id: u64) {
         if id >= settings_ui::RESET_OFFSET {
             self.commit_edit();
             self.close_popover();
             let base = id - settings_ui::RESET_OFFSET;
             if settings_ui::reset_to_default(base, &mut self.settings) {
-                let _ = self.settings.save();
+                self.persist();
                 match base {
                     settings_ui::CTRL_THEME
                     | settings_ui::CTRL_THEME_SELECTION
@@ -1281,7 +1565,7 @@ impl SettingsView {
             let idx = (id - settings_ui::POPOVER_BASE) as usize;
             if let Some(cid) = self.popover {
                 if settings_ui::apply_choice(cid, idx, &self.fonts, &mut self.settings) {
-                    let _ = self.settings.save();
+                    self.persist();
                     if let Some(event) = settings_ui::sound_event(cid) {
                         let sound = self.settings.sound_for(event);
                         if !sound.is_empty() {
@@ -1500,6 +1784,13 @@ impl SettingsView {
             self.commit_edit();
             self.editing = Some((id, seed));
             self.close_popover();
+        } else if host_tab::is_host_number_edit(id) {
+            self.commit_edit();
+            let seed = host_tab::host_number(id, &mut self.settings)
+                .map(|(value, _, _)| value.to_string())
+                .unwrap_or_default();
+            self.editing = Some((id, seed));
+            self.close_popover();
         } else if id >= 100 {
             self.commit_edit();
             if settings_ui::is_dropdown(id) {
@@ -1509,7 +1800,7 @@ impl SettingsView {
                     self.open_popover(id);
                 }
             } else if settings_ui::handle_control(id, &mut self.settings) {
-                let _ = self.settings.save();
+                self.persist();
                 match id {
                     settings_ui::CTRL_FONT_WEIGHT_DEC | settings_ui::CTRL_FONT_WEIGHT_INC => {
                         ui::set_ui_font_weight(self.settings.ui_font_weight as u16);
@@ -1931,6 +2222,189 @@ mod tests {
         view.click(settings_ui::CTRL_JIRA_RESET_TOKEN);
         settle(&mut view);
         assert_eq!(view.pages.jira.token, TokenSource::Missing);
+    }
+
+    /// A host's settings.json in memory, refusing what a host refuses.
+    struct HostFile {
+        file: std::sync::Mutex<Value>,
+        outdated: bool,
+    }
+
+    impl HostFile {
+        fn new(outdated: bool) -> Arc<HostFile> {
+            Arc::new(HostFile {
+                file: std::sync::Mutex::new(serde_json::json!({"theme": "kept"})),
+                outdated,
+            })
+        }
+
+        fn answer(file: &Value) -> HostAnswer {
+            HostAnswer {
+                values: settings::host_values(file),
+                keys: settings::HOST_KEYS
+                    .iter()
+                    .map(|key| key.to_string())
+                    .collect(),
+                path: "/home/dev/.config/pomelo/settings.json".into(),
+            }
+        }
+    }
+
+    impl HostSettingsStore for HostFile {
+        fn read(&self) -> Result<HostAnswer, HostError> {
+            if self.outdated {
+                return Err(HostError::Outdated(
+                    "Changing the settings of dev needs a newer pom on dev; update it there".into(),
+                ));
+            }
+            let file = self
+                .file
+                .lock()
+                .map_err(|error| HostError::Failed(error.to_string()))?;
+            Ok(HostFile::answer(&file))
+        }
+
+        fn change(&self, values: Value) -> Result<HostAnswer, HostError> {
+            let mut file = self
+                .file
+                .lock()
+                .map_err(|error| HostError::Failed(error.to_string()))?;
+            settings::apply_host_change(&mut file, &values)
+                .map_err(|error| HostError::Refused(error.to_string()))?;
+            Ok(HostFile::answer(&file))
+        }
+    }
+
+    fn remote_host(store: Arc<HostFile>) -> settings_ui::RemoteHost {
+        settings_ui::RemoteHost {
+            name: "dev".into(),
+            version: "0.9.9".into(),
+            store,
+        }
+    }
+
+    #[test]
+    fn the_host_tab_changes_the_hosts_settings_and_leaves_this_macs() {
+        let file = HostFile::new(false);
+        let mut view = SettingsView::new(Settings::default());
+        view.set_remote_host(Some(remote_host(file.clone())));
+        settle(&mut view);
+        view.select_category(settings_ui::KEYMAP);
+        view.click(settings_ui::CTRL_TAB_HOST);
+        assert!(view.host_shown());
+        assert_eq!(view.selected, settings_ui::GENERAL, "a page the host has");
+        assert_eq!(
+            view.pages.host.as_ref().map(|host| host.load.clone()),
+            Some(HostLoad::Ready)
+        );
+
+        view.select_category(settings_ui::AGENT);
+        view.click(settings_ui::CTRL_TAB_HOST);
+        view.click(settings_ui::CTRL_AGENT_COMMAND);
+        view.key_backspace();
+        view.key_text("x");
+        view.key_enter();
+        view.click(settings_ui::CTRL_IDLE_EXIT_INC);
+        settle(&mut view);
+        let host_file = file.file.lock().expect("file").clone();
+        assert_eq!(host_file["agent_command"], "claudx");
+        assert_eq!(host_file["server"]["idle_exit_minutes"], 35);
+        assert_eq!(host_file["theme"], "kept");
+        assert_eq!(
+            view.settings.agent_command, "claude",
+            "this Mac keeps its own"
+        );
+        assert_eq!(
+            view.pages
+                .host
+                .as_ref()
+                .map(|host| host.settings.agent_command.clone()),
+            Some("claudx".into())
+        );
+
+        view.click(settings_ui::CTRL_PROXY_BIND);
+        view.editing = Some((settings_ui::CTRL_PROXY_BIND, "not an address".into()));
+        view.key_enter();
+        let errors = view
+            .pages
+            .host
+            .as_ref()
+            .map(HostPage::control_errors)
+            .unwrap_or_default();
+        assert_eq!(errors.len(), 1, "said on the row: {errors:?}");
+        assert_eq!(errors[0].0, settings_ui::CTRL_PROXY_BIND);
+
+        view.click(settings_ui::CTRL_HOST_OPEN_JSON);
+        assert_eq!(
+            view.take_side_effects().edit_host_settings.as_deref(),
+            Some("/home/dev/.config/pomelo/settings.json")
+        );
+        view.click(settings_ui::CTRL_TAB_MAC);
+        view.click(settings_ui::CTRL_AGENT_COMMAND);
+        assert_eq!(
+            view.editing.as_ref().map(|(_, text)| text.as_str()),
+            Some("claude"),
+            "This Mac edits its own again"
+        );
+    }
+
+    #[test]
+    fn a_value_the_host_refuses_goes_back_and_says_why_on_its_row() {
+        let file = HostFile::new(false);
+        let mut view = SettingsView::new(Settings::default());
+        view.set_remote_host(Some(remote_host(file.clone())));
+        settle(&mut view);
+        view.click(settings_ui::CTRL_TAB_HOST);
+        view.editing = Some((settings_ui::CTRL_MODULES_LIMIT_EDIT, "0".into()));
+        view.key_enter();
+        settle(&mut view);
+        let host = view.pages.host.clone().expect("host");
+        assert_eq!(
+            host.settings.modules_size_limit_gb, 1,
+            "clamped as on this Mac"
+        );
+
+        let mut change = Map::new();
+        change.insert("dev_proxy_port".into(), Value::from(80));
+        let before = Box::new(host.settings.clone());
+        if let Some(host) = view.pages.host.as_mut() {
+            host.settings.dev_proxy_port = 80;
+        }
+        let values = Value::Object(change.clone());
+        view.ask_host_settings(HostAsk::Change { change, before }, move |store| {
+            store.change(values)
+        });
+        settle(&mut view);
+        let host = view.pages.host.clone().expect("host");
+        assert_eq!(host.settings.dev_proxy_port, 8767, "put back");
+        assert_eq!(
+            host.control_errors(),
+            vec![(
+                settings_ui::CTRL_PROXY_PORT_EDIT,
+                "80 is not between 1024 and 65535".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn an_older_pom_on_the_host_asks_for_an_update() {
+        let mut view = SettingsView::new(Settings::default());
+        view.set_remote_host(Some(remote_host(HostFile::new(true))));
+        settle(&mut view);
+        assert!(matches!(
+            view.pages.host.as_ref().map(|host| &host.load),
+            Some(HostLoad::Outdated(_))
+        ));
+        view.click(settings_ui::CTRL_TAB_HOST);
+        settle(&mut view);
+        view.click(settings_ui::CTRL_HOST_UPDATE_POM);
+        assert!(view.take_side_effects().update_host_pom);
+        assert!(view.key_home_end(true));
+        assert_eq!(
+            view.selected,
+            settings_ui::INTEGRATIONS,
+            "the host tab's last page"
+        );
     }
 
     #[test]

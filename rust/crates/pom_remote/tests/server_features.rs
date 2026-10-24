@@ -614,7 +614,7 @@ fn the_host_settings_go_through_a_server_that_offers_them() {
     );
     assert_eq!(current.host_settings().expect("again"), set);
     let refused = current.set_host_settings(serde_json::json!({"theme": "x"}));
-    let Err(pom_remote::SourceError::Failed(message)) = refused else {
+    let Err(pom_remote::SourceError::Refused(message)) = refused else {
         panic!("not refused: {refused:?}");
     };
     assert!(

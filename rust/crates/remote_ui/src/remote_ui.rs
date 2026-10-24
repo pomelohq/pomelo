@@ -270,7 +270,9 @@ impl WindowModal for ConnectHostModal {
                     Some(Err(error)) => {
                         let lead = match error {
                             SourceError::Unreachable(_) => "Could not connect",
-                            SourceError::Failed(_) => "It answered with an error",
+                            SourceError::Failed(_) | SourceError::Refused(_) => {
+                                "It answered with an error"
+                            }
                         };
                         section = section
                             .gap(10.0)

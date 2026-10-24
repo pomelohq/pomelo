@@ -111,6 +111,33 @@ impl RemoteWindow {
         }
     }
 
+    /// The host tab of Settings: the host's own settings, through its pom server.
+    pub fn settings_host(&self) -> settings_ui::RemoteHost {
+        settings_ui::RemoteHost {
+            name: self.host.clone(),
+            version: self.host_status().1,
+            store: Arc::new(HostSettingsOnHost {
+                source: self.watch.source(),
+            }),
+        }
+    }
+
+    /// The window's session to the host, and the host's pom version (empty until known).
+    pub fn host_status(&self) -> (settings_ui::HostLink, String) {
+        let snapshot = self.watch.snapshot();
+        let link = match remote_ui::host_link(&snapshot.connection) {
+            workspace::HostLink::Connecting => settings_ui::HostLink::Connecting,
+            workspace::HostLink::Connected => settings_ui::HostLink::Connected,
+            workspace::HostLink::Reconnecting => settings_ui::HostLink::Reconnecting,
+            workspace::HostLink::Disconnected => settings_ui::HostLink::Disconnected,
+        };
+        let version = snapshot
+            .transport
+            .and_then(|transport| transport.remote_version)
+            .unwrap_or_default();
+        (link, version)
+    }
+
     /// The Project page: the repositories main has on the host and how many workspaces have each.
     pub fn project_page(&self) -> settings_ui::ProjectPage {
         let workspaces = self
@@ -154,6 +181,56 @@ impl RemoteWindow {
     /// The key this Mac keeps the project's Jira cache under.
     pub fn jira_session(&self) -> String {
         pom_remote::remote_jira_session(&self.project, &self.host)
+    }
+}
+
+/// A host's settings read and changed through its pom server.
+struct HostSettingsOnHost {
+    source: Arc<dyn pom_remote::ProjectSource>,
+}
+
+impl HostSettingsOnHost {
+    fn error(&self, error: pom_remote::SourceError) -> settings_ui::HostError {
+        let outdated = self.source.transport().is_some_and(|transport| {
+            transport.via == pom_remote::Via::Server && !transport.host_settings
+        });
+        match error {
+            pom_remote::SourceError::Unreachable(message) => {
+                settings_ui::HostError::Unreachable(message)
+            }
+            pom_remote::SourceError::Refused(message) => settings_ui::HostError::Refused(message),
+            pom_remote::SourceError::Failed(message) if outdated => {
+                settings_ui::HostError::Outdated(message)
+            }
+            pom_remote::SourceError::Failed(message) => settings_ui::HostError::Failed(message),
+        }
+    }
+}
+
+fn host_answer(answer: pom_remote::server_api::HostSettings) -> settings_ui::HostAnswer {
+    settings_ui::HostAnswer {
+        values: answer.values,
+        keys: answer.keys,
+        path: answer.path,
+    }
+}
+
+impl settings_ui::HostSettingsStore for HostSettingsOnHost {
+    fn read(&self) -> Result<settings_ui::HostAnswer, settings_ui::HostError> {
+        self.source
+            .host_settings()
+            .map(host_answer)
+            .map_err(|error| self.error(error))
+    }
+
+    fn change(
+        &self,
+        values: serde_json::Value,
+    ) -> Result<settings_ui::HostAnswer, settings_ui::HostError> {
+        self.source
+            .set_host_settings(values)
+            .map(host_answer)
+            .map_err(|error| self.error(error))
     }
 }
 
@@ -1101,7 +1178,7 @@ impl App {
     }
 
     /// Installs this app's version of pom on the host, off the UI thread; the page shows how it goes.
-    fn update_remote_pom(&mut self, id: WindowId) {
+    pub(crate) fn update_remote_pom(&mut self, id: WindowId) {
         let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
             return;
         };
@@ -1179,6 +1256,38 @@ impl App {
             }
         };
         self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+    }
+
+    /// Opens a file of the host, such as its settings.json, in the editor that reaches it over ssh.
+    pub(crate) fn open_remote_path(&mut self, id: WindowId, path: &str) {
+        let Some(remote) = self.mains.get(&id).and_then(|main| main.remote.as_ref()) else {
+            return;
+        };
+        let message = match host(&remote.host) {
+            Err(error) => format!("Cannot open an editor: {error}"),
+            Ok(host) => {
+                let find =
+                    |program: &str| pom_remote::find_program(program, pom_services::tool_path());
+                match pom_remote::editor_argv(
+                    &self.settings.remote_editor,
+                    &host.url.alias(),
+                    path,
+                    &find,
+                ) {
+                    Ok(argv) => match launch(&argv) {
+                        Ok(()) => {
+                            format!("Opening {path} on {} in {}", host.name, program_name(&argv))
+                        }
+                        Err(error) => format!("Could not run {}: {error}", program_name(&argv)),
+                    },
+                    Err(error) => format!("Cannot open an editor: {error}"),
+                }
+            }
+        };
+        self.with_workspace_view(id, |view, _| view.show_toast(message, None));
+        if let Some(main) = self.mains.get(&id) {
+            main.window.focus_window();
+        }
     }
 
     /// Creating a workspace on the host: the create form, with the repos main has there.

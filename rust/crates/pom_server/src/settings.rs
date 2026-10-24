@@ -20,12 +20,15 @@ pub struct SettingsService {
 }
 
 fn answered(
+    path: &std::path::Path,
     result: Result<serde_json::Value, HostSettingsError>,
 ) -> Result<HostSettings, RemoteError> {
-    result.map(HostSettings::new).map_err(|error| match error {
-        HostSettingsError::File(message) => RemoteError::new(FAILED, message),
-        other => RemoteError::new(error_code::INVALID_PARAMS, other.to_string()),
-    })
+    result
+        .map(|values| HostSettings::new(values).kept_in(path))
+        .map_err(|error| match error {
+            HostSettingsError::File(message) => RemoteError::new(FAILED, message),
+            other => RemoteError::new(error_code::INVALID_PARAMS, other.to_string()),
+        })
 }
 
 impl SettingsService {
@@ -52,7 +55,8 @@ impl SettingsService {
     }
 
     pub fn get(&self) -> Result<HostSettings, RemoteError> {
-        answered(settings::read_host_settings(self.path()?))
+        let path = self.path()?;
+        answered(path, settings::read_host_settings(path))
     }
 
     /// `peer` is the process at the other end of the caller's socket: the `pom server proxy` it runs.
@@ -73,6 +77,6 @@ impl SettingsService {
             .writing
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        answered(settings::write_host_settings(path, &params.values))
+        answered(path, settings::write_host_settings(path, &params.values))
     }
 }

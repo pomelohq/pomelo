@@ -109,7 +109,9 @@ fn follow(source: &dyn ProjectSource, host: &str, job: &str, send: &Updates) -> 
                     }
                 }
             },
-            Err(SourceError::Failed(message)) => return Err(message),
+            Err(SourceError::Failed(message) | SourceError::Refused(message)) => {
+                return Err(message)
+            }
             Err(SourceError::Unreachable(reason)) => last_error = reason,
         }
         // The session coming back on its own is no lost try: the server keeps the job's events meanwhile.

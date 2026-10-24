@@ -662,6 +662,17 @@ impl Inner {
         params: impl Serialize,
         timeout: Duration,
     ) -> Result<Route<T>, SourceError> {
+        self.request_telling_refusals(name, params, timeout, false)
+    }
+
+    /// [`Self::request`]; with `refusals`, an answer that the params are not taken is [`SourceError::Refused`].
+    fn request_telling_refusals<T: DeserializeOwned>(
+        self: &Arc<Self>,
+        name: &str,
+        params: impl Serialize,
+        timeout: Duration,
+        refusals: bool,
+    ) -> Result<Route<T>, SourceError> {
         let params =
             serde_json::to_value(params).map_err(|error| SourceError::Failed(error.to_string()))?;
         let mut retried = false;
@@ -682,6 +693,11 @@ impl Inner {
                                 self.host.name
                             ))
                         })
+                }
+                Err(Error::Remote(error))
+                    if refusals && error.code == error_code::INVALID_PARAMS =>
+                {
+                    return Err(SourceError::Refused(error.message))
                 }
                 Err(Error::Remote(error)) => return Err(SourceError::Failed(error.message)),
                 Err(Error::Closed(_) | Error::Io(_)) if !retried => {
@@ -752,7 +768,7 @@ impl Inner {
                 self.host.name
             )));
         }
-        let route = self.request(name, params, READ_TIMEOUT)?;
+        let route = self.request_telling_refusals(name, params, READ_TIMEOUT, true)?;
         self.server_only(route, "The host's settings")
     }
 
