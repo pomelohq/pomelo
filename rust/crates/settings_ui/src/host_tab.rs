@@ -770,22 +770,27 @@ pub fn placeholder() -> Node {
 }
 
 /// A section's note under its header: where it applies.
-pub fn note(text: &str) -> Node {
+pub fn note(text: &str, under_header: bool) -> Node {
     let ink = theme().text_placeholder;
-    div()
+    let note = div()
         .row()
-        .pb(3.0)
+        .h_px(super::SMALL_LINE_HEIGHT)
         .gap(6.0)
         .items_center()
         .child(ui::icon(ui::IconKind::Info).size(12.0).color(ink))
-        .child(label(text.to_string()).size(12.0).color(ink))
-        .into()
+        .child(label(text.to_string()).size(12.0).color(ink));
+    if under_header {
+        div().col().pb(4.0).child(note).into()
+    } else {
+        div().col().pt(3.0).child(note).into()
+    }
 }
 
 /// The message a host gave for a row, under its description.
 pub fn row_error(text: &str, wrap: f32) -> Node {
     label(text.to_string())
         .size(12.0)
+        .line_height(super::SMALL_LINE_HEIGHT)
         .color(theme().error)
         .wrap(wrap)
         .into()

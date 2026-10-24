@@ -75,6 +75,7 @@ fn menu_c() -> Rgba {
 }
 
 const ROUND: f32 = 6.0;
+const SMALL_LINE_HEIGHT: f32 = 16.0;
 const NAV_LEAD_W: f32 = 12.0;
 
 fn nav_guide() -> Rgba {
@@ -4452,15 +4453,25 @@ fn render_page_under(
                 } else {
                     name.to_string()
                 };
+                let noted = matches!(page.items.get(i + 1), Some(PageItem::Note(_)))
+                    && visible.get(i + 1).copied().unwrap_or(false);
                 col = col.child(inset(section_header(
                     &shown,
                     SECTION_ANCHOR_BASE + section_idx as u64,
+                    noted,
                 )));
                 in_bindings = *name == "Bindings";
                 table_open = false;
                 section_idx += 1;
             }
-            PageItem::Note(text) => col = col.child(inset(host_tab::note(text))),
+            PageItem::Note(text) => {
+                let under_header = matches!(
+                    i.checked_sub(1)
+                        .and_then(|previous| page.items.get(previous)),
+                    Some(PageItem::Header(_))
+                );
+                col = col.child(inset(host_tab::note(text, under_header)))
+            }
             PageItem::Row(row) => {
                 let control = match &row.control {
                     Control::Dropdown { id, value } => dropdown(value, *id),
@@ -4588,11 +4599,11 @@ fn keys(binding: &str) -> Node {
     row.into()
 }
 
-fn section_header(name: &str, anchor: u64) -> Node {
+fn section_header(name: &str, anchor: u64, noted: bool) -> Node {
     div()
         .col()
         .pt(22.0)
-        .pb(8.0)
+        .pb(if noted { 6.0 } else { 8.0 })
         .on_click(anchor) // geometry marker only: lets the app read this section's y to scroll the navbar to it
         .child(
             div().row().h_px(14.0).items_center().child(
@@ -4721,7 +4732,12 @@ fn reset_button(id: u64) -> Node {
 
 fn description_node(desc: &str, wrap_w: f32) -> Node {
     if !desc.contains('`') {
-        return label(desc).size(12.0).color(dim_c()).wrap(wrap_w).into();
+        return label(desc)
+            .size(12.0)
+            .line_height(SMALL_LINE_HEIGHT)
+            .color(dim_c())
+            .wrap(wrap_w)
+            .into();
     }
     let mut row = div().row().items_center();
     for (i, part) in desc.split('`').enumerate() {
