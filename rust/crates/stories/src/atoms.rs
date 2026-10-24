@@ -9,6 +9,7 @@ const PAGE: &str = "Atoms";
 const BUTTON: (f32, f32) = (220.0, 72.0);
 const CONTROL: (f32, f32) = (260.0, 72.0);
 const INPUT: (f32, f32) = (320.0, 108.0);
+const TOOLTIP: (f32, f32) = (260.0, 96.0);
 const ID: u64 = 1;
 
 /// A control on its own, centered with room around it.
@@ -362,11 +363,11 @@ pub fn stories() -> Vec<StoryDef> {
                 )
             })
         }),
-        story("tooltip", "Tooltip", "Text", CONTROL, || {
-            still(|_, _| alone(ui::tooltip_bubble("Open in Browser", None)))
+        story("tooltip", "Tooltip", "Text", TOOLTIP, || {
+            still(|_, _| hovered_with_tooltip(IconKind::ArrowUpRight, "Open in Browser", None))
         }),
-        story("tooltip-keys", "Tooltip", "With keys", CONTROL, || {
-            still(|_, _| alone(ui::tooltip_bubble("Toggle Left Dock", Some("cmd-b"))))
+        story("tooltip-keys", "Tooltip", "With keys", TOOLTIP, || {
+            still(|_, _| hovered_with_tooltip(IconKind::Sidebar, "Toggle Left Dock", Some("cmd-b")))
         }),
         story("dot-states", "Status dot", "States", CONTROL, || {
             still(|_, _| {
@@ -466,4 +467,26 @@ fn filters(hovered: Option<u64>) -> ui::Segmented {
         0,
     )
     .hovered(hovered)
+}
+
+/// A tooltip only shows under a hovered icon, so the board draws both.
+fn hovered_with_tooltip(kind: IconKind, text: &str, keys: Option<&str>) -> Node {
+    let colors = theme();
+    div()
+        .col()
+        .p(16.0)
+        .gap(4.0)
+        .child(
+            div()
+                .row()
+                .w_px(24.0)
+                .h_px(24.0)
+                .items_center()
+                .justify_center()
+                .rounded(4.0)
+                .bg(colors.ghost_element_hover)
+                .child(ui::icon(kind).size(14.0).color(colors.icon)),
+        )
+        .child(div().row().child(ui::tooltip_bubble(text, keys)))
+        .into()
 }
