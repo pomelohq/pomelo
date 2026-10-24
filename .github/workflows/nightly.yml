@@ -1,0 +1,146 @@
+name: Nightly
+
+# Each night, when main moved since the last nightly: build main as `<next patch>-nightly.<YYYYMMDD>` with
+# build.yml (signed, notarized, Sparkle-signed like a release) and publish it into the one rolling `nightly`
+# prerelease, its assets named by version. The last 7 nights' builds stay there, so a host can still install the
+# exact nightly an app runs. It never touches appcast.xml or the latest stable release, and the release is never
+# marked latest. Run it by hand with dry_run to build and sign without publishing or moving any tag.
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and sign, publish nothing.
+        type: boolean
+        default: true
+      force:
+        description: Build even when main has not moved since the last nightly.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  KEEP_NIGHTS: 7
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Decide whether and what to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          COMMIT=$(git rev-parse HEAD)
+          LAST=""
+          if gh release download nightly --repo "$GITHUB_REPOSITORY" -p nightly.json -O "$RUNNER_TEMP/nightly.json" 2>/dev/null; then
+            LAST=$(jq -r '.commit // empty' "$RUNNER_TEMP/nightly.json")
+          fi
+          CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
+          IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
+          VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-nightly.$(date -u +%Y%m%d)"
+          BUILD=true
+          if [ "$COMMIT" = "$LAST" ] && [ "$FORCE" != true ] && [ "$DRY_RUN" != true ]; then
+            BUILD=false
+            echo "main is still at $COMMIT, the last nightly; nothing to build"
+          fi
+          echo "build $BUILD: $VERSION from $COMMIT (last nightly ${LAST:-none})"
+          {
+            echo "build=$BUILD"
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.plan.outputs.commit }}
+      version: ${{ needs.plan.outputs.version }}
+      stable: false
+    secrets: inherit
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Gather the files
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        run: |
+          mkdir -p publish
+          cp "artifacts/macos/Pomelo-$VERSION.dmg" "artifacts/macos/Pomelo-$VERSION.app.tar.gz" \
+            "artifacts/macos/Pomelo-$VERSION.app.tar.gz.sig" publish/
+          cp artifacts/linux-*/* publish/
+          cd publish
+          sha256sum -- * > "checksums-$VERSION.txt"
+          jq -n --arg version "$VERSION" --arg commit "$COMMIT" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, commit: $commit, date: $date}' > nightly.json
+          ls -l
+      - name: Publish into the nightly release
+        if: ${{ !(inputs.dry_run || false) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          COMMIT: ${{ needs.plan.outputs.commit }}
+        working-directory: publish
+        run: |
+          NOTES="Nightly build of main, $VERSION from $COMMIT. Builds of the last $KEEP_NIGHTS nights stay here, named by version. Not a stable release."
+          if ! gh release view nightly --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create nightly --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --target "$COMMIT" --title "Nightly" --notes "$NOTES"
+          fi
+          # The release points at the commit its newest build came from.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/nightly" -f sha="$COMMIT" -F force=true >/dev/null
+          gh release edit nightly --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --notes "$NOTES"
+          gh release upload nightly --repo "$GITHUB_REPOSITORY" --clobber -- *
+      - name: Keep the last nights' builds
+        if: ${{ !(inputs.dry_run || false) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSETS=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/nightly" --jq '.assets[] | "\(.id) \(.name)"')
+          VERSIONS=$(printf '%s\n' "$ASSETS" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]{8}' | sort -u \
+            | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n)
+          DROP=$(printf '%s\n' "$VERSIONS" | head -n "-$KEEP_NIGHTS")
+          for VERSION in $DROP; do
+            printf '%s\n' "$ASSETS" | while read -r ID NAME; do
+              case "$NAME" in
+                *"$VERSION"*)
+                  echo "dropping $NAME"
+                  gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$ID"
+                  ;;
+              esac
+            done
+          done
+      - name: Dry run
+        if: ${{ inputs.dry_run || false }}
+        working-directory: publish
+        run: |
+          echo "dry run: would publish these into the nightly release, move its tag and keep the last $KEEP_NIGHTS nights:"
+          ls -1
