@@ -18,3 +18,6 @@ ui = { path = "../ui" }
 winit.workspace = true
 workspace = { path = "../workspace" }
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"

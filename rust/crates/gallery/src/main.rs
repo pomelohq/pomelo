@@ -483,6 +483,7 @@ impl Gallery {
         self.focused_hits = live.hits.clone();
 
         let mut side = ui::Painted::default();
+        let mut overlay = ui::Painted::default();
         if self.chrome {
             let left = chrome::left(
                 h,
@@ -546,13 +547,23 @@ impl Gallery {
                 interaction,
             ));
             let menu = match self.menu {
-                Some(Menu::Pages) => Some((chrome::page_menu(&self.pages, self.page), 12.0)),
-                Some(Menu::Themes) => Some((chrome::theme_menu(&self.themes, self.theme), pill_x)),
+                Some(Menu::Pages) => {
+                    Some((chrome::page_menu(&self.pages, self.page), chrome::PAGES))
+                }
+                Some(Menu::Themes) => {
+                    Some((chrome::theme_menu(&self.themes, self.theme), chrome::THEMES))
+                }
                 None => None,
             };
-            if let Some((menu, x)) = menu {
+            let anchor = |id: u64| {
+                side.hits
+                    .iter()
+                    .find(|(_, hit)| *hit == id)
+                    .map_or(12.0, |(rect, _)| rect.x - 6.0)
+            };
+            if let Some((menu, x)) = menu.map(|(menu, id)| (menu, anchor(id))) {
                 let (menu_w, menu_h) = ui::measure(&menu);
-                side.append(ui::render_interactive(
+                overlay.append(ui::render_interactive(
                     &menu,
                     ui::Rect::new(
                         x,
@@ -584,15 +595,14 @@ impl Gallery {
                         ui::Rgba::TRANSPARENT,
                     ),
                 );
-                side.rects.extend(tip.rects);
-                side.texts.extend(tip.texts);
-                side.icons.extend(tip.icons);
+                overlay.append(tip);
             }
         }
         self.chrome_hits = side.hits.clone();
+        self.chrome_hits.extend(overlay.hits.iter().copied());
 
         let canvas_clip = Some((canvas.x, 0.0, canvas.w, canvas.h));
-        let layers: [ui::Layer; 3] = [
+        let layers: [ui::Layer; 4] = [
             (
                 base.rects.as_slice(),
                 base.tris.as_slice(),
@@ -612,6 +622,13 @@ impl Gallery {
                 side.tris.as_slice(),
                 side.texts.as_slice(),
                 side.icons.as_slice(),
+                None,
+            ),
+            (
+                overlay.rects.as_slice(),
+                overlay.tris.as_slice(),
+                overlay.texts.as_slice(),
+                overlay.icons.as_slice(),
                 None,
             ),
         ];
@@ -775,6 +792,39 @@ impl Gallery {
         self.menu = None;
     }
 
+    /// Arrows walk the open menu in the order it lists its rows, applying each one as they land on it.
+    fn step_menu(&mut self, by: isize) {
+        let step = |at: usize, len: usize| (at as isize + by).clamp(0, len as isize - 1) as usize;
+        match self.menu {
+            Some(Menu::Pages) if !self.pages.is_empty() => {
+                let page = step(self.page, self.pages.len());
+                if page != self.page {
+                    self.open_page(page, true);
+                    self.save();
+                }
+            }
+            Some(Menu::Themes) => {
+                let order: Vec<&'static str> = [ui::Appearance::Dark, ui::Appearance::Light]
+                    .iter()
+                    .flat_map(|appearance| {
+                        self.themes
+                            .iter()
+                            .filter(move |(_, kind)| kind == appearance)
+                            .map(|(name, _)| *name)
+                    })
+                    .collect();
+                let next = order
+                    .iter()
+                    .position(|name| *name == self.theme)
+                    .and_then(|at| order.get(step(at, order.len())).copied());
+                if let Some(next) = next.filter(|next| *next != self.theme) {
+                    self.set_theme(next);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn toggle_menu(&mut self, menu: Menu) {
         self.menu = if self.menu == Some(menu) {
             None
@@ -815,7 +865,12 @@ impl Gallery {
                 self.fit();
                 return;
             }
-            Key::Named(NamedKey::Escape) if self.menu.is_some() => {
+            Key::Named(step @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) if self.menu.is_some() => {
+                self.step_menu(if *step == NamedKey::ArrowUp { -1 } else { 1 });
+                self.redraw();
+                return;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Escape) if self.menu.is_some() => {
                 self.menu = None;
                 self.redraw();
                 return;
@@ -879,6 +934,8 @@ impl ApplicationHandler for Gallery {
         if self.window.is_some() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
         let attributes = Window::default_attributes()
             .with_title("Pomelo Gallery")
             .with_inner_size(LogicalSize::new(1440.0, 900.0));
@@ -976,6 +1033,31 @@ impl ApplicationHandler for Gallery {
             }
             _ => {}
         }
+    }
+}
+
+/// A bare binary has no bundle, so the Dock would show a blank document without this.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+
+    const ICON: &[u8] = include_bytes!("../../pomelo/assets/AppIcon.icns");
+    // SAFETY: plain AppKit class messages on the main thread; a null image is checked before use.
+    unsafe {
+        let data: *mut AnyObject = msg_send![
+            class!(NSData),
+            dataWithBytes: ICON.as_ptr() as *const std::ffi::c_void,
+            length: ICON.len(),
+        ];
+        let image: *mut AnyObject = msg_send![class!(NSImage), alloc];
+        let image: *mut AnyObject = msg_send![image, initWithData: data];
+        if image.is_null() {
+            eprintln!("gallery: the Dock icon did not load");
+            return;
+        }
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: () = msg_send![app, setApplicationIconImage: image];
     }
 }
 

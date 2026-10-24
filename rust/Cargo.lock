@@ -1641,6 +1641,7 @@ name = "gallery"
 version = "0.9.9"
 dependencies = [
  "anyhow",
+ "objc2 0.5.2",
  "serde",
  "serde_json",
  "stories",
