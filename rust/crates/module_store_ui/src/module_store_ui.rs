@@ -487,29 +487,18 @@ fn shimmer(clock: f32, width: f32) -> Node {
 
 fn chip(text: &str, highlight: bool) -> Node {
     let colors = theme();
-    let border = if highlight {
-        colors.text_accent
-    } else {
-        colors.border_variant
-    };
-    let ink = if text == "main" {
+    let chip = ui::chip(text).color(if text == "main" {
         colors.text
     } else {
         colors.text_muted
-    };
-    div()
-        .row()
-        .px(7.0)
-        .py(2.0)
-        .rounded(4.0)
-        .border(1.0, border)
-        .bg(if highlight {
-            colors.info_background
-        } else {
-            colors.element_background
-        })
-        .child(label(text.to_string()).size(11.5).mono().color(ink))
-        .into()
+    });
+    if highlight {
+        chip.fill(colors.info_background)
+            .border(colors.text_accent)
+            .into()
+    } else {
+        chip.into()
+    }
 }
 
 /// As many chips as fit in `width`, then "+N more" (or all of them, wrapped, with "Show less").

@@ -219,14 +219,10 @@ impl EnvItem {
             .row()
             .w_px(BADGE_W)
             .child(
-                div()
-                    .row()
-                    .h_px(18.0)
-                    .px(7.0)
-                    .items_center()
-                    .rounded(4.0)
-                    .bg(color.alpha(0.14))
-                    .child(label(text.to_string()).size(12.0).medium().color(color)),
+                ui::chip(text)
+                    .color(color)
+                    .fill(color.alpha(0.14))
+                    .border(color.alpha(0.3)),
             )
             .into()
     }

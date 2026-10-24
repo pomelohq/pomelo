@@ -142,12 +142,10 @@ fn plan_chip(plan: &str) -> Node {
     if let Some(first) = text.get(0..1) {
         text = first.to_uppercase() + &text[1..];
     }
-    div()
-        .row()
-        .px(6.0)
-        .rounded(8.0)
-        .bg(colors.text_accent.alpha(0.14))
-        .child(label(text).size(10.5).mono().color(colors.text_accent))
+    ui::chip(text)
+        .color(colors.text_accent)
+        .fill(colors.text_accent.alpha(0.14))
+        .border(colors.text_accent.alpha(0.3))
         .into()
 }
 

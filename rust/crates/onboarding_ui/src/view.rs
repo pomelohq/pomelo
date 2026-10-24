@@ -111,18 +111,12 @@ pub fn card_frame(chosen: bool) -> ui::Div {
 
 pub fn chip(text: &str, on: bool) -> Node {
     let colors = theme();
-    div()
-        .row()
-        .h_px(20.0)
-        .px(8.0)
-        .items_center()
-        .rounded(4.0)
-        .bg(colors.element_active)
-        .child(label(text.to_string()).size(12.0).color(if on {
+    ui::chip(text)
+        .color(if on {
             colors.text_muted
         } else {
             colors.text_placeholder
-        }))
+        })
         .into()
 }
 
