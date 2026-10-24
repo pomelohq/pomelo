@@ -221,7 +221,12 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
 
 App and host versions: the same version works fully. With different versions the app uses only what the
 host's `pom server` declares in its HELLO, and offers "Update pom on host" once their major or minor version
-differs.
+differs and the host is the older one; a newer host asks for the app to be updated instead, never for pom
+there to go back. HELLO also carries the wire protocol each side speaks, newest (`protocol`) and oldest
+(`min_protocol`); two sides talk when each one's newest is at least the other's oldest, a HELLO without
+`min_protocol` speaks only its `protocol`, and a server answers in the protocol both speak. With no protocol
+in common the app reads the host over plain ssh and says which side to update. CI runs the app's client
+against the last stable release's signed Linux pom.
 
 ## Local processes
 

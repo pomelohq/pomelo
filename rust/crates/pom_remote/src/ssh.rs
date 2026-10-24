@@ -391,6 +391,12 @@ pub fn version_mismatch(local: &str, remote: &str) -> bool {
     major_minor(local) != major_minor(remote)
 }
 
+/// The host's pom is a later release than the app: putting the app's version there would take it back.
+pub fn host_newer(local: &str, remote: &str) -> bool {
+    let parse = |version: &str| auto_update::Version::parse(version.trim_start_matches('v'));
+    matches!((parse(local), parse(remote)), (Some(local), Some(remote)) if remote > local)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -580,5 +586,9 @@ mod tests {
         assert!(!version_mismatch("0.9.3", "0.9.7"));
         assert!(version_mismatch("0.9.3", "0.10.0"));
         assert!(version_mismatch("1.0.0", "0.9.3"));
+        assert!(host_newer("0.9.10", "0.10.0"));
+        assert!(host_newer("0.9.10", "v0.9.11"));
+        assert!(!host_newer("0.10.0", "0.9.10"));
+        assert!(!host_newer("0.9.10", "not a version"));
     }
 }

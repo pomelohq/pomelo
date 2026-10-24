@@ -168,6 +168,8 @@ pub struct TransportInfo {
     pub fallback_reason: Option<String>,
     pub remote_version: Option<String>,
     pub version_mismatch: bool,
+    /// The host's pom is newer than the app: the app is what to update, not pom there.
+    pub host_newer: bool,
     pub terminals: bool,
     /// The server pushes changes, so nothing needs asking again and again.
     pub pushes: bool,
