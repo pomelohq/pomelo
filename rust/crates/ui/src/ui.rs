@@ -1497,6 +1497,23 @@ fn device_descriptor(adapter: &wgpu::Adapter) -> DeviceDescriptor<'static> {
     }
 }
 
+fn offscreen_texture(device: &wgpu::Device, config: &SurfaceConfiguration) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ui-offscreen"),
+        size: wgpu::Extent3d {
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: config.format,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
+}
+
 impl UiRenderer {
     pub fn new(window: Arc<WinitWindow>) -> Result<Self> {
         let size = window.inner_size();
@@ -1528,20 +1545,7 @@ impl UiRenderer {
         let (device, queue) =
             pollster::block_on(adapter.request_device(&DeviceDescriptor::default()))?;
         let config = ui_config(width, height);
-        let offscreen = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("ui-offscreen"),
-            size: wgpu::Extent3d {
-                width: config.width,
-                height: config.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: config.format,
-            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let offscreen = offscreen_texture(&device, &config);
         Self::from_parts(device, queue, config, scale, None, Some(offscreen))
     }
 
@@ -1990,6 +1994,9 @@ impl UiRenderer {
         if let Some(surface) = &self.surface {
             configure_surface(surface, &self.device, &self.config);
         }
+        if self.offscreen.is_some() {
+            self.offscreen = Some(offscreen_texture(&self.device, &self.config));
+        }
         self.msaa = make_msaa(
             &self.device,
             self.config.width,
@@ -2390,9 +2397,13 @@ impl UiRenderer {
                             .ok()
                             .and_then(|m| m.get(&id).map(|(w, h, _)| (*w as f32, *h as f32)))
                             .unwrap_or((q.w.max(1.0), q.h.max(1.0)));
-                        let fit = (q.w / iw).min(q.h / ih).clamp(0.0, 1.0);
-                        let (fw, fh) = (iw * fit, ih * fit);
-                        let rect = (q.x + (q.w - fw) / 2.0, q.y + (q.h - fh) / 2.0, fw, fh);
+                        let rect = if q.stretch {
+                            (q.x, q.y, q.w, q.h)
+                        } else {
+                            let fit = (q.w / iw).min(q.h / ih).clamp(0.0, 1.0);
+                            let (fw, fh) = (iw * fit, ih * fit);
+                            (q.x + (q.w - fw) / 2.0, q.y + (q.h - fh) / 2.0, fw, fh)
+                        };
                         (IconTexKey::Image(id), 1.0f32, [1.0, 1.0, 1.0, 1.0], rect)
                     } else if let Some(m) = q.material {
                         (
@@ -2745,6 +2756,7 @@ mod tests {
             color: Rgba::new(1.0, 1.0, 1.0, 1.0),
             material: None,
             image: None,
+            stretch: false,
         }];
         let text = |line: &str| Text {
             x: 0.0,

@@ -426,6 +426,7 @@ impl ServicesPanel {
             .context
             .holder_name(&self.model.context.target(repo, service));
         if let Ok(mut shared) = self.model.shared.lock() {
+            shared.pinned = true;
             shared.status.insert(holder.clone(), status);
             match error {
                 Some(error) => shared.errors.insert(holder.clone(), error),
@@ -477,6 +478,7 @@ impl ServicesPanel {
     /// Shows shared container `name` as running (snapshots, tests).
     pub fn show_shared_running(&mut self, name: &str) {
         if let Ok(mut shared) = self.model.shared.lock() {
+            shared.pinned = true;
             shared.shared_running.insert(name.to_string());
         }
     }

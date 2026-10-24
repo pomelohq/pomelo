@@ -923,6 +923,8 @@ pub struct IconQuad {
     pub color: Rgba,
     pub material: Option<MaterialIcon>,
     pub image: Option<u64>,
+    /// An image that fills the quad at any scale instead of fitting inside it at no more than its own size.
+    pub stretch: bool,
 }
 
 #[derive(Default, Clone)]
@@ -1234,6 +1236,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     color: Rgba::TRANSPARENT,
                     material: None,
                     image: Some(img),
+                    stretch: false,
                 });
             }
             if let Some(name) = d.debug {
@@ -1279,6 +1282,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 color: i.color,
                 material: i.material,
                 image: None,
+                stretch: false,
             });
         }
     }
@@ -1483,6 +1487,16 @@ fn align_off(container: f32, item: f32, center: bool) -> f32 {
 }
 
 impl Painted {
+    /// Adds `other` on top of what is painted so far.
+    pub fn append(&mut self, other: Painted) {
+        self.rects.extend(other.rects);
+        self.tris.extend(other.tris);
+        self.texts.extend(other.texts);
+        self.icons.extend(other.icons);
+        self.hits.extend(other.hits);
+        self.debug_bounds.extend(other.debug_bounds);
+    }
+
     /// Topmost click id at (`x`, `y`), if any.
     pub fn hit(&self, x: f32, y: f32) -> Option<u64> {
         self.hits
