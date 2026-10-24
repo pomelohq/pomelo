@@ -212,7 +212,7 @@ pub(crate) fn unpack_any(
             .path()
             .map_err(|error| error.to_string())?
             .into_owned();
-        if !allowed(&path) {
+        if !allowed(&path) || !entry.header().entry_type().is_file() {
             return Err(format!(
                 "unexpected file in the archive: {}",
                 path.display()
@@ -227,6 +227,23 @@ pub(crate) fn unpack_any(
             .map_err(|error| format!("unpack {}: {error}", path.display()))?;
     }
     Ok(text)
+}
+
+/// A file the manifest names, which must be one the archive could hold.
+pub(crate) fn staged_file(staging: &Path, relative: &str) -> Result<PathBuf, String> {
+    if relative == SECRETS_FILE || !allowed_entry(Path::new(relative)) {
+        return Err(format!("the manifest names an unexpected file: {relative}"));
+    }
+    Ok(staging.join(relative))
+}
+
+/// A repo's folder name: one plain path segment.
+pub(crate) fn plain_name(name: &str) -> Result<&str, String> {
+    let mut parts = Path::new(name).components();
+    match (parts.next(), parts.next()) {
+        (Some(Component::Normal(_)), None) if !name.starts_with('.') => Ok(name),
+        _ => Err(format!("the manifest names an unexpected repo: {name}")),
+    }
 }
 
 fn allowed_entry(path: &Path) -> bool {
@@ -409,6 +426,56 @@ mod tests {
         for bad in ["../x", "git/../x", "/etc/passwd", "git/a/b", "other.txt"] {
             assert!(!allowed_entry(Path::new(bad)), "{bad}");
         }
+        let staging = Path::new("/staging");
+        assert_eq!(
+            staged_file(staging, "git/api.patch"),
+            Ok(staging.join("git/api.patch"))
+        );
+        for bad in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "secrets.sealed",
+            "git/.hidden",
+        ] {
+            assert!(staged_file(staging, bad).is_err(), "{bad}");
+        }
+        assert_eq!(plain_name("api"), Ok("api"));
+        for bad in ["..", "../api", "a/b", ".git", "/api", ""] {
+            assert!(plain_name(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_archive_entry_that_is_a_link_is_refused() {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        let manifest = br#"{"schema":"pom.wsbundle/v1"}"#;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, MANIFEST_FILE, &manifest[..])
+            .expect("manifest");
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        builder
+            .append_link(&mut link, "git/api.patch", "/etc/hosts")
+            .expect("link");
+        let bytes = builder.into_inner().expect("tar").finish().expect("gzip");
+        let temp = tempfile::tempdir().expect("temp");
+        let refused = unpack_any(
+            &mut bytes.as_slice(),
+            temp.path(),
+            &|_| Ok(()),
+            &allowed_entry,
+        )
+        .expect_err("link");
+        assert!(refused.contains("unexpected file"), "{refused}");
+        assert!(!temp.path().join("git/api.patch").exists());
     }
 
     #[test]

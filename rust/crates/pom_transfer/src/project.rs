@@ -184,7 +184,7 @@ pub fn import_project(
     let mut cloned = Vec::new();
     let main = pom_layout::workspace_folder(&root, &manifest.default_branch);
     for repo in &manifest.repos {
-        let destination = main.join(&repo.name);
+        let destination = main.join(crate::plain_name(&repo.name)?);
         if pom_layout::is_git_repo(&destination) {
             continue;
         }
