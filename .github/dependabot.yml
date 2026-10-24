@@ -8,3 +8,12 @@ updates:
     groups:
       actions:
         patterns: ['*']
+  # One grouped pull request a week for compatible updates; a breaking (major) update gets its own.
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      cargo-compatible:
+        update-types: [minor, patch]

@@ -89,6 +89,24 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color
 
+  # Advisories, licenses, banned crates and sources of every dependency, per rust/deny.toml.
+  deny:
+    name: Dependencies (cargo-deny)
+    needs: orchestrate
+    if: ${{ needs.orchestrate.outputs.run_tests == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup show
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny
+      - run: cargo deny --locked check
+
   # Clippy builds cold: it still finishes before the tests, and one cache restore per OS keeps the cache download
   # (throttled per account) small.
   clippy_mac:
@@ -421,7 +439,7 @@ jobs:
   gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [orchestrate, check_style, clippy_mac, run_tests_mac, clippy_linux, run_tests_linux, cli-smoke, pom-server, postgres]
+    needs: [orchestrate, check_style, deny, clippy_mac, run_tests_mac, clippy_linux, run_tests_linux, cli-smoke, pom-server, postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

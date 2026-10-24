@@ -69,7 +69,6 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 block2 = { version = "0.5" }
 core-foundation-sys = { version = "0.8" }
 errno = { version = "0.3" }
-getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 half = { version = "2", features = ["num-traits"] }
 libc = { version = "0.2" }
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }
