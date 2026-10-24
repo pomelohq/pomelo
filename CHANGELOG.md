@@ -4,6 +4,21 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-10-24
+
+### Security
+- The dev proxy asks for its token on every request a reverse proxy forwards, also one running on the same machine: only a request from this machine to a `localhost` name goes without it, and a peer listed in `proxy.trusted_proxies` never counts as this machine. With a real `proxy.domain`, `pom proxy` now refuses to start without a token (`pom proxy token new`) or `allow_unauthenticated`, even when bound to loopback. (#382)
+- An agent can only deny another agent's permission prompt; an allow comes from a person or an orchestrator, unless pom.yml sets `agents.peer_approve: true`. (#383)
+- Importing a workspace archive unpacks only plain files: untracked files never land under a `.git`, links and other special entries stop the import, setuid bits are dropped, and the manifest's paths and repo names are checked. (#384)
+- The secrets key is no longer replaced when it cannot be read or has the wrong length, which lost every stored secret; it is created only when missing. (#381)
+
+### Changed
+- In a remote window, the main agent starts with the host's Agent Command and new terminals use the host's Terminal Shell, read from the host's own settings. Needs this pom on the host. (#371, #349)
+- SECURITY.md describes the screen fallback, the secrets key and imports as they work now. (#385)
+
+### Fixed
+- An agent opened from a remote window opens where Open Agents In says, next to the code or in the dock. (#348)
+
 ## [0.9.8] - 2026-10-24
 
 ### Added
