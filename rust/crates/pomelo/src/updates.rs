@@ -36,6 +36,7 @@ impl App {
         if !self.updates.waker_installed {
             self.updates.install_waker();
         }
+        self.apply_update_channel();
         auto_update::set_automatic_checks(self.settings.auto_update);
         let snapshot = auto_update::snapshot();
         if self.updates.shown.as_ref() != Some(&snapshot) {
@@ -56,6 +57,14 @@ impl App {
         }
         self.announce_fix();
         self.poll_release_notes();
+    }
+
+    pub(crate) fn apply_update_channel(&self) {
+        let channel =
+            auto_update::Channel::parse(self.settings.update_channel()).unwrap_or_default();
+        if auto_update::set_channel(channel) && self.settings.auto_update {
+            auto_update::check(auto_update::CheckKind::Automatic);
+        }
     }
 
     /// After a crash at startup, a newer release that is ready says so in every window.

@@ -4,11 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
-const REPO: &str = match option_env!("POMELO_UPDATE_REPO") {
-    Some(repo) => repo,
-    None => "pomelohq/pomelo",
+mod releases;
+pub use releases::{
+    newest, offers, releases_api, verify, Artifact, Channel, Offer, Version, NIGHTLY_TAG, REPO,
+    UPDATE_PUBLIC_KEY,
 };
-const TAG_PREFIX: &str = "v";
+
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
 pub const UP_TO_DATE_SHOWN: Duration = Duration::from_secs(3);
 
@@ -159,6 +160,22 @@ impl State {
         }
     }
 
+    /// A staged prerelease is not what the stable channel installs.
+    fn channel_changed(&mut self, channel: Channel) {
+        let prerelease = self
+            .staged
+            .as_ref()
+            .and_then(|staged| Version::parse(&staged.version))
+            .is_some_and(|version| version.is_prerelease());
+        if channel == Channel::Stable && prerelease {
+            self.staged = None;
+            self.dismissed = None;
+            if matches!(self.status, Status::Ready { .. }) {
+                self.status = Status::Idle;
+            }
+        }
+    }
+
     fn expire_up_to_date(&mut self) {
         if self.status == Status::UpToDate {
             self.status = self.at_rest();
@@ -272,6 +289,26 @@ pub fn set_automatic_checks(enabled: bool) {
     check(CheckKind::Automatic);
 }
 
+static NIGHTLY: AtomicBool = AtomicBool::new(false);
+
+fn channel() -> Channel {
+    if NIGHTLY.load(Ordering::SeqCst) {
+        Channel::Nightly
+    } else {
+        Channel::Stable
+    }
+}
+
+/// Which releases the next check considers; true when it changed, so the caller can check again.
+pub fn set_channel(channel: Channel) -> bool {
+    let nightly = channel == Channel::Nightly;
+    if NIGHTLY.swap(nightly, Ordering::SeqCst) == nightly {
+        return false;
+    }
+    update(|state| state.channel_changed(channel));
+    true
+}
+
 pub fn dismiss() {
     update(State::dismiss);
 }
@@ -307,7 +344,8 @@ pub fn take_just_updated() -> Option<String> {
 }
 
 pub fn release_url(version: &str) -> String {
-    format!("https://github.com/{REPO}/releases/tag/{TAG_PREFIX}{version}")
+    let tag = Version::parse(version).map_or_else(|| format!("v{version}"), |v| v.tag());
+    format!("https://github.com/{REPO}/releases/tag/{tag}")
 }
 
 pub fn releases_url() -> String {
@@ -315,11 +353,12 @@ pub fn releases_url() -> String {
 }
 
 pub fn release_notes(version: &str) -> Result<String, String> {
-    if parse_version(version).is_none() {
+    let Some(parsed) = Version::parse(version) else {
         return Err(format!("not a release version: {version}"));
-    }
+    };
     let body = curl(&format!(
-        "https://api.github.com/repos/{REPO}/releases/tags/{TAG_PREFIX}{version}"
+        "https://api.github.com/repos/{REPO}/releases/tags/{}",
+        parsed.tag()
     ))?;
     let release: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("parse release: {e}"))?;
@@ -330,98 +369,8 @@ pub fn release_notes(version: &str) -> Result<String, String> {
         .to_string())
 }
 
-/// The release signing key's public half: the same EdDSA key the previous app's updater trusts.
-pub const UPDATE_PUBLIC_KEY: &str = "tGnmpupAySzHVMfQcDqtlMFoxuSLC9Pl6TtF4DmGECY=";
-
-/// Checks `bytes` against a base64 Ed25519 `signature` made with the key whose public half is `public_key`.
-pub fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
-    use base64::Engine;
-    let engine = base64::engine::general_purpose::STANDARD;
-    let key: [u8; 32] = engine
-        .decode(public_key)
-        .ok()
-        .and_then(|raw| raw.try_into().ok())
-        .ok_or("bad update public key")?;
-    let signature: [u8; 64] = engine
-        .decode(signature)
-        .ok()
-        .and_then(|raw| raw.try_into().ok())
-        .ok_or("the update's signature is malformed")?;
-    let key =
-        ed25519_dalek::VerifyingKey::from_bytes(&key).map_err(|e| format!("update key: {e}"))?;
-    key.verify_strict(bytes, &ed25519_dalek::Signature::from_bytes(&signature))
-        .map_err(|_| "the download's signature did not verify".to_string())
-}
-
-fn parse_version(text: &str) -> Option<Vec<u32>> {
-    let parts: Option<Vec<u32>> = text.split('.').map(|part| part.parse().ok()).collect();
-    parts.filter(|parts| parts.len() == 3)
-}
-
-fn join_version(version: &[u32]) -> String {
-    version
-        .iter()
-        .map(|part| part.to_string())
-        .collect::<Vec<_>>()
-        .join(".")
-}
-
-fn needs_download(latest: &[u32], current: &[u32], staged: Option<&[u32]>) -> bool {
+fn needs_download(latest: &Version, current: &Version, staged: Option<&Version>) -> bool {
     latest > current && staged.is_none_or(|staged| latest > staged)
-}
-
-struct Release {
-    version: Vec<u32>,
-    tarball: String,
-    signature: String,
-    size: Option<u64>,
-}
-
-fn asset<'a>(release: &'a serde_json::Value, suffix: &str) -> Option<&'a serde_json::Value> {
-    release.get("assets")?.as_array()?.iter().find(|asset| {
-        asset
-            .get("name")
-            .and_then(|name| name.as_str())
-            .is_some_and(|name| name.ends_with(suffix))
-    })
-}
-
-fn download_url(asset: &serde_json::Value) -> Option<String> {
-    asset
-        .get("browser_download_url")
-        .and_then(|url| url.as_str())
-        .map(String::from)
-}
-
-fn newest_release(releases: &serde_json::Value) -> Option<Release> {
-    let mut best: Option<Release> = None;
-    for release in releases.as_array()? {
-        let tag = release
-            .get("tag_name")
-            .and_then(|tag| tag.as_str())
-            .unwrap_or_default();
-        let Some(version) = tag.strip_prefix(TAG_PREFIX).and_then(parse_version) else {
-            continue;
-        };
-        let Some(tarball) = asset(release, ".app.tar.gz") else {
-            continue;
-        };
-        let (Some(tarball_url), Some(signature)) = (
-            download_url(tarball),
-            asset(release, ".app.tar.gz.sig").and_then(download_url),
-        ) else {
-            continue;
-        };
-        if best.as_ref().is_none_or(|best| version > best.version) {
-            best = Some(Release {
-                version,
-                tarball: tarball_url,
-                signature,
-                size: tarball.get("size").and_then(|size| size.as_u64()),
-            });
-        }
-    }
-    best
 }
 
 fn cache_root() -> PathBuf {
@@ -444,23 +393,21 @@ fn marker_path() -> PathBuf {
 }
 
 fn check_and_stage(app_root: &Path) -> Result<(), String> {
-    let body = curl(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=20"
-    ))?;
+    let body = curl(&releases_api(20))?;
     let releases: serde_json::Value =
         serde_json::from_str(&body).map_err(|e| format!("parse releases: {e}"))?;
-    let current = parse_version(current_version()).ok_or("bad current version")?;
+    let current = Version::parse(current_version()).ok_or("bad current version")?;
     let staged = state()
         .staged
         .as_ref()
-        .and_then(|staged| parse_version(&staged.version));
-    let Some(release) = newest_release(&releases)
-        .filter(|release| needs_download(&release.version, &current, staged.as_deref()))
+        .and_then(|staged| Version::parse(&staged.version));
+    let Some(release) = newest(&releases, channel(), Artifact::MacApp)
+        .filter(|release| needs_download(&release.version, &current, staged.as_ref()))
     else {
         update(|state| state.found_nothing(SystemTime::now()));
         return Ok(());
     };
-    let version = join_version(&release.version);
+    let version = release.version.to_string();
     eprintln!(
         "[update] {} -> {version} available, downloading into {}",
         current_version(),
@@ -472,7 +419,7 @@ fn check_and_stage(app_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn download_and_stage(release: &Release, version: &str) -> Result<Staged, String> {
+fn download_and_stage(release: &Offer, version: &str) -> Result<Staged, String> {
     let root = staging_root();
     if let Err(error) = std::fs::remove_dir_all(&root) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -482,10 +429,10 @@ fn download_and_stage(release: &Release, version: &str) -> Result<Staged, String
     let dir = root.join(version);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let tarball = dir.join("Pomelo.app.tar.gz");
-    download(&release.tarball, release.size, &tarball, version)?;
+    download(&release.url, release.size, &tarball, version)?;
 
     update(|state| state.verifying(version));
-    let signature = curl(&release.signature)?;
+    let signature = curl(&release.signature_url)?;
     let bytes = std::fs::read(&tarball).map_err(|e| format!("read update: {e}"))?;
     verify(&bytes, signature.trim(), UPDATE_PUBLIC_KEY)?;
     run(Command::new("tar")
@@ -693,39 +640,39 @@ mod tests {
     }
 
     #[test]
-    fn versions_compare_by_number_and_skip_what_is_staged() {
-        assert_eq!(parse_version("0.10.2"), Some(vec![0, 10, 2]));
-        assert_eq!(parse_version("0.10"), None);
-        assert_eq!(parse_version("0.1.x"), None);
-        assert!(needs_download(&[0, 10, 0], &[0, 9, 9], None));
-        assert!(!needs_download(&[0, 9, 9], &[0, 9, 9], None));
-        assert!(!needs_download(&[0, 7, 4], &[0, 7, 3], Some(&[0, 7, 4])));
-        assert!(needs_download(&[0, 7, 5], &[0, 7, 3], Some(&[0, 7, 4])));
-        assert_eq!(join_version(&[1, 2, 3]), "1.2.3");
+    fn a_newer_version_downloads_unless_it_is_already_staged() {
+        let version = |text: &str| Version::parse(text).unwrap_or_else(|| panic!("{text}"));
+        assert!(needs_download(&version("0.10.0"), &version("0.9.9"), None));
+        assert!(!needs_download(&version("0.9.9"), &version("0.9.9"), None));
+        assert!(needs_download(
+            &version("0.9.9"),
+            &version("0.9.9-nightly.20261024"),
+            None
+        ));
+        assert!(!needs_download(
+            &version("0.7.4"),
+            &version("0.7.3"),
+            Some(&version("0.7.4"))
+        ));
+        assert!(needs_download(
+            &version("0.7.5"),
+            &version("0.7.3"),
+            Some(&version("0.7.4"))
+        ));
     }
 
     #[test]
-    fn the_newest_signed_release_wins() {
-        let releases = serde_json::json!([
-            {"tag_name": "v0.8.0", "assets": [{"name": "Pomelo.app.tar.gz", "browser_download_url": "u8"}]},
-            {"tag_name": "v0.7.4", "assets": [
-                {"name": "Pomelo.app.tar.gz", "browser_download_url": "u74", "size": 1200},
-                {"name": "Pomelo.app.tar.gz.sig", "browser_download_url": "s74"}
-            ]},
-            {"tag_name": "v0.7.10", "assets": [
-                {"name": "Pomelo.app.tar.gz", "browser_download_url": "u710"},
-                {"name": "Pomelo.app.tar.gz.sig", "browser_download_url": "s710"}
-            ]},
-            {"tag_name": "nightly", "assets": []}
-        ]);
-        let newest = newest_release(&releases);
-        assert_eq!(
-            newest
-                .as_ref()
-                .map(|r| (r.version.clone(), r.tarball.as_str())),
-            Some((vec![0, 7, 10], "u710"))
-        );
-        assert_eq!(newest.and_then(|r| r.size), None);
+    fn a_staged_nightly_is_dropped_when_switching_to_stable() {
+        let mut state = State::default();
+        ready(&mut state, "0.9.9-nightly.20261024");
+        state.channel_changed(Channel::Nightly);
+        assert!(state.staged.is_some());
+        state.channel_changed(Channel::Stable);
+        assert!(state.staged.is_none());
+        assert_eq!(state.status, Status::Idle);
+        ready(&mut state, "0.9.9");
+        state.channel_changed(Channel::Stable);
+        assert!(state.staged.is_some());
     }
 
     fn ready(state: &mut State, version: &str) {

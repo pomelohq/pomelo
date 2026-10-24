@@ -251,6 +251,7 @@ pub const CTRL_AGENT_TAB_CLOSE: u64 = 331;
 pub const CTRL_MULTI_CURSOR_MODIFIER: u64 = 332;
 pub const CTRL_CURSOR_BLINK: u64 = 333;
 pub const CTRL_VIM_MODE: u64 = 390;
+pub const CTRL_UPDATE_CHANNEL: u64 = 391;
 pub const CTRL_CURSOR_ANIMATION: u64 = 334;
 pub const CTRL_CURSOR_SHAPE: u64 = 335;
 pub const CTRL_REDUCE_MOTION: u64 = 336;
@@ -350,6 +351,7 @@ const AGENT_TAB_CLOSE: [(&str, &str); 2] =
 /// Where agents open, as (setting value, label).
 const PROXY_SCHEMES: [(&str, &str); 2] = [("http", "HTTP"), ("https", "HTTPS")];
 const AGENT_OPEN_IN: [(&str, &str); 2] = [("dock", "Agent Dock"), ("center", "Editor Tab")];
+const UPDATE_CHANNELS: [(&str, &str); 2] = [("stable", "Stable"), ("nightly", "Nightly")];
 const RESTORE_ON_STARTUP: [(&str, &str); 2] =
     [("last_session", "Last Session"), ("none", "Nothing")];
 const MULTI_CURSOR_MODIFIERS: [(&str, &str); 2] = [("alt", "Alt"), ("cmd_or_ctrl", "Cmd Or Ctrl")];
@@ -697,6 +699,7 @@ pub fn is_dropdown(id: u64) -> bool {
             | CTRL_AGENT_TAB_CLOSE
             | CTRL_AGENT_OPEN_IN
             | CTRL_RESTORE_ON_STARTUP
+            | CTRL_UPDATE_CHANNEL
             | CTRL_MULTI_CURSOR_MODIFIER
             | CTRL_CURSOR_SHAPE
             | CTRL_REDUCE_MOTION
@@ -751,6 +754,7 @@ pub fn control_items(id: u64, fonts: &[String]) -> Vec<String> {
             .map(|(_, label)| label.to_string())
             .collect(),
         CTRL_RESTORE_ON_STARTUP => labels(&RESTORE_ON_STARTUP),
+        CTRL_UPDATE_CHANNEL => labels(&UPDATE_CHANNELS),
         CTRL_AGENT_OPEN_IN => labels(&AGENT_OPEN_IN),
         CTRL_PROXY_SCHEME => labels(&PROXY_SCHEMES),
         CTRL_MULTI_CURSOR_MODIFIER => labels(&MULTI_CURSOR_MODIFIERS),
@@ -796,6 +800,7 @@ pub fn control_value(id: u64, s: &Settings) -> String {
             .map_or(AGENT_TAB_CLOSE[0].1, |(_, label)| label)
             .to_string(),
         CTRL_RESTORE_ON_STARTUP => label_of(&RESTORE_ON_STARTUP, &s.restore_on_startup),
+        CTRL_UPDATE_CHANNEL => label_of(&UPDATE_CHANNELS, s.update_channel()),
         CTRL_AGENT_OPEN_IN => label_of(&AGENT_OPEN_IN, &s.agent_open_in),
         CTRL_PROXY_SCHEME => label_of(&PROXY_SCHEMES, &s.proxy.public_scheme),
         CTRL_MULTI_CURSOR_MODIFIER => label_of(&MULTI_CURSOR_MODIFIERS, &s.multi_cursor_modifier),
@@ -855,6 +860,7 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
         }
         CTRL_MULTI_CURSOR_MODIFIER
         | CTRL_RESTORE_ON_STARTUP
+        | CTRL_UPDATE_CHANNEL
         | CTRL_AGENT_OPEN_IN
         | CTRL_CURSOR_SHAPE
         | CTRL_REDUCE_MOTION
@@ -864,6 +870,7 @@ pub fn apply_choice(id: u64, index: usize, fonts: &[String], s: &mut Settings) -
             let (choices, slot) = match id {
                 CTRL_PROXY_SCHEME => (&PROXY_SCHEMES[..], &mut s.proxy.public_scheme),
                 CTRL_RESTORE_ON_STARTUP => (&RESTORE_ON_STARTUP[..], &mut s.restore_on_startup),
+                CTRL_UPDATE_CHANNEL => (&UPDATE_CHANNELS[..], &mut s.update_channel),
                 CTRL_AGENT_OPEN_IN => (&AGENT_OPEN_IN[..], &mut s.agent_open_in),
                 CTRL_MULTI_CURSOR_MODIFIER => {
                     (&MULTI_CURSOR_MODIFIERS[..], &mut s.multi_cursor_modifier)
@@ -982,6 +989,7 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days == d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command == d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update == d.auto_update,
+        CTRL_UPDATE_CHANNEL => s.update_channel == d.update_channel,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size == d.buffer_font_size,
         CTRL_SOFT_WRAP => s.soft_wrap == d.soft_wrap,
         CTRL_DIFF_VIEW => s.split_diff == d.split_diff,
@@ -1066,6 +1074,7 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
         CTRL_MODULES_DAYS_EDIT => s.modules_unused_days = d.modules_unused_days,
         CTRL_AGENT_COMMAND => s.agent_command = d.agent_command,
         CTRL_AUTO_UPDATE => s.auto_update = d.auto_update,
+        CTRL_UPDATE_CHANNEL => s.update_channel = d.update_channel,
         CTRL_BUFFER_FONT_EDIT => s.buffer_font_size = d.buffer_font_size,
         CTRL_SOFT_WRAP => s.soft_wrap = d.soft_wrap,
         CTRL_DIFF_VIEW => s.split_diff = d.split_diff,
@@ -2929,6 +2938,18 @@ fn general_page(s: &Settings, general: &GeneralPage) -> Page {
     }
 }
 
+fn update_channel_row(s: &Settings) -> PageItem {
+    PageItem::Row(SettingRow {
+        title: "Update Channel".into(),
+        description: "Stable gets each release. Nightly also gets a build of main every night, and every stable release newer than it. Back on Stable, the next stable release replaces a nightly; nothing goes back a version.".into(),
+        control: Control::Dropdown {
+            id: CTRL_UPDATE_CHANNEL,
+            value: control_value(CTRL_UPDATE_CHANNEL, s),
+        },
+        reset: reset_if_changed(CTRL_UPDATE_CHANNEL, s),
+    })
+}
+
 /// The app replaces itself only on macOS; elsewhere a new release is installed from its tarball.
 fn update_items(s: &Settings, general: &GeneralPage) -> Vec<PageItem> {
     let version = format!("Pomelo {}", general.version);
@@ -2954,6 +2975,7 @@ fn update_items(s: &Settings, general: &GeneralPage) -> Vec<PageItem> {
             },
             reset: reset_if_changed(CTRL_AUTO_UPDATE, s),
         }),
+        update_channel_row(s),
         PageItem::Row(SettingRow {
             title: version.into(),
             description: match (&general.update_note, general.updates_apply) {
@@ -5160,6 +5182,21 @@ mod tests {
             function_button(CTRL_SHOW_FUNCTION_BASE + FUNCTION_BUTTONS.len() as u64),
             None
         );
+    }
+
+    #[test]
+    fn the_update_channel_shows_the_builds_own_until_one_is_picked() {
+        let mut s = Settings::default();
+        let builds_own = if settings::default_update_channel() == "nightly" {
+            "Nightly"
+        } else {
+            "Stable"
+        };
+        assert_eq!(control_value(CTRL_UPDATE_CHANNEL, &s), builds_own);
+        assert!(apply_choice(CTRL_UPDATE_CHANNEL, 1, &[], &mut s));
+        assert_eq!(s.update_channel, "nightly");
+        assert!(reset_to_default(CTRL_UPDATE_CHANNEL, &mut s));
+        assert_eq!(s.update_channel, "");
     }
 
     #[test]
