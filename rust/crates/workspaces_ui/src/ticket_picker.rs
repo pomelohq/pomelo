@@ -562,30 +562,16 @@ fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
 
 fn status_pill(issue: &SprintIssue) -> Node {
     let colors = theme();
-    let (text, border) = match issue.category.as_str() {
-        "indeterminate" => (colors.text_accent, colors.border_selected),
-        "done" => (colors.success, colors.border_variant),
-        _ => (colors.text_muted, colors.border_variant),
+    let color = match issue.category.as_str() {
+        "indeterminate" => colors.text_accent,
+        "done" => colors.success,
+        _ => colors.text_muted,
     };
     div()
         .row()
         .w_px(STATUS_W)
         .items_center()
-        .child(
-            div()
-                .row()
-                .h_px(18.0)
-                .px(7.0)
-                .items_center()
-                .rounded(9.0)
-                .border(1.0, border)
-                .child(
-                    label(issue.status.clone())
-                        .label_size(LabelSize::XSmall)
-                        .color(text)
-                        .truncate(),
-                ),
-        )
+        .child(ui::status_pill(&issue.status, color))
         .into()
 }
 

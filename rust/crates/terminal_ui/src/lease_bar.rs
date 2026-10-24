@@ -235,7 +235,7 @@ pub fn strip(
             .h_px(20.0)
             .gap(8.0)
             .items_center()
-            .child(ui::attention_pill("Waiting for approval"))
+            .child(ui::status_pill("Waiting for approval", colors.warning))
             .child(what);
         let card = if width < ONE_LINE_W {
             div()

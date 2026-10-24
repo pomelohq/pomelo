@@ -1289,7 +1289,7 @@ fn workspace_row(
         Upkeep::None if waiting => Some(
             div()
                 .row()
-                .child(ui::attention_pill("Waiting for you"))
+                .child(ui::status_pill("Waiting for you", theme().warning))
                 .into(),
         ),
         Upkeep::None => match trouble {
@@ -1437,7 +1437,7 @@ pub fn switcher_status(row: &WorkspaceRow) -> Option<Node> {
         return Some(
             div()
                 .row()
-                .child(ui::attention_pill("Waiting for you"))
+                .child(ui::status_pill("Waiting for you", theme().warning))
                 .into(),
         );
     }

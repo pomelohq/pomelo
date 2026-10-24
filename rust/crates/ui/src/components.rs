@@ -612,7 +612,7 @@ pub fn with_tooltip(target: Div, text: &str, above: bool) -> Div {
     )
 }
 
-/// A state in a word with its dot, on a neutral pill: Running, Stopped, Installs once.
+/// The one pill: a state or something waiting on the person, as a dot and words in `color` on its wash.
 pub fn status_pill(text: &str, color: Rgba) -> Node {
     div()
         .row()
@@ -621,38 +621,16 @@ pub fn status_pill(text: &str, color: Rgba) -> Node {
         .h_px(20.0)
         .px(7.0)
         .rounded(10.0)
-        .bg(theme().ghost_element_hover)
+        .bg(color.alpha(0.14))
         .child(dot(color, 6.0))
         .child(
             crate::label(text.to_string())
                 .size(11.0)
                 .medium()
-                .color(color),
+                .color(color)
+                .truncate(),
         )
         .into()
-}
-
-/// Something waiting on the person, on the attention yellow.
-pub fn attention_pill(text: &str) -> Div {
-    let colors = theme();
-    let pill = div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(colors.attention)
-        .child(
-            crate::label(text.to_string())
-                .size(11.0)
-                .medium()
-                .color(colors.on_attention),
-        );
-    // The yellow is close to white, so on a light card it needs an edge to stand off it.
-    match colors.appearance {
-        crate::Appearance::Light => pill.border(1.0, colors.on_attention.alpha(0.22)),
-        crate::Appearance::Dark => pill,
-    }
 }
 
 /// A round status mark: running, failing, needs a look.

@@ -287,11 +287,11 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|_, _| alone(ui::status_pill("Stopped", theme().text_muted))),
         ),
         story(
-            "attention-pill",
-            "Attention pill",
-            "Waiting",
+            "status-pill-waiting",
+            "Status pill",
+            "Waiting on you",
             BUTTON,
-            || still(|_, _| alone(ui::attention_pill("Waiting for you"))),
+            || still(|_, _| alone(ui::status_pill("Waiting for you", theme().warning))),
         ),
         story("status-line-ok", "Status line", "Done", CONTROL, || {
             still(|_, _| {

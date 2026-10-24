@@ -589,22 +589,6 @@ impl ServiceItem {
         (span, node)
     }
 
-    /// The state as a pill: a dot and the words in the state's tone.
-    fn status_pill(text: String, tone: ui::Rgba) -> Node {
-        div()
-            .row()
-            .h_px(22.0)
-            .pl(8.0)
-            .pr(10.0)
-            .gap(7.0)
-            .rounded(11.0)
-            .items_center()
-            .bg(tone.alpha(0.14))
-            .child(ui::dot(tone, 7.0))
-            .child(label(text).size(12.0).medium().color(tone).truncate())
-            .into()
-    }
-
     /// A choice among `options` with `current` pressed; each option clicks at `base + index`.
     fn choice(&self, options: &[String], current: &str, base: u64) -> Node {
         let colors = theme();
@@ -864,18 +848,18 @@ impl ServiceItem {
                 if let Some(uptime) = self.uptime() {
                     text.push_str(&format!(" - up {uptime}"));
                 }
-                Self::status_pill(text, colors.success)
+                ui::status_pill(&text, colors.success)
             }
-            State::Busy(text) => Self::status_pill(text.to_string(), colors.warning),
+            State::Busy(text) => ui::status_pill(text, colors.warning),
             State::Crashed => {
                 let text = match crash {
                     Some(crash) => format!("Crashed - {}", crash.exit),
                     None => "Crashed".to_string(),
                 };
-                Self::status_pill(text, colors.error)
+                ui::status_pill(&text, colors.error)
             }
-            State::Failed { .. } => Self::status_pill("Could not start".into(), colors.error),
-            State::Stopped => Self::status_pill("Stopped".into(), colors.text_placeholder),
+            State::Failed { .. } => ui::status_pill("Could not start", colors.error),
+            State::Stopped => ui::status_pill("Stopped", colors.text_placeholder),
         };
         let mut facts = vec![Self::fact("Status", status)];
         if *state == State::Running {
