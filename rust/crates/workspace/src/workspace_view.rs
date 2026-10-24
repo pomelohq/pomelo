@@ -389,6 +389,7 @@ pub struct WorkspaceView {
     pull_toast: Option<String>,
     /// When main's background update last succeeded; its row says "Up to date" for a moment after.
     upkeep_done_at: Option<Instant>,
+    upkeep_done_shown: Duration,
     /// Time, place and count of the last press in the terminal grid, for double/triple-click selection.
     terminal_click: Option<(Instant, f32, f32, u32)>,
     titlebar_press: bool,
@@ -512,6 +513,7 @@ impl WorkspaceView {
             cleanup_toast: false,
             pull_toast: None,
             upkeep_done_at: None,
+            upkeep_done_shown: UPKEEP_DONE_SHOWN,
             terminal_click: None,
             titlebar_press: false,
             titlebar_click: None,
@@ -2326,7 +2328,7 @@ impl WorkspaceView {
             });
         if self
             .upkeep_done_at
-            .is_some_and(|at| at.elapsed() >= UPKEEP_DONE_SHOWN)
+            .is_some_and(|at| at.elapsed() >= self.upkeep_done_shown)
         {
             self.upkeep_done_at = None;
         }
@@ -10451,6 +10453,8 @@ mod tests {
             ..Default::default()
         };
         e.update(app.app_mut(), |v, _| {
+            // A first frame on a loaded machine can take longer than the row stays up.
+            v.upkeep_done_shown = Duration::from_secs(3600);
             v.set_workspace_ops(vec![running]);
             v.set_workspace_ops(Vec::new());
         });
