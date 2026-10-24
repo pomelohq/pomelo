@@ -1197,20 +1197,6 @@ pub(crate) fn picker_footer(actions: Vec<Node>) -> Node {
 /// One footer action: a chip per key, then its name; `click` is its id and whether the pointer is over it.
 pub(crate) fn picker_action(click: Option<(u64, bool)>, keys: &[&str], text: &str) -> Node {
     let colors = theme();
-    let chip = |keys: &str| {
-        div()
-            .row()
-            .h_px(18.0)
-            .px(5.0)
-            .items_center()
-            .rounded(4.0)
-            .bg(if colors.appearance == ui::Appearance::Light {
-                colors.element_active
-            } else {
-                colors.element_hover
-            })
-            .child(render_keystroke(keys, 11.0))
-    };
     let mut button = div()
         .row()
         .h_px(22.0)
@@ -1223,7 +1209,7 @@ pub(crate) fn picker_action(click: Option<(u64, bool)>, keys: &[&str], text: &st
                 .row()
                 .items_center()
                 .gap(3.0)
-                .children(keys.iter().map(|keys| Node::from(chip(keys)))),
+                .children(keys.iter().map(|keys| ui::key_chip(keys, false))),
         )
         .child(label(text).size(12.0).color(colors.text_placeholder));
     if let Some((id, hovered)) = click {

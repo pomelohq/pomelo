@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use pom_agent::PendingApproval;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use ui::{div, icon, label, render_keystroke_in, theme, Appearance, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Appearance, Div, IconKind, Node, Rgba};
 use workspace::keymap::{key_hint, Action};
 
 const TAKE_OVER: u64 = 0;
@@ -303,54 +303,16 @@ pub(crate) fn button(
     text: &str,
     keys: Option<String>,
     primary: bool,
-) -> Div {
-    let colors = theme();
-    let (ink, keys_ink, chip) = if primary {
-        (
-            colors.on_accent,
-            colors.on_accent,
-            Rgba::new(1.0, 1.0, 1.0, 0.18),
-        )
-    } else {
-        // A translucent wash: the flat hover color matches the card and would vanish on it.
-        let chip = match colors.appearance {
-            Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-            Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.08),
-        };
-        (colors.text, colors.text_muted, chip)
-    };
-    let mut button = div()
-        .row()
-        .h_px(24.0)
-        .px(8.0)
-        .gap(4.0)
-        .items_center()
-        .rounded(6.0)
-        .on_click(id);
-    button = if primary {
-        button.bg(colors.accent_fill)
-    } else {
-        button
-            .hover_bg(colors.ghost_element_hover)
-            .active_bg(colors.ghost_element_active)
-    };
-    if let Some(kind) = glyph {
-        button = button.child(icon(kind).size(14.0).color(ink));
-    }
-    button = button.child(label(text).size(12.0).medium().color(ink));
-    if let Some(keys) = keys {
-        button = button.child(
-            div()
-                .row()
-                .h_px(18.0)
-                .px(5.0)
-                .items_center()
-                .rounded(4.0)
-                .bg(chip)
-                .child(render_keystroke_in(&keys, 11.0, keys_ink)),
-        );
-    }
-    button
+) -> Node {
+    ui::button(id, text)
+        .kind(if primary {
+            ui::ButtonKind::Primary
+        } else {
+            ui::ButtonKind::Ghost
+        })
+        .icon(glyph)
+        .keystroke(keys.as_deref())
+        .into()
 }
 
 #[cfg(test)]
