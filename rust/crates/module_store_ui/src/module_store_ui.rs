@@ -12,7 +12,7 @@ pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
-use workspace::{paragraph, small_button, status_pill, text_line, ButtonKind, Item, ItemTick};
+use workspace::{paragraph, status_pill, text_line, ButtonKind, Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
@@ -297,24 +297,17 @@ fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>
         .gap(6.0)
         .pt(4.0)
         .child(div().flex(1.0))
-        .child(small_button(
-            cancel,
-            None,
-            "Cancel",
-            Some("escape"),
-            ButtonKind::Secondary,
-            true,
-            hovered,
-        ))
-        .child(small_button(
-            confirm,
-            None,
-            action,
-            Some("enter"),
-            ButtonKind::Primary,
-            true,
-            hovered,
-        ))
+        .child(
+            ui::button(cancel, "Cancel")
+                .keystroke(Some("escape"))
+                .hovered(hovered),
+        )
+        .child(
+            ui::button(confirm, action)
+                .kind(ButtonKind::Primary)
+                .keystroke(Some("enter"))
+                .hovered(hovered),
+        )
         .into()
 }
 
@@ -624,15 +617,11 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
         Look::Primary => ButtonKind::Secondary,
         Look::Ghost => ButtonKind::Ghost,
     };
-    small_button(
-        spec.id,
-        None,
-        spec.text,
-        None,
-        kind,
-        state.busy.is_none(),
-        hovered,
-    )
+    ui::button(spec.id, spec.text)
+        .kind(kind)
+        .enabled(state.busy.is_none())
+        .hovered(hovered)
+        .into()
 }
 
 struct Line {
@@ -1089,25 +1078,20 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         }
     }
     let idle = state.busy.is_none() && state.overview.is_some();
-    head = head.child(div().flex(1.0)).child(small_button(
-        REFRESH,
-        Some(IconKind::RotateCw),
-        "Refresh",
-        None,
-        ButtonKind::Ghost,
-        state.busy.is_none() && !state.loading(),
-        hovered,
-    ));
+    head = head.child(div().flex(1.0)).child(
+        ui::button(REFRESH, "Refresh")
+            .kind(ButtonKind::Ghost)
+            .icon(Some(IconKind::RotateCw))
+            .enabled(state.busy.is_none() && !state.loading())
+            .hovered(hovered),
+    );
     if unused > 0 && state.measuring == 0 {
-        head = head.child(small_button(
-            FREE_UNUSED,
-            None,
-            &format!("Free {} unused", format_size(unused)),
-            None,
-            ButtonKind::Ghost,
-            idle,
-            hovered,
-        ));
+        head = head.child(
+            ui::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
+                .kind(ButtonKind::Ghost)
+                .enabled(idle)
+                .hovered(hovered),
+        );
     }
     let can_optimize = state.measuring == 0
         && state
@@ -1115,15 +1099,12 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .as_ref()
             .is_some_and(|overview| !plan(overview).is_empty());
     if can_optimize {
-        head = head.child(small_button(
-            OPTIMIZE,
-            None,
-            "Optimize",
-            None,
-            ButtonKind::Primary,
-            idle,
-            hovered,
-        ));
+        head = head.child(
+            ui::button(OPTIMIZE, "Optimize")
+                .kind(ButtonKind::Primary)
+                .enabled(idle)
+                .hovered(hovered),
+        );
     }
     head.into()
 }

@@ -3,9 +3,8 @@ use std::path::PathBuf;
 use pom_bundle::Contents;
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
-    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section,
-    outlined_button, status_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
-    WINDOW_MODAL_BASE,
+    checkbox, modal_footer, modal_frame, modal_header, modal_section, status_line, ButtonKind,
+    EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 480.0;
@@ -92,20 +91,18 @@ impl WindowModal for ExportConfigModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Export...",
-                Some("enter"),
-                ButtonKind::Primary,
-                self.can_export(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Export...")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(self.can_export()),
+            );
         modal_frame(WIDTH)
             .child(modal_header("Export Config", Some(CLOSE)))
             .child(section)
@@ -282,12 +279,11 @@ impl ImportConfigModal {
                         .truncate(),
                 ),
             )
-            .child(outlined_button(
-                CHOOSE_FILE,
-                Some(IconKind::FolderOpen),
-                button,
-                true,
-            ))
+            .child(
+                ui::button(CHOOSE_FILE, button)
+                    .size(ui::ButtonSize::Medium)
+                    .icon(Some(IconKind::FolderOpen)),
+            )
             .into()
     }
 
@@ -333,13 +329,11 @@ impl WindowModal for ImportConfigModal {
         let colors = theme();
         let width = self.width();
         let mut section = modal_section(16.0).child(self.file_row());
-        let mut buttons = div().row().items_center().gap(8.0).child(modal_button(
-            CANCEL,
-            "Cancel",
-            Some("escape"),
-            ButtonKind::Secondary,
-            true,
-        ));
+        let mut buttons = div().row().items_center().gap(8.0).child(
+            ui::button(CANCEL, "Cancel")
+                .size(ui::ButtonSize::Medium)
+                .keystroke(Some("escape")),
+        );
         let mut start = None;
         match &self.stage {
             Stage::Pick => {
@@ -356,13 +350,13 @@ impl WindowModal for ImportConfigModal {
                     Some("sealed bundle"),
                     None,
                 ));
-                buttons = buttons.child(modal_button(
-                    CONFIRM,
-                    "Unlock",
-                    Some("enter"),
-                    ButtonKind::Primary,
-                    !self.password.text().is_empty(),
-                ));
+                buttons = buttons.child(
+                    ui::button(CONFIRM, "Unlock")
+                        .size(ui::ButtonSize::Medium)
+                        .kind(ButtonKind::Primary)
+                        .keystroke(Some("enter"))
+                        .enabled(!self.password.text().is_empty()),
+                );
             }
             Stage::Loaded(contents) => {
                 section = section.child(Self::preview(contents));
@@ -386,21 +380,20 @@ impl WindowModal for ImportConfigModal {
                     self.write_config,
                     "Replace my pom.yml (kept as pom.yml.bak)",
                 ));
-                start = Some(outlined_button(
-                    ADAPT,
-                    Some(IconKind::Sparkle),
-                    "Adapt with Claude",
-                    true,
-                ));
+                start = Some(
+                    ui::button(ADAPT, "Adapt with Claude")
+                        .size(ui::ButtonSize::Medium)
+                        .icon(Some(IconKind::Sparkle)),
+                );
                 let applies =
                     self.write_config || (self.store_secrets && !contents.secrets.is_empty());
-                buttons = buttons.child(modal_button(
-                    CONFIRM,
-                    "Apply",
-                    Some("enter"),
-                    ButtonKind::Primary,
-                    applies,
-                ));
+                buttons = buttons.child(
+                    ui::button(CONFIRM, "Apply")
+                        .size(ui::ButtonSize::Medium)
+                        .kind(ButtonKind::Primary)
+                        .keystroke(Some("enter"))
+                        .enabled(applies),
+                );
             }
         }
         if let Some(error) = &self.error {
@@ -413,7 +406,7 @@ impl WindowModal for ImportConfigModal {
         modal_frame(width)
             .child(modal_header("Import Config", Some(CLOSE)))
             .child(section)
-            .child(modal_footer(start, buttons.into()))
+            .child(modal_footer(start.map(Node::from), buttons.into()))
             .into()
     }
 

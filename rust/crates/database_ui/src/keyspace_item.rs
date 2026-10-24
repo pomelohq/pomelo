@@ -8,9 +8,7 @@ use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{
-    field_label, small_button, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome,
-};
+use workspace::{field_label, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::details::{self, FoldAction, FoldTarget, JsonFold, Pane, FOLD_BASE, FOLD_END};
 use crate::json::{self, Json};
@@ -411,7 +409,7 @@ impl KeyspaceItem {
         } else {
             ButtonKind::Ghost
         };
-        small_button(id, None, text, None, kind, true, self.hovered)
+        ui::button(id, text).kind(kind).hovered(self.hovered).into()
     }
 
     fn input(
@@ -773,15 +771,12 @@ impl KeyspaceItem {
                 "no expiry",
                 self.focus == Focus::Ttl,
             )));
-        head = head.child(small_button(
-            COPY_VALUE,
-            Some(IconKind::Copy),
-            "Copy value",
-            None,
-            ButtonKind::Ghost,
-            true,
-            self.hovered,
-        ));
+        head = head.child(
+            ui::button(COPY_VALUE, "Copy value")
+                .kind(ButtonKind::Ghost)
+                .icon(Some(IconKind::Copy))
+                .hovered(self.hovered),
+        );
         head = if self.confirm_delete {
             head.child(self.text_button(CONFIRM_DELETE, "Delete it", true))
                 .child(self.text_button(CANCEL_DELETE, "Keep", false))

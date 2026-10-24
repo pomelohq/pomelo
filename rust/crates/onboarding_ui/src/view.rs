@@ -2,7 +2,7 @@
 
 use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{text_line, ButtonKind};
+use workspace::text_line;
 
 pub const COLUMN_W: f32 = 640.0;
 pub const WIDE_W: f32 = 760.0;
@@ -266,10 +266,6 @@ pub fn footer(note: Option<&str>, leading: Vec<Node>, buttons: Vec<Node>) -> Nod
         row = row.child(button);
     }
     row.into()
-}
-
-pub fn button(id: u64, text: &str, keys: Option<&str>, kind: ButtonKind, enabled: bool) -> Node {
-    workspace::modal_button(id, text, keys, kind, enabled)
 }
 
 /// A small icon-only button with no fill until hovered.

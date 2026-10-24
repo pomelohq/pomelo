@@ -3,7 +3,7 @@
 use pom_agent::AgentCli;
 use ui::{div, label, theme, IconKind, Node};
 use workspace::text_field::FieldFont;
-use workspace::{field, outlined_button, ButtonKind};
+use workspace::{field, ButtonKind};
 
 use crate::ids::*;
 use crate::model::{home_relative, AddMode, Field, Form, Onboarding, Request, Step};
@@ -32,40 +32,33 @@ pub(crate) fn render(state: &Onboarding, width: f32, hovered: Option<u64>) -> No
 
 pub(crate) fn footer(state: &Onboarding) -> Node {
     let form = &state.form;
-    let mut buttons = Vec::new();
+    let mut buttons: Vec<Node> = Vec::new();
     if form.step == Step::Repositories {
-        buttons.push(view::button(
-            CANCEL,
-            "Cancel",
-            Some("escape"),
-            ButtonKind::Secondary,
-            true,
-        ));
+        buttons.push(
+            workspace::button(CANCEL, "Cancel")
+                .size(ui::ButtonSize::Medium)
+                .keystroke(Some("escape"))
+                .into(),
+        );
     } else {
-        buttons.push(view::button(
-            BACK,
-            "Back",
-            None,
-            ButtonKind::Secondary,
-            true,
-        ));
+        buttons.push(
+            workspace::button(BACK, "Back")
+                .size(ui::ButtonSize::Medium)
+                .into(),
+        );
     }
-    buttons.push(match form.step {
-        Step::Review => view::button(
-            CREATE,
-            &format!("Create {}", form.name()),
-            Some("cmd-enter"),
-            ButtonKind::Primary,
-            state.can_create(),
-        ),
-        step => view::button(
-            NEXT,
-            "Continue",
-            Some("enter"),
-            ButtonKind::Primary,
-            step_ready(state, step),
-        ),
-    });
+    buttons.push(Node::from(match form.step {
+        Step::Review => workspace::button(CREATE, format!("Create {}", form.name()))
+            .size(ui::ButtonSize::Medium)
+            .kind(ButtonKind::Primary)
+            .keystroke(Some("cmd-enter"))
+            .enabled(state.can_create()),
+        step => workspace::button(NEXT, "Continue")
+            .size(ui::ButtonSize::Medium)
+            .kind(ButtonKind::Primary)
+            .keystroke(Some("enter"))
+            .enabled(step_ready(state, step)),
+    }));
     let note = (form.step == Step::Repositories && form.repos.is_empty())
         .then_some("Add at least one repository");
     view::footer(note, Vec::new(), buttons)
@@ -165,12 +158,11 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
     let mut adder = div().row().items_center().gap(8.0).child(mode);
     let adder_hint = match form.add_mode {
         AddMode::Folders => {
-            adder = adder.child(outlined_button(
-                CHOOSE,
-                Some(IconKind::FolderOpen),
-                "Choose folders...",
-                true,
-            ));
+            adder = adder.child(
+                ui::button(CHOOSE, "Choose folders...")
+                    .size(ui::ButtonSize::Medium)
+                    .icon(Some(IconKind::FolderOpen)),
+            );
             "A folder with a .git inside, or a folder of repos"
         }
         AddMode::Urls => {
@@ -186,12 +178,11 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
                     )
                     .flex(1.0),
                 )
-                .child(outlined_button(
-                    ADD_URL,
-                    None,
-                    "Add",
-                    !form.url.text().trim().is_empty(),
-                ));
+                .child(
+                    ui::button(ADD_URL, "Add")
+                        .size(ui::ButtonSize::Medium)
+                        .enabled(!form.url.text().trim().is_empty()),
+                );
             "Paste one or several git URLs to clone"
         }
     };

@@ -10,9 +10,9 @@ use module_store::Outlook;
 use pom_agent::NameSuggestion;
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
-    accent_action, checkbox, field, modal_button, modal_footer, modal_frame, modal_header,
-    modal_note, modal_section, status_line, toggle_button_group, ButtonKind, EditKey, InputField,
-    ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    accent_action, checkbox, field, modal_footer, modal_frame, modal_header, modal_note,
+    modal_section, status_line, toggle_button_group, ButtonKind, EditKey, InputField, ModalResult,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 use crate::repo_branch_picker::{
@@ -956,20 +956,18 @@ impl WindowModal for CreateWorkspaceModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Create",
-                Some("enter"),
-                ButtonKind::Primary,
-                self.can_create(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Create")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(self.can_create()),
+            );
         modal_frame(CREATE_WIDTH)
             .on_click(FORM_SURFACE)
             .child(modal_header("Create Workspace", Some(CLOSE)))
@@ -1275,20 +1273,17 @@ impl WindowModal for RenameWorkspaceModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Save",
-                Some("enter"),
-                ButtonKind::Primary,
-                true,
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Save")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter")),
+            );
         modal_frame(WIDTH)
             .child(modal_header("Rename Workspace", Some(CLOSE)))
             .child(

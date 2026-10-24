@@ -9,9 +9,7 @@ use pom_db::Database;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{
-    small_button, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
-};
+use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
 use crate::details::{self, Pane};
 use crate::object_item::{object_item_id, readable_time, ObjectItem};
@@ -423,15 +421,11 @@ impl BucketItem {
                         FieldFont::Ui,
                     )),
             )
-            .child(small_button(
-                UPLOAD,
-                Some(IconKind::ArrowUp),
-                "Upload here",
-                None,
-                ButtonKind::Secondary,
-                true,
-                self.hovered,
-            ))
+            .child(
+                ui::button(UPLOAD, "Upload here")
+                    .icon(Some(IconKind::ArrowUp))
+                    .hovered(self.hovered),
+            )
             .child(
                 div()
                     .row()

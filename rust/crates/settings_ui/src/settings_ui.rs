@@ -19,7 +19,7 @@ pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 use settings::Settings;
 use ui::{
     chevron_down, chevron_right, chevron_up_down, close_icon, div, label, render, search_icon,
-    theme, ButtonStyle, Div, LabelSize, Node, Rect, Rgba,
+    theme, Div, LabelSize, Node, Rect, Rgba,
 };
 
 // Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
@@ -2462,28 +2462,14 @@ fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
         .justify_between()
         .child(div().row().gap(8.0).items_center().child(chip))
         .child(match file {
-            Some((id, text)) => small_button(id, text, false, Some(ui::IconKind::File)),
-            None => div(),
+            Some((id, text)) => Node::from(
+                ui::button(id, text)
+                    .kind(ui::ButtonKind::Ghost)
+                    .icon(Some(ui::IconKind::File)),
+            ),
+            None => div().into(),
         })
         .into()
-}
-
-fn small_button(id: u64, text: &str, secondary: bool, icon: Option<ui::IconKind>) -> Div {
-    let mut b = div()
-        .row()
-        .h_px(24.0)
-        .px(8.0)
-        .gap(4.0)
-        .items_center()
-        .rounded(ROUND)
-        .on_click(id);
-    if secondary {
-        b = b.bg(chip_c()).border(1.0, border_c());
-    }
-    if let Some(kind) = icon {
-        b = b.child(ui::icon(kind).size(14.0).color(title_c()));
-    }
-    b.child(label(text.to_string()).size(12.0).medium().color(title_c()))
 }
 
 fn stub_body(name: &str) -> Node {
@@ -3411,12 +3397,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
                 )
                 .child(crumbs),
         )
-        .child(ui::button_sized(
-            CTRL_OPEN_JSON,
-            "Edit in settings.json",
-            ButtonStyle::OutlinedGhost,
-            ui::ButtonSize::Default,
-        ))
+        .child(ui::button(CTRL_OPEN_JSON, "Edit in settings.json"))
         .into()
 }
 
@@ -4942,7 +4923,7 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
 
 fn action_button(id: u64, text: &str, enabled: bool) -> Node {
     if enabled {
-        small_button(id, text, true, None).into()
+        ui::button(id, text).into()
     } else {
         div()
             .row()
@@ -4992,7 +4973,10 @@ fn sub_page_button(id: u64) -> Node {
 }
 
 fn edit_in_json_button(id: u64) -> Node {
-    small_button(id, "Edit in settings.json", false, Some(ui::IconKind::File)).into()
+    ui::button(id, "Edit in settings.json")
+        .kind(ui::ButtonKind::Ghost)
+        .icon(Some(ui::IconKind::File))
+        .into()
 }
 
 /// A text caret: a fixed-width slot (so surrounding text never shifts) whose bar shows only on the blink's

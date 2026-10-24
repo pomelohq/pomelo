@@ -4,9 +4,7 @@ use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect};
 use workspace::text_field::TextField;
-use workspace::{
-    modal_button, ButtonKind, EditKey, InputField, Item, ItemTick, TerminalKeyOutcome,
-};
+use workspace::{ButtonKind, EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::{action_button, hit_at, EnvironmentContext};
 
@@ -343,13 +341,13 @@ impl Item for SecretsItem {
                     false,
                 )),
             )
-            .child(modal_button(
-                ADD,
-                "Add",
-                Some("enter"),
-                ButtonKind::Primary,
-                add_ready,
-            ));
+            .child(
+                ui::button(ADD, "Add")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(add_ready),
+            );
         let note = match &self.error {
             Some(error) => label(error.clone()).size(12.0).color(colors.error),
             None => label("Names use letters, digits and _ only, as in {{secret.NAME}}.")

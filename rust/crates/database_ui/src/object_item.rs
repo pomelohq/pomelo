@@ -7,8 +7,8 @@ use std::sync::Arc;
 use pom_db::object_storage::{format_size, HttpTransport, ObjectEntry, ObjectRead};
 use pom_db::Database;
 use terminal::Modifiers;
-use ui::{button, div, label, theme, ButtonStyle, IconKind, Node, Rect};
-use workspace::{small_button, ButtonKind, Item, ItemTick};
+use ui::{div, label, theme, IconKind, Node, Rect};
+use workspace::{ButtonKind, Item, ItemTick};
 
 use crate::{DatabaseContext, Pending};
 
@@ -317,21 +317,17 @@ impl ObjectItem {
                     .color(colors.error)
                     .truncate(),
                 )
-                .child(button(CONFIRM_DELETE, "Delete", ButtonStyle::Outlined))
-                .child(button(CANCEL_DELETE, "Cancel", ButtonStyle::Subtle))
+                .child(ui::button(CONFIRM_DELETE, "Delete"))
+                .child(ui::button(CANCEL_DELETE, "Cancel").kind(ButtonKind::Ghost))
                 .into();
         }
         let mut row = div().row().gap(8.0).items_center();
         if !self.deleted {
             row = row
-                .child(button(DOWNLOAD, "Download", ButtonStyle::Outlined))
-                .child(button(
-                    COPY_URL,
-                    "Copy URL (expires in 1 hour)",
-                    ButtonStyle::Outlined,
-                ))
-                .child(button(COPY_PATH, "Copy Path", ButtonStyle::Outlined))
-                .child(button(DELETE, "Delete...", ButtonStyle::Outlined));
+                .child(ui::button(DOWNLOAD, "Download"))
+                .child(ui::button(COPY_URL, "Copy URL (expires in 1 hour)"))
+                .child(ui::button(COPY_PATH, "Copy Path"))
+                .child(ui::button(DELETE, "Delete..."));
         }
         row.into()
     }
@@ -510,7 +506,7 @@ impl ObjectItem {
 
 /// `2026-09-27T18:42:00.000Z` -> `2026-09-27 18:42`.
 fn action(id: u64, leading: Option<IconKind>, text: &str, kind: ButtonKind) -> Node {
-    small_button(id, leading, text, None, kind, true, None)
+    ui::button(id, text).kind(kind).icon(leading).into()
 }
 
 pub(crate) fn readable_time(stamp: &str) -> String {

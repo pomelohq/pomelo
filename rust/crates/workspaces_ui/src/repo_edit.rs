@@ -3,8 +3,8 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use ui::{div, label, theme, IconKind, Node};
 use workspace::{
-    checkbox, modal_button, modal_footer, modal_frame, modal_header, modal_section, status_line,
-    text_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    checkbox, modal_footer, modal_frame, modal_header, modal_section, status_line, text_line,
+    ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 460.0;
@@ -88,20 +88,18 @@ impl WindowModal for RenameAliasModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Rename",
-                Some("enter"),
-                ButtonKind::Primary,
-                self.can_rename(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Rename")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(self.can_rename()),
+            );
         modal_frame(WIDTH)
             .child(modal_header(
                 &format!("Rename Alias of {}", self.repo),
@@ -202,20 +200,17 @@ impl WindowModal for RemoveRepoModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Remove",
-                Some("enter"),
-                ButtonKind::Danger,
-                true,
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Remove")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Danger)
+                    .keystroke(Some("enter")),
+            );
         modal_frame(WIDTH)
             .child(modal_header(&format!("Remove {}?", self.repo), Some(CLOSE)))
             .child(section)
@@ -320,20 +315,18 @@ impl WindowModal for PickReposModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Add",
-                Some("enter"),
-                ButtonKind::Primary,
-                !self.picked().is_empty(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Add")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(!self.picked().is_empty()),
+            );
         modal_frame(WIDTH)
             .child(modal_header(
                 &format!("Add Repos to {}", self.branch),
@@ -519,20 +512,18 @@ impl WindowModal for UseBranchModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Check Out",
-                Some("enter"),
-                ButtonKind::Primary,
-                !self.entries().is_empty(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Check Out")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(!self.entries().is_empty()),
+            );
         modal_frame(USE_BRANCH_WIDTH)
             .child(modal_header(
                 &format!("Use another branch in {repo}"),

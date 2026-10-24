@@ -9083,29 +9083,21 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
     let mut has_actions = false;
     if let Some(primary) = &notification.primary {
         has_actions = true;
-        actions = actions.child(crate::small_button(
-            crate::NOTIFICATION_PRIMARY,
-            None,
-            primary,
-            None,
-            crate::ButtonKind::Primary,
-            true,
-            hovered,
-        ));
+        actions = actions.child(
+            crate::button(crate::NOTIFICATION_PRIMARY, primary)
+                .kind(ui::ButtonKind::Primary)
+                .hovered(hovered),
+        );
     }
     for (index, label) in notification.buttons.iter().enumerate() {
         let id = crate::NOTIFICATION_BUTTON_BASE + index as u64;
         if id < crate::NOTIFICATION_BUTTON_END {
             has_actions = true;
-            actions = actions.child(crate::small_button(
-                id,
-                None,
-                label,
-                None,
-                crate::ButtonKind::Ghost,
-                true,
-                hovered,
-            ));
+            actions = actions.child(
+                crate::button(id, label)
+                    .kind(ui::ButtonKind::Ghost)
+                    .hovered(hovered),
+            );
         }
     }
     if has_actions {

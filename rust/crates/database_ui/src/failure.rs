@@ -1,6 +1,6 @@
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
 use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
-use workspace::{small_button, ButtonKind};
+use workspace::ButtonKind;
 
 const PAD: f32 = 10.0;
 const GAP: f32 = 6.0;
@@ -355,18 +355,19 @@ impl Failure {
                         } else {
                             ButtonKind::Secondary
                         };
-                        small_button(id(action), None, action.label(), None, kind, true, hover)
+                        ui::button(id(action), action.label())
+                            .kind(kind)
+                            .hovered(hover)
+                            .into()
                     })
                     .collect();
-                buttons.push(small_button(
-                    id(FailureAction::FixWithAgent),
-                    Some(IconKind::Sparkle),
-                    "Fix with Claude",
-                    None,
-                    ButtonKind::Ghost,
-                    true,
-                    hover,
-                ));
+                buttons.push(
+                    ui::button(id(FailureAction::FixWithAgent), "Fix with Claude")
+                        .kind(ButtonKind::Ghost)
+                        .icon(Some(IconKind::Sparkle))
+                        .hovered(hover)
+                        .into(),
+                );
                 for line in pack(buttons, inner, GAP) {
                     block = block.child(line);
                 }
