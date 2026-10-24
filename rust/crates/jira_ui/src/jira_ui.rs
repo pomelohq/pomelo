@@ -1,6 +1,7 @@
 //! A workspace's Jira ticket as a tab: key and status, title, the description and comments as markdown, and
 //! the ticket's web links. Opens on what the cache holds and fetches the ticket again in the background.
 
+use components::field_label;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{field_label, Item, ItemTick};
+use workspace::{Item, ItemTick};
 
 const PAD_X: f32 = 28.0;
 const PAD_Y: f32 = 20.0;
@@ -169,7 +170,8 @@ impl TicketItem {
 
     fn header(&self, width: f32) -> Node {
         let colors = theme();
-        let button = |id: u64, kind: IconKind, text: &str| ui::button(id, text).icon(Some(kind));
+        let button =
+            |id: u64, kind: IconKind, text: &str| components::button(id, text).icon(Some(kind));
         let mut top = div().row().gap(8.0).items_center().child(
             label(self.key.clone())
                 .size(13.0)

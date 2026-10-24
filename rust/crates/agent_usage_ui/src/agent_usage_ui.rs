@@ -369,11 +369,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 ),
         )
         .child(
-            ui::segmented(
+            components::segmented(
                 [
-                    ui::segment(PERIOD_BASE, "Today"),
-                    ui::segment(PERIOD_BASE + 1, "7 days"),
-                    ui::segment(PERIOD_BASE + 2, "30 days"),
+                    components::segment(PERIOD_BASE, "Today"),
+                    components::segment(PERIOD_BASE + 1, "7 days"),
+                    components::segment(PERIOD_BASE + 2, "30 days"),
                 ],
                 period_index,
             )
@@ -536,11 +536,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         Group::Agent => 1,
         Group::Model => 2,
     };
-    let group_picker: Node = ui::segmented(
+    let group_picker: Node = components::segmented(
         [
-            ui::segment(GROUP_BASE, "Workspace"),
-            ui::segment(GROUP_BASE + 1, "Agent"),
-            ui::segment(GROUP_BASE + 2, "Model"),
+            components::segment(GROUP_BASE, "Workspace"),
+            components::segment(GROUP_BASE + 1, "Agent"),
+            components::segment(GROUP_BASE + 2, "Model"),
         ],
         group_index,
     )
@@ -625,7 +625,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .row()
                 .items_center()
                 .gap(6.0)
-                .child(ui::dot(color_of(&group.key), 8.0))
+                .child(components::dot(color_of(&group.key), 8.0))
                 .child(
                     label(group.label.clone())
                         .size(12.0)
@@ -693,7 +693,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .w_px(200.0)
                     .items_center()
                     .gap(8.0)
-                    .child(ui::dot(color_of(&group.key), 8.0))
+                    .child(components::dot(color_of(&group.key), 8.0))
                     .child(
                         label(group.label.clone())
                             .size(13.0)

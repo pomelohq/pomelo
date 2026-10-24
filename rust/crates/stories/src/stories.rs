@@ -66,19 +66,20 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors.",
         "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
         "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
-        "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions. Small in panels and toolbars, Medium in dialogs and forms.",
+        "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions, Agent where the work goes to an agent. Small in panels and toolbars, Medium in dialogs and forms.",
+        "Icon button" => "A square button showing only an icon: XSmall beside a value, Small in toolbars, Medium in headers. Toggled when it switches something on; name it with a tooltip.",
         "Link" => "A text-only action that reads like a link, beside the value it acts on: Open in browser, Change.",
         "Select" => "Pick one of a few known values: a theme, a profile, a database. Opens a Menu of the choices; a placeholder shows while nothing is chosen.",
         "Checkbox" => "An on or off choice in a form.",
         "Segmented" => "One of a few mutually exclusive choices: Small for toolbar filters (All, Running, Failed), Medium in forms; a choice can carry an icon or be unavailable.",
         "Progress" => "How far a job of known length has got.",
-        "Status pill" => "The one pill: a state in a word or two with its dot, tinted by its color. Warning when something waits on the person.",
+        "Pill" => "The one pill: a state in a word or two with its dot, tinted by its color. Warning when something waits on the person.",
         "Status line" => "The result of a check, under the control that ran it.",
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
-        "Divider" => "Separates sections; Faded inside a list.",
+        "Divider" => "A 1px line between sections or groups of rows.",
         "Chip" => "A short read-only tag: a branch, a key kind, a plan, a detected stack. One shape; only the ink, fill and edge change.",
         "Tooltip" => "Names what an icon does, with the keys that run it when there are any.",
-        "Status dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
+        "Dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
         "Input" => "A labeled text field with its hint or its error below.",
         "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. Groups under a muted header, icons at the left, keys at the right, Danger last; a long list gets a search line; a check marks the current choice.",
         "Select menu" => "A select with its menu open, as wide as the select. It opens below; near the right edge it lines up with the select's right side; near the bottom it opens above with its search line at the bottom.",
@@ -146,6 +147,35 @@ mod tests {
             assert!(
                 super::group_note(def.group).is_some(),
                 "{} has no note",
+                def.group
+            );
+        }
+    }
+
+    /// Each file of the components crate is one component, so each has its group in the gallery, and every
+    /// Atoms group is a component file: the gallery and the crate list the same things.
+    #[test]
+    fn the_gallery_shows_every_component_once() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../components/src");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .expect("components sources")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.path().file_stem()?.to_str().map(str::to_string))
+            .filter(|stem| stem != "components")
+            .collect();
+        files.sort();
+        let file_of = |group: &str| group.to_lowercase().replace(' ', "_");
+        let groups: Vec<String> = super::all().iter().map(|def| file_of(def.group)).collect();
+        for file in &files {
+            assert!(
+                groups.contains(file),
+                "components/src/{file}.rs has no group in the gallery"
+            );
+        }
+        for def in super::all().iter().filter(|def| def.page == "Atoms") {
+            assert!(
+                files.contains(&file_of(def.group)),
+                "the {} group shows no component file",
                 def.group
             );
         }

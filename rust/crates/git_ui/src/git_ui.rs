@@ -11,6 +11,7 @@ mod scan;
 mod tree;
 mod widgets;
 
+use components::MenuItem;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +26,7 @@ use git::{ChangeStatus, FileChange};
 use rows::Row;
 use scan::{review_key, RepoScan, Scan, Scanner};
 use workspace::list_nav::ListNav;
-use workspace::{EditKey, MenuItem, PaneKind, PanelRequest, SidePanelView};
+use workspace::{EditKey, PaneKind, PanelRequest, SidePanelView};
 
 const ROW_STRIDE: u64 = 8;
 /// Ids of the tabs, toolbars and footers start here; rows take the ids below.

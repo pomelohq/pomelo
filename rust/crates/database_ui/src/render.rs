@@ -131,10 +131,10 @@ fn trailing(text: String) -> Node {
 fn dot(status: Status) -> Node {
     let colors = theme();
     let mark = match status {
-        Status::Connected => ui::dot(colors.success, 7.0),
-        Status::Failed { warning: true } => ui::dot(colors.warning, 7.0),
-        Status::Failed { warning: false } => ui::dot(colors.error, 7.0),
-        Status::NotConnected | Status::Loading => ui::ring(colors.text_placeholder, 8.0),
+        Status::Connected => components::dot(colors.success, 7.0),
+        Status::Failed { warning: true } => components::dot(colors.warning, 7.0),
+        Status::Failed { warning: false } => components::dot(colors.error, 7.0),
+        Status::NotConnected | Status::Loading => components::ring(colors.text_placeholder, 8.0),
     };
     div()
         .row()
@@ -319,7 +319,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 )
                 .child(dot(*status));
             if panel.hover == Some(id) && !detail.tooltip.is_empty() {
-                ui::with_tooltip(line, &detail.tooltip, false).into()
+                components::with_tooltip(line, &detail.tooltip, false).into()
             } else {
                 line.into()
             }
@@ -528,7 +528,7 @@ fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) 
                 .color(if hot { colors.icon } else { colors.icon_muted }),
         );
     if hot {
-        ui::with_tooltip(button, tip, false).into()
+        components::with_tooltip(button, tip, false).into()
     } else {
         button.into()
     }
@@ -536,29 +536,8 @@ fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) 
 
 fn filter_box(panel: &DatabasePanel) -> Node {
     let colors = theme();
-    let mut field = div()
-        .row()
+    let mut field = components::search_box(DatabasePanel::base() + FILTER, panel.filter_focused)
         .flex(1.0)
-        .h_px(28.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(5.0)
-        .bg(colors.editor_background)
-        .border(
-            1.0,
-            if panel.filter_focused {
-                colors.border_focused
-            } else {
-                colors.border_variant
-            },
-        )
-        .on_click(DatabasePanel::base() + FILTER)
-        .child(
-            icon(IconKind::Search)
-                .size(13.0)
-                .color(colors.text_placeholder),
-        )
         .child(
             div()
                 .row()

@@ -93,19 +93,10 @@ fn state_of(forward: &PortForward) -> (&'static str, Rgba, Rgba) {
 }
 
 fn icon_button(id: u64, kind: IconKind, hovered: Option<u64>) -> Node {
-    let mut button = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(24.0)
-        .h_px(24.0)
-        .rounded(6.0)
-        .on_click(id)
-        .child(icon(kind).size(14.0).color(theme().text));
-    if hovered == Some(id) {
-        button = button.bg(theme().ghost_element_hover);
-    }
-    button.into()
+    components::icon_button(id, kind)
+        .color(theme().text)
+        .hovered(hovered)
+        .into()
 }
 
 fn fixed(width: f32, child: impl Into<Node>) -> ui::Div {
@@ -167,7 +158,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
         .h_px(ROW_H)
         .pl(12.0)
         .pr(6.0)
-        .child(ui::dot(dot, 8.0))
+        .child(components::dot(dot, 8.0))
         .child(fixed(
             64.0,
             small(forward.remote_port.to_string(), colors.text).mono(),
@@ -358,14 +349,14 @@ impl PortsPage {
             .px(CARD_INSET)
             .h_px(TOOLBAR_H)
             .child(field)
-            .child(ui::button(FORWARD, "Forward").hovered(self.hovered))
+            .child(components::button(FORWARD, "Forward").hovered(self.hovered))
             .child(div().flex(1.0))
             .child(
                 div()
                     .row()
                     .items_center()
                     .gap(6.0)
-                    .child(ui::dot(dot, 7.0))
+                    .child(components::dot(dot, 7.0))
                     .child(small(text, colors.text_muted)),
             )
             .into()

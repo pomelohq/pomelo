@@ -1,8 +1,8 @@
 //! A project being set up, phase by phase, and the summary once it is ready.
 
+use components::{text_line, ButtonKind};
 use onboarding::{CheckKind, CheckStatus};
 use ui::{div, icon, label, theme, IconKind, Node};
-use workspace::{text_line, ButtonKind};
 
 use crate::ids::*;
 use crate::model::{Onboarding, Phase, Request, Run};
@@ -45,8 +45,8 @@ pub(crate) fn progress(state: &Onboarding, width: f32, _hovered: Option<u64>) ->
             "The project was not created",
             error,
             None,
-            vec![workspace::button(BACK_TO_FORM, "Back to the form")
-                .size(ui::ButtonSize::Medium)
+            vec![components::button(BACK_TO_FORM, "Back to the form")
+                .size(components::ButtonSize::Medium)
                 .into()],
             width,
         ));
@@ -66,30 +66,30 @@ pub(crate) fn progress_footer(state: &Onboarding) -> Node {
         if run.agent_configuring() {
             if run.agent != pom_agent::AgentCli::Claude {
                 leading.push(
-                    workspace::button(VERIFY_NOW, "It is done - verify")
-                        .size(ui::ButtonSize::Medium)
+                    components::button(VERIFY_NOW, "It is done - verify")
+                        .size(components::ButtonSize::Medium)
                         .kind(ButtonKind::Ghost)
                         .into(),
                 );
             }
             leading.push(
-                workspace::button(SKIP_AGENT, "Skip the agent")
-                    .size(ui::ButtonSize::Medium)
+                components::button(SKIP_AGENT, "Skip the agent")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Ghost)
                     .into(),
             );
         }
         if run.agent_skipped {
             leading.push(
-                workspace::button(RESUME_AGENT, format!("Let {} finish it", run.agent.title()))
-                    .size(ui::ButtonSize::Medium)
+                components::button(RESUME_AGENT, format!("Let {} finish it", run.agent.title()))
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Ghost)
                     .into(),
             );
         }
         if run.agent_active() {
             buttons.push(
-                workspace::button(
+                components::button(
                     AGENT_CLI,
                     if run.agent_shown {
                         "Hide agent CLI"
@@ -97,21 +97,21 @@ pub(crate) fn progress_footer(state: &Onboarding) -> Node {
                         "Show agent CLI"
                     },
                 )
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .kind(ButtonKind::Ghost)
                 .into(),
             );
         }
         buttons.push(
-            workspace::button(PAUSE, if run.paused { "Resume" } else { "Pause" })
-                .size(ui::ButtonSize::Medium)
+            components::button(PAUSE, if run.paused { "Resume" } else { "Pause" })
+                .size(components::ButtonSize::Medium)
                 .kind(ButtonKind::Ghost)
                 .into(),
         );
     }
     buttons.push(
-        workspace::button(STOP, "Cancel")
-            .size(ui::ButtonSize::Medium)
+        components::button(STOP, "Cancel")
+            .size(components::ButtonSize::Medium)
             .into(),
     );
     view::footer(None, leading, buttons)
@@ -368,34 +368,34 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
     let mut buttons = Vec::new();
     if finding.fixing {
         buttons.push(
-            workspace::button(CANCEL_FIX, "Cancel")
-                .size(ui::ButtonSize::Medium)
+            components::button(CANCEL_FIX, "Cancel")
+                .size(components::ButtonSize::Medium)
                 .into(),
         );
     } else {
         if run.agent_active() {
             buttons.push(
-                workspace::button(FIX_AGENT, format!("Fix with {}", run.agent.title()))
-                    .size(ui::ButtonSize::Medium)
+                components::button(FIX_AGENT, format!("Fix with {}", run.agent.title()))
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .into(),
             );
         }
         buttons.push(
-            workspace::button(FIX_MANUAL, "Fix manually")
-                .size(ui::ButtonSize::Medium)
+            components::button(FIX_MANUAL, "Fix manually")
+                .size(components::ButtonSize::Medium)
                 .into(),
         );
         buttons.push(
-            workspace::button(RETRY, "Verify again")
-                .size(ui::ButtonSize::Medium)
+            components::button(RETRY, "Verify again")
+                .size(components::ButtonSize::Medium)
                 .kind(ButtonKind::Ghost)
                 .into(),
         );
         if matches!(check.kind, CheckKind::Boot { .. }) {
             buttons.push(
-                workspace::button(SKIP_SERVICE, "Skip this service")
-                    .size(ui::ButtonSize::Medium)
+                components::button(SKIP_SERVICE, "Skip this service")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Ghost)
                     .into(),
             );
@@ -418,14 +418,14 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
         .gap(8.0)
         .child(view::muted("Fix it yourself:"))
         .child(
-            workspace::button(OPEN_CONFIG, "Open pom.yml")
-                .size(ui::ButtonSize::Medium)
+            components::button(OPEN_CONFIG, "Open pom.yml")
+                .size(components::ButtonSize::Medium)
                 .icon(Some(IconKind::File)),
         );
     if let Some(repo) = finding_repo(&check.kind) {
         manual = manual.child(
-            workspace::button(OPEN_TERMINAL, format!("Open a terminal in {repo}"))
-                .size(ui::ButtonSize::Medium)
+            components::button(OPEN_TERMINAL, format!("Open a terminal in {repo}"))
+                .size(components::ButtonSize::Medium)
                 .icon(Some(IconKind::Terminal)),
         );
     }
@@ -567,7 +567,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         .child(view::head(&format!("{} is ready", run.name), Some(&sub)))
         .child(stats);
     if !rows.is_empty() {
-        column = column.child(workspace::field(
+        column = column.child(components::field(
             "What was set up",
             view::panel_list(rows, 4.0),
             None,
@@ -575,7 +575,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         ));
     }
     column
-        .child(workspace::field("Next", cards.into(), None, None))
+        .child(components::field("Next", cards.into(), None, None))
         .child(text_line(
             16.0,
             view::muted(&format!("{secrets}Took {}.", view::seconds_text(took))),
@@ -597,8 +597,8 @@ pub(crate) fn done_footer(state: &Onboarding) -> Node {
     view::footer(
         None,
         Vec::new(),
-        vec![workspace::button(OPEN_WORKSPACE, workspace_title(run))
-            .size(ui::ButtonSize::Medium)
+        vec![components::button(OPEN_WORKSPACE, workspace_title(run))
+            .size(components::ButtonSize::Medium)
             .kind(ButtonKind::Primary)
             .keystroke(Some("enter"))
             .into()],

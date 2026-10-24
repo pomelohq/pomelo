@@ -591,38 +591,15 @@ impl ServiceItem {
 
     /// A choice among `options` with `current` pressed; each option clicks at `base + index`.
     fn choice(&self, options: &[String], current: &str, base: u64) -> Node {
-        let colors = theme();
-        let mut row = div()
-            .row()
-            .gap(2.0)
-            .p(2.0)
-            .rounded(4.0)
-            .bg(colors.element_background);
-        for (index, option) in options.iter().enumerate() {
-            let pressed = option == current;
-            row = row.child(
-                div()
-                    .row()
-                    .h_px(18.0)
-                    .px(6.0)
-                    .items_center()
-                    .rounded(3.0)
-                    .on_click(self.base + base + index as u64)
-                    .hover_bg(colors.ghost_element_hover)
-                    .active_bg(colors.ghost_element_active)
-                    .bg(if pressed {
-                        colors.element_selected
-                    } else {
-                        ui::Rgba::TRANSPARENT
-                    })
-                    .child(label(option.clone()).size(12.0).color(if pressed {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    })),
-            );
-        }
-        row.into()
+        let segments = options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| components::segment(self.base + base + index as u64, option));
+        let selected = options
+            .iter()
+            .position(|option| option == current)
+            .unwrap_or(usize::MAX);
+        components::segmented(segments, selected).into()
     }
 
     /// The shared service's definition, when this tab follows one.
@@ -670,7 +647,7 @@ impl ServiceItem {
                         .medium()
                         .color(colors.text),
                 )
-                .child(ui::chip("shared").color(theme().text_muted))
+                .child(components::chip("shared").color(theme().text_muted))
         } else if self.target.is_workspace_level() {
             title.child(
                 label(self.target.service.clone())
@@ -698,7 +675,7 @@ impl ServiceItem {
             .map(|(_, service)| self.context.access.mode(&self.target, &service))
             .filter(|mode| !mode.is_empty())
         {
-            title = title.child(ui::chip(mode).color(theme().text_muted));
+            title = title.child(components::chip(mode).color(theme().text_muted));
         }
         let mut buttons = Vec::new();
         let controls = self.container.is_none() || self.offers(ServiceControl::Shared);
@@ -842,26 +819,26 @@ impl ServiceItem {
 
     fn facts(&self, state: &State, crash: Option<&Crash>, width: f32) -> Node {
         let colors = theme();
-        let status: Node = match state {
+        let status = match state {
             State::Running => {
                 let mut text = "Running".to_string();
                 if let Some(uptime) = self.uptime() {
                     text.push_str(&format!(" - up {uptime}"));
                 }
-                ui::status_pill(&text, colors.success)
+                components::pill(text).color(colors.success)
             }
-            State::Busy(text) => ui::status_pill(text, colors.warning),
+            State::Busy(text) => components::pill(*text).color(colors.warning),
             State::Crashed => {
                 let text = match crash {
                     Some(crash) => format!("Crashed - {}", crash.exit),
                     None => "Crashed".to_string(),
                 };
-                ui::status_pill(&text, colors.error)
+                components::pill(text).color(colors.error)
             }
-            State::Failed { .. } => ui::status_pill("Could not start", colors.error),
-            State::Stopped => ui::status_pill("Stopped", colors.text_placeholder),
+            State::Failed { .. } => components::pill("Could not start").color(colors.error),
+            State::Stopped => components::pill("Stopped").color(colors.text_placeholder),
         };
-        let mut facts = vec![Self::fact("Status", status)];
+        let mut facts = vec![Self::fact("Status", status.into())];
         if *state == State::Running {
             if let Some(pid) = self.context.access.pid(&self.process_holder()) {
                 facts.push(Self::fact(
@@ -915,7 +892,10 @@ impl ServiceItem {
                     self.choice(&modes, &current_mode, MODE_BASE),
                 ))
             } else if !current_mode.is_empty() {
-                Some(Self::fact("Mode", ui::chip(current_mode.clone()).into()))
+                Some(Self::fact(
+                    "Mode",
+                    components::chip(current_mode.clone()).into(),
+                ))
             } else {
                 None
             };
@@ -928,7 +908,7 @@ impl ServiceItem {
                         self.choice(&profiles, &current, PROFILE_BASE),
                     ));
                 } else if !current.is_empty() {
-                    facts.push(Self::fact("Env profile", ui::chip(current).into()));
+                    facts.push(Self::fact("Env profile", components::chip(current).into()));
                 }
                 if let Some(file) = dir.env_output.first() {
                     let shown = format!("{}/{}", self.target.repo, file.file);
@@ -1524,32 +1504,11 @@ impl ServiceItem {
         );
         if live {
             title = title
-                .child(ui::dot(colors.success, 6.0))
+                .child(components::dot(colors.success, 6.0))
                 .child(label("live").size(11.5).color(colors.success));
         }
-        let mut field = div()
-            .row()
+        let mut field = components::search_box(self.base + FILTER, self.filter_focused)
             .w_px(280.0)
-            .h_px(26.0)
-            .px(8.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(5.0)
-            .border(
-                1.0,
-                if self.filter_focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .bg(colors.editor_background)
-            .on_click(self.base + FILTER)
-            .child(
-                icon(IconKind::Search)
-                    .size(12.0)
-                    .color(colors.text_placeholder),
-            )
             .child(
                 div()
                     .row()

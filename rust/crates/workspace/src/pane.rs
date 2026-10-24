@@ -529,7 +529,7 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
             } else {
                 theme().text_muted
             };
-            close_slot = close_slot.child(ui::dot(color, 7.0));
+            close_slot = close_slot.child(components::dot(color, 7.0));
         }
         let glyph: Node = match (item.tab_dot(), item.tab_icon()) {
             (Some(color), _) => div()
@@ -538,7 +538,7 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .h_px(14.0)
                 .items_center()
                 .justify_center()
-                .child(ui::dot(color, 8.0))
+                .child(components::dot(color, 8.0))
                 .into(),
             (None, Some(kind)) => icon(kind)
                 .size(14.0)

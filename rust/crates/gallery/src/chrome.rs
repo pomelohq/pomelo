@@ -1,4 +1,5 @@
-use ui::{div, icon, label, theme, IconKind, MenuItem, Node, Rgba};
+use components::MenuItem;
+use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 
 use crate::scene::{Board, Group};
 
@@ -158,7 +159,7 @@ fn row_icon(kind: IconKind, selected: bool) -> Node {
 }
 
 fn rule() -> Node {
-    div().py(6.0).child(ui::divider()).into()
+    div().py(6.0).child(components::divider()).into()
 }
 
 /// The left panel's fixed top (title, pages, the Layers heading) and its layer list, which scrolls under it.
@@ -236,7 +237,7 @@ pub fn left(
         .col()
         .w_px(LEFT)
         .child(header("Pomelo Gallery", panels_button()))
-        .child(ui::divider())
+        .child(components::divider())
         .child(section("Pages", Some(pages.len().to_string())))
         .children(pages.iter().enumerate().map(|(index, name)| {
             row(
@@ -302,7 +303,7 @@ pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom
         .h_px(height)
         .bg(theme().panel_background)
         .child(header("View", zoom_bar.into()))
-        .child(ui::divider())
+        .child(components::divider())
         .child(theme_list(RIGHT, themes, current))
         .into()
 }
@@ -366,7 +367,7 @@ pub fn theme_menu(themes: &[(&str, ui::Appearance)], current: &str, hovered: Opt
                 }),
         );
     }
-    ui::menu(&items).hovered(hovered).into()
+    components::menu(&items).hovered(hovered).into()
 }
 
 fn panels_button() -> Node {
@@ -452,7 +453,7 @@ pub fn page_menu(pages: &[&str], page: usize, hovered: Option<u64>) -> Node {
             ..MenuItem::new(PAGE + index as u64, name.to_string())
         })
         .collect();
-    ui::menu(&items).hovered(hovered).into()
+    components::menu(&items).hovered(hovered).into()
 }
 
 /// The keys that hide and show the panels, shown while the pointer is on that button.

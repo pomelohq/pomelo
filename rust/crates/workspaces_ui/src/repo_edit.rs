@@ -1,10 +1,11 @@
+use components::{checkbox, status_line, text_line, ButtonKind};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use ui::{div, label, theme, IconKind, Node};
 use workspace::{
-    checkbox, modal_footer, modal_frame, modal_header, modal_section, status_line, text_line,
-    ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    modal_footer, modal_frame, modal_header, modal_section, EditKey, InputField, ModalResult,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 460.0;
@@ -89,13 +90,13 @@ impl WindowModal for RenameAliasModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Rename")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Rename")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(self.can_rename()),
@@ -201,13 +202,13 @@ impl WindowModal for RemoveRepoModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Remove")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Remove")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Danger)
                     .keystroke(Some("enter")),
             );
@@ -316,13 +317,13 @@ impl WindowModal for PickReposModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Add")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Add")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(!self.picked().is_empty()),
@@ -513,13 +514,13 @@ impl WindowModal for UseBranchModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Check Out")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Check Out")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(!self.entries().is_empty()),

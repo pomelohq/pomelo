@@ -131,7 +131,7 @@ fn banner(index: usize, check: &MachineCheck, hovered: Option<u64>) -> Node {
     } else {
         line = line.child(
             crate::button(WELCOME_RECHECK, "Check again")
-                .kind(ui::ButtonKind::Ghost)
+                .kind(components::ButtonKind::Ghost)
                 .hovered(hovered),
         );
     }
@@ -537,7 +537,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
                 .h_px(16.0)
                 .items_center()
                 .gap(6.0)
-                .child(ui::dot(dot, 8.0))
+                .child(components::dot(dot, 8.0))
                 .child(
                     div().row().flex(1.0).child(
                         label(notice.status.clone())

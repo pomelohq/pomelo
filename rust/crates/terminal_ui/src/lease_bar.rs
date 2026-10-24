@@ -235,7 +235,7 @@ pub fn strip(
             .h_px(20.0)
             .gap(8.0)
             .items_center()
-            .child(ui::status_pill("Waiting for approval", colors.warning))
+            .child(components::pill("Waiting for approval").attention())
             .child(what);
         let card = if width < ONE_LINE_W {
             div()
@@ -304,11 +304,11 @@ pub(crate) fn button(
     keys: Option<String>,
     primary: bool,
 ) -> Node {
-    ui::button(id, text)
+    components::button(id, text)
         .kind(if primary {
-            ui::ButtonKind::Primary
+            components::ButtonKind::Primary
         } else {
-            ui::ButtonKind::Ghost
+            components::ButtonKind::Ghost
         })
         .icon(glyph)
         .keystroke(keys.as_deref())

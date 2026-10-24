@@ -1289,7 +1289,7 @@ fn workspace_row(
         Upkeep::None if waiting => Some(
             div()
                 .row()
-                .child(ui::status_pill("Waiting for you", theme().warning))
+                .child(components::pill("Waiting for you").attention())
                 .into(),
         ),
         Upkeep::None => match trouble {
@@ -1437,7 +1437,7 @@ pub fn switcher_status(row: &WorkspaceRow) -> Option<Node> {
         return Some(
             div()
                 .row()
-                .child(ui::status_pill("Waiting for you", theme().warning))
+                .child(components::pill("Waiting for you").attention())
                 .into(),
         );
     }
@@ -1586,15 +1586,8 @@ fn status_line(glyph: IconKind, color: Rgba, text: String) -> Node {
 }
 
 fn icon_button(kind: IconKind, id: u64) -> Node {
-    div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(22.0)
-        .h_px(22.0)
-        .rounded(4.0)
-        .on_click(id)
-        .child(icon(kind).size(13.0).color(theme().text_muted))
+    components::icon_button(id, kind)
+        .color(theme().text_muted)
         .into()
 }
 
@@ -1962,7 +1955,7 @@ impl Panel for AgentEmptyPanel {
             .child(
                 div().row().child(
                     crate::button(crate::AGENT_TOGGLE, "Start Agent")
-                        .size(ui::ButtonSize::Medium)
+                        .size(components::ButtonSize::Medium)
                         .icon(Some(IconKind::Sparkle)),
                 ),
             )

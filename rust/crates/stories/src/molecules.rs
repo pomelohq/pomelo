@@ -1,6 +1,7 @@
 //! Atoms put together into one control: a menu of choices, and a select with its menu open.
 
-use ui::{div, IconKind, MenuItem, Node};
+use components::MenuItem;
+use ui::{div, IconKind, Node};
 
 use crate::{still, Story, StoryDef};
 
@@ -90,8 +91,8 @@ fn opens_submenu(id: u64) -> bool {
     id < ID + 2
 }
 
-fn menu(items: &[MenuItem], nested: bool) -> ui::Menu<'_> {
-    let menu = ui::menu(items);
+fn menu(items: &[MenuItem], nested: bool) -> components::Menu<'_> {
+    let menu = components::menu(items);
     if nested {
         menu.submenus(opens_submenu)
     } else {
@@ -106,13 +107,13 @@ fn submenu_open() -> Node {
         .p(INSET)
         .gap(2.0)
         .child(menu(&submenus(), true).hovered(Some(ID)))
-        .child(ui::menu(&choices).hovered(Some(ID + 1)))
+        .child(components::menu(&choices).hovered(Some(ID + 1)))
         .into()
 }
 
 fn submenu_open_size() -> (f32, f32) {
     let (_, parent_width, parent_height) = menu(&submenus(), true).render();
-    let (_, child_width, child_height) = ui::menu(&chosen()).render();
+    let (_, child_width, child_height) = components::menu(&chosen()).render();
     (
         parent_width + 2.0 + child_width + 2.0 * INSET,
         parent_height.max(child_height) + 2.0 * INSET,
@@ -157,13 +158,13 @@ fn searchable(query: &'static str, hovered: Option<u64>) -> Node {
     let items = themes(query);
     div()
         .p(INSET)
-        .child(ui::menu(&items).search(query).hovered(hovered))
+        .child(components::menu(&items).search(query).hovered(hovered))
         .into()
 }
 
 fn searchable_size(query: &str) -> (f32, f32) {
     let items = themes(query);
-    let (_, width, height) = ui::menu(&items).search(query).render();
+    let (_, width, height) = components::menu(&items).search(query).render();
     (width + 2.0 * INSET, height + 2.0 * INSET)
 }
 
@@ -173,9 +174,9 @@ fn select_open() -> Node {
         .col()
         .p(INSET)
         .gap(SELECT_GAP)
-        .child(ui::select(ID + 10, "Pomelo Dark").width(SELECT_WIDTH))
+        .child(components::select(ID + 10, "Pomelo Dark").width(SELECT_WIDTH))
         .child(
-            ui::menu(&items)
+            components::menu(&items)
                 .hovered(Some(ID + 1))
                 .min_width(SELECT_WIDTH),
         )
@@ -183,7 +184,7 @@ fn select_open() -> Node {
 }
 
 fn select_open_size() -> (f32, f32) {
-    let (_, width, height) = ui::menu(&chosen()).min_width(SELECT_WIDTH).render();
+    let (_, width, height) = components::menu(&chosen()).min_width(SELECT_WIDTH).render();
     (
         width + 2.0 * INSET,
         height + SELECT_HEIGHT + SELECT_GAP + 2.0 * INSET,
@@ -194,11 +195,13 @@ const EDGE_BOARD: (f32, f32) = (340.0, 240.0);
 const EDGE_MARGIN: f32 = 8.0;
 
 /// A select at `select_at` on a board standing in for the window, with its menu where
-/// `ui::place_menu` puts it: so the board shows the real flip, not a hand-drawn one.
+/// `components::place_menu` puts it: so the board shows the real flip, not a hand-drawn one.
 fn at_edge(select_at: (f32, f32), searchable: bool) -> Node {
     let items = if searchable { themes("") } else { chosen() };
     let edge_menu = || {
-        let menu = ui::menu(&items).hovered(Some(ID)).min_width(SELECT_WIDTH);
+        let menu = components::menu(&items)
+            .hovered(Some(ID))
+            .min_width(SELECT_WIDTH);
         if searchable {
             menu.search("")
         } else {
@@ -213,10 +216,11 @@ fn at_edge(select_at: (f32, f32), searchable: bool) -> Node {
         SELECT_HEIGHT,
         ui::Rgba::TRANSPARENT,
     );
-    let (x, y) = ui::place_menu(anchor, (width, height), EDGE_BOARD, SELECT_GAP, EDGE_MARGIN);
+    let (x, y) =
+        components::place_menu(anchor, (width, height), EDGE_BOARD, SELECT_GAP, EDGE_MARGIN);
     let select = div()
         .pl(anchor.x)
-        .child(ui::select(ID + 10, "Pomelo Dark").width(SELECT_WIDTH));
+        .child(components::select(ID + 10, "Pomelo Dark").width(SELECT_WIDTH));
     let menu = div()
         .pl(x)
         .child(edge_menu().search_at_bottom(y < anchor.y));

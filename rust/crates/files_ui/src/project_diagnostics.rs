@@ -402,18 +402,10 @@ impl ProjectDiagnostics {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, color: Rgba) -> Node {
-        let mut button = div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .child(icon(kind).size(14.0).color(color));
-        if self.hovered == Some(id) {
-            button = button.bg(theme().ghost_element_hover);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .color(color)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn toolbar(&self, width: f32) -> Node {
@@ -457,7 +449,7 @@ impl ProjectDiagnostics {
                 } else {
                     "warnings"
                 };
-                column = column.child(ui::button(
+                column = column.child(components::button(
                     SHOW_WARNINGS,
                     format!("Show {} {noun}", self.warnings),
                 ));

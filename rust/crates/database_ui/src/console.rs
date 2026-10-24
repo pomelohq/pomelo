@@ -154,13 +154,13 @@ impl ConsoleFooter {
     fn toolbar(&self) -> Node {
         let colors = theme();
         let database = self.database();
-        let picker = ui::select(
+        let picker = components::select(
             DATABASE_PICKER,
             database.map(crate::tree::readable).unwrap_or_default(),
         )
         .placeholder("Select database")
         .icon(Some(IconKind::Cylinder))
-        .size(ui::ButtonSize::Small);
+        .size(components::ButtonSize::Small);
         let running = self.running.busy();
         let run = div()
             .row()
@@ -176,7 +176,7 @@ impl ConsoleFooter {
                 colors.success
             }))
             .child(label("Run").size(12.0).color(colors.text))
-            .child(ui::key_chip("cmd-enter", false));
+            .child(components::key_chip("cmd-enter", false));
         let (status, error) = if running {
             ("Running...".to_string(), false)
         } else {

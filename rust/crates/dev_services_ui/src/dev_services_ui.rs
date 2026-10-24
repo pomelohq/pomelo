@@ -1,3 +1,4 @@
+use components::ButtonKind;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -5,7 +6,7 @@ use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -370,7 +371,7 @@ fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node
         .row()
         .items_center()
         .gap(6.0)
-        .child(ui::dot(color, 7.0))
+        .child(components::dot(color, 7.0))
         .child(small(format!("{name} :{}", server.port), colors.text_muted))
         .into()
 }
@@ -382,27 +383,8 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         KindFilter::Proxy => 1,
         KindFilter::Webhook => 2,
     };
-    let border = if state.filter_focused {
-        colors.border_focused
-    } else {
-        colors.border
-    };
-    let mut field = div()
-        .row()
-        .items_center()
-        .gap(8.0)
+    let field = components::search_box(FILTER, state.filter_focused)
         .w_px(240.0)
-        .h_px(30.0)
-        .px(10.0)
-        .rounded(6.0)
-        .border(1.0, border)
-        .bg(colors.editor_background)
-        .on_click(FILTER)
-        .child(
-            icon(IconKind::Filter)
-                .size(14.0)
-                .color(colors.text_placeholder),
-        )
         .child(
             div()
                 .row()
@@ -416,9 +398,6 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                     FieldFont::Ui,
                 )),
         );
-    if state.filter_focused {
-        field = field.ring(3.0, colors.overlay_selected);
-    }
     let mut bar = div()
         .row()
         .items_center()
@@ -426,21 +405,21 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         .px(CARD_INSET)
         .h_px(TOOLBAR_H)
         .child(
-            ui::segmented(
+            components::segmented(
                 [
-                    ui::segment(KIND_BASE, "All"),
-                    ui::segment(KIND_BASE + 1, "Proxy"),
-                    ui::segment(KIND_BASE + 2, "Webhooks"),
+                    components::segment(KIND_BASE, "All"),
+                    components::segment(KIND_BASE + 1, "Proxy"),
+                    components::segment(KIND_BASE + 2, "Webhooks"),
                 ],
                 kind,
             )
             .hovered(hovered),
         )
         .child(
-            ui::segmented(
+            components::segmented(
                 [
-                    ui::segment(STATUS_BASE, "Any Status"),
-                    ui::segment(STATUS_BASE + 1, "Errors"),
+                    components::segment(STATUS_BASE, "Any Status"),
+                    components::segment(STATUS_BASE + 1, "Errors"),
                 ],
                 usize::from(state.errors_only),
             )
@@ -462,7 +441,7 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         );
     if !state.served_elsewhere {
         bar = bar.child(
-            ui::button(RESTART, "Restart")
+            components::button(RESTART, "Restart")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::RotateCw))
                 .hovered(hovered),
@@ -680,7 +659,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .as_ref()
         .is_some_and(|(text, _)| !text.is_empty())
         .then(|| {
-            ui::button(COPY_BODY, "Copy")
+            components::button(COPY_BODY, "Copy")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::Copy))
                 .hovered(hovered)
@@ -749,7 +728,10 @@ fn delivery_row(delivery: &Delivery) -> Node {
         .items_center()
         .gap(10.0)
         .h_px(26.0)
-        .child(ui::dot(if ok { colors.success } else { colors.error }, 8.0))
+        .child(components::dot(
+            if ok { colors.success } else { colors.error },
+            8.0,
+        ))
         .child(
             div()
                 .row()

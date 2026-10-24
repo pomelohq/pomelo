@@ -1,10 +1,11 @@
+use components::ButtonKind;
 use std::collections::HashMap;
 
 use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect};
 use workspace::text_field::TextField;
-use workspace::{ButtonKind, EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::{action_button, hit_at, EnvironmentContext};
 
@@ -342,8 +343,8 @@ impl Item for SecretsItem {
                 )),
             )
             .child(
-                ui::button(ADD, "Add")
-                    .size(ui::ButtonSize::Medium)
+                components::button(ADD, "Add")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(add_ready),

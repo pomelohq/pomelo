@@ -1209,7 +1209,7 @@ pub(crate) fn picker_action(click: Option<(u64, bool)>, keys: &[&str], text: &st
                 .row()
                 .items_center()
                 .gap(3.0)
-                .children(keys.iter().map(|keys| ui::key_chip(keys, false))),
+                .children(keys.iter().map(|keys| components::key_chip(keys, false))),
         )
         .child(label(text).size(12.0).color(colors.text_placeholder));
     if let Some((id, hovered)) = click {

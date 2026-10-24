@@ -5,7 +5,6 @@ use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
 pub(crate) const TAB_BAR_H: f32 = 38.0;
-pub(crate) const SEGMENT_H: f32 = 26.0;
 pub(crate) const TOOLBAR_H: f32 = 38.0;
 pub(crate) const INDENT: f32 = 16.0;
 const BUTTON_H: f32 = 26.0;

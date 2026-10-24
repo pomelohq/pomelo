@@ -2,12 +2,13 @@
 //! (ranked mine-first, best match), with the list they come from: a board's sprint or backlog, or every
 //! open ticket assigned to the user.
 
+use components::{field_label, status_line, text_line};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
-use workspace::{field_label, status_line, text_line, InputField, WINDOW_MODAL_BASE};
+use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
 
@@ -571,7 +572,7 @@ fn status_pill(issue: &SprintIssue) -> Node {
         .row()
         .w_px(STATUS_W)
         .items_center()
-        .child(ui::status_pill(&issue.status, color))
+        .child(components::pill(&issue.status).color(color))
         .into()
 }
 

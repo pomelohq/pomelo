@@ -10,6 +10,7 @@ name = "gallery"
 path = "src/main.rs"
 
 [dependencies]
+components = { path = "../components" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

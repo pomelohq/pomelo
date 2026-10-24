@@ -1,0 +1,13 @@
+[package]
+name = "components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pomelo's design system: buttons, selects, chips, pills, menus and the rest, built on the ui element tree."
+
+[lib]
+path = "src/components.rs"
+
+[dependencies]
+ui = { path = "../ui" }
+workspace_hack = { version = "0.1", path = "../workspace_hack" }

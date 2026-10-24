@@ -1,6 +1,7 @@
 //! The create and rename forms. Both float over the window, take the keyboard (Tab between fields, Enter to
 //! confirm, Escape to cancel) and can ask Claude for a name in the background.
 
+use components::{checkbox, field, link, status_line, ButtonKind};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -10,9 +11,8 @@ use module_store::Outlook;
 use pom_agent::NameSuggestion;
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
-    accent_action, checkbox, field, modal_footer, modal_frame, modal_header, modal_note,
-    modal_section, status_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
-    WINDOW_MODAL_BASE,
+    modal_footer, modal_frame, modal_header, modal_note, modal_section, EditKey, InputField,
+    ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 use crate::repo_branch_picker::{
@@ -576,14 +576,13 @@ impl CreateWorkspaceModal {
                 content
             };
             let control = if names.len() <= ENVIRONMENT_CHOICES {
-                ui::segmented(
-                    names
-                        .iter()
-                        .enumerate()
-                        .map(|(index, name)| ui::segment(ENVIRONMENT_BASE + index as u64, *name)),
+                components::segmented(
+                    names.iter().enumerate().map(|(index, name)| {
+                        components::segment(ENVIRONMENT_BASE + index as u64, *name)
+                    }),
                     self.environment,
                 )
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .into()
             } else {
                 self.environment_select(&names, available)
@@ -600,14 +599,14 @@ impl CreateWorkspaceModal {
             row = row.child(
                 div().col().flex(1.0).child(field(
                     "Data",
-                    ui::segmented(
+                    components::segmented(
                         [
-                            ui::segment(DATA_FROM_MAIN, "Copy from main"),
-                            ui::segment(DATA_FRESH, "Empty, run seeds"),
+                            components::segment(DATA_FROM_MAIN, "Copy from main"),
+                            components::segment(DATA_FRESH, "Empty, run seeds"),
                         ],
                         usize::from(self.fresh_databases),
                     )
-                    .size(ui::ButtonSize::Medium)
+                    .size(components::ButtonSize::Medium)
                     .into(),
                     Some("the workspace's databases"),
                     None,
@@ -905,7 +904,7 @@ impl WindowModal for CreateWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let branch_error = self.branch_error();
-        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
+        let mut refine_row = div().row().items_center().gap(12.0).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine name & branch with Claude",
@@ -964,13 +963,13 @@ impl WindowModal for CreateWorkspaceModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Create")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Create")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(self.can_create()),
@@ -1255,7 +1254,7 @@ impl WindowModal for RenameWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
+        let mut refine_row = div().row().items_center().gap(12.0).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine with Claude",
@@ -1281,13 +1280,13 @@ impl WindowModal for RenameWorkspaceModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Save")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Save")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter")),
             );

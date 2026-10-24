@@ -9,6 +9,7 @@ description = "The onboarding page: create a project from repos, then follow its
 path = "src/onboarding_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 onboarding = { path = "../onboarding" }
 pom_agent = { path = "../pom_agent" }
 pom_core = { path = "../pom_core" }

@@ -129,7 +129,11 @@ pub fn new_agent(
                     .child(label(note).size(12.5).color(colors.text_muted).truncate()),
             )
             .child(div().flex(1.0))
-            .child(ui::chip(tag_text).color(tag_color).border(tag_border));
+            .child(
+                components::chip(tag_text)
+                    .color(tag_color)
+                    .border(tag_border),
+            );
         if !unavailable {
             row = row.on_click(id);
         }
@@ -208,7 +212,7 @@ pub fn new_agent(
                 },
             )
             .child(if chosen {
-                Node::from(ui::dot(colors.text_accent, 8.0))
+                Node::from(components::dot(colors.text_accent, 8.0))
             } else {
                 Node::from(div())
             });

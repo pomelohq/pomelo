@@ -227,7 +227,7 @@ impl PrItem {
         }
         let mut actions = div().row().gap(8.0).items_center();
         if self.confirm_merge && enabled {
-            actions = actions.child(ui::button(MERGE_CANCEL, "Cancel"));
+            actions = actions.child(components::button(MERGE_CANCEL, "Cancel"));
         }
         actions = actions.child(
             div()
@@ -350,8 +350,8 @@ impl PrItem {
             );
         if focused && !self.reply.text().trim().is_empty() {
             row = row.child(
-                ui::button(base + SEND_REPLY, "Reply")
-                    .kind(ui::ButtonKind::Primary)
+                components::button(base + SEND_REPLY, "Reply")
+                    .kind(components::ButtonKind::Primary)
                     .enabled(!busy),
             );
         }
@@ -360,7 +360,7 @@ impl PrItem {
         } else {
             "Resolve thread"
         };
-        row.child(ui::button(base + TOGGLE_RESOLVED, toggle).enabled(!busy))
+        row.child(components::button(base + TOGGLE_RESOLVED, toggle).enabled(!busy))
             .into()
     }
 
@@ -384,11 +384,11 @@ impl PrItem {
         let mut buttons = div().row().gap(8.0).items_center();
         for (index, event) in REVIEW_EVENTS.iter().enumerate() {
             buttons = buttons.child(
-                ui::button(REVIEW_EVENT_BASE + index as u64, event.label())
+                components::button(REVIEW_EVENT_BASE + index as u64, event.label())
                     .kind(if *event == ReviewEvent::Approve {
-                        ui::ButtonKind::Primary
+                        components::ButtonKind::Primary
                     } else {
-                        ui::ButtonKind::Secondary
+                        components::ButtonKind::Secondary
                     })
                     .enabled(!busy),
             );

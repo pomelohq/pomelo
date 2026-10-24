@@ -818,7 +818,7 @@ struct FileItem {
     line_numbers: bool,
     inline_blame: bool,
     toolbar_ids: u64,
-    menu_request: Option<Vec<workspace::MenuItem>>,
+    menu_request: Option<Vec<components::MenuItem>>,
     /// A key the toolbar ran, for the view to route like a keystroke (outline, go to line, ...).
     view_key: Option<EditKey>,
     find_requested: bool,
@@ -1345,9 +1345,12 @@ impl FileItem {
                     .size(13.0)
                     .color(theme().text_muted),
             )
-            .child(div().row().child(
-                ui::button(OPEN_IN_TERMINAL, "Open in terminal").size(ui::ButtonSize::Medium),
-            ))
+            .child(
+                div().row().child(
+                    components::button(OPEN_IN_TERMINAL, "Open in terminal")
+                        .size(components::ButtonSize::Medium),
+                ),
+            )
             .into();
         (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)
     }
@@ -1964,11 +1967,11 @@ impl FileItem {
         symbols
     }
 
-    fn selection_menu(&self) -> Vec<workspace::MenuItem> {
+    fn selection_menu(&self) -> Vec<components::MenuItem> {
         SELECTION_COMMANDS
             .iter()
             .enumerate()
-            .map(|(index, (text, key, sep))| workspace::MenuItem {
+            .map(|(index, (text, key, sep))| components::MenuItem {
                 id: self.toolbar_ids + TOOLBAR_SELECTION_BASE + index as u64,
                 label: (*text).into(),
                 checked: false,
@@ -1984,11 +1987,11 @@ impl FileItem {
             .collect()
     }
 
-    fn controls_menu(&self) -> Vec<workspace::MenuItem> {
+    fn controls_menu(&self) -> Vec<components::MenuItem> {
         EDITOR_CONTROLS
             .iter()
             .enumerate()
-            .map(|(index, (control, text, sep))| workspace::MenuItem {
+            .map(|(index, (control, text, sep))| components::MenuItem {
                 id: self.toolbar_ids + TOOLBAR_CONTROL_BASE + index as u64,
                 label: (*text).into(),
                 checked: match control {
@@ -6279,7 +6282,7 @@ impl Item for FileItem {
         std::mem::take(&mut self.find_requested)
     }
 
-    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+    fn take_menu_request(&mut self) -> Option<Vec<components::MenuItem>> {
         self.menu_request.take()
     }
 
@@ -7589,7 +7592,7 @@ impl FilesView {
             .px(12.0)
             .gap(8.0)
             .items_center()
-            .child(ui::dot(theme().warning, 8.0))
+            .child(components::dot(theme().warning, 8.0))
             .child(
                 div()
                     .col()
@@ -10361,7 +10364,7 @@ impl FunctionView for FilesView {
         self.take_tree_toast().or_else(|| self.lsp_toast.take())
     }
 
-    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+    fn take_menu_request(&mut self) -> Option<Vec<components::MenuItem>> {
         self.panes.take_menu_request()
     }
 

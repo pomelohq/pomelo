@@ -1,11 +1,13 @@
 //! Modals the window owns (forms such as creating a workspace) and the pieces they are built from: the modal
 //! frame, header and footer, labeled inputs, checkboxes and a progress bar, sized after the reference's.
 
+use components::{button, ButtonKind};
 use std::any::Any;
 
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
-use ui::{button, div, icon, label, theme, ButtonKind, IconKind, LabelSize, Node, Rgba};
+use components::{field, text_line};
+use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -167,75 +169,6 @@ pub fn modal_note(text: &str) -> Node {
         .into()
 }
 
-/// An inline link-like action in the accent color, with an optional leading icon.
-pub fn accent_action(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
-    let colors = theme();
-    let color = if enabled {
-        colors.text_accent
-    } else {
-        colors.text_disabled
-    };
-    let mut action = div().row().items_center().gap(6.0).h_px(16.0);
-    if enabled {
-        action = action.on_click(id);
-    }
-    if let Some(kind) = leading {
-        action = action.child(icon(kind).size(12.0).color(color));
-    }
-    action
-        .child(label(text.to_string()).size(12.0).color(color))
-        .into()
-}
-
-/// A field's label: small, uppercase and muted, as every form labels its inputs.
-pub fn field_label(text: &str) -> Node {
-    text_line(
-        14.0,
-        label(text.to_uppercase())
-            .size(11.0)
-            .weight(600)
-            .color(theme().text_placeholder),
-    )
-}
-
-/// `text` in a box of the design's line height, so stacked lines keep the rhythm the type scale sets.
-pub fn text_line(height: f32, text: ui::Label) -> Node {
-    div().row().h_px(height).items_center().child(text).into()
-}
-
-/// The line under a field: what it is for, or what is wrong with it.
-fn field_note(hint: Option<&str>, error: Option<&str>) -> Option<Node> {
-    let colors = theme();
-    match (error, hint) {
-        (Some(error), _) => Some(text_line(
-            16.0,
-            label(error.to_string()).size(12.0).color(colors.error),
-        )),
-        // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
-        (None, Some(hint)) if !hint.is_empty() => Some(text_line(
-            16.0,
-            label(hint.to_string())
-                .size(12.0)
-                .color(colors.text_placeholder)
-                .truncate_start(),
-        )),
-        _ => None,
-    }
-}
-
-/// A labeled group in a form: the label, the control, and the hint or error under it.
-pub fn field(title: &str, control: Node, hint: Option<&str>, error: Option<&str>) -> Node {
-    let mut column = div()
-        .col()
-        .gap(6.0)
-        .child(field_label(title))
-        .child(control);
-    if let Some(note) = field_note(hint, error) {
-        column = column.child(note);
-    }
-    column.into()
-}
-
 /// Width of a confirmation in design px.
 pub const PROMPT_WIDTH: f32 = 460.0;
 
@@ -310,7 +243,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
         };
         buttons = buttons.child(
             button(button_base + index as u64, text)
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .kind(kind)
                 .keystroke(keystroke),
         );
@@ -481,24 +414,7 @@ impl InputField {
         suffix: Option<&str>,
     ) -> Node {
         let colors = theme();
-        let border = match (error, focused) {
-            (true, _) => colors.error,
-            (false, true) => colors.border_focused,
-            (false, false) => colors.border,
-        };
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .h_px(INPUT_HEIGHT + 10.0)
-            .px(10.0)
-            .rounded(6.0)
-            .bg(colors.editor_background)
-            .border(1.0, border)
-            .on_click(click_id);
-        if focused && !error {
-            row = row.ring(3.0, colors.overlay_selected);
-        }
+        let mut row = components::input_box(click_id, focused, error);
         if let Some(kind) = self.leading {
             row = row.child(icon(kind).size(14.0).color(colors.text_placeholder));
         }
@@ -545,67 +461,6 @@ impl InputField {
         dots.move_to_end();
         Some(dots)
     }
-}
-
-/// A checkbox (14px box, accent filled when on) and its label, the whole row clickable.
-pub fn checkbox(id: u64, checked: bool, text: &str) -> Node {
-    let colors = theme();
-    let mut square = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(14.0)
-        .h_px(14.0)
-        .rounded(4.0);
-    square = if checked {
-        square
-            .bg(colors.accent_fill)
-            .child(icon(IconKind::Check).size(10.0).color(colors.on_accent))
-    } else {
-        square.border(1.0, colors.border)
-    };
-    let mut row = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .h_px(16.0)
-        .on_click(id)
-        .child(square);
-    if !text.is_empty() {
-        row = row.child(label(text.to_string()).size(12.0).color(colors.text));
-    }
-    row.into()
-}
-
-/// A determinate bar: 8px track with 2px inset, filled in the info color (never below 2%).
-pub fn progress_bar(value: f32) -> Node {
-    let colors = theme();
-    let fraction = value.clamp(0.02, 1.0);
-    div()
-        .row()
-        .h_px(8.0)
-        .p(2.0)
-        .rounded(4.0)
-        .bg(colors.background)
-        .child(div().h_px(4.0).flex(fraction).rounded(2.0).bg(colors.info))
-        .child(div().h_px(4.0).flex(1.0 - fraction))
-        .into()
-}
-
-/// A small muted status line: a leading icon and truncated text.
-pub fn status_line(kind: IconKind, color: Rgba, text: &str) -> Node {
-    div()
-        .row()
-        .items_center()
-        .gap(4.0)
-        .child(icon(kind).size(12.0).color(color))
-        .child(
-            label(text.to_string())
-                .label_size(LabelSize::Small)
-                .color(theme().text_muted)
-                .truncate(),
-        )
-        .into()
 }
 
 #[cfg(test)]

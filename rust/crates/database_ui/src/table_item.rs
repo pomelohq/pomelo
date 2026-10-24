@@ -5,6 +5,7 @@
 //! in place and saved together in one transaction. Structure and DDL views show the table's shape.
 //! A Redis keyspace tab lists its keys instead (no filter, paging or editing).
 
+use components::{field_label, ButtonKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,9 +14,7 @@ use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
-use workspace::{
-    field_label, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
-};
+use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
 use crate::details::{
     self, CellView, FoldAction, FoldTarget, JsonFold, Pane, RowField, Target, CANCEL_VALUE,
@@ -1174,26 +1173,10 @@ impl TableItem {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, enabled: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .w_px(24.0)
-            .h_px(24.0)
-            .rounded(6.0)
-            .items_center()
-            .justify_center()
-            .child(icon(kind).size(12.0).color(if enabled {
-                colors.icon_muted
-            } else {
-                colors.text_disabled
-            }));
-        if enabled {
-            button = button.on_click(id);
-            if self.hovered == Some(id) {
-                button = button.bg(colors.ghost_element_hover);
-            }
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .enabled(enabled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn text_button(&self, id: u64, text: String, on: bool) -> Node {
@@ -1202,7 +1185,7 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, &text)
+        components::button(id, &text)
             .kind(kind)
             .hovered(self.hovered)
             .into()
@@ -1214,7 +1197,7 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, text)
+        components::button(id, text)
             .kind(kind)
             .keystroke(Some(keys))
             .hovered(self.hovered)
@@ -1335,16 +1318,16 @@ impl TableItem {
             .child(crumb);
         if !self.is_redis() {
             let views = [
-                ui::segment(VIEW_DATA, "Data"),
-                ui::segment(VIEW_STRUCTURE, "Structure"),
-                ui::segment(VIEW_DDL, "DDL"),
+                components::segment(VIEW_DATA, "Data"),
+                components::segment(VIEW_STRUCTURE, "Structure"),
+                components::segment(VIEW_DDL, "DDL"),
             ];
             let selected = match self.view {
                 View::Data => 0,
                 View::Structure => 1,
                 View::Ddl => 2,
             };
-            bar = bar.child(ui::segmented(views, selected).hovered(self.hovered));
+            bar = bar.child(components::segmented(views, selected).hovered(self.hovered));
         }
         if self.view == View::Data && self.side_fits {
             bar = bar.child(self.keyed_button(DETAILS, "Details", "shift-enter", self.details));
@@ -1487,8 +1470,8 @@ impl TableItem {
         );
         if !self.is_redis() && data {
             bar = bar.child(
-                ui::button(EXPORT, "Export CSV")
-                    .kind(ui::ButtonKind::Ghost)
+                components::button(EXPORT, "Export CSV")
+                    .kind(components::ButtonKind::Ghost)
                     .icon(Some(IconKind::Download))
                     .hovered(self.hovered),
             );
@@ -1543,8 +1526,8 @@ impl TableItem {
             .child(self.text_button(REVIEW, "Review SQL".into(), false))
             .child(self.text_button(DISCARD, "Discard".into(), false))
             .child(
-                ui::button(APPLY, "Apply")
-                    .kind(ui::ButtonKind::Primary)
+                components::button(APPLY, "Apply")
+                    .kind(components::ButtonKind::Primary)
                     .keystroke(Some("cmd-s"))
                     .hovered(self.hovered),
             )
@@ -1554,8 +1537,8 @@ impl TableItem {
     fn side_head(&self) -> Node {
         let colors = theme();
         let modes = [
-            ui::segment(SIDE_VALUE, "Value"),
-            ui::segment(SIDE_ROW, "Row"),
+            components::segment(SIDE_VALUE, "Value"),
+            components::segment(SIDE_ROW, "Row"),
         ];
         div()
             .row()
@@ -1564,7 +1547,10 @@ impl TableItem {
             .pr(8.0)
             .gap(8.0)
             .items_center()
-            .child(ui::segmented(modes, usize::from(self.side == Side::Row)).hovered(self.hovered))
+            .child(
+                components::segmented(modes, usize::from(self.side == Side::Row))
+                    .hovered(self.hovered),
+            )
             .child(div().row().flex(1.0))
             .child(
                 div()

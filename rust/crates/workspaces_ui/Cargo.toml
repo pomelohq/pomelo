@@ -9,6 +9,7 @@ description = "Creating, renaming and deleting workspaces from the app: the form
 path = "src/workspaces_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 indexmap = "2"
 module_store = { path = "../module_store" }
 nucleo-matcher = "0.3.1"

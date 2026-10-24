@@ -1,7 +1,8 @@
 //! The shared controls screens are built from, one state per board.
 
-use ui::{div, theme, ButtonSize, IconKind, Node};
-use workspace::{ButtonKind, InputField};
+use components::{ButtonKind, ButtonSize};
+use ui::{div, theme, Corner, IconKind, Node, Rgba};
+use workspace::InputField;
 
 use crate::{still, Story, StoryDef};
 
@@ -28,9 +29,9 @@ fn sized(kind: ButtonKind) -> Node {
         div()
             .items_center()
             .gap(12.0)
-            .child(workspace::button(ID, "Small").kind(kind))
+            .child(components::button(ID, "Small").kind(kind))
             .child(
-                workspace::button(ID + 1, "Medium")
+                components::button(ID + 1, "Medium")
                     .kind(kind)
                     .size(ButtonSize::Medium),
             ),
@@ -80,7 +81,7 @@ pub fn stories() -> Vec<StoryDef> {
         story("button-icon-key", "Button", "Icon and key", BUTTON, || {
             still(|_, _| {
                 alone(
-                    workspace::button(ID, "Start all")
+                    components::button(ID, "Start all")
                         .icon(Some(IconKind::Play))
                         .keystroke(Some("cmd-shift-s")),
                 )
@@ -94,7 +95,7 @@ pub fn stories() -> Vec<StoryDef> {
             || {
                 still(|_, _| {
                     alone(
-                        workspace::button(ID, "Create")
+                        components::button(ID, "Create")
                             .kind(ButtonKind::Primary)
                             .size(ButtonSize::Medium)
                             .keystroke(Some("enter")),
@@ -102,8 +103,57 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story("button-agent", "Button", "Agent", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    components::button(ID, "Fix with Claude")
+                        .kind(ButtonKind::Agent)
+                        .icon(Some(IconKind::Sparkle)),
+                )
+            })
+        }),
+        story("icon-button", "Icon button", "Sizes", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    div()
+                        .row()
+                        .items_center()
+                        .gap(8.0)
+                        .child(components::icon_button(ID, IconKind::Copy).size(ButtonSize::XSmall))
+                        .child(components::icon_button(ID + 1, IconKind::RotateCw))
+                        .child(
+                            components::icon_button(ID + 2, IconKind::Sliders)
+                                .size(ButtonSize::Medium),
+                        ),
+                )
+            })
+        }),
+        story(
+            "icon-button-states",
+            "Icon button",
+            "Hovered, on and off",
+            BUTTON,
+            || {
+                still(|_, _| {
+                    alone(
+                        div()
+                            .row()
+                            .items_center()
+                            .gap(8.0)
+                            .child(
+                                components::icon_button(ID, IconKind::RotateCw).hovered(Some(ID)),
+                            )
+                            .child(
+                                components::icon_button(ID + 1, IconKind::CaseSensitive)
+                                    .toggled(true),
+                            )
+                            .child(components::icon_button(ID + 2, IconKind::Trash).enabled(false)),
+                    )
+                })
+            },
+        ),
         story("button-hovered", "Button", "Hovered", BUTTON, || {
-            still(|_, _| alone(workspace::button(ID, "Restart").hovered(Some(ID))))
+            still(|_, _| alone(components::button(ID, "Restart").hovered(Some(ID))))
         }),
         story("button-disabled", "Button", "Disabled", BUTTON, || {
             still(|_, _| {
@@ -111,9 +161,9 @@ pub fn stories() -> Vec<StoryDef> {
                     div()
                         .items_center()
                         .gap(12.0)
-                        .child(workspace::button(ID, "Restart").enabled(false))
+                        .child(components::button(ID, "Restart").enabled(false))
                         .child(
-                            workspace::button(ID + 1, "Create")
+                            components::button(ID + 1, "Create")
                                 .kind(ButtonKind::Primary)
                                 .enabled(false),
                         ),
@@ -122,7 +172,7 @@ pub fn stories() -> Vec<StoryDef> {
         }),
         story("link", "Link", "Enabled", BUTTON, || {
             still(|_, _| {
-                alone(workspace::accent_action(
+                alone(components::link(
                     ID,
                     Some(IconKind::ArrowUpRight),
                     "Open in browser",
@@ -132,7 +182,7 @@ pub fn stories() -> Vec<StoryDef> {
         }),
         story("link-disabled", "Link", "Disabled", BUTTON, || {
             still(|_, _| {
-                alone(workspace::accent_action(
+                alone(components::link(
                     ID,
                     Some(IconKind::ArrowUpRight),
                     "Open in browser",
@@ -141,12 +191,12 @@ pub fn stories() -> Vec<StoryDef> {
             })
         }),
         story("select-chosen", "Select", "Chosen", CONTROL, || {
-            still(|_, _| alone(ui::select(ID, "Pomelo Dark").min_width(188.0)))
+            still(|_, _| alone(components::select(ID, "Pomelo Dark").min_width(188.0)))
         }),
         story("select-empty", "Select", "Nothing chosen", CONTROL, || {
             still(|_, _| {
                 alone(
-                    ui::select(ID, "")
+                    components::select(ID, "")
                         .placeholder("Select database")
                         .min_width(188.0),
                 )
@@ -160,7 +210,7 @@ pub fn stories() -> Vec<StoryDef> {
             || {
                 still(|_, _| {
                     alone(
-                        ui::select(ID, "main")
+                        components::select(ID, "main")
                             .icon(Some(IconKind::Cylinder))
                             .size(ButtonSize::Small),
                     )
@@ -170,7 +220,7 @@ pub fn stories() -> Vec<StoryDef> {
         story("select-hovered", "Select", "Hovered", CONTROL, || {
             still(|_, _| {
                 alone(
-                    ui::select(ID, "Pomelo Dark")
+                    components::select(ID, "Pomelo Dark")
                         .min_width(188.0)
                         .hovered(Some(ID)),
                 )
@@ -181,26 +231,30 @@ pub fn stories() -> Vec<StoryDef> {
             "Select",
             "Long value, fixed width",
             CONTROL,
-            || still(|_, _| alone(ui::select(ID, "api/.env.development.local").width(160.0))),
+            || {
+                still(|_, _| {
+                    alone(components::select(ID, "api/.env.development.local").width(160.0))
+                })
+            },
         ),
         story("select-disabled", "Select", "Disabled", CONTROL, || {
             still(|_, _| {
                 alone(
-                    ui::select(ID, "Pomelo Dark")
+                    components::select(ID, "Pomelo Dark")
                         .min_width(188.0)
                         .enabled(false),
                 )
             })
         }),
         story("checkbox-checked", "Checkbox", "Checked", CONTROL, || {
-            still(|_, _| alone(workspace::checkbox(ID, true, "Start with the workspace")))
+            still(|_, _| alone(components::checkbox(ID, true, "Start with the workspace")))
         }),
         story(
             "checkbox-unchecked",
             "Checkbox",
             "Unchecked",
             CONTROL,
-            || still(|_, _| alone(workspace::checkbox(ID, false, "Start with the workspace"))),
+            || still(|_, _| alone(components::checkbox(ID, false, "Start with the workspace"))),
         ),
         story("segmented", "Segmented", "On a toolbar", CONTROL, || {
             still(|_, _| alone(filters(None)))
@@ -216,10 +270,10 @@ pub fn stories() -> Vec<StoryDef> {
             || {
                 still(|_, _| {
                     alone(
-                        ui::segmented(
+                        components::segmented(
                             [
-                                ui::segment(ID, "This Mac").icon(Some(IconKind::Monitor)),
-                                ui::segment(ID + 1, "Host").icon(Some(IconKind::Server)),
+                                components::segment(ID, "This Mac").icon(Some(IconKind::Monitor)),
+                                components::segment(ID + 1, "Host").icon(Some(IconKind::Server)),
                             ],
                             0,
                         )
@@ -236,11 +290,11 @@ pub fn stories() -> Vec<StoryDef> {
             || {
                 still(|_, _| {
                     alone(
-                        ui::segmented(
+                        components::segmented(
                             [
-                                ui::segment(ID, "Claude Code"),
-                                ui::segment(ID + 1, "Codex").enabled(false),
-                                ui::segment(ID + 2, "Gemini CLI"),
+                                components::segment(ID, "Claude Code"),
+                                components::segment(ID + 1, "Codex").enabled(false),
+                                components::segment(ID + 2, "Gemini CLI"),
                             ],
                             0,
                         )
@@ -250,52 +304,36 @@ pub fn stories() -> Vec<StoryDef> {
             },
         ),
         story("progress-start", "Progress", "Starting", CONTROL, || {
-            still(|_, _| alone(div().col().w_px(200.0).child(workspace::progress_bar(0.1))))
+            still(|_, _| alone(div().col().w_px(200.0).child(components::progress_bar(0.1))))
         }),
         story("progress-half", "Progress", "Halfway", CONTROL, || {
-            still(|_, _| alone(div().col().w_px(200.0).child(workspace::progress_bar(0.6))))
+            still(|_, _| alone(div().col().w_px(200.0).child(components::progress_bar(0.6))))
         }),
         story("progress-done", "Progress", "Done", CONTROL, || {
-            still(|_, _| alone(div().col().w_px(200.0).child(workspace::progress_bar(1.0))))
+            still(|_, _| alone(div().col().w_px(200.0).child(components::progress_bar(1.0))))
+        }),
+        story("status-pill-running", "Pill", "Running", BUTTON, || {
+            still(|_, _| alone(components::pill("Running").color(theme().success)))
+        }),
+        story("status-pill-starting", "Pill", "Starting", BUTTON, || {
+            still(|_, _| alone(components::pill("Starting").color(theme().warning)))
+        }),
+        story("status-pill-crashed", "Pill", "Crashed", BUTTON, || {
+            still(|_, _| alone(components::pill("Crashed").color(theme().error)))
+        }),
+        story("status-pill-stopped", "Pill", "Stopped", BUTTON, || {
+            still(|_, _| alone(components::pill("Stopped").color(theme().text_muted)))
         }),
         story(
-            "status-pill-running",
-            "Status pill",
-            "Running",
-            BUTTON,
-            || still(|_, _| alone(ui::status_pill("Running", theme().success))),
-        ),
-        story(
-            "status-pill-starting",
-            "Status pill",
-            "Starting",
-            BUTTON,
-            || still(|_, _| alone(ui::status_pill("Starting", theme().warning))),
-        ),
-        story(
-            "status-pill-crashed",
-            "Status pill",
-            "Crashed",
-            BUTTON,
-            || still(|_, _| alone(ui::status_pill("Crashed", theme().error))),
-        ),
-        story(
-            "status-pill-stopped",
-            "Status pill",
-            "Stopped",
-            BUTTON,
-            || still(|_, _| alone(ui::status_pill("Stopped", theme().text_muted))),
-        ),
-        story(
             "status-pill-waiting",
-            "Status pill",
+            "Pill",
             "Waiting on you",
             BUTTON,
-            || still(|_, _| alone(ui::status_pill("Waiting for you", theme().warning))),
+            || still(|_, _| alone(components::pill("Waiting for you").attention())),
         ),
         story("status-line-ok", "Status line", "Done", CONTROL, || {
             still(|_, _| {
-                alone(workspace::status_line(
+                alone(components::status_line(
                     IconKind::Check,
                     theme().success,
                     "Connected to dev",
@@ -309,7 +347,7 @@ pub fn stories() -> Vec<StoryDef> {
             CONTROL,
             || {
                 still(|_, _| {
-                    alone(workspace::status_line(
+                    alone(components::status_line(
                         IconKind::Warning,
                         theme().error,
                         "Could not reach dev",
@@ -318,7 +356,7 @@ pub fn stories() -> Vec<StoryDef> {
             },
         ),
         story("key-chip", "Key chip", "On a panel", BUTTON, || {
-            still(|_, _| alone(workspace::key_chip("cmd-shift-p", false)))
+            still(|_, _| alone(components::key_chip("cmd-shift-p", false)))
         }),
         story("key-chip-accent", "Key chip", "On accent", BUTTON, || {
             still(|_, _| {
@@ -327,26 +365,23 @@ pub fn stories() -> Vec<StoryDef> {
                         .p(8.0)
                         .rounded(6.0)
                         .bg(theme().accent_fill)
-                        .child(workspace::key_chip("cmd-enter", true)),
+                        .child(components::key_chip("cmd-enter", true)),
                 )
             })
         }),
-        story("divider", "Divider", "Default", CONTROL, || {
-            still(|_, _| alone(div().col().w_px(200.0).child(ui::divider())))
-        }),
-        story("divider-faded", "Divider", "Faded", CONTROL, || {
-            still(|_, _| alone(div().col().w_px(200.0).child(ui::divider_faded())))
+        story("divider", "Divider", "Between sections", CONTROL, || {
+            still(|_, _| alone(div().col().w_px(200.0).child(components::divider())))
         }),
         story("chip", "Chip", "Default", BUTTON, || {
-            still(|_, _| alone(ui::chip("feat-login")))
+            still(|_, _| alone(components::chip("feat-login")))
         }),
         story("chip-muted", "Chip", "Muted", BUTTON, || {
-            still(|_, _| alone(ui::chip("docker compose").color(theme().text_muted)))
+            still(|_, _| alone(components::chip("docker compose").color(theme().text_muted)))
         }),
         story("chip-icon", "Chip", "With icon", BUTTON, || {
             still(|_, _| {
                 alone(
-                    ui::chip("main")
+                    components::chip("main")
                         .icon(IconKind::Branch)
                         .color(theme().text_muted),
                 )
@@ -356,7 +391,7 @@ pub fn stories() -> Vec<StoryDef> {
             still(|_, _| {
                 let accent = theme().text_accent;
                 alone(
-                    ui::chip("Pro")
+                    components::chip("Pro")
                         .color(accent)
                         .fill(accent.alpha(0.14))
                         .border(accent.alpha(0.3)),
@@ -369,31 +404,31 @@ pub fn stories() -> Vec<StoryDef> {
         story("tooltip-keys", "Tooltip", "With keys", TOOLTIP, || {
             still(|_, _| hovered_with_tooltip(IconKind::Sidebar, "Toggle Left Dock", Some("cmd-b")))
         }),
-        story("dot-states", "Status dot", "States", CONTROL, || {
+        story("dot-states", "Dot", "States", CONTROL, || {
             still(|_, _| {
                 let colors = theme();
                 alone(
                     div()
                         .items_center()
                         .gap(12.0)
-                        .child(ui::dot(colors.success, 7.0))
-                        .child(ui::dot(colors.warning, 7.0))
-                        .child(ui::dot(colors.error, 7.0))
-                        .child(ui::dot(colors.text_accent, 7.0))
-                        .child(ui::ring(colors.icon_muted, 8.0)),
+                        .child(components::dot(colors.success, 7.0))
+                        .child(components::dot(colors.warning, 7.0))
+                        .child(components::dot(colors.error, 7.0))
+                        .child(components::dot(colors.text_accent, 7.0))
+                        .child(components::ring(colors.icon_muted, 8.0)),
                 )
             })
         }),
-        story("dot-sizes", "Status dot", "Sizes", CONTROL, || {
+        story("dot-sizes", "Dot", "Sizes", CONTROL, || {
             still(|_, _| {
                 let color = theme().success;
                 alone(
                     div()
                         .items_center()
                         .gap(12.0)
-                        .child(ui::dot(color, 6.0))
-                        .child(ui::dot(color, 7.0))
-                        .child(ui::dot(color, 8.0)),
+                        .child(components::dot(color, 6.0))
+                        .child(components::dot(color, 7.0))
+                        .child(components::dot(color, 8.0)),
                 )
             })
         }),
@@ -457,36 +492,61 @@ pub fn stories() -> Vec<StoryDef> {
     ]
 }
 
-fn filters(hovered: Option<u64>) -> ui::Segmented {
-    ui::segmented(
+fn filters(hovered: Option<u64>) -> components::Segmented {
+    components::segmented(
         [
-            ui::segment(ID, "All"),
-            ui::segment(ID + 1, "Running"),
-            ui::segment(ID + 2, "Failed"),
+            components::segment(ID, "All"),
+            components::segment(ID + 1, "Running"),
+            components::segment(ID + 2, "Failed"),
         ],
         0,
     )
     .hovered(hovered)
 }
 
-/// A tooltip only shows under a hovered icon, so the board draws both.
+/// A tooltip only shows while the pointer rests on an icon, so the board draws all three.
 fn hovered_with_tooltip(kind: IconKind, text: &str, keys: Option<&str>) -> Node {
     let colors = theme();
+    let pointer = div()
+        .w_px(POINTER)
+        .h_px(POINTER)
+        .pin(
+            Corner::TopLeft,
+            0.0,
+            0.0,
+            POINTER,
+            POINTER,
+            ui::icon(IconKind::PointerEdge)
+                .size(POINTER)
+                .color(Rgba::new(1.0, 1.0, 1.0, 1.0)),
+        )
+        .pin(
+            Corner::TopLeft,
+            0.0,
+            0.0,
+            POINTER,
+            POINTER,
+            ui::icon(IconKind::Pointer)
+                .size(POINTER)
+                .color(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+        );
+    let target = div()
+        .row()
+        .w_px(24.0)
+        .h_px(24.0)
+        .items_center()
+        .justify_center()
+        .rounded(4.0)
+        .bg(colors.ghost_element_hover)
+        .child(ui::icon(kind).size(14.0).color(colors.icon))
+        .pin(Corner::TopLeft, 11.0, 9.0, POINTER, POINTER, pointer);
     div()
         .col()
         .p(16.0)
         .gap(4.0)
-        .child(
-            div()
-                .row()
-                .w_px(24.0)
-                .h_px(24.0)
-                .items_center()
-                .justify_center()
-                .rounded(4.0)
-                .bg(colors.ghost_element_hover)
-                .child(ui::icon(kind).size(14.0).color(colors.icon)),
-        )
-        .child(div().row().child(ui::tooltip_bubble(text, keys)))
+        .child(target)
+        .child(div().row().child(components::tooltip_bubble(text, keys)))
         .into()
 }
+
+const POINTER: f32 = 18.0;

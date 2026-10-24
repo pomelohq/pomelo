@@ -1,3 +1,4 @@
+use components::key_chip;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -10,7 +11,7 @@ use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{key_chip, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const ITEM_ID: &str = "project-search";
 const INPUT_H: f32 = 28.0;
@@ -558,30 +559,11 @@ impl ProjectSearch {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, toggled: bool, enabled: bool) -> Node {
-        let colors = theme();
-        let color = if !enabled {
-            colors.text_disabled
-        } else if toggled {
-            colors.text_accent
-        } else {
-            colors.icon_muted
-        };
-        let mut button = div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .child(icon(kind).size(14.0).color(color));
-        if toggled {
-            button = button.bg(colors.element_selected);
-        } else if enabled && self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        if enabled {
-            button = button.on_click(id);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .toggled(toggled)
+            .enabled(enabled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn option_button(&self, id: u64, kind: IconKind, toggled: bool) -> Node {

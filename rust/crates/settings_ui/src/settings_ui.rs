@@ -49,12 +49,6 @@ fn panel_edge_c() -> Rgba {
 }
 
 // Settings rules and control edges are translucent so they read the same on the panel and on a tinted hit row.
-fn line_c() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.06),
-        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.08),
-    }
-}
 fn border_c() -> Rgba {
     match theme().appearance {
         ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.12),
@@ -1482,11 +1476,11 @@ fn truncate_to_width(text: &str, size: f32, mono: bool, max_w: f32) -> String {
 
 const POPOVER_BOTTOM_MARGIN: f32 = 8.0; // keep the menu this far from the window edge
 const POPOVER_MAX_H: f32 = 342.0; // the menu is this tall, not window-fit
-const POPOVER_CHROME: f32 = ui::MENU_SEARCH_ROW + 5.0 + 2.0 * ui::MENU_PAD;
+const POPOVER_CHROME: f32 = components::MENU_SEARCH_ROW + 5.0 + 2.0 * components::MENU_PAD;
 
 /// The fixed number of item rows the popover shows; the list scrolls within it rather than the menu shrinking.
 fn popover_row_cap() -> usize {
-    let rows = ((POPOVER_MAX_H - POPOVER_CHROME) / ui::MENU_ROW)
+    let rows = ((POPOVER_MAX_H - POPOVER_CHROME) / components::MENU_ROW)
         .floor()
         .max(1.0) as usize;
     POPOVER_VISIBLE.min(rows)
@@ -1522,7 +1516,7 @@ pub fn popover(
     let w = width * s;
     let margin = POPOVER_BOTTOM_MARGIN * s;
     // Fixed height, not shrunk to the room below: the list scrolls inside it.
-    let row_h = ui::MENU_ROW * s;
+    let row_h = components::MENU_ROW * s;
     let chrome = POPOVER_CHROME * s;
     let avail = viewport_h - 2.0 * margin;
     let visible = if chrome + matches.len() as f32 * row_h <= avail {
@@ -1545,20 +1539,20 @@ pub fn popover(
         })
         .or_else(|| matches.first().map(|&o| id_of(o)));
 
-    let rows: Vec<ui::MenuItem> = matches
+    let rows: Vec<components::MenuItem> = matches
         .iter()
         .skip(scroll)
         .take(visible)
-        .map(|&orig| ui::MenuItem {
+        .map(|&orig| components::MenuItem {
             checked: items[orig] == *current,
-            ..ui::MenuItem::new(
+            ..components::MenuItem::new(
                 id_of(orig),
                 truncate_to_width(&items[orig], 13.0, false, width - 44.0),
             )
         })
         .collect();
     let card = |search_at_bottom| {
-        ui::menu(&rows)
+        components::menu(&rows)
             .hovered(cursor_id)
             .search(query)
             .search_at_bottom(search_at_bottom)
@@ -1566,7 +1560,7 @@ pub fn popover(
             .render()
     };
     let h = card(false).2 * s;
-    let (x, y) = ui::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
+    let (x, y) = components::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
     let opens_above = y < anchor.y;
     let (card, _, _) = card(opens_above);
     let mut out = render(&card, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
@@ -1589,8 +1583,8 @@ pub fn popover(
     layered.extend(out.rects);
     out.rects = layered;
 
-    let pad = ui::MENU_PAD * s;
-    let search_h = ui::MENU_SEARCH_ROW * s;
+    let pad = components::MENU_PAD * s;
+    let search_h = components::MENU_SEARCH_ROW * s;
     let search_y = if opens_above {
         y + h - pad - search_h
     } else {
@@ -1600,7 +1594,7 @@ pub fn popover(
     if ui::caret_phase() {
         let caret_x = x
             + pad
-            + ui::MENU_SEARCH_INSET * s
+            + components::MENU_SEARCH_INSET * s
             + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight()) * s;
         out.rects.push(Rect {
             x: caret_x,
@@ -2378,7 +2372,7 @@ fn toolbar_scope(project: Option<&ProjectPage>) -> (String, Option<(u64, &'stati
 
 fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
     let accent = theme().text_accent;
-    let chip = ui::chip(scope)
+    let chip = components::chip(scope)
         .color(accent)
         .fill(accent.alpha(0.14))
         .border(accent.alpha(0.3));
@@ -2390,8 +2384,8 @@ fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
         .child(div().row().gap(8.0).items_center().child(chip))
         .child(match file {
             Some((id, text)) => Node::from(
-                ui::button(id, text)
-                    .kind(ui::ButtonKind::Ghost)
+                components::button(id, text)
+                    .kind(components::ButtonKind::Ghost)
                     .icon(Some(ui::IconKind::File)),
             ),
             None => div().into(),
@@ -3324,7 +3318,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
                 )
                 .child(crumbs),
         )
-        .child(ui::button(CTRL_OPEN_JSON, "Edit in settings.json"))
+        .child(components::button(CTRL_OPEN_JSON, "Edit in settings.json"))
         .into()
 }
 
@@ -4536,7 +4530,11 @@ fn binding_row(action: Node, name: Node, keys: Node, height: f32, last: bool) ->
     div()
         .col()
         .child(row)
-        .child(if last { div().h_px(1.0) } else { ui::divider() })
+        .child(if last {
+            div().h_px(1.0)
+        } else {
+            components::divider()
+        })
         .into()
 }
 
@@ -4606,23 +4604,18 @@ fn row_frame(
     div()
         .col()
         .child(div().col().py(10.0).child(row))
-        .child(if last { div().h_px(1.0) } else { ui::divider() })
+        .child(if last {
+            div().h_px(1.0)
+        } else {
+            components::divider()
+        })
         .into()
 }
 
 fn reset_button(id: u64) -> Node {
-    div()
-        .w_px(18.0)
-        .h_px(18.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(
-            ui::icon(ui::IconKind::Undo)
-                .size(14.0)
-                .color(theme().text_placeholder),
-        )
+    components::icon_button(id, ui::IconKind::Undo)
+        .size(components::ButtonSize::XSmall)
+        .color(theme().text_placeholder)
         .into()
 }
 
@@ -4672,7 +4665,9 @@ fn display_value(value: &str) -> String {
 }
 
 fn dropdown(value: &str, id: u64) -> Node {
-    ui::select(id, display_value(value)).min_width(188.0).into()
+    components::select(id, display_value(value))
+        .min_width(188.0)
+        .into()
 }
 
 fn toggle_switch(on: bool, id: u64) -> Node {
@@ -4819,7 +4814,7 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
 }
 
 fn action_button(id: u64, text: &str, enabled: bool) -> Node {
-    ui::button(id, text).enabled(enabled).into()
+    components::button(id, text).enabled(enabled).into()
 }
 
 fn status_chip(running: bool) -> Node {
@@ -4832,7 +4827,7 @@ fn status_chip(running: bool) -> Node {
         .row()
         .items_center()
         .gap(6.0)
-        .child(ui::dot(color, 7.0))
+        .child(components::dot(color, 7.0))
         .child(label(text).size(12.0).color(color))
         .into()
 }
@@ -4858,8 +4853,8 @@ fn sub_page_button(id: u64) -> Node {
 }
 
 fn edit_in_json_button(id: u64) -> Node {
-    ui::button(id, "Edit in settings.json")
-        .kind(ui::ButtonKind::Ghost)
+    components::button(id, "Edit in settings.json")
+        .kind(components::ButtonKind::Ghost)
         .icon(Some(ui::IconKind::File))
         .into()
 }

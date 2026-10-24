@@ -9,6 +9,7 @@ description = "The Agent usage tab: tokens and estimated cost of the coding agen
 path = "src/agent_usage_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 desktop = { path = "../desktop" }
 terminal = { path = "../terminal" }
 ui = { path = "../ui" }

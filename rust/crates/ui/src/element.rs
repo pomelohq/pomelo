@@ -128,6 +128,9 @@ pub enum IconKind {
     Filter,
     Sliders,
     CursorIBeam,
+    /// The arrow pointer, drawn over [`IconKind::PointerEdge`] in a light color for its outline.
+    Pointer,
+    PointerEdge,
     Copy,
     Ellipsis,
     Pause,
@@ -154,7 +157,7 @@ pub enum IconKind {
 
 impl IconKind {
     /// Every icon, for pickers and the gallery; a test keeps it in step with the enum.
-    pub const ALL: [IconKind; 106] = [
+    pub const ALL: [IconKind; 108] = [
         IconKind::ChevronRight,
         IconKind::BadgeClose,
         IconKind::BadgeAlert,
@@ -239,6 +242,8 @@ impl IconKind {
         IconKind::Filter,
         IconKind::Sliders,
         IconKind::CursorIBeam,
+        IconKind::Pointer,
+        IconKind::PointerEdge,
         IconKind::Copy,
         IconKind::Ellipsis,
         IconKind::Pause,

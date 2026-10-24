@@ -142,7 +142,7 @@ fn plan_chip(plan: &str) -> Node {
     if let Some(first) = text.get(0..1) {
         text = first.to_uppercase() + &text[1..];
     }
-    ui::chip(text)
+    components::chip(text)
         .color(colors.text_accent)
         .fill(colors.text_accent.alpha(0.14))
         .border(colors.text_accent.alpha(0.3))

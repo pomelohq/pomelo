@@ -2,6 +2,7 @@
 //! origin branches, narrowed as you type, and a row that creates the typed branch when nothing matches. Opening
 //! it fetches origin in the background, so branches pushed since show up, tagged new.
 
+use components::{field_label, text_line};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
 use ui::{deferred, div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{field_label, overlay_ring, text_line, WINDOW_MODAL_BASE};
+use workspace::{overlay_ring, WINDOW_MODAL_BASE};
 
 pub(crate) const PICKER_QUERY: u64 = WINDOW_MODAL_BASE + 9;
 pub(crate) const PICKER_REFRESH: u64 = WINDOW_MODAL_BASE + 10;
@@ -505,10 +506,10 @@ impl BranchPicker {
                 }
             }));
         if fresh {
-            title_row = title_row.child(ui::status_pill("new", colors.text_accent));
+            title_row = title_row.child(components::pill("new").color(colors.text_accent));
         }
         if remote {
-            title_row = title_row.child(ui::status_pill("origin", colors.info));
+            title_row = title_row.child(components::pill("origin").color(colors.info));
         }
         let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
         if !subtitle.is_empty() {

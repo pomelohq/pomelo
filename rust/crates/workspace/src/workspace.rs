@@ -20,10 +20,9 @@ mod usage;
 mod welcome;
 mod workspace_view;
 pub use form::{
-    accent_action, checkbox, field, field_label, is_window_modal_id, modal_footer, modal_frame,
-    modal_header, modal_note, modal_section, overlay_ring, paragraph, progress_bar, prompt_card,
-    status_line, text_line, InputField, ModalResult, WindowModal, PROMPT_WIDTH, WINDOW_MODAL_BASE,
-    WINDOW_MODAL_END,
+    is_window_modal_id, modal_footer, modal_frame, modal_header, modal_note, modal_section,
+    overlay_ring, paragraph, prompt_card, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
+    WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
@@ -33,7 +32,6 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
-pub use ui::{button, key_chip, status_pill, Button, ButtonKind, ButtonSize, MenuItem};
 pub use update::{
     button as update_button, UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone,
     UPDATE_BUTTON, UPDATE_DISMISS,
@@ -91,6 +89,7 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
     })
 }
 
+use components::{button, key_chip, ButtonKind, MenuItem};
 use ui::{div, folder_icon, label, render, theme, Node, Painted, Rect, Rgba, Text};
 
 pub const TOP_BAR_H: f32 = 40.0;
@@ -1146,7 +1145,7 @@ pub fn host_indicator(host: &str, link: HostLink, hot: bool, ring: Rgba) -> Node
         HostLink::Reconnecting => (colors.warning, colors.warning),
         HostLink::Disconnected => (colors.error, colors.error),
     };
-    let marker = ui::dot(dot, 6.0).ring(1.5, ring);
+    let marker = components::dot(dot, 6.0).ring(1.5, ring);
     let glyph = div()
         .row()
         .w_px(14.0)
@@ -3597,7 +3596,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     .col()
                     .h_px(13.0)
                     .justify_end()
-                    .child(ui::dot(theme().success, 6.0)),
+                    .child(components::dot(theme().success, 6.0)),
             );
         }
         let mut b = div()
@@ -3700,7 +3699,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             .col()
                             .h_px(14.0)
                             .justify_end()
-                            .child(ui::dot(dot, 6.0)),
+                            .child(components::dot(dot, 6.0)),
                     );
                 }
                 let mut button = div()
@@ -3888,7 +3887,7 @@ pub fn context_menu_card(items: &[MenuItem], hovered: Option<u64>) -> (Node, f32
             _ => item.clone(),
         })
         .collect();
-    ui::menu(&items)
+    components::menu(&items)
         .hovered(hovered)
         .submenus(is_submenu)
         .render()
@@ -3991,7 +3990,7 @@ pub enum StatusKey {
 /// A tooltip bubble anchored ABOVE `anchor` (for the status bar, which sits at the very bottom).
 pub fn tooltip_above(anchor: Rect, text: &str, keys: Option<&str>, viewport_w: f32) -> Painted {
     let scale = ui::ui_text_scale();
-    let node: Node = ui::tooltip_bubble(text, keys).into();
+    let node: Node = components::tooltip_bubble(text, keys).into();
     let w = ui::measure(&node).0 * scale;
     let h = 24.0 * scale;
     let mut x = anchor.x;
@@ -4042,7 +4041,7 @@ pub fn tooltip(anchor: Rect, text: &str, viewport_w: f32) -> Painted {
         x = (viewport_w - 6.0 * scale - w).max(6.0 * scale);
     }
     let y = anchor.y + anchor.h + 5.0 * scale;
-    let node: Node = ui::tooltip_bubble(text, None).into();
+    let node: Node = components::tooltip_bubble(text, None).into();
     let mut out = Painted::default();
     // A faint shadow under the bubble.
     out.rects.push(Rect {

@@ -1,6 +1,7 @@
 mod access;
 mod remote;
 
+use components::{pill, text_line, ButtonKind};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -12,7 +13,7 @@ pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
-use workspace::{paragraph, status_pill, text_line, ButtonKind, Item, ItemTick};
+use workspace::{paragraph, Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
@@ -298,12 +299,12 @@ fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>
         .pt(4.0)
         .child(div().flex(1.0))
         .child(
-            ui::button(cancel, "Cancel")
+            components::button(cancel, "Cancel")
                 .keystroke(Some("escape"))
                 .hovered(hovered),
         )
         .child(
-            ui::button(confirm, action)
+            components::button(confirm, action)
                 .kind(ButtonKind::Primary)
                 .keystroke(Some("enter"))
                 .hovered(hovered),
@@ -475,7 +476,7 @@ fn wave(clock: f32, period: f32) -> f32 {
 fn pulse(clock: f32) -> Node {
     let mut color = theme().text_accent;
     color.a *= 0.35 + 0.65 * wave(clock, 0.9);
-    ui::dot(color, 7.0).into()
+    components::dot(color, 7.0).into()
 }
 
 /// A size still being measured.
@@ -487,7 +488,7 @@ fn shimmer(clock: f32, width: f32) -> Node {
 
 fn chip(text: &str, highlight: bool) -> Node {
     let colors = theme();
-    let chip = ui::chip(text).color(if text == "main" {
+    let chip = components::chip(text).color(if text == "main" {
         colors.text
     } else {
         colors.text_muted
@@ -606,7 +607,7 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
         Look::Primary => ButtonKind::Secondary,
         Look::Ghost => ButtonKind::Ghost,
     };
-    ui::button(spec.id, spec.text)
+    components::button(spec.id, spec.text)
         .kind(kind)
         .enabled(state.busy.is_none())
         .hovered(hovered)
@@ -818,9 +819,9 @@ fn version_rows(
             )
         }
         None if version.stored.is_some() && version.on_main => {
-            status_pill("New workspaces", colors.success)
+            pill("New workspaces").color(colors.success).into()
         }
-        None if version.stored.is_none() => status_pill("Installs once", colors.text_muted),
+        None if version.stored.is_none() => pill("Installs once").color(colors.text_muted).into(),
         None => div().into(),
     };
     let size = match &version.stored {
@@ -1068,7 +1069,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
     }
     let idle = state.busy.is_none() && state.overview.is_some();
     head = head.child(div().flex(1.0)).child(
-        ui::button(REFRESH, "Refresh")
+        components::button(REFRESH, "Refresh")
             .kind(ButtonKind::Ghost)
             .icon(Some(IconKind::RotateCw))
             .enabled(state.busy.is_none() && !state.loading())
@@ -1076,7 +1077,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
     );
     if unused > 0 && state.measuring == 0 {
         head = head.child(
-            ui::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
+            components::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
                 .kind(ButtonKind::Ghost)
                 .enabled(idle)
                 .hovered(hovered),
@@ -1089,7 +1090,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .is_some_and(|overview| !plan(overview).is_empty());
     if can_optimize {
         head = head.child(
-            ui::button(OPTIMIZE, "Optimize")
+            components::button(OPTIMIZE, "Optimize")
                 .kind(ButtonKind::Primary)
                 .enabled(idle)
                 .hovered(hovered),

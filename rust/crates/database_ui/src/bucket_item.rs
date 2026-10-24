@@ -394,25 +394,8 @@ impl BucketItem {
             .items_center()
             .child(crumb)
             .child(
-                div()
-                    .row()
+                components::search_box(FIND_FIELD, finding)
                     .w_px(find_w)
-                    .h_px(FIELD_H)
-                    .px(10.0)
-                    .gap(8.0)
-                    .items_center()
-                    .rounded(6.0)
-                    .bg(colors.background)
-                    .border(
-                        1.0,
-                        if finding {
-                            colors.border_focused
-                        } else {
-                            colors.border_variant
-                        },
-                    )
-                    .on_click(FIND_FIELD)
-                    .child(icon(IconKind::Search).size(11.0).color(colors.icon_muted))
                     .child(self.find.render(
                         "name in this folder",
                         finding,
@@ -422,7 +405,7 @@ impl BucketItem {
                     )),
             )
             .child(
-                ui::button(UPLOAD, "Upload here")
+                components::button(UPLOAD, "Upload here")
                     .icon(Some(IconKind::ArrowUp))
                     .hovered(self.hovered),
             )
@@ -737,18 +720,18 @@ impl Item for BucketItem {
             .gap(10.0)
             .items_center()
             .child(div().w_px(16.0))
-            .child(div().row().flex(1.0).child(workspace::field_label("Name")))
+            .child(div().row().flex(1.0).child(components::field_label("Name")))
             .child(
                 div()
                     .row()
                     .w_px(110.0)
-                    .child(workspace::field_label("Size")),
+                    .child(components::field_label("Size")),
             )
             .child(
                 div()
                     .row()
                     .w_px(130.0)
-                    .child(workspace::field_label("Modified")),
+                    .child(components::field_label("Modified")),
             );
         let card = |w: f32| {
             div()

@@ -2,13 +2,14 @@
 //! selected key's value the way its type holds it (JSON as a tree, a hash as fields, a list with its indexes, a
 //! sorted set with scores, a set's members). The TTL can be changed, and a key or every match deleted.
 
+use components::{field_label, ButtonKind};
 use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{field_label, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::details::{self, FoldAction, FoldTarget, JsonFold, Pane, FOLD_BASE, FOLD_END};
 use crate::json::{self, Json};
@@ -129,7 +130,7 @@ fn kind_color(kind: &str) -> Rgba {
 }
 
 fn badge(kind: &str) -> Node {
-    ui::chip(kind).color(kind_color(kind)).into()
+    components::chip(kind).color(kind_color(kind)).into()
 }
 
 impl KeyspaceItem {
@@ -395,7 +396,10 @@ impl KeyspaceItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, text).kind(kind).hovered(self.hovered).into()
+        components::button(id, text)
+            .kind(kind)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn input(
@@ -758,7 +762,7 @@ impl KeyspaceItem {
                 self.focus == Focus::Ttl,
             )));
         head = head.child(
-            ui::button(COPY_VALUE, "Copy value")
+            components::button(COPY_VALUE, "Copy value")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::Copy))
                 .hovered(self.hovered),

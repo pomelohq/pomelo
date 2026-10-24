@@ -9087,7 +9087,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         has_actions = true;
         actions = actions.child(
             crate::button(crate::NOTIFICATION_PRIMARY, primary)
-                .kind(ui::ButtonKind::Primary)
+                .kind(components::ButtonKind::Primary)
                 .hovered(hovered),
         );
     }
@@ -9097,7 +9097,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
             has_actions = true;
             actions = actions.child(
                 crate::button(id, label)
-                    .kind(ui::ButtonKind::Ghost)
+                    .kind(components::ButtonKind::Ghost)
                     .hovered(hovered),
             );
         }

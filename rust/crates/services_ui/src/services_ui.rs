@@ -10,6 +10,7 @@ mod remote_agents;
 mod tab;
 mod view;
 
+use components::MenuItem;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ use pom_services::ServiceTarget;
 use ui::{div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{AgentFix, EditKey, MenuItem, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
+use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
 
 pub use access::{
     Console, ConsoleRequest, LocalServices, LogLines, RepoCommand, ServiceControl, ServicesAccess,
@@ -868,7 +869,7 @@ impl ServicesPanel {
                         let failed = states.iter().any(State::needs_attention);
                         let mut pips = div().row().gap(3.0).items_center();
                         for state in states.iter().take(8) {
-                            pips = pips.child(ui::dot(view::state_color(state), 5.0));
+                            pips = pips.child(components::dot(view::state_color(state), 5.0));
                         }
                         div()
                             .row()
@@ -963,7 +964,7 @@ impl ServicesPanel {
                     .items_center()
                     .child(label(target.service.clone()).color(colors.text).truncate());
                 if let Some(mode) = self.mode(target).filter(|mode| !mode.is_empty()) {
-                    name = name.child(ui::chip(mode).color(theme().text_muted));
+                    name = name.child(components::chip(mode).color(theme().text_muted));
                 }
                 body.child(self.guide_column())
                     .child(view::status_icon(&state))
@@ -1069,7 +1070,7 @@ impl ServicesPanel {
         let status = label(status).size(11.5).color(colors.text_muted);
         let status_w = ui::measure(&status.clone().into()).0;
         let ticket = (!self.model.context.ticket.is_empty()).then(|| {
-            ui::chip(&self.model.context.ticket)
+            components::chip(&self.model.context.ticket)
                 .color(theme().text_muted)
                 .into()
         });
@@ -1123,7 +1124,7 @@ impl ServicesPanel {
                 .row()
                 .gap(5.0)
                 .items_center()
-                .child(ui::dot(color, 7.0))
+                .child(components::dot(color, 7.0))
                 .child(label(text).size(11.5).color(colors.text_muted))
                 .into()
         };
@@ -1304,79 +1305,37 @@ impl ServicesPanel {
 
     fn filter_bar(&self) -> Node {
         let colors = theme();
-        let field = div()
-            .row()
-            .h_px(26.0)
-            .px(8.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(5.0)
-            .bg(colors.editor_background)
-            .border(
-                1.0,
-                if self.filter_focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .on_click(self.base + FILTER)
-            .child(
-                icon(IconKind::Search)
-                    .size(12.0)
-                    .color(colors.text_placeholder),
-            )
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .items_center()
-                    .child(self.filter.render(
-                        "Filter by name",
-                        self.filter_focused,
-                        colors.text,
-                        20.0,
-                        FieldFont::Ui,
-                    )),
-            );
-        let mut segments = div().row().gap(2.0).items_center();
-        for (index, filter) in StatusFilter::ALL.into_iter().enumerate() {
-            let id = self.base + STATUS_FILTER + index as u64;
-            let count = match filter {
-                StatusFilter::All => self.counts.total,
-                StatusFilter::Running => self.counts.running + self.counts.busy,
-                StatusFilter::Failed => self.counts.attention,
-                StatusFilter::Stopped => self.counts.stopped,
-            };
-            let selected = self.status_filter == filter;
-            segments = segments.child(
-                div()
-                    .row()
-                    .h_px(22.0)
-                    .px(7.0)
-                    .gap(5.0)
-                    .items_center()
-                    .rounded(4.0)
-                    .on_click(id)
-                    .bg(if selected {
-                        colors.element_selected
-                    } else if self.hot(id) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(label(filter.title()).size(12.0).color(if selected {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    }))
-                    .child(
-                        label(count.to_string())
-                            .size(11.0)
-                            .color(colors.text_placeholder),
-                    ),
-            );
-        }
+        let field = components::search_box(self.base + FILTER, self.filter_focused).child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .child(self.filter.render(
+                    "Filter by name",
+                    self.filter_focused,
+                    colors.text,
+                    20.0,
+                    FieldFont::Ui,
+                )),
+        );
+        let segments = StatusFilter::ALL
+            .into_iter()
+            .enumerate()
+            .map(|(index, filter)| {
+                let count = match filter {
+                    StatusFilter::All => self.counts.total,
+                    StatusFilter::Running => self.counts.running + self.counts.busy,
+                    StatusFilter::Failed => self.counts.attention,
+                    StatusFilter::Stopped => self.counts.stopped,
+                };
+                components::segment(self.base + STATUS_FILTER + index as u64, filter.title())
+                    .count(count)
+            });
+        let selected = StatusFilter::ALL
+            .iter()
+            .position(|filter| *filter == self.status_filter)
+            .unwrap_or(0);
+        let segments = components::segmented(segments, selected);
         div()
             .col()
             .h_px(FILTER_H)
