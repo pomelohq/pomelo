@@ -298,6 +298,36 @@ pub fn releases_api(per_page: u32) -> String {
     format!("https://api.github.com/repos/{REPO}/releases?per_page={per_page}")
 }
 
+/// The releases `channel` chooses from. The nightly release is also asked for by its tag: it was created once
+/// and is only updated, so enough stable releases after it push it out of the newest page.
+pub fn listing(
+    channel: Channel,
+    fetch: &dyn Fn(&str) -> Result<String, String>,
+) -> Result<serde_json::Value, String> {
+    let body = fetch(&releases_api(20))?;
+    let mut releases: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("parse releases: {e}"))?;
+    if channel != Channel::Nightly {
+        return Ok(releases);
+    }
+    let listed = releases.as_array().is_some_and(|list| {
+        list.iter()
+            .any(|release| release.get("tag_name").and_then(|t| t.as_str()) == Some(NIGHTLY_TAG))
+    });
+    if listed {
+        return Ok(releases);
+    }
+    let nightly = fetch(&format!(
+        "https://api.github.com/repos/{REPO}/releases/tags/{NIGHTLY_TAG}"
+    ))
+    .ok()
+    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok());
+    if let (Some(list), Some(nightly)) = (releases.as_array_mut(), nightly) {
+        list.push(nightly);
+    }
+    Ok(releases)
+}
+
 /// Checks `bytes` against a base64 Ed25519 `signature` made with the key whose public half is `public_key`.
 pub fn verify(bytes: &[u8], signature: &str, public_key: &str) -> Result<(), String> {
     use base64::Engine;
@@ -381,7 +411,7 @@ mod tests {
         serde_json::json!({"name": name, "browser_download_url": format!("https://x/{name}"), "size": 10})
     }
 
-    fn listing() -> serde_json::Value {
+    fn published() -> serde_json::Value {
         let signed = |version: &str| {
             let name = Artifact::MacApp.file_name(version);
             vec![asset(&name), asset(&format!("{name}.sig"))]
@@ -402,9 +432,9 @@ mod tests {
 
     #[test]
     fn stable_ignores_nightlies_and_nightly_takes_the_highest_signed_build() {
-        let stable = newest(&listing(), Channel::Stable, Artifact::MacApp).map(|o| o.version);
+        let stable = newest(&published(), Channel::Stable, Artifact::MacApp).map(|o| o.version);
         assert_eq!(stable, Some(version("0.9.8")));
-        let nightly = newest(&listing(), Channel::Nightly, Artifact::MacApp);
+        let nightly = newest(&published(), Channel::Nightly, Artifact::MacApp);
         assert_eq!(
             nightly.as_ref().map(|offer| offer.version.clone()),
             Some(version("0.9.9-nightly.20261024")),
@@ -418,13 +448,31 @@ mod tests {
 
     #[test]
     fn a_stable_release_cut_after_a_nightly_wins_on_the_nightly_channel() {
-        let mut releases = listing();
+        let mut releases = published();
         let name = Artifact::MacApp.file_name("0.9.9");
         if let Some(list) = releases.as_array_mut() {
             list.push(serde_json::json!({"tag_name": "v0.9.9", "assets": [asset(&name), asset(&format!("{name}.sig"))]}));
         }
         let nightly = newest(&releases, Channel::Nightly, Artifact::MacApp).map(|o| o.version);
         assert_eq!(nightly, Some(version("0.9.9")));
+    }
+
+    #[test]
+    fn the_nightly_channel_asks_for_the_nightly_release_when_the_page_misses_it() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let fetch = |url: &str| {
+            asked.borrow_mut().push(url.to_string());
+            Ok(if url.ends_with("/tags/nightly") {
+                r#"{"tag_name": "nightly", "assets": []}"#.to_string()
+            } else {
+                r#"[{"tag_name": "v0.9.8", "assets": []}]"#.to_string()
+            })
+        };
+        let stable = listing(Channel::Stable, &fetch).unwrap_or_default();
+        assert_eq!(stable.as_array().map(Vec::len), Some(1));
+        let nightly = listing(Channel::Nightly, &fetch).unwrap_or_default();
+        assert_eq!(nightly.as_array().map(Vec::len), Some(2));
+        assert_eq!(asked.borrow().len(), 3);
     }
 
     #[test]

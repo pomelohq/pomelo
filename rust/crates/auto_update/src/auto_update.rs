@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime};
 
 mod releases;
 pub use releases::{
-    newest, offers, releases_api, verify, Artifact, Channel, Offer, Version, NIGHTLY_TAG, REPO,
-    UPDATE_PUBLIC_KEY,
+    listing, newest, offers, releases_api, verify, Artifact, Channel, Offer, Version, NIGHTLY_TAG,
+    REPO, UPDATE_PUBLIC_KEY,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -393,9 +393,7 @@ fn marker_path() -> PathBuf {
 }
 
 fn check_and_stage(app_root: &Path) -> Result<(), String> {
-    let body = curl(&releases_api(20))?;
-    let releases: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("parse releases: {e}"))?;
+    let releases = listing(channel(), &|url| curl(url))?;
     let current = Version::parse(current_version()).ok_or("bad current version")?;
     let staged = state()
         .staged
