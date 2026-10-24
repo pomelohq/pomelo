@@ -152,6 +152,118 @@ pub enum IconKind {
     EngineKafka,
 }
 
+impl IconKind {
+    /// Every icon, for pickers and the gallery; a test keeps it in step with the enum.
+    pub const ALL: [IconKind; 106] = [
+        IconKind::ChevronRight,
+        IconKind::BadgeClose,
+        IconKind::BadgeAlert,
+        IconKind::BadgeCheck,
+        IconKind::ChevronDown,
+        IconKind::ChevronUpDown,
+        IconKind::Search,
+        IconKind::Close,
+        IconKind::Check,
+        IconKind::Warning,
+        IconKind::XCircle,
+        IconKind::Plus,
+        IconKind::Folder,
+        IconKind::FolderOpen,
+        IconKind::File,
+        IconKind::Monitor,
+        IconKind::ArrowUpRight,
+        IconKind::ArrowLeft,
+        IconKind::ArrowRight,
+        IconKind::Window,
+        IconKind::Grid,
+        IconKind::Branch,
+        IconKind::Cylinder,
+        IconKind::Ticket,
+        IconKind::Terminal,
+        IconKind::Diamond,
+        IconKind::Sparkle,
+        IconKind::Sidebar,
+        IconKind::PanelRight,
+        IconKind::PanelBottom,
+        IconKind::Maximize,
+        IconKind::Minimize,
+        IconKind::WindowMinimize,
+        IconKind::WindowMaximize,
+        IconKind::WindowRestore,
+        IconKind::Pin,
+        IconKind::Server,
+        IconKind::Undo,
+        IconKind::ChevronLeft,
+        IconKind::CaseSensitive,
+        IconKind::WholeWord,
+        IconKind::Regex,
+        IconKind::Replace,
+        IconKind::ReplaceNext,
+        IconKind::ReplaceAll,
+        IconKind::SelectAll,
+        IconKind::Quote,
+        IconKind::Command,
+        IconKind::Shift,
+        IconKind::Option,
+        IconKind::Control,
+        IconKind::ArrowUp,
+        IconKind::ArrowDown,
+        IconKind::Return,
+        IconKind::Backspace,
+        IconKind::Tab,
+        IconKind::KeyArrowLeft,
+        IconKind::KeyArrowRight,
+        IconKind::DiffUnified,
+        IconKind::DiffSplit,
+        IconKind::FileGit,
+        IconKind::Play,
+        IconKind::Stop,
+        IconKind::RotateCw,
+        IconKind::Download,
+        IconKind::LoadCircle,
+        IconKind::Circle,
+        IconKind::BoltOutlined,
+        IconKind::SquarePlus,
+        IconKind::SquareDot,
+        IconKind::SquareMinus,
+        IconKind::Table,
+        IconKind::Eye,
+        IconKind::Key,
+        IconKind::Dash,
+        IconKind::ChevronUp,
+        IconKind::ExpandUp,
+        IconKind::PullRequest,
+        IconKind::Merged,
+        IconKind::Clock,
+        IconKind::FileLock,
+        IconKind::Filter,
+        IconKind::Sliders,
+        IconKind::CursorIBeam,
+        IconKind::Copy,
+        IconKind::Ellipsis,
+        IconKind::Pause,
+        IconKind::HelpCircle,
+        IconKind::Info,
+        IconKind::Messages,
+        IconKind::Wrench,
+        IconKind::Archive,
+        IconKind::Package,
+        IconKind::Trash,
+        IconKind::Column,
+        IconKind::EnginePostgresql,
+        IconKind::EngineMysql,
+        IconKind::EngineMariadb,
+        IconKind::EngineRedis,
+        IconKind::EngineMongodb,
+        IconKind::EngineSqlite,
+        IconKind::EngineElasticsearch,
+        IconKind::EngineOpensearch,
+        IconKind::EngineMinio,
+        IconKind::EngineRabbitmq,
+        IconKind::EngineKafka,
+    ];
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MaterialIcon {
     Rust,
@@ -1510,6 +1622,26 @@ impl Painted {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_icon_is_listed_once() {
+        let source = include_str!("element.rs");
+        let start = source.find("pub enum IconKind {").unwrap_or_default();
+        let body = &source[start..];
+        let body = &body[..body.find("\n}").unwrap_or_default()];
+        let variants = body
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                line.ends_with(',') && line.starts_with(|c: char| c.is_ascii_uppercase())
+            })
+            .count();
+        assert_eq!(variants, IconKind::ALL.len());
+        let mut unique = IconKind::ALL.to_vec();
+        unique.sort_by_key(|kind| format!("{kind:?}"));
+        unique.dedup();
+        assert_eq!(unique.len(), IconKind::ALL.len());
+    }
 
     #[test]
     fn a_clickable_div_shows_its_hover_and_pressed_background() {

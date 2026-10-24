@@ -161,16 +161,16 @@ fn rule() -> Node {
     div().py(6.0).child(ui::divider()).into()
 }
 
+/// The left panel's fixed top (title, pages, the Layers heading) and its layer list, which scrolls under it.
 pub fn left(
-    height: f32,
     pages: &[&str],
     page: usize,
     groups: &[Group],
     boards: &[Board],
     focused: Option<usize>,
     collapsed: &[&str],
-) -> Node {
-    let mut layers = div().col();
+) -> (Node, Node) {
+    let mut layers = div().col().pb(INSET);
     for (group_index, group) in groups.iter().enumerate() {
         let open = !collapsed.contains(&group.title);
         let members: Vec<(usize, &Board)> = boards
@@ -232,11 +232,9 @@ pub fn left(
             ));
         }
     }
-    div()
+    let top = div()
         .col()
         .w_px(LEFT)
-        .h_px(height)
-        .bg(theme().panel_background)
         .child(header("Pomelo Gallery", panels_button()))
         .child(ui::divider())
         .child(section("Pages", Some(pages.len().to_string())))
@@ -253,8 +251,8 @@ pub fn left(
         }))
         .child(rule())
         .child(section("Layers", Some(boards.len().to_string())))
-        .child(layers)
-        .into()
+        .into();
+    (top, layers.into())
 }
 
 /// Three colors of a theme side by side: its panel, its accent and its text.
@@ -367,13 +365,20 @@ pub fn board_title(title: &str, note: Option<&str>, width: f32) -> Node {
         .gap(6.0)
         .child(label(title).size(12.0).weight(500).truncate());
     if let Some(note) = note {
-        line = line.child(label(note).size(12.0).color(theme().text_muted).truncate());
+        line = line.child(label(note).size(12.0).color(theme().text_muted).wrap(width));
     }
     line.into()
 }
 
 pub fn group_title(title: &str) -> Node {
     label(title).size(15.0).weight(600).into()
+}
+
+pub fn group_note(note: &str, width: f32) -> Node {
+    div()
+        .w_px(width)
+        .child(label(note).size(12.0).color(theme().text_muted).wrap(width))
+        .into()
 }
 
 fn pill() -> ui::Div {
