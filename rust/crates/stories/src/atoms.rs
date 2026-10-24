@@ -201,38 +201,50 @@ pub fn stories() -> Vec<StoryDef> {
             CONTROL,
             || still(|_, _| alone(workspace::checkbox(ID, false, "Start with the workspace"))),
         ),
-        story("segmented", "Segmented", "First chosen", CONTROL, || {
-            still(|_, _| {
-                alone(workspace::segmented(
-                    &[(ID, "All"), (ID + 1, "Running"), (ID + 2, "Failed")],
-                    0,
-                    None,
-                ))
-            })
+        story("segmented", "Segmented", "On a toolbar", CONTROL, || {
+            still(|_, _| alone(filters(None)))
         }),
         story("segmented-hovered", "Segmented", "Hovered", CONTROL, || {
-            still(|_, _| {
-                alone(workspace::segmented(
-                    &[(ID, "All"), (ID + 1, "Running"), (ID + 2, "Failed")],
-                    0,
-                    Some(ID + 2),
-                ))
-            })
+            still(|_, _| alone(filters(Some(ID + 2))))
         }),
         story(
-            "toggle-group",
-            "Toggle group",
-            "With icons",
+            "segmented-form",
+            "Segmented",
+            "In a form, with icons",
             CONTROL,
             || {
                 still(|_, _| {
-                    alone(workspace::toggle_button_group(
-                        &[
-                            (ID, Some(IconKind::Monitor), "This Mac"),
-                            (ID + 1, Some(IconKind::Server), "Host"),
-                        ],
-                        0,
-                    ))
+                    alone(
+                        ui::segmented(
+                            [
+                                ui::segment(ID, "This Mac").icon(Some(IconKind::Monitor)),
+                                ui::segment(ID + 1, "Host").icon(Some(IconKind::Server)),
+                            ],
+                            0,
+                        )
+                        .size(ButtonSize::Medium),
+                    )
+                })
+            },
+        ),
+        story(
+            "segmented-disabled",
+            "Segmented",
+            "One unavailable",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        ui::segmented(
+                            [
+                                ui::segment(ID, "Claude Code"),
+                                ui::segment(ID + 1, "Codex").enabled(false),
+                                ui::segment(ID + 2, "Gemini CLI"),
+                            ],
+                            0,
+                        )
+                        .size(ButtonSize::Medium),
+                    )
                 })
             },
         ),
@@ -442,4 +454,16 @@ pub fn stories() -> Vec<StoryDef> {
             })
         }),
     ]
+}
+
+fn filters(hovered: Option<u64>) -> ui::Segmented {
+    ui::segmented(
+        [
+            ui::segment(ID, "All"),
+            ui::segment(ID + 1, "Running"),
+            ui::segment(ID + 2, "Failed"),
+        ],
+        0,
+    )
+    .hovered(hovered)
 }

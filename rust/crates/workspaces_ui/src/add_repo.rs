@@ -1,8 +1,7 @@
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
     checkbox, field, modal_footer, modal_frame, modal_header, modal_section, status_line,
-    toggle_button_group, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
-    WINDOW_MODAL_BASE,
+    ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
 };
 
 /// Opens the system folder picker; returns the folders chosen.
@@ -176,17 +175,15 @@ impl WindowModal for AddRepoModal {
         if self.ai_available {
             section = section.child(field(
                 "Afterwards",
-                toggle_button_group(
-                    &[
-                        (USE_AI, None, "Let Claude wire its env and shared services"),
-                        (
-                            REVIEW_LATER,
-                            None,
-                            "Review its entry in the config afterwards",
-                        ),
+                ui::segmented(
+                    [
+                        ui::segment(USE_AI, "Let Claude wire its env and shared services"),
+                        ui::segment(REVIEW_LATER, "Review its entry in the config afterwards"),
                     ],
                     usize::from(!self.use_ai),
-                ),
+                )
+                .size(ui::ButtonSize::Medium)
+                .into(),
                 None,
                 None,
             ));

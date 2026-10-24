@@ -22,8 +22,8 @@ mod workspace_view;
 pub use form::{
     accent_action, checkbox, field, field_label, is_window_modal_id, modal_footer, modal_frame,
     modal_header, modal_note, modal_section, overlay_ring, paragraph, progress_bar, prompt_card,
-    segmented, status_line, text_line, toggle_button_group, InputField, ModalResult, WindowModal,
-    PROMPT_WIDTH, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    status_line, text_line, InputField, ModalResult, WindowModal, PROMPT_WIDTH, WINDOW_MODAL_BASE,
+    WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,

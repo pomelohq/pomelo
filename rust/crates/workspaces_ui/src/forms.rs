@@ -11,8 +11,8 @@ use pom_agent::NameSuggestion;
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{
     accent_action, checkbox, field, modal_footer, modal_frame, modal_header, modal_note,
-    modal_section, status_line, toggle_button_group, ButtonKind, EditKey, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE,
+    modal_section, status_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
+    WINDOW_MODAL_BASE,
 };
 
 use crate::repo_branch_picker::{
@@ -576,12 +576,15 @@ impl CreateWorkspaceModal {
                 content
             };
             let control = if names.len() <= ENVIRONMENT_CHOICES {
-                let choices: Vec<(u64, Option<IconKind>, &str)> = names
-                    .iter()
-                    .enumerate()
-                    .map(|(index, name)| (ENVIRONMENT_BASE + index as u64, None, *name))
-                    .collect();
-                toggle_button_group(&choices, self.environment)
+                ui::segmented(
+                    names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| ui::segment(ENVIRONMENT_BASE + index as u64, *name)),
+                    self.environment,
+                )
+                .size(ui::ButtonSize::Medium)
+                .into()
             } else {
                 self.environment_select(&names, available)
             };
@@ -594,18 +597,22 @@ impl CreateWorkspaceModal {
             any = true;
         }
         if self.offers_data_choice() {
-            row = row.child(div().col().flex(1.0).child(field(
-                "Data",
-                toggle_button_group(
-                    &[
-                        (DATA_FROM_MAIN, None, "Copy from main"),
-                        (DATA_FRESH, None, "Empty, run seeds"),
-                    ],
-                    usize::from(self.fresh_databases),
-                ),
-                Some("the workspace's databases"),
-                None,
-            )));
+            row = row.child(
+                div().col().flex(1.0).child(field(
+                    "Data",
+                    ui::segmented(
+                        [
+                            ui::segment(DATA_FROM_MAIN, "Copy from main"),
+                            ui::segment(DATA_FRESH, "Empty, run seeds"),
+                        ],
+                        usize::from(self.fresh_databases),
+                    )
+                    .size(ui::ButtonSize::Medium)
+                    .into(),
+                    Some("the workspace's databases"),
+                    None,
+                )),
+            );
             any = true;
         }
         any.then(|| row.into())
