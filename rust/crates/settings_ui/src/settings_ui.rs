@@ -1557,13 +1557,18 @@ pub fn popover(
             )
         })
         .collect();
-    let (card, _, height) = ui::menu(&rows)
-        .hovered(cursor_id)
-        .search(query)
-        .min_width(width)
-        .render();
-    let h = height * s;
+    let card = |search_at_bottom| {
+        ui::menu(&rows)
+            .hovered(cursor_id)
+            .search(query)
+            .search_at_bottom(search_at_bottom)
+            .min_width(width)
+            .render()
+    };
+    let h = card(false).2 * s;
     let (x, y) = ui::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
+    let opens_above = y < anchor.y;
+    let (card, _, _) = card(opens_above);
     let mut out = render(&card, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
 
     // A soft drop shadow: a few stacked, growing, translucent rects, since the renderer has no blur.
@@ -1586,6 +1591,11 @@ pub fn popover(
 
     let pad = ui::MENU_PAD * s;
     let search_h = ui::MENU_SEARCH_ROW * s;
+    let search_y = if opens_above {
+        y + h - pad - search_h
+    } else {
+        y + pad
+    };
     // The search field is always focused while the popover is open.
     if ui::caret_phase() {
         let caret_x = x
@@ -1594,7 +1604,7 @@ pub fn popover(
             + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight()) * s;
         out.rects.push(Rect {
             x: caret_x,
-            y: y + pad + (search_h - 15.0 * s) / 2.0,
+            y: search_y + (search_h - 15.0 * s) / 2.0,
             w: 1.5 * s,
             h: 15.0 * s,
             color: theme().text,
@@ -1605,7 +1615,11 @@ pub fn popover(
     }
 
     if matches.len() > visible {
-        let track_top = y + chrome - pad;
+        let track_top = if opens_above {
+            y + pad
+        } else {
+            y + chrome - pad
+        };
         let track_h = visible as f32 * row_h;
         let thumb_h = (track_h * visible as f32 / matches.len() as f32).max(24.0 * s);
         let travel = track_h - thumb_h;

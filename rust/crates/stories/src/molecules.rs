@@ -199,31 +199,23 @@ fn select_closed_size() -> (f32, f32) {
     (card_size(&chosen(), false).0, SELECT_HEIGHT + 2.0 * INSET)
 }
 
-fn select_open_search() -> Node {
-    let items = themes("");
-    div()
-        .col()
-        .p(INSET)
-        .gap(SELECT_GAP)
-        .child(ui::select(ID + 10, "Pomelo Dark").min_width(200.0))
-        .child(ui::menu(&items).search("").hovered(Some(ID)))
-        .into()
-}
-
-fn select_open_search_size() -> (f32, f32) {
-    let (width, height) = searchable_size("");
-    (width, height + SELECT_HEIGHT + SELECT_GAP)
-}
-
 const EDGE_BOARD: (f32, f32) = (340.0, 240.0);
 const EDGE_MARGIN: f32 = 8.0;
 const EDGE_SELECT_WIDTH: f32 = 140.0;
 
 /// A select at `select_at` on a board standing in for the window, with its menu where
 /// `ui::place_menu` puts it: so the board shows the real flip, not a hand-drawn one.
-fn at_edge(select_at: (f32, f32)) -> Node {
-    let items = chosen();
-    let (_, width, height) = ui::menu(&items).render();
+fn at_edge(select_at: (f32, f32), searchable: bool) -> Node {
+    let items = if searchable { themes("") } else { chosen() };
+    let edge_menu = || {
+        let menu = ui::menu(&items).hovered(Some(ID));
+        if searchable {
+            menu.search("")
+        } else {
+            menu
+        }
+    };
+    let (_, width, height) = edge_menu().render();
     let anchor = ui::Rect::new(
         select_at.0,
         select_at.1,
@@ -235,7 +227,9 @@ fn at_edge(select_at: (f32, f32)) -> Node {
     let select = div()
         .pl(anchor.x)
         .child(ui::select(ID + 10, "Pomelo Dark").width(EDGE_SELECT_WIDTH));
-    let menu = div().pl(x).child(ui::menu(&items).hovered(Some(ID)));
+    let menu = div()
+        .pl(x)
+        .child(edge_menu().search_at_bottom(y < anchor.y));
     let column = div().col().w_px(EDGE_BOARD.0).h_px(EDGE_BOARD.1);
     if y > anchor.y {
         column
@@ -342,14 +336,21 @@ pub fn stories() -> Vec<StoryDef> {
             "Select menu",
             "Near the right edge",
             EDGE_BOARD,
-            || still(|_, _| at_edge((EDGE_BOARD.0 - EDGE_MARGIN - EDGE_SELECT_WIDTH, INSET))),
+            || {
+                still(|_, _| {
+                    at_edge(
+                        (EDGE_BOARD.0 - EDGE_MARGIN - EDGE_SELECT_WIDTH, INSET),
+                        false,
+                    )
+                })
+            },
         ),
         story(
             "select-bottom-edge",
             "Select menu",
             "Near the bottom edge",
             EDGE_BOARD,
-            || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT))),
+            || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT), false)),
         ),
         story(
             "select-corner",
@@ -358,19 +359,22 @@ pub fn stories() -> Vec<StoryDef> {
             EDGE_BOARD,
             || {
                 still(|_, _| {
-                    at_edge((
-                        EDGE_BOARD.0 - EDGE_MARGIN - EDGE_SELECT_WIDTH,
-                        EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT,
-                    ))
+                    at_edge(
+                        (
+                            EDGE_BOARD.0 - EDGE_MARGIN - EDGE_SELECT_WIDTH,
+                            EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT,
+                        ),
+                        false,
+                    )
                 })
             },
         ),
         story(
-            "select-open-search",
+            "select-bottom-search",
             "Select menu",
-            "Open with search",
-            select_open_search_size(),
-            || still(|_, _| select_open_search()),
+            "Near the bottom edge, with search",
+            EDGE_BOARD,
+            || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT), true)),
         ),
     ]
 }
