@@ -31,6 +31,9 @@ jobs:
   macos:
     runs-on: macos-15 # Apple Silicon
     timeout-minutes: 90
+    env:
+      # pom reports this version, which the app compares with its own to offer updating pom on a host.
+      POM_BUILD_VERSION: ${{ inputs.version }}
     defaults:
       run:
         working-directory: rust
@@ -181,6 +184,9 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    env:
+      # pom reports this version, which the app compares with its own to offer updating pom on a host.
+      POM_BUILD_VERSION: ${{ inputs.version }}
     defaults:
       run:
         working-directory: rust
