@@ -605,18 +605,6 @@ impl ServiceItem {
             .into()
     }
 
-    fn chip(text: String) -> Node {
-        div()
-            .row()
-            .h_px(20.0)
-            .px(8.0)
-            .rounded(4.0)
-            .items_center()
-            .bg(translucent(0.05, 0.04))
-            .child(label(text).size(12.0).color(theme().text))
-            .into()
-    }
-
     /// A choice among `options` with `current` pressed; each option clicks at `base + index`.
     fn choice(&self, options: &[String], current: &str, base: u64) -> Node {
         let colors = theme();
@@ -943,7 +931,7 @@ impl ServiceItem {
                     self.choice(&modes, &current_mode, MODE_BASE),
                 ))
             } else if !current_mode.is_empty() {
-                Some(Self::fact("Mode", Self::chip(current_mode.clone())))
+                Some(Self::fact("Mode", ui::chip(current_mode.clone()).into()))
             } else {
                 None
             };
@@ -956,7 +944,7 @@ impl ServiceItem {
                         self.choice(&profiles, &current, PROFILE_BASE),
                     ));
                 } else if !current.is_empty() {
-                    facts.push(Self::fact("Env profile", Self::chip(current)));
+                    facts.push(Self::fact("Env profile", ui::chip(current).into()));
                 }
                 if let Some(file) = dir.env_output.first() {
                     let shown = format!("{}/{}", self.target.repo, file.file);

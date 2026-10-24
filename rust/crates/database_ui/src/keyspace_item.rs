@@ -129,21 +129,7 @@ fn kind_color(kind: &str) -> Rgba {
 }
 
 fn badge(kind: &str) -> Node {
-    let colors = theme();
-    div()
-        .row()
-        .px(5.0)
-        .h_px(16.0)
-        .items_center()
-        .rounded(3.0)
-        .border(1.0, colors.border_variant)
-        .child(
-            label(kind.to_string())
-                .size(10.0)
-                .mono()
-                .color(kind_color(kind)),
-        )
-        .into()
+    ui::chip(kind).color(kind_color(kind)).into()
 }
 
 impl KeyspaceItem {

@@ -78,6 +78,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Status line" => "The result of a check, under the control that ran it.",
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
         "Divider" => "Separates sections; Faded inside a list.",
+        "Chip" => "A short read-only tag: a branch, a key kind, a plan, a detected stack. One shape; only the ink, fill and edge change.",
         "Tooltip" => "Names what an icon does, with the keys that run it when there are any.",
         "Status dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
         "Input" => "A labeled text field with its hint or its error below.",

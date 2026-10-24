@@ -324,6 +324,32 @@ pub fn stories() -> Vec<StoryDef> {
         story("divider-faded", "Divider", "Faded", CONTROL, || {
             still(|_, _| alone(div().col().w_px(200.0).child(ui::divider_faded())))
         }),
+        story("chip", "Chip", "Default", BUTTON, || {
+            still(|_, _| alone(ui::chip("feat-login")))
+        }),
+        story("chip-muted", "Chip", "Muted", BUTTON, || {
+            still(|_, _| alone(ui::chip("docker compose").color(theme().text_muted)))
+        }),
+        story("chip-icon", "Chip", "With icon", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    ui::chip("main")
+                        .icon(IconKind::Branch)
+                        .color(theme().text_muted),
+                )
+            })
+        }),
+        story("chip-tinted", "Chip", "Tinted", BUTTON, || {
+            still(|_, _| {
+                let accent = theme().text_accent;
+                alone(
+                    ui::chip("Pro")
+                        .color(accent)
+                        .fill(accent.alpha(0.14))
+                        .border(accent.alpha(0.3)),
+                )
+            })
+        }),
         story("tooltip", "Tooltip", "Text", CONTROL, || {
             still(|_, _| alone(ui::tooltip_bubble("Open in Browser", None)))
         }),
