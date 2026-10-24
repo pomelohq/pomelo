@@ -67,7 +67,11 @@ pub fn write_atomic(path: &Path, contents: &[u8], mode: u32) -> std::io::Result<
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = parent.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    // Per call, not just per process: two threads writing one file would otherwise share a temp
+    // file, and the second rename fails once the first has moved it.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let call = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = parent.join(format!(".{file_name}.{}.{call}.tmp", std::process::id()));
     let result = (|| {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -96,7 +100,13 @@ pub fn ensure_private_dir(dir: &Path, uid: u32) -> std::io::Result<()> {
             if let Some(parent) = dir.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::DirBuilder::new().mode(0o700).create(dir)?;
+            // Two holders starting at once both see it missing; the one that loses still uses it.
+            match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+                Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                    return Err(error)
+                }
+                _ => {}
+            }
         }
         Err(error) => return Err(error),
         Ok(_) => {}
@@ -143,6 +153,45 @@ mod tests {
         );
         let leftovers = std::fs::read_dir(temp.path().join("nested"))?.count();
         assert_eq!(leftovers, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn threads_writing_one_file_at_once_all_succeed() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join(".env.local");
+        std::thread::scope(|scope| {
+            let writers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        (0..50).try_for_each(|_| write_atomic(&path, b"PORT=3000\n", 0o600))
+                    })
+                })
+                .collect();
+            writers
+                .into_iter()
+                .try_for_each(|writer| writer.join().expect("writer thread"))
+        })?;
+        assert_eq!(std::fs::read(&path)?, b"PORT=3000\n");
+        assert_eq!(std::fs::read_dir(temp.path())?.count(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn threads_creating_one_socket_dir_at_once_all_succeed() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let uid = std::fs::metadata(temp.path())?.uid();
+        for round in 0..50 {
+            let dir = temp.path().join(format!("sockets-{round}"));
+            std::thread::scope(|scope| {
+                let creators: Vec<_> = (0..8)
+                    .map(|_| scope.spawn(|| ensure_private_dir(&dir, uid)))
+                    .collect();
+                creators
+                    .into_iter()
+                    .try_for_each(|creator| creator.join().expect("creator thread"))
+            })?;
+        }
         Ok(())
     }
 
