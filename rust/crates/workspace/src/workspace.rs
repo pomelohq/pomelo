@@ -33,7 +33,7 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
-pub use ui::{button, key_chip, Button, ButtonKind, ButtonSize};
+pub use ui::{button, key_chip, Button, ButtonKind, ButtonSize, MenuItem};
 pub use update::{
     button as update_button, UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone,
     UPDATE_BUTTON, UPDATE_DISMISS,
@@ -3882,174 +3882,21 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
         .into()
 }
 
-/// One row of a context menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
-#[derive(Clone, Debug)]
-pub struct MenuItem {
-    pub id: u64,
-    pub label: std::borrow::Cow<'static, str>,
-    pub checked: bool,
-    pub sep: bool,
-    pub disabled: bool,
-    /// Loses data: drawn in the error color.
-    pub danger: bool,
-    /// Shown before the label when the item is not checked.
-    pub icon: Option<ui::IconKind>,
-    /// Muted text at the right: its key, or what a submenu is set to.
-    pub hint: Option<std::borrow::Cow<'static, str>>,
-    /// The icon's color, over the default for its kind.
-    pub color: Option<Rgba>,
-    /// A group's title: small, muted and not clickable.
-    pub header: bool,
-}
-
-impl MenuItem {
-    pub fn new(id: u64, label: impl Into<std::borrow::Cow<'static, str>>) -> Self {
-        MenuItem {
-            id,
-            label: label.into(),
-            checked: false,
-            sep: false,
-            disabled: false,
-            danger: false,
-            icon: None,
-            hint: None,
-            color: None,
-            header: false,
-        }
-    }
-}
-
-fn raised_hover() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-        ui::Appearance::Light => Rgba::new(0.0, 0.0, 0.0, 0.04),
-    }
-}
-
 pub fn context_menu_card(items: &[MenuItem], hovered: Option<u64>) -> (Node, f32, f32) {
-    let row_h = 26.0_f32;
-    let pad = 4.0_f32;
-    let wght = ui::ui_font_weight();
-    let marks = items.iter().any(|it| it.checked || it.icon.is_some());
-    let mark_w = if marks { 12.0 + 6.0 } else { 0.0 };
-    let mut content_w = 0.0_f32;
-    for it in items {
-        let label_w = ui::measure_text_width(&it.label, 13.0, false, wght);
-        let right = if is_submenu(it.id) {
-            14.0
-        } else {
-            let k = it.hint.as_deref().unwrap_or_else(|| menu_key(it.id));
-            if k.is_empty() {
-                0.0
-            } else {
-                ui::measure(&crate::render_keystroke(k, 12.0)).0 + 24.0
-            }
-        } + if is_submenu(it.id) {
-            it.hint.as_deref().map_or(0.0, |hint| {
-                ui::measure_text_width(hint, 12.0, false, wght) + 12.0
-            })
-        } else {
-            0.0
-        };
-        content_w = content_w.max(label_w + right);
-    }
-    let mw = (16.0 + mark_w + content_w + 2.0 * pad).max(200.0);
-    // Count only the separators actually drawn (a leading `sep` on the first item is skipped).
-    let seps = items
+    let items: Vec<MenuItem> = items
         .iter()
-        .enumerate()
-        .filter(|(i, it)| it.sep && *i > 0)
-        .count() as f32;
-    let mh = pad * 2.0 + row_h * items.len() as f32 + 5.0 * seps;
-    let mut col = div()
-        .col()
-        .p(pad)
-        .rounded(8.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border);
-    for (i, item) in items.iter().enumerate() {
-        if item.sep && i > 0 {
-            col = col.child(
-                div()
-                    .h_px(5.0)
-                    .py(2.0)
-                    .child(div().h_px(1.0).w_px(mw - 2.0 * pad).bg(theme().border)),
-            );
-        }
-        if item.header {
-            col = col.child(
-                div().row().h_px(row_h).px(8.0).items_center().child(
-                    label(item.label.to_string())
-                        .size(12.0)
-                        .color(theme().text_muted),
-                ),
-            );
-            continue;
-        }
-        let mut row = div()
-            .row()
-            .h_px(row_h)
-            .px(8.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(5.0)
-            .on_click(item.id);
-        if hovered == Some(item.id) && !item.disabled {
-            row = row.bg(raised_hover());
-        }
-        let label_color = if item.disabled {
-            theme().text_disabled
-        } else if item.danger {
-            theme().error
-        } else {
-            text_c()
-        };
-        let mark = match (item.checked, item.icon) {
-            (true, _) => ui::check_icon().size(12.0),
-            (false, Some(kind)) => {
-                ui::icon(kind)
-                    .size(12.0)
-                    .color(if let Some(color) = item.color {
-                        color
-                    } else if item.disabled {
-                        theme().text_disabled
-                    } else if item.danger {
-                        theme().error
-                    } else if kind == ui::IconKind::Sparkle {
-                        theme().icon_accent
-                    } else {
-                        theme().icon_muted
-                    })
-            }
-            (false, None) => ui::icon(ui::IconKind::Check)
-                .size(12.0)
-                .color(Rgba::TRANSPARENT),
-        };
-        if marks {
-            row = row.child(mark);
-        }
-        row = row.child(label(item.label.to_string()).size(13.0).color(label_color));
-        if is_submenu(item.id) {
-            row = row.child(div().flex(1.0));
-            if let Some(hint) = &item.hint {
-                row = row.child(label(hint.to_string()).size(12.0).color(theme().text_muted));
-            }
-            row = row.child(
-                ui::icon(ui::IconKind::ChevronRight)
-                    .size(12.0)
-                    .color(theme().icon_muted),
-            );
-        } else {
-            let key = item.hint.as_deref().unwrap_or_else(|| menu_key(item.id));
-            if !key.is_empty() {
-                row = row
-                    .child(div().flex(1.0))
-                    .child(crate::render_keystroke(key, 12.0));
-            }
-        }
-        col = col.child(row);
-    }
-    (col.w_px(mw).into(), mw, mh)
+        .map(|item| match item.hint {
+            None if !is_submenu(item.id) && !menu_key(item.id).is_empty() => MenuItem {
+                hint: Some(menu_key(item.id).into()),
+                ..item.clone()
+            },
+            _ => item.clone(),
+        })
+        .collect();
+    ui::menu(&items)
+        .hovered(hovered)
+        .submenus(is_submenu)
+        .render()
 }
 
 #[allow(clippy::too_many_arguments)]

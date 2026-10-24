@@ -4,6 +4,7 @@
 pub mod atoms;
 pub mod fixtures;
 pub mod foundations;
+pub mod molecules;
 pub mod services;
 
 use std::io::BufWriter;
@@ -41,6 +42,7 @@ pub struct StoryDef {
 pub fn all() -> Vec<StoryDef> {
     let mut all = foundations::stories();
     all.extend(atoms::stories());
+    all.extend(molecules::stories());
     all.extend(services::stories());
     all
 }
@@ -66,7 +68,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
         "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions. Small in panels and toolbars, Medium in dialogs and forms.",
         "Link" => "A text-only action that reads like a link, beside the value it acts on: Open in browser, Change.",
-        "Select" => "Pick one of a few known values: a theme, a profile, a database. Opens the screen's menu of choices; a placeholder shows while nothing is chosen.",
+        "Select" => "Pick one of a few known values: a theme, a profile, a database. Opens a Menu of the choices; a placeholder shows while nothing is chosen.",
         "Checkbox" => "An on or off choice in a form.",
         "Segmented" => "Compact filters on a toolbar, such as All, Running, Failed.",
         "Toggle group" => "Mutually exclusive choices inside a form, with icons.",
@@ -76,6 +78,8 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
         "Divider" => "Separates sections; Faded inside a list.",
         "Input" => "A labeled text field with its hint or its error below.",
+        "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. A check marks the current choice; keys sit on the right; Danger for actions that lose data.",
+        "Select menu" => "A select with its menu open under it, the current value checked.",
         "Services panel" => "The Services panel in the side dock: every service of the workspace, what needs attention, and the shared services.",
         "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
         _ => return None,
