@@ -116,8 +116,21 @@ pub struct Text {
     pub italic: bool,
     /// Wrap width in logical (design) px; `0` = single line. Used for wrapping setting descriptions.
     pub wrap: f32,
+    /// Distance between wrapped lines in design px; `0` = the default pitch.
+    pub line_height: f32,
     /// The UI text scale it was laid out at, which it is drawn at too.
     pub scale: f32,
+}
+
+impl Text {
+    fn line_pitch(&self) -> f32 {
+        if self.line_height > 0.0 {
+            // A hair under the pitch so a baseline landing on a half pixel rounds up the page, as browsers place it.
+            self.line_height * self.scale - 0.001
+        } else {
+            self.size * self.scale * 1.3
+        }
+    }
 }
 
 /// A scissor rectangle `(x, y, w, h)` in physical pixels; `None` means draw unclipped.
@@ -891,7 +904,7 @@ struct Measurer {
     // keyed by (text, quarter-px size, mono) so repeated labels across frames are free.
     cache: std::collections::HashMap<(String, u32, TextFont), f32>,
     // Wrapped (width, height) keyed additionally by wrap width (half-px buckets).
-    wrap_cache: std::collections::HashMap<(String, u32, TextFont, u32), (f32, f32)>,
+    wrap_cache: std::collections::HashMap<(String, u32, TextFont, u32), (f32, usize)>,
     glyph_cache: std::collections::HashMap<(String, u32, TextFont), GlyphOffsets>,
     /// The font settings the caches were filled with.
     generation: u64,
@@ -1100,12 +1113,28 @@ pub fn measure_wrapped(
     weight: u16,
     max_w: f32,
 ) -> (f32, f32) {
+    let scaled_size = size * theme::ui_text_scale();
+    if text.is_empty() || max_w <= 0.0 {
+        return (0.0, scaled_size * 1.4);
+    }
+    let (width, lines) = measure_wrapped_lines(text, size, font, weight, max_w);
+    (width, lines as f32 * scaled_size * 1.5)
+}
+
+/// `text` wrapped to `max_w` logical (design) px at `size`, as (widest line, line count).
+pub fn measure_wrapped_lines(
+    text: &str,
+    size: f32,
+    font: impl Into<TextFont>,
+    weight: u16,
+    max_w: f32,
+) -> (f32, usize) {
     let font = font.into();
     let scale = theme::ui_text_scale();
     let size = size * scale;
     let max_w = max_w * scale;
     if text.is_empty() || max_w <= 0.0 {
-        return (0.0, size * 1.4);
+        return (0.0, 1);
     }
     MEASURER.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -1146,7 +1175,7 @@ pub fn measure_wrapped(
             lines += 1;
             w = w.max(run.line_w);
         }
-        let out = (w, lines.max(1) as f32 * size * 1.5);
+        let out = (w, lines.max(1));
         m.wrap_cache.insert(key, out);
         out
     })
@@ -2067,7 +2096,7 @@ impl UiRenderer {
                 vw / self.scale
             };
             let weight = effective_weight(t.font, fam.as_deref(), t.weight);
-            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
+            let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, t.line_pitch()));
             buf.set_size(Some(wrap_w), None);
             shape_text(
                 &mut buf,
@@ -2581,13 +2610,14 @@ impl UiRenderer {
                 t.italic.hash(&mut h);
                 t.font.hash(&mut h);
                 wrap_w.map(f32::to_bits).hash(&mut h);
+                t.line_height.to_bits().hash(&mut h);
                 fam.hash(&mut h);
                 generation.hash(&mut h);
                 h.finish()
             };
             keys.push(key);
             if !self.shaped_cache.contains_key(&key) {
-                let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, sz * 1.3));
+                let mut buf = Buffer::new(&mut self.font_system, Metrics::new(sz, t.line_pitch()));
                 buf.set_size(wrap_w, None);
                 shape_text(
                     &mut buf,
@@ -2726,6 +2756,7 @@ mod tests {
             weight: 400,
             italic: false,
             wrap: 0.0,
+            line_height: 0.0,
             scale: 1.0,
         };
         let draw = |renderer: &mut UiRenderer, line: &str| {

@@ -413,6 +413,8 @@ pub struct Label {
     pub strikethrough: Option<Rgba>,
     /// Wrap width in design px (0 = single line).
     pub wrap: f32,
+    /// Distance between wrapped lines in design px (0 = the default pitch).
+    pub line_height: f32,
     /// Shrink when its row overflows and cut the text with a trailing "...".
     pub truncate: bool,
     /// Cut from the front instead ("...rest"), keeping the end of a path visible.
@@ -456,6 +458,7 @@ pub fn label(text: impl Into<String>) -> Label {
         underline: None,
         strikethrough: None,
         wrap: 0.0,
+        line_height: 0.0,
         truncate: false,
         truncate_start: false,
     }
@@ -516,7 +519,25 @@ impl Label {
         self.wrap = w;
         self
     }
+    /// Lay wrapped lines `px` design px apart, as a type token's line height does.
+    pub fn line_height(mut self, px: f32) -> Self {
+        self.line_height = px;
+        self
+    }
     fn intrinsic(&self) -> (f32, f32) {
+        if self.wrap > 0.0 && self.line_height > 0.0 && !self.text.is_empty() {
+            let (width, lines) = crate::measure_wrapped_lines(
+                &self.text,
+                self.size,
+                self.font,
+                self.weight,
+                self.wrap,
+            );
+            return (
+                width,
+                lines as f32 * self.line_height * crate::ui_text_scale(),
+            );
+        }
         if self.wrap > 0.0 {
             return crate::measure_wrapped(
                 &self.text,
@@ -1165,6 +1186,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                 weight: l.weight,
                 italic: l.italic,
                 wrap: l.wrap,
+                line_height: l.line_height,
                 scale: crate::ui_text_scale(),
             });
         }
