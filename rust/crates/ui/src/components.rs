@@ -428,8 +428,11 @@ impl MenuItem {
     }
 }
 
-const MENU_ROW: f32 = 26.0;
-const MENU_PAD: f32 = 4.0;
+pub const MENU_ROW: f32 = 26.0;
+pub const MENU_PAD: f32 = 4.0;
+pub const MENU_SEARCH_ROW: f32 = 32.0;
+pub const MENU_SEARCH_INSET: f32 = 8.0;
+const MENU_SEPARATOR: f32 = 5.0;
 const MENU_MIN_WIDTH: f32 = 200.0;
 
 /// A list of choices on a raised card: context menus and the list a select opens.
@@ -437,6 +440,8 @@ pub struct Menu<'a> {
     items: &'a [MenuItem],
     hovered: Option<u64>,
     opens_submenu: fn(u64) -> bool,
+    search: Option<&'a str>,
+    min_width: f32,
 }
 
 pub fn menu(items: &[MenuItem]) -> Menu<'_> {
@@ -444,10 +449,12 @@ pub fn menu(items: &[MenuItem]) -> Menu<'_> {
         items,
         hovered: None,
         opens_submenu: |_| false,
+        search: None,
+        min_width: MENU_MIN_WIDTH,
     }
 }
 
-impl Menu<'_> {
+impl<'a> Menu<'a> {
     pub fn hovered(mut self, hovered: Option<u64>) -> Self {
         self.hovered = hovered;
         self
@@ -456,6 +463,17 @@ impl Menu<'_> {
     /// Rows whose id this returns true for show a chevron, with their hint as the value they are set to.
     pub fn submenus(mut self, opens_submenu: fn(u64) -> bool) -> Self {
         self.opens_submenu = opens_submenu;
+        self
+    }
+
+    /// A search line above the items showing `query`, or a placeholder while it is empty.
+    pub fn search(mut self, query: &'a str) -> Self {
+        self.search = Some(query);
+        self
+    }
+
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = width;
         self
     }
 
@@ -483,7 +501,7 @@ impl Menu<'_> {
             };
             content_width = content_width.max(label_width + right);
         }
-        let width = (16.0 + mark_width + content_width + 2.0 * MENU_PAD).max(MENU_MIN_WIDTH);
+        let width = (16.0 + mark_width + content_width + 2.0 * MENU_PAD).max(self.min_width);
         // A leading separator is not drawn, so it takes no height.
         let separators = self
             .items
@@ -491,23 +509,53 @@ impl Menu<'_> {
             .enumerate()
             .filter(|(index, item)| item.sep && *index > 0)
             .count() as f32;
-        let height = MENU_PAD * 2.0 + MENU_ROW * self.items.len() as f32 + 5.0 * separators;
+        let search_height = if self.search.is_some() {
+            MENU_SEARCH_ROW + MENU_SEPARATOR
+        } else {
+            0.0
+        };
+        let height = MENU_PAD * 2.0
+            + search_height
+            + MENU_ROW * self.items.len() as f32
+            + MENU_SEPARATOR * separators;
+        let separator = || {
+            div().h_px(MENU_SEPARATOR).py(2.0).child(
+                div()
+                    .h_px(1.0)
+                    .w_px(width - 2.0 * MENU_PAD)
+                    .bg(colors.border),
+            )
+        };
         let mut card = div()
             .col()
             .p(MENU_PAD)
             .rounded(8.0)
             .bg(colors.elevated_surface_background)
             .border(1.0, colors.border);
+        if let Some(query) = self.search {
+            let line = if query.is_empty() {
+                crate::label("Search...")
+                    .size(12.0)
+                    .color(colors.text_muted)
+            } else {
+                crate::label(query.to_string())
+                    .size(12.0)
+                    .color(colors.text)
+            };
+            card = card
+                .child(
+                    div()
+                        .row()
+                        .h_px(MENU_SEARCH_ROW)
+                        .px(MENU_SEARCH_INSET)
+                        .items_center()
+                        .child(line),
+                )
+                .child(separator());
+        }
         for (index, item) in self.items.iter().enumerate() {
             if item.sep && index > 0 {
-                card = card.child(
-                    div().h_px(5.0).py(2.0).child(
-                        div()
-                            .h_px(1.0)
-                            .w_px(width - 2.0 * MENU_PAD)
-                            .bg(colors.border),
-                    ),
-                );
+                card = card.child(separator());
             }
             if item.header {
                 card = card.child(

@@ -136,6 +136,42 @@ fn card_size(items: &[MenuItem], nested: bool) -> (f32, f32) {
     (width + 2.0 * INSET, height + 2.0 * INSET)
 }
 
+const THEMES: [&str; 5] = [
+    "Pomelo Dark",
+    "Pomelo Light",
+    "One Dark",
+    "Solarized Dark",
+    "Gruvbox Light",
+];
+
+/// The themes matching `query`, the way a searchable list filters as you type.
+fn themes(query: &str) -> Vec<MenuItem> {
+    let query = query.to_lowercase();
+    THEMES
+        .into_iter()
+        .enumerate()
+        .filter(|(_, name)| name.to_lowercase().contains(&query))
+        .map(|(index, name)| MenuItem {
+            checked: index == 0,
+            ..item(index as u64, name)
+        })
+        .collect()
+}
+
+fn searchable(query: &'static str, hovered: Option<u64>) -> Node {
+    let items = themes(query);
+    div()
+        .p(INSET)
+        .child(ui::menu(&items).search(query).hovered(hovered))
+        .into()
+}
+
+fn searchable_size(query: &str) -> (f32, f32) {
+    let items = themes(query);
+    let (_, width, height) = ui::menu(&items).search(query).render();
+    (width + 2.0 * INSET, height + 2.0 * INSET)
+}
+
 fn select_open() -> Node {
     let items = chosen();
     div()
@@ -210,6 +246,20 @@ pub fn stories() -> Vec<StoryDef> {
             "Submenus",
             card_size(&submenus(), true),
             || still(|_, _| card(&submenus(), None, true)),
+        ),
+        story(
+            "menu-search-empty",
+            "Menu",
+            "Search, just opened",
+            searchable_size(""),
+            || still(|_, _| searchable("", Some(ID))),
+        ),
+        story(
+            "menu-search-typed",
+            "Menu",
+            "Search, filtered",
+            searchable_size("dark"),
+            || still(|_, _| searchable("dark", Some(ID + 2))),
         ),
         story(
             "select-open",

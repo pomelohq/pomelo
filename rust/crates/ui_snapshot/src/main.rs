@@ -5239,9 +5239,12 @@ fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse::<u64>().ok())
             .map(|i| settings_ui::POPOVER_BASE + i);
         let pop = settings_ui::popover(anchor, &current, &items, scroll, &query, hover, lw, lh);
-        r.render_layered(
-            (&base.rects, &base.tris, &base.texts),
-            (&pop.rects, &pop.tris, &pop.texts),
+        r.render_frame(
+            ui::Rgba::new(0.0, 0.0, 0.0, 1.0),
+            &[
+                (&base.rects, &base.tris, &base.texts, &base.icons, None),
+                (&pop.rects, &pop.tris, &pop.texts, &pop.icons, None),
+            ],
         )?;
     } else {
         let layers: Vec<ui::Layer> = vec![(
