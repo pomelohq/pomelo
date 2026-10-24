@@ -136,17 +136,8 @@ pub fn pill(text: &str, tone: Rgba) -> Node {
         .items_center()
         .rounded(10.0)
         .bg(theme().ghost_element_hover)
-        .child(dot(tone, 6.0))
+        .child(ui::dot(tone, 6.0))
         .child(label(text.to_string()).size(11.0).medium().color(tone))
-        .into()
-}
-
-pub fn dot(color: Rgba, size: f32) -> Node {
-    div()
-        .w_px(size)
-        .h_px(size)
-        .rounded(size / 2.0)
-        .bg(color)
         .into()
 }
 
@@ -158,7 +149,7 @@ pub fn radio(on: bool) -> Node {
         mark.items_center()
             .justify_center()
             .bg(colors.accent_fill)
-            .child(dot(colors.panel_background, 6.0))
+            .child(ui::dot(colors.panel_background, 6.0))
             .into()
     } else {
         mark.border(1.0, colors.border).into()

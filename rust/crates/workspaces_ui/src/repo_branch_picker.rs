@@ -551,7 +551,7 @@ fn tag(text: &str, color: Rgba) -> Node {
         .items_center()
         .rounded(10.0)
         .bg(wash)
-        .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color))
+        .child(ui::dot(color, 6.0))
         .child(label(text.to_string()).size(11.0).medium().color(color))
         .into()
 }

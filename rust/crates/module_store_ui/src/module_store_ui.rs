@@ -475,7 +475,7 @@ fn wave(clock: f32, period: f32) -> f32 {
 fn pulse(clock: f32) -> Node {
     let mut color = theme().text_accent;
     color.a *= 0.35 + 0.65 * wave(clock, 0.9);
-    div().w_px(7.0).h_px(7.0).rounded(3.5).bg(color).into()
+    ui::dot(color, 7.0).into()
 }
 
 /// A size still being measured.

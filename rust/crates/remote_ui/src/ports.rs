@@ -167,7 +167,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
         .h_px(ROW_H)
         .pl(12.0)
         .pr(6.0)
-        .child(div().w_px(8.0).h_px(8.0).rounded(4.0).bg(dot))
+        .child(ui::dot(dot, 8.0))
         .child(fixed(
             64.0,
             small(forward.remote_port.to_string(), colors.text).mono(),
@@ -365,7 +365,7 @@ impl PortsPage {
                     .row()
                     .items_center()
                     .gap(6.0)
-                    .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(dot))
+                    .child(ui::dot(dot, 7.0))
                     .child(small(text, colors.text_muted)),
             )
             .into()

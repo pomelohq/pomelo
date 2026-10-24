@@ -600,7 +600,7 @@ impl ServiceItem {
             .rounded(11.0)
             .items_center()
             .bg(tone.alpha(0.14))
-            .child(div().w_px(7.0).h_px(7.0).rounded(3.5).bg(tone))
+            .child(ui::dot(tone, 7.0))
             .child(label(text).size(12.0).medium().color(tone).truncate())
             .into()
     }
@@ -1552,7 +1552,7 @@ impl ServiceItem {
         );
         if live {
             title = title
-                .child(view::dot(colors.success, 6.0))
+                .child(ui::dot(colors.success, 6.0))
                 .child(label("live").size(11.5).color(colors.success));
         }
         let mut field = div()

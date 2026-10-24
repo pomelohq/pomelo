@@ -638,12 +638,7 @@ pub fn tabs(host: &HostPage) -> Node {
             -2.0,
             6.0,
             6.0,
-            div()
-                .w_px(6.0)
-                .h_px(6.0)
-                .rounded(3.0)
-                .bg(dot)
-                .ring(1.5, ring),
+            ui::dot(dot, 6.0).ring(1.5, ring),
         );
     div()
         .row()

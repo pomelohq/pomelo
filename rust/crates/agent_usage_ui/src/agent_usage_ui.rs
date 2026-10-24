@@ -653,13 +653,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .row()
                 .items_center()
                 .gap(6.0)
-                .child(
-                    div()
-                        .w_px(8.0)
-                        .h_px(8.0)
-                        .rounded(4.0)
-                        .bg(color_of(&group.key)),
-                )
+                .child(ui::dot(color_of(&group.key), 8.0))
                 .child(
                     label(group.label.clone())
                         .size(12.0)
@@ -727,13 +721,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .w_px(200.0)
                     .items_center()
                     .gap(8.0)
-                    .child(
-                        div()
-                            .w_px(8.0)
-                            .h_px(8.0)
-                            .rounded(4.0)
-                            .bg(color_of(&group.key)),
-                    )
+                    .child(ui::dot(color_of(&group.key), 8.0))
                     .child(
                         label(group.label.clone())
                             .size(13.0)

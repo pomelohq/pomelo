@@ -176,7 +176,7 @@ pub fn status_pill(text: &str, color: Rgba) -> Node {
         .px(7.0)
         .rounded(10.0)
         .bg(theme().ghost_element_hover)
-        .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color))
+        .child(ui::dot(color, 6.0))
         .child(label(text.to_string()).size(11.0).medium().color(color))
         .into()
 }

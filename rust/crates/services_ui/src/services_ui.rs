@@ -868,7 +868,7 @@ impl ServicesPanel {
                         let failed = states.iter().any(State::needs_attention);
                         let mut pips = div().row().gap(3.0).items_center();
                         for state in states.iter().take(8) {
-                            pips = pips.child(view::dot(view::state_color(state), 5.0));
+                            pips = pips.child(ui::dot(view::state_color(state), 5.0));
                         }
                         div()
                             .row()
@@ -1120,7 +1120,7 @@ impl ServicesPanel {
                 .row()
                 .gap(5.0)
                 .items_center()
-                .child(view::dot(color, 7.0))
+                .child(ui::dot(color, 7.0))
                 .child(label(text).size(11.5).color(colors.text_muted))
                 .into()
         };

@@ -220,13 +220,7 @@ pub fn new_agent(
                 },
             )
             .child(if chosen {
-                Node::from(
-                    div()
-                        .w_px(8.0)
-                        .h_px(8.0)
-                        .rounded(4.0)
-                        .bg(colors.text_accent),
-                )
+                Node::from(ui::dot(colors.text_accent, 8.0))
             } else {
                 Node::from(div())
             });
