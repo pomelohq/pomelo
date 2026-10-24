@@ -441,6 +441,7 @@ pub struct Menu<'a> {
     hovered: Option<u64>,
     opens_submenu: fn(u64) -> bool,
     search: Option<&'a str>,
+    search_at_bottom: bool,
     min_width: f32,
 }
 
@@ -450,6 +451,7 @@ pub fn menu(items: &[MenuItem]) -> Menu<'_> {
         hovered: None,
         opens_submenu: |_| false,
         search: None,
+        search_at_bottom: false,
         min_width: MENU_MIN_WIDTH,
     }
 }
@@ -469,6 +471,12 @@ impl<'a> Menu<'a> {
     /// A search line above the items showing `query`, or a placeholder while it is empty.
     pub fn search(mut self, query: &'a str) -> Self {
         self.search = Some(query);
+        self
+    }
+
+    /// Keeps the search line next to the anchor when the menu opens above it.
+    pub fn search_at_bottom(mut self, at_bottom: bool) -> Self {
+        self.search_at_bottom = at_bottom;
         self
     }
 
@@ -532,7 +540,7 @@ impl<'a> Menu<'a> {
             .rounded(8.0)
             .bg(colors.elevated_surface_background)
             .border(1.0, colors.border);
-        if let Some(query) = self.search {
+        let mut search = self.search.map(|query| {
             let line = if query.is_empty() {
                 crate::label("Search...")
                     .size(12.0)
@@ -542,16 +550,17 @@ impl<'a> Menu<'a> {
                     .size(12.0)
                     .color(colors.text)
             };
-            card = card
-                .child(
-                    div()
-                        .row()
-                        .h_px(MENU_SEARCH_ROW)
-                        .px(MENU_SEARCH_INSET)
-                        .items_center()
-                        .child(line),
-                )
-                .child(separator());
+            div()
+                .row()
+                .h_px(MENU_SEARCH_ROW)
+                .px(MENU_SEARCH_INSET)
+                .items_center()
+                .child(line)
+        });
+        if !self.search_at_bottom {
+            if let Some(line) = search.take() {
+                card = card.child(line).child(separator());
+            }
         }
         for (index, item) in self.items.iter().enumerate() {
             if item.sep && index > 0 {
@@ -568,6 +577,9 @@ impl<'a> Menu<'a> {
                 continue;
             }
             card = card.child(self.row(item, marks));
+        }
+        if let Some(line) = search {
+            card = card.child(separator()).child(line);
         }
         (card.w_px(width).into(), width, height)
     }
