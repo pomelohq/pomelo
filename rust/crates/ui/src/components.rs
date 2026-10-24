@@ -658,3 +658,62 @@ fn menu_hover() -> Rgba {
         crate::Appearance::Light => Rgba::new(0.0, 0.0, 0.0, 0.04),
     }
 }
+
+/// Where a `size` menu opening from `anchor` goes inside `viewport`: under it and left-aligned when it
+/// fits, right-aligned to it near the right edge, above it near the bottom; never past `margin`.
+pub fn place_menu(
+    anchor: crate::Rect,
+    size: (f32, f32),
+    viewport: (f32, f32),
+    gap: f32,
+    margin: f32,
+) -> (f32, f32) {
+    let (width, height) = size;
+    let (viewport_w, viewport_h) = viewport;
+    let mut x = anchor.x;
+    if x + width > viewport_w - margin {
+        x = anchor.x + anchor.w - width;
+    }
+    let x = x.min(viewport_w - margin - width).max(margin);
+    let below = anchor.y + anchor.h + gap;
+    let above = anchor.y - gap - height;
+    let y = if below + height <= viewport_h - margin {
+        below
+    } else if above >= margin {
+        above
+    } else {
+        (viewport_h - margin - height).max(margin)
+    };
+    (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::place_menu;
+    use crate::{Rect, Rgba};
+
+    fn anchor(x: f32, y: f32) -> Rect {
+        Rect::new(x, y, 140.0, 28.0, Rgba::TRANSPARENT)
+    }
+
+    #[test]
+    fn a_menu_opens_under_its_anchor_and_flips_at_the_edges() {
+        let viewport = (400.0, 300.0);
+        assert_eq!(
+            place_menu(anchor(20.0, 20.0), (200.0, 100.0), viewport, 4.0, 8.0),
+            (20.0, 52.0)
+        );
+        assert_eq!(
+            place_menu(anchor(250.0, 20.0), (200.0, 100.0), viewport, 4.0, 8.0),
+            (190.0, 52.0)
+        );
+        assert_eq!(
+            place_menu(anchor(20.0, 260.0), (200.0, 100.0), viewport, 4.0, 8.0),
+            (20.0, 156.0)
+        );
+        assert_eq!(
+            place_menu(anchor(20.0, 100.0), (200.0, 250.0), viewport, 4.0, 8.0),
+            (20.0, 42.0)
+        );
+    }
+}

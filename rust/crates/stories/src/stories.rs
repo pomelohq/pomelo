@@ -79,7 +79,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Divider" => "Separates sections; Faded inside a list.",
         "Input" => "A labeled text field with its hint or its error below.",
         "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. A long list gets a search line that filters as you type. A check marks the current choice; keys sit on the right; Danger for actions that lose data.",
-        "Select menu" => "A select with its menu open under it, the current value checked.",
+        "Select menu" => "A select closed, then with its menu open under it: the current value checked, and a search line for a long list. Near the right edge the menu lines up with the select's right side; near the bottom it opens above.",
         "Services panel" => "The Services panel in the side dock: every service of the workspace, what needs attention, and the shared services.",
         "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
         _ => return None,

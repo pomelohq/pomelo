@@ -1520,16 +1520,8 @@ pub fn popover(
     let matches = filter_indices(items, query);
     let width = 210.0_f32.max(anchor.w / s);
     let w = width * s;
-    // Anchored to the trigger's left, then shifted left near the window's right edge.
     let margin = POPOVER_BOTTOM_MARGIN * s;
-    let mut x = anchor.x;
-    if x + w > viewport_w - margin {
-        x = viewport_w - margin - w;
-    }
-    x = x.max(margin);
-
-    // Fixed height, not shrunk to the room below: the list scrolls inside it. Near the window bottom it
-    // shifts up and may cover its trigger rather than flipping above.
+    // Fixed height, not shrunk to the room below: the list scrolls inside it.
     let row_h = ui::MENU_ROW * s;
     let chrome = POPOVER_CHROME * s;
     let avail = viewport_h - 2.0 * margin;
@@ -1571,11 +1563,7 @@ pub fn popover(
         .min_width(width)
         .render();
     let h = height * s;
-    let mut y = anchor.y + anchor.h + 2.0 * s;
-    if y + h > viewport_h - margin {
-        y = viewport_h - margin - h;
-    }
-    y = y.max(margin);
+    let (x, y) = ui::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
     let mut out = render(&card, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
 
     // A soft drop shadow: a few stacked, growing, translucent rects, since the renderer has no blur.
