@@ -482,8 +482,27 @@ pub fn transport_banners(
             ..NoticeBanner::default()
         });
     }
-    if let (true, Some(remote)) = (transport.version_mismatch, &transport.remote_version) {
-        let version = version_line(remote, host);
+    if transport.version_mismatch && transport.host_newer {
+        let version = match &transport.remote_version {
+            Some(remote) => version_line(remote, host),
+            None => format!(
+                "pom on {host} is newer than the app ({}).",
+                pom_remote::VERSION
+            ),
+        };
+        banners.push(NoticeBanner {
+            tone: NoticeTone::Warning,
+            text: format!("{version} Update this app to use everything pom there offers."),
+            ..NoticeBanner::default()
+        });
+    } else if transport.version_mismatch {
+        let version = match &transport.remote_version {
+            Some(remote) => version_line(remote, host),
+            None => format!(
+                "pom on {host} is older than the app ({}).",
+                pom_remote::VERSION
+            ),
+        };
         let banner = match (&update.running, &update.error) {
             (Some(step), _) => NoticeBanner {
                 tone: NoticeTone::Info,
@@ -643,10 +662,9 @@ pub fn remote_notice(
         actions.push(NoticeAction::Reconnect);
     }
     actions.push(NoticeAction::OpenInEditor);
-    let mismatch = snapshot
-        .transport
-        .as_ref()
-        .is_some_and(|transport| transport.version_mismatch || lacks_files(transport));
+    let mismatch = snapshot.transport.as_ref().is_some_and(|transport| {
+        (transport.version_mismatch && !transport.host_newer) || lacks_files(transport)
+    });
     let update_action = (mismatch && update.can_install && update.running.is_none()).then(|| {
         actions.push(NoticeAction::UpdatePom);
         actions.len() - 1
@@ -825,6 +843,54 @@ mod tests {
         let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
         assert!(notice.banners.is_empty());
         assert_eq!(actions, vec![NoticeAction::OpenInEditor]);
+    }
+
+    #[test]
+    fn a_newer_host_asks_to_update_the_app_and_an_older_protocol_offers_the_host_update() {
+        let update = PomUpdate {
+            can_install: true,
+            ..PomUpdate::default()
+        };
+        let mut snapshot = Snapshot {
+            connection: Connection::Connected,
+            ..Snapshot::default()
+        };
+        snapshot.transport = Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Server,
+            remote_version: Some("9.0.0".into()),
+            version_mismatch: true,
+            host_newer: true,
+            files: true,
+            ..pom_remote::TransportInfo::default()
+        });
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
+        assert_eq!(actions, vec![NoticeAction::OpenInEditor], "never downgrade");
+        assert!(notice.banners[0]
+            .text
+            .ends_with("Update this app to use everything pom there offers."));
+        assert_eq!(notice.banners[0].action, None);
+
+        snapshot.transport = Some(pom_remote::TransportInfo {
+            via: pom_remote::Via::Ssh,
+            fallback_reason: Some(
+                "pom server on dev speaks an older protocol than this app".into(),
+            ),
+            version_mismatch: true,
+            ..pom_remote::TransportInfo::default()
+        });
+        let (notice, actions) = remote_notice(&snapshot, "dev", "dev", "myproject", &update);
+        assert_eq!(
+            actions,
+            vec![NoticeAction::OpenInEditor, NoticeAction::UpdatePom]
+        );
+        assert_eq!(
+            notice.banners[0].text,
+            "Reading over ssh: pom server on dev speaks an older protocol than this app."
+        );
+        assert!(notice.banners[1]
+            .text
+            .starts_with("pom on dev is older than the app ("));
+        assert_eq!(notice.banners[1].action, Some(1));
     }
 
     #[test]

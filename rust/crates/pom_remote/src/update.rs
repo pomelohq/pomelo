@@ -4,7 +4,8 @@
 //! into a temp folder there, whose install.sh puts pom in place. The host never downloads anything.
 //!
 //! An app and a host's pom of the same version work together fully. Of different versions, the app uses only
-//! what the server's HELLO declares, and offers this update once their major or minor version differs.
+//! what the server's HELLO declares, and offers this update once their major or minor version differs and the
+//! host is older; a newer host is never taken back.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

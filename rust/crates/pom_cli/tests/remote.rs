@@ -85,7 +85,11 @@ repos:
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(POM);
+        self.command_with(Path::new(POM), args)
+    }
+
+    fn command_with(&self, binary: &Path, args: &[&str]) -> Command {
+        let mut command = Command::new(binary);
         let path = format!(
             "{}:{}",
             self.temp.path().join("bin").display(),
@@ -1179,6 +1183,109 @@ fn an_older_remote_pom_without_a_server_is_read_over_plain_ssh() {
     let reason = transport.fallback_reason.expect("a reason");
     assert!(reason.contains("update pom on the VM"), "{reason}");
     assert!(server.status("feat").is_ok());
+}
+
+/// The previous release's pom, its signature checked against the release key, serves this build's client: CI's
+/// compatibility job sets `POM_PREVIOUS_TARBALL` to the downloaded Linux tarball, with its `.sig` beside it.
+#[test]
+#[ignore = "needs POM_PREVIOUS_TARBALL: a previous release's Linux pom tarball"]
+fn the_previous_release_s_server_serves_this_app() {
+    use pom_remote::{ProjectSource, ServiceAction, Via};
+    let tarball =
+        PathBuf::from(std::env::var_os("POM_PREVIOUS_TARBALL").expect("POM_PREVIOUS_TARBALL"));
+    let bytes = std::fs::read(&tarball).expect("tarball");
+    let signature =
+        std::fs::read_to_string(format!("{}.sig", tarball.display())).expect("signature");
+    auto_update::verify(&bytes, signature.trim(), auto_update::UPDATE_PUBLIC_KEY)
+        .expect("signed with the release key");
+    let version = tarball
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix("pom-"))
+        .and_then(|rest| rest.split_once("-linux-"))
+        .map(|(version, _)| version.to_string())
+        .expect("pom-<version>-linux-<arch>.tar.gz");
+    assert_ne!(version, env!("CARGO_PKG_VERSION"), "not a previous release");
+
+    let fixture = Fixture::new();
+    fixture.register_project();
+    let previous = fixture.temp.path().join("home/previous");
+    std::fs::create_dir_all(&previous).expect("previous");
+    let unpacked = Command::new("tar")
+        .arg("-xzf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&previous)
+        .status()
+        .expect("tar");
+    assert!(unpacked.success());
+    let binary = previous.join(format!("pom-{version}/bin/pom"));
+    let added = fixture.pom(&[
+        "host",
+        "add",
+        "prev",
+        "ssh://192.0.2.11",
+        "--pom-path",
+        &format!("~/previous/pom-{version}/bin/pom"),
+    ]);
+    assert!(added.status.success(), "{}", text(&added));
+
+    let server = fixture.server_source("prev");
+    let local = fixture.local_source();
+    let served = || {
+        assert_eq!(
+            server.workspaces().expect("workspaces"),
+            local.workspaces().expect("local")
+        );
+        let transport = server.transport().expect("transport");
+        assert_eq!(
+            transport.via,
+            Via::Server,
+            "{:?}",
+            transport.fallback_reason
+        );
+        assert_eq!(transport.remote_version.as_deref(), Some(version.as_str()));
+        assert!(transport.terminals);
+        assert!(!transport.host_newer);
+        assert_eq!(
+            transport.version_mismatch,
+            pom_remote::version_mismatch(env!("CARGO_PKG_VERSION"), &version)
+        );
+
+        let started = server
+            .act("feat", ServiceAction::Start, "web")
+            .expect("start");
+        assert!(started.contains("started api/web"), "{started}");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !server
+            .logs("feat", "api/web")
+            .expect("logs")
+            .contains("web-banner-")
+        {
+            assert!(Instant::now() < deadline, "no banner");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        while !server.status("feat").expect("status").services[0].ready {
+            assert!(Instant::now() < deadline, "web never became ready");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert_eq!(
+            server.agents("feat").expect("agents"),
+            local.agents("feat").expect("local agents")
+        );
+        server
+            .act("feat", ServiceAction::Stop, "web")
+            .expect("stop");
+        assert!(!server.status("feat").expect("status").services[0].up);
+    };
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(served));
+    let stopped = fixture.command_with(&binary, &["server", "stop"]).output();
+    if let Err(error) = &stopped {
+        eprintln!("previous pom server stop: {error}");
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[test]

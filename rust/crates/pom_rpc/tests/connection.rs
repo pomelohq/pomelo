@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use pom_rpc::mock::{self, Faults};
 use pom_rpc::{
     error_code, read_frame, write_frame, CloseReason, Config, Connection, ConnectionState, Error,
-    Frame, Hello, InputChunk, Kind, PushEvent, RemoteError, Request, RequestContext, Response,
-    StreamEvent, Transport, MAX_FRAME, MAX_PENDING_REQUESTS,
+    Frame, Hello, InputChunk, Kind, Mismatch, PushEvent, RemoteError, Request, RequestContext,
+    Response, StreamEvent, Transport, MAX_FRAME, MAX_PENDING_REQUESTS, MIN_PROTOCOL,
+    PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 
@@ -279,9 +280,51 @@ fn protocol_mismatch_is_refused_in_the_handshake() {
     });
     let mut hello = Hello::new("raw");
     hello.protocol = 99;
+    hello.min_protocol = 0;
     write_frame(&mut raw, &Frame::json(Kind::Hello, 0, &hello).unwrap()).unwrap();
-    assert!(farewell(&mut raw).starts_with(error_code::PROTOCOL_MISMATCH));
+    let refusal = farewell(&mut raw);
+    assert!(refusal.starts_with(error_code::PROTOCOL_MISMATCH));
+    assert_eq!(
+        Mismatch::parse(&refusal),
+        Some(Mismatch {
+            peer: 99,
+            this_side: PROTOCOL_VERSION
+        })
+    );
     assert!(matches!(accepting.join().unwrap(), Err(Error::Closed(_))));
+}
+
+#[test]
+fn a_newer_peer_that_still_speaks_ours_is_answered_in_ours() {
+    let (server_transport, mut raw) = raw_pair();
+    let accepting = thread::spawn(move || {
+        Connection::builder(server_transport).accept(|_| Ok(Hello::new("server")))
+    });
+    let mut hello = Hello::new("raw");
+    hello.protocol = PROTOCOL_VERSION + 3;
+    hello.min_protocol = MIN_PROTOCOL;
+    write_frame(&mut raw, &Frame::json(Kind::Hello, 0, &hello).unwrap()).unwrap();
+    let reply: Hello = pom_rpc::decode(&read(&mut raw).payload).unwrap();
+    assert_eq!(reply.protocol, PROTOCOL_VERSION);
+    assert_eq!(reply.min_protocol, MIN_PROTOCOL);
+    let (server, _) = accepting.join().unwrap().unwrap();
+    server.close();
+}
+
+#[test]
+fn a_peer_whose_oldest_protocol_is_newer_than_ours_is_refused() {
+    let (server_transport, mut raw) = raw_pair();
+    let accepting = thread::spawn(move || {
+        Connection::builder(server_transport).accept(|_| Ok(Hello::new("server")))
+    });
+    let mut hello = Hello::new("raw");
+    hello.protocol = PROTOCOL_VERSION + 3;
+    hello.min_protocol = PROTOCOL_VERSION + 1;
+    write_frame(&mut raw, &Frame::json(Kind::Hello, 0, &hello).unwrap()).unwrap();
+    let refusal = farewell(&mut raw);
+    let mismatch = Mismatch::parse(&refusal).expect(&refusal);
+    assert_eq!(mismatch.other_than(PROTOCOL_VERSION), PROTOCOL_VERSION + 3);
+    assert!(accepting.join().unwrap().is_err());
 }
 
 #[test]

@@ -17,7 +17,8 @@ pub use connection::{
     MAX_CHANNELS, MAX_PENDING_REQUESTS,
 };
 pub use envelope::{
-    decode, error_code, End, Hello, Push, RemoteError, Request, Response, PROTOCOL_VERSION,
+    agreed_protocol, decode, error_code, End, Hello, Mismatch, Push, RemoteError, Request,
+    Response, MIN_PROTOCOL, PROTOCOL_VERSION,
 };
 pub use error::{CloseReason, Error};
 pub use frame::{read_frame, write_frame, Frame, Kind, ReadError, MAX_DATA, MAX_FRAME};

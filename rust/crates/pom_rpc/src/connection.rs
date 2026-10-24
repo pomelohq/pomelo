@@ -14,7 +14,8 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::envelope::{
-    decode, error_code, End, Hello, Push, RemoteError, Request, Response, PROTOCOL_VERSION,
+    agreed_protocol, decode, error_code, End, Hello, Push, RemoteError, Request, Response,
+    MIN_PROTOCOL,
 };
 use crate::error::{CloseReason, Error};
 use crate::frame::{read_frame, write_frame, Frame, Kind, ReadError, MAX_DATA};
@@ -406,17 +407,10 @@ impl Inner {
             other => return Err(Fault::violation(format!("expected HELLO, got {other:?}"))),
         }
         let hello: Hello = decode(&frame.payload).map_err(protocol)?;
-        if hello.protocol != PROTOCOL_VERSION {
-            let message = format!(
-                "{}: peer speaks protocol {}, this side {PROTOCOL_VERSION}",
-                error_code::PROTOCOL_MISMATCH,
-                hello.protocol
-            );
-            return Err(Fault {
-                close: CloseReason::Peer(message.clone()),
-                farewell: Some(message),
-            });
-        }
+        let agreed = agreed_protocol(&hello).map_err(|message| Fault {
+            close: CloseReason::Peer(message.clone()),
+            farewell: Some(message),
+        })?;
         let accept = self.lock().accept.take();
         let reply = match accept {
             Some(decide) => Some(decide(&hello).map_err(|reason| Fault {
@@ -428,7 +422,9 @@ impl Inner {
         let mut state = self.lock();
         state.last_received = Instant::now();
         if let Some(mut reply) = reply {
-            reply.protocol = PROTOCOL_VERSION;
+            // An older client checks the reply's protocol against its own, so it gets the one both speak.
+            reply.protocol = agreed;
+            reply.min_protocol = MIN_PROTOCOL;
             let frame = Frame::json(Kind::Hello, CONNECTION_CHANNEL, &reply).map_err(protocol)?;
             self.queue_control(&mut state, frame);
         }

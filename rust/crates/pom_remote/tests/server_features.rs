@@ -633,3 +633,47 @@ fn the_host_settings_go_through_a_server_that_offers_them() {
     };
     assert!(message.contains("needs a newer pom on dev"), "{message}");
 }
+
+fn refusing(refusal: &'static str) -> ServerSource {
+    let opener: pom_remote::Opener = Arc::new(move |_reconnect| {
+        let (client, server) = pom_rpc::mock::pair()?;
+        std::thread::spawn(move || {
+            if Connection::builder(server)
+                .accept(move |_| Err(refusal.to_string()))
+                .is_ok()
+            {
+                eprintln!("the refusing server accepted");
+            }
+        });
+        Ok(client)
+    });
+    let host = pom_remote::Host {
+        name: "dev".into(),
+        url: pom_remote::HostUrl::parse("ssh://dev.example.net").expect("url"),
+        pom_path: None,
+        transport: None,
+    };
+    ServerSource::with_opener(host, "/srv/myproject/pom.yml".into(), opener)
+}
+
+#[test]
+fn a_host_on_another_protocol_says_which_side_to_update() {
+    let newer =
+        refusing("protocol_mismatch: peer speaks protocol 1 (oldest 1), this side 9 (oldest 8)");
+    assert_eq!(newer.usage(0), Ok(None));
+    let transport = newer.transport().expect("transport");
+    assert!(transport.version_mismatch && transport.host_newer);
+    assert_eq!(
+        transport.fallback_reason.as_deref(),
+        Some("pom server on dev speaks a newer protocol than this app")
+    );
+
+    let older = refusing("protocol_mismatch: peer speaks protocol 1, this side 0");
+    assert_eq!(older.usage(0), Ok(None));
+    let transport = older.transport().expect("transport");
+    assert!(transport.version_mismatch && !transport.host_newer);
+    assert_eq!(
+        transport.fallback_reason.as_deref(),
+        Some("pom server on dev speaks an older protocol than this app")
+    );
+}

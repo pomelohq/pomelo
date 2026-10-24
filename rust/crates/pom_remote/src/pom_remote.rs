@@ -47,8 +47,8 @@ pub use source::{
     WorkspaceList, WorkspaceSummary, PROJECT_SCHEMA, WORKSPACE_SCHEMA,
 };
 pub use ssh::{
-    control_dir, json_requested, parse_version, quote, remote_command, ssh_args, ssh_command,
-    version_mismatch, Ssh, Tty,
+    control_dir, host_newer, json_requested, parse_version, quote, remote_command, ssh_args,
+    ssh_command, version_mismatch, Ssh, Tty,
 };
 pub use watch::{Connection, Snapshot, Timing, Watch, POLL_EVERY, SAFETY_REFRESH};
 

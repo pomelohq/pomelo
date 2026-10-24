@@ -361,7 +361,7 @@ jobs:
   # pom server on the platform it mostly runs on: socket permissions, the peer uid check (SO_PEERCRED), the
   # lock, idle and socket-removed exits, terminals over real holders (latency and a 200 MiB flood), pushes and
   # agent leases, followed service output and workspace jobs, and the app's reads, shells, agents, output and
-  # jobs through `pom server proxy` behind a fake ssh.
+  # jobs through `pom server proxy` behind a fake ssh, also against the previous release's signed pom.
   pom-server:
     name: pom server (Linux)
     needs: orchestrate
@@ -392,6 +392,21 @@ jobs:
       - run: >-
           cargo nextest run -p pom_cli --test remote
           -E 'test(server) | test(chaos) | test(session_dies) | test(reconnected) | test(updating_pom)'
+      # The last stable release's pom server must still serve this build's client (handshake and a few RPCs).
+      - name: Download the previous release's pom
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          current="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
+          tag="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts --limit 20 \
+            --json tagName --jq '.[].tagName' | grep -vx "v$current" | head -n 1)"
+          [ -n "$tag" ] || { echo "::error::no previous release"; exit 1; }
+          file="pom-${tag#v}-linux-x86_64.tar.gz"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/previous" \
+            --pattern "$file" --pattern "$file.sig"
+          echo "POM_PREVIOUS_TARBALL=$RUNNER_TEMP/previous/$file" >> "$GITHUB_ENV"
+      - name: The previous release's pom server serves this app
+        run: cargo nextest run -p pom_cli --test remote --run-ignored only -E 'test(previous_release)'
       # sshd and its throwaway key live only on this runner.
       - name: Start a real sshd on this runner
         run: |

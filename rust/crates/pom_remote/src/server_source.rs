@@ -10,8 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use pom_agent::SessionView;
 use pom_rpc::pty::{self, LinkState, PtyProvider, ResumeError, SharedEvents};
 use pom_rpc::{
-    error_code, CloseReason, Connection, Error, Hello, PushEvent, StreamEvent, StreamReceiver,
-    Subscription,
+    error_code, CloseReason, Connection, Error, Hello, Mismatch, PushEvent, StreamEvent,
+    StreamReceiver, Subscription, PROTOCOL_VERSION,
 };
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -31,9 +31,9 @@ use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
 use crate::update::{Release, UpdateStep};
 use crate::{
-    version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, JobEvent, JobFeed, LogEvent,
-    LogFeed, ProjectSource, RemoteSource, ServiceAction, SourceError, Ssh, StatusReport,
-    TransportInfo, Update, Via, WorkspaceList,
+    host_newer, version_mismatch, AgentTurn, Feed, FeedEvent, Host, HostTransport, JobEvent,
+    JobFeed, LogEvent, LogFeed, ProjectSource, RemoteSource, ServiceAction, SourceError, Ssh,
+    StatusReport, TransportInfo, Update, Via, WorkspaceList,
 };
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -226,6 +226,11 @@ enum Failure {
     ServerGone,
     /// The host cannot serve; read it over plain ssh.
     Fallback(String),
+    /// The host's server speaks no protocol the app speaks; `host_newer` when its protocols are all newer.
+    Mismatch {
+        reason: String,
+        host_newer: bool,
+    },
     Source(SourceError),
 }
 
@@ -259,11 +264,19 @@ impl Inner {
         locked(&self.status).link.clone()
     }
 
-    fn fall_back(&self, link: &mut LinkSlot, reason: String) {
+    fn fall_back(&self, link: &mut LinkSlot, failure: Failure) {
+        let (reason, mismatch) = match failure {
+            Failure::Mismatch { reason, host_newer } => (reason, Some(host_newer)),
+            Failure::Fallback(reason) => (reason, None),
+            Failure::ServerGone => ("pom server is gone".to_string(), None),
+            Failure::Source(error) => (error.to_string(), None),
+        };
         *link = LinkSlot::Fallback;
         *locked(&self.info) = Some(TransportInfo {
             via: Via::Ssh,
             fallback_reason: Some(reason),
+            version_mismatch: mismatch.is_some(),
+            host_newer: mismatch.unwrap_or(false),
             ..TransportInfo::default()
         });
         self.set_link_state(LinkState::Connected);
@@ -312,9 +325,14 @@ impl Inner {
             Err(Error::Closed(CloseReason::Peer(message)))
                 if message.starts_with(error_code::PROTOCOL_MISMATCH) =>
             {
-                Err(Failure::Fallback(format!(
-                    "pom server on {name} speaks another protocol; update pom on the VM to get terminals"
-                )))
+                let host_newer = Mismatch::parse(&message).is_some_and(|mismatch| {
+                    mismatch.other_than(PROTOCOL_VERSION) > PROTOCOL_VERSION
+                });
+                let side = if host_newer { "a newer" } else { "an older" };
+                Err(Failure::Mismatch {
+                    reason: format!("pom server on {name} speaks {side} protocol than this app"),
+                    host_newer,
+                })
             }
             Err(error) => Err(
                 match process.as_ref().map(|process| process.failure(EXIT_WAIT)) {
@@ -333,11 +351,9 @@ impl Inner {
                             "pom is not installed on {name}; check it with: pom host test {name}"
                         )))
                     }
-                    Some(ProxyFailure::Other(reason)) => {
-                        Failure::Source(SourceError::Unreachable(format!(
-                            "pom server on {name} did not answer ({error}): {reason}"
-                        )))
-                    }
+                    Some(ProxyFailure::Other(reason)) => Failure::Source(SourceError::Unreachable(
+                        format!("pom server on {name} did not answer ({error}): {reason}"),
+                    )),
                 },
             ),
         }
@@ -360,6 +376,8 @@ impl Inner {
             via: Via::Server,
             fallback_reason: None,
             version_mismatch: version_mismatch(VERSION, &server.pom_version),
+            host_newer: version_mismatch(VERSION, &server.pom_version)
+                && host_newer(VERSION, &server.pom_version),
             remote_version: Some(server.pom_version.clone()),
             terminals: offers(pom_rpc::pty::METHODS),
             pushes: offers(PUSH),
@@ -454,8 +472,8 @@ impl Inner {
                 self.supervise();
                 Ok(Some(connection))
             }
-            Err(Failure::Fallback(reason)) => {
-                self.fall_back(&mut link, reason);
+            Err(failure @ (Failure::Fallback(_) | Failure::Mismatch { .. })) => {
+                self.fall_back(&mut link, failure);
                 Ok(None)
             }
             Err(Failure::ServerGone) => Err(SourceError::Unreachable(format!(
@@ -614,8 +632,8 @@ fn supervise(weak: &Weak<Inner>) {
             let mut link = locked(&inner.link);
             match inner.redial(&mut link) {
                 Ok(()) => break,
-                Err(Failure::Fallback(why)) => {
-                    inner.fall_back(&mut link, why);
+                Err(failure @ (Failure::Fallback(_) | Failure::Mismatch { .. })) => {
+                    inner.fall_back(&mut link, failure);
                     return;
                 }
                 Err(Failure::ServerGone) => reason = "pom server is gone".to_string(),
