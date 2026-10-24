@@ -396,16 +396,15 @@ impl Gallery {
                     ui::Rect::new(bx, by - 20.0, bw, 16.0, ui::Rgba::TRANSPARENT),
                 ));
             }
-            for (spread, alpha) in [(14.0, 0.06), (8.0, 0.1), (3.0, 0.16)] {
-                let mut shadow = ui::Rect::new(
+            // Rects have no blur, so the shadow is a few thin square steps that fade out under the frame.
+            for (spread, alpha) in [(3.0, 0.04), (2.0, 0.06), (1.0, 0.1)] {
+                base.rects.push(ui::Rect::new(
                     bx - spread,
-                    by - spread + spread * 0.5,
+                    by - spread + 1.0,
                     bw + spread * 2.0,
                     bh + spread * 2.0,
                     ui::Rgba::new(0.0, 0.0, 0.0, alpha),
-                );
-                shadow.radius = spread;
-                base.rects.push(shadow);
+                ));
             }
             let mut frame = ui::Rect::new(
                 bx - 1.0,
