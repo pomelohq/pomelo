@@ -21,6 +21,7 @@ members = [
     "crates/auto_update_ui",
     "crates/settings",
     "crates/settings_ui",
+    "crates/stories",
     "crates/ui_snapshot",
     "crates/grammar_packager",
     "crates/grammars",

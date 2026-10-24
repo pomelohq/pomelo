@@ -58,6 +58,7 @@ pom_ports = { path = "../pom_ports" }
 pom_env = { path = "../pom_env" }
 terminal = { path = "../terminal" }
 terminal_ui = { path = "../terminal_ui" }
+stories = { path = "../stories" }
 anyhow.workspace = true
 png = "0.17"
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
