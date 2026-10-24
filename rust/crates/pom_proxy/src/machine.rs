@@ -63,6 +63,10 @@ impl Machine for SystemMachine {
         Some(self.state.path("proxy/activity.json"))
     }
 
+    fn forwarders_file(&self) -> Option<std::path::PathBuf> {
+        Some(self.state.path(crate::FORWARDERS_FILE))
+    }
+
     fn wake(&self, project_root: &Path, branch: &str) {
         let Some(waker) = self.waker.clone() else {
             return;

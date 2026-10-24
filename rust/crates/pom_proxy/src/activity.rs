@@ -90,14 +90,14 @@ impl Activity {
             schema: ACTIVITY_SCHEMA.into(),
             workspaces,
         };
-        match write(path, &file) {
+        match write_json(path, &file) {
             Ok(()) => seen.written = Some(Instant::now()),
             Err(error) => eprintln!("dev proxy: {}: {error}", path.display()),
         }
     }
 }
 
-fn write(path: &Path, file: &ActivityFile) -> std::io::Result<()> {
+pub(crate) fn write_json<T: Serialize>(path: &Path, file: &T) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }

@@ -1440,6 +1440,11 @@ impl App {
                 ) {
                     pom_doctor::add_finding(&mut findings, finding);
                 }
+                let forwarders =
+                    pom_proxy::untrusted_forwarders(&network, &pom_paths::StateDir::from_env());
+                if let Some(finding) = pom_doctor::untrusted_forwarders(&forwarders) {
+                    pom_doctor::add_finding(&mut findings, finding);
+                }
                 if let Some(finding) = bundled_pom_shadowed(path) {
                     pom_doctor::add_finding(&mut findings, finding);
                 }

@@ -363,6 +363,10 @@ pub trait Machine: Send + Sync {
     fn activity_file(&self) -> Option<PathBuf> {
         None
     }
+    /// Where peers that forward without being trusted are kept; nowhere when `None`.
+    fn forwarders_file(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 type BranchMap = (Instant, HashMap<String, String>);
@@ -414,6 +418,7 @@ pub struct Router {
     /// When each workspace was last asked to wake.
     woken: Mutex<HashMap<(PathBuf, String), Instant>>,
     activity: crate::activity::Activity,
+    forwarders: crate::forwarders::Forwarders,
     random: Mutex<u64>,
     /// Hosts end in it besides `localhost`.
     domain: String,
@@ -422,8 +427,10 @@ pub struct Router {
 impl Router {
     pub fn new(machine: Box<dyn Machine>) -> Router {
         let activity = crate::activity::Activity::new(machine.activity_file());
+        let forwarders = crate::forwarders::Forwarders::new(machine.forwarders_file());
         Router {
             activity,
+            forwarders,
             machine,
             projects: RwLock::new(Vec::new()),
             branch_maps: Mutex::new(HashMap::new()),
@@ -457,6 +464,10 @@ impl Router {
         if let Ok(mut current) = self.gateways.write() {
             *current = gateways;
         }
+    }
+
+    pub(crate) fn note_forwarder(&self, address: std::net::IpAddr) {
+        self.forwarders.note(address, crate::faults::now_ms());
     }
 
     pub fn has_projects(&self) -> bool {
