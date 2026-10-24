@@ -304,13 +304,6 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|_, _| card(&submenus(), None, true)),
         ),
         story(
-            "menu-search-empty",
-            "Menu",
-            "Search, just opened",
-            searchable_size(""),
-            || still(|_, _| searchable("", Some(ID))),
-        ),
-        story(
             "menu-search-typed",
             "Menu",
             "Search, filtered",
