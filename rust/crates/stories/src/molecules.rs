@@ -15,14 +15,6 @@ fn item(index: u64, text: &'static str) -> MenuItem {
     MenuItem::new(ID + index, text)
 }
 
-fn plain() -> Vec<MenuItem> {
-    vec![
-        item(0, "Open"),
-        item(1, "Open in new pane"),
-        item(2, "Reveal in Finder"),
-    ]
-}
-
 fn chosen() -> Vec<MenuItem> {
     ["Pomelo Dark", "Pomelo Light", "Solarized Dark"]
         .into_iter()
@@ -34,66 +26,48 @@ fn chosen() -> Vec<MenuItem> {
         .collect()
 }
 
-fn icons_and_keys() -> Vec<MenuItem> {
+/// What a right click on a file opens: every kind of row a menu has, in the order a real one uses them.
+fn context_menu() -> Vec<MenuItem> {
     vec![
         MenuItem {
-            icon: Some(IconKind::Play),
-            hint: Some("cmd-shift-s".into()),
-            ..item(0, "Start all")
+            icon: Some(IconKind::File),
+            hint: Some("cmd-o".into()),
+            ..item(0, "Open")
         },
-        MenuItem {
-            icon: Some(IconKind::Stop),
-            hint: Some("cmd-shift-x".into()),
-            ..item(1, "Stop all")
-        },
-        MenuItem {
-            icon: Some(IconKind::Sparkle),
-            ..item(2, "Ask the agent")
-        },
-    ]
-}
-
-fn groups() -> Vec<MenuItem> {
-    vec![
-        MenuItem {
-            header: true,
-            ..item(0, "Clipboard")
-        },
-        MenuItem {
-            hint: Some("cmd-x".into()),
-            ..item(1, "Cut")
-        },
-        MenuItem {
-            hint: Some("cmd-c".into()),
-            ..item(2, "Copy")
-        },
+        item(1, "Open in new pane"),
+        item(2, "Reveal in Finder"),
         MenuItem {
             sep: true,
             header: true,
-            ..item(3, "Path")
+            ..item(3, "Copy")
+        },
+        MenuItem {
+            icon: Some(IconKind::Copy),
+            hint: Some("cmd-alt-c".into()),
+            ..item(4, "Copy path")
         },
         MenuItem {
             hint: Some("cmd-shift-c".into()),
-            ..item(4, "Copy relative path")
+            ..item(5, "Copy relative path")
         },
-    ]
-}
-
-fn danger_and_disabled() -> Vec<MenuItem> {
-    vec![
-        item(0, "Rename"),
+        MenuItem {
+            sep: true,
+            ..item(6, "Rename")
+        },
         MenuItem {
             disabled: true,
-            ..item(1, "Paste")
+            ..item(7, "Paste")
         },
         MenuItem {
             sep: true,
             danger: true,
             icon: Some(IconKind::Trash),
-            ..item(2, "Delete")
+            ..item(8, "Delete")
         },
     ]
 }
+
+const CONTEXT_HOVERED: u64 = ID + 6;
 
 fn submenus() -> Vec<MenuItem> {
     vec![
@@ -123,6 +97,26 @@ fn menu(items: &[MenuItem], nested: bool) -> ui::Menu<'_> {
     } else {
         menu
     }
+}
+
+fn submenu_open() -> Node {
+    let choices = chosen();
+    div()
+        .row()
+        .p(INSET)
+        .gap(2.0)
+        .child(menu(&submenus(), true).hovered(Some(ID)))
+        .child(ui::menu(&choices).hovered(Some(ID + 1)))
+        .into()
+}
+
+fn submenu_open_size() -> (f32, f32) {
+    let (_, parent_width, parent_height) = menu(&submenus(), true).render();
+    let (_, child_width, child_height) = ui::menu(&chosen()).render();
+    (
+        parent_width + 2.0 + child_width + 2.0 * INSET,
+        parent_height.max(child_height) + 2.0 * INSET,
+    )
 }
 
 fn card(items: &[MenuItem], hovered: Option<u64>, nested: bool) -> Node {
@@ -251,58 +245,30 @@ pub fn stories() -> Vec<StoryDef> {
     };
     vec![
         story(
-            "menu-plain",
+            "menu-context",
             "Menu",
-            "Plain",
-            card_size(&plain(), false),
-            || still(|_, _| card(&plain(), None, false)),
-        ),
-        story(
-            "menu-hovered",
-            "Menu",
-            "Hovered",
-            card_size(&plain(), false),
-            || still(|_, _| card(&plain(), Some(ID + 1), false)),
-        ),
-        story(
-            "menu-icons-keys",
-            "Menu",
-            "Icons and keys",
-            card_size(&icons_and_keys(), false),
-            || still(|_, _| card(&icons_and_keys(), None, false)),
-        ),
-        story(
-            "menu-groups",
-            "Menu",
-            "Groups",
-            card_size(&groups(), false),
-            || still(|_, _| card(&groups(), None, false)),
-        ),
-        story(
-            "menu-danger-disabled",
-            "Menu",
-            "Danger and disabled",
-            card_size(&danger_and_disabled(), false),
-            || still(|_, _| card(&danger_and_disabled(), None, false)),
-        ),
-        story(
-            "menu-submenus",
-            "Menu",
-            "Submenus",
-            card_size(&submenus(), true),
-            || still(|_, _| card(&submenus(), None, true)),
+            "Right click on a file",
+            card_size(&context_menu(), false),
+            || still(|_, _| card(&context_menu(), Some(CONTEXT_HOVERED), false)),
         ),
         story(
             "menu-search-typed",
             "Menu",
-            "Search, filtered",
+            "A long list, filtered",
             searchable_size("dark"),
             || still(|_, _| searchable("dark", Some(ID + 2))),
         ),
         story(
+            "menu-submenu-open",
+            "Menu",
+            "A submenu open",
+            submenu_open_size(),
+            || still(|_, _| submenu_open()),
+        ),
+        story(
             "select-open",
             "Select menu",
-            "Open",
+            "Opens below",
             select_open_size(),
             || still(|_, _| select_open()),
         ),
@@ -316,26 +282,9 @@ pub fn stories() -> Vec<StoryDef> {
         story(
             "select-bottom-search",
             "Select menu",
-            "Near the bottom edge",
+            "Near the bottom: opens above",
             EDGE_BOARD,
             || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT), true)),
-        ),
-        story(
-            "select-corner",
-            "Select menu",
-            "Near the bottom right corner",
-            EDGE_BOARD,
-            || {
-                still(|_, _| {
-                    at_edge(
-                        (
-                            EDGE_BOARD.0 - EDGE_MARGIN - SELECT_WIDTH,
-                            EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT,
-                        ),
-                        false,
-                    )
-                })
-            },
         ),
     ]
 }
