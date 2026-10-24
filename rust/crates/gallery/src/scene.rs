@@ -2,8 +2,14 @@ use stories::{Story, StoryDef};
 
 pub const GAP: f32 = 80.0;
 pub const ROW_GAP: f32 = 160.0;
-pub const GROUP_TITLE: f32 = 56.0;
+/// Room above a group's boards for its title and note, inside its frame.
+pub const GROUP_HEADER: f32 = 88.0;
+/// How far a group's dashed frame sits outside its header and boards.
+pub const FRAME_PAD: f32 = 32.0;
 pub const BOARD_TITLE: f32 = 22.0;
+const GROUP_GAP: f32 = 160.0;
+/// Groups of small boards share a shelf up to this width, so a page of atoms is not one tall column.
+const SHELF: f32 = 2400.0;
 
 pub struct Board {
     pub def: StoryDef,
@@ -22,7 +28,11 @@ pub struct Raster {
 
 pub struct Group {
     pub title: &'static str,
-    pub top: f32,
+    pub note: Option<&'static str>,
+    pub left: f32,
+    pub right: f32,
+    /// Where the header starts, above the boards.
+    pub head: f32,
     pub bottom: f32,
 }
 
@@ -64,25 +74,32 @@ pub fn pages(defs: &[StoryDef]) -> Vec<&'static str> {
     pages
 }
 
-/// A page's stories in rows by group, each row left to right in registry order.
+/// A page's stories by group, each group one row in registry order; narrow groups share a shelf.
 pub fn lay_out(defs: &[StoryDef], page: &str) -> (Vec<Board>, Vec<Group>) {
     let mut boards = Vec::new();
     let mut groups: Vec<Group> = Vec::new();
-    let mut y = 0.0;
     let mut order: Vec<&'static str> = Vec::new();
     for def in defs.iter().filter(|def| def.page == page) {
         if !order.contains(&def.group) {
             order.push(def.group);
         }
     }
+    let (mut shelf_x, mut shelf_y, mut shelf_bottom) = (0.0_f32, 0.0_f32, 0.0_f32);
     for group in order {
-        let top = y + GROUP_TITLE + BOARD_TITLE;
-        let mut x = 0.0;
-        let mut tallest: f32 = 0.0;
-        for def in defs
+        let members: Vec<&StoryDef> = defs
             .iter()
             .filter(|def| def.page == page && def.group == group)
-        {
+            .collect();
+        let width = members.iter().map(|def| def.size.0).sum::<f32>()
+            + GAP * members.len().saturating_sub(1) as f32;
+        let tallest = members.iter().map(|def| def.size.1).fold(0.0, f32::max);
+        if shelf_x > 0.0 && shelf_x + width > SHELF {
+            shelf_x = 0.0;
+            shelf_y = shelf_bottom + ROW_GAP + FRAME_PAD * 2.0;
+        }
+        let top = shelf_y + GROUP_HEADER + BOARD_TITLE;
+        let mut x = shelf_x;
+        for def in members {
             boards.push(Board {
                 def: *def,
                 x,
@@ -93,14 +110,17 @@ pub fn lay_out(defs: &[StoryDef], page: &str) -> (Vec<Board>, Vec<Group>) {
                 stale: true,
             });
             x += def.size.0 + GAP;
-            tallest = tallest.max(def.size.1);
         }
         groups.push(Group {
             title: group,
-            top,
+            note: stories::group_note(group),
+            left: shelf_x,
+            right: shelf_x + width,
+            head: shelf_y,
             bottom: top + tallest,
         });
-        y = top + tallest + ROW_GAP;
+        shelf_bottom = shelf_bottom.max(top + tallest);
+        shelf_x += width + GROUP_GAP + FRAME_PAD * 2.0;
     }
     (boards, groups)
 }

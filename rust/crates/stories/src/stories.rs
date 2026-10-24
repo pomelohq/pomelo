@@ -1,7 +1,9 @@
 //! Named ways to build real UI from fixture data. The app's own code draws each one, so the gallery, snapshot
 //! tests and the design canvas show exactly what a release shows.
 
+pub mod atoms;
 pub mod fixtures;
+pub mod foundations;
 pub mod services;
 
 use std::io::BufWriter;
@@ -35,8 +37,51 @@ pub struct StoryDef {
     pub build: fn() -> anyhow::Result<Box<dyn Story>>,
 }
 
+/// Pages run from the smallest parts up, as the atomic levels do.
 pub fn all() -> Vec<StoryDef> {
-    services::stories()
+    let mut all = foundations::stories();
+    all.extend(atoms::stories());
+    all.extend(services::stories());
+    all
+}
+
+/// A story that only draws: a foundation or a control in one state.
+struct Static(fn(f32, f32) -> ui::Node);
+
+impl Story for Static {
+    fn render(&mut self, width: f32, height: f32) -> ui::Node {
+        (self.0)(width, height)
+    }
+}
+
+pub fn still(render: fn(f32, f32) -> ui::Node) -> anyhow::Result<Box<dyn Story>> {
+    Ok(Box::new(Static(render)))
+}
+
+/// What a group is for, so someone picking a control knows which one fits.
+pub fn group_note(group: &str) -> Option<&'static str> {
+    Some(match group {
+        "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors.",
+        "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
+        "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
+        "Button" => "Toolbar and header buttons. Filled for the main action of a bar, Outlined or Subtle for the rest, Tinted accent to draw the eye.",
+        "Small button" => "Actions inside panels and cards, such as Start all. One Primary per card, Danger for destructive actions; can carry an icon and its shortcut.",
+        "Modal button" => "The footer buttons of a dialog, each with the key that runs it. One Primary per dialog.",
+        "Outlined button" => "A secondary action inside a form, such as Add repo.",
+        "Accent action" => "A text-only action that reads like a link: Open in browser, Change.",
+        "Checkbox" => "An on or off choice in a form.",
+        "Segmented" => "Compact filters on a toolbar, such as All, Running, Failed.",
+        "Toggle group" => "Mutually exclusive choices inside a form, with icons.",
+        "Progress" => "How far a job of known length has got.",
+        "Status pill" => "The state of a service or job in one word.",
+        "Status line" => "The result of a check, under the control that ran it.",
+        "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
+        "Divider" => "Separates sections; Faded inside a list.",
+        "Input" => "A labeled text field with its hint or its error below.",
+        "Services panel" => "The Services panel in the side dock: every service of the workspace, what needs attention, and the shared services.",
+        "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
+        _ => return None,
+    })
 }
 
 pub fn find(id: &str) -> Option<StoryDef> {
@@ -92,11 +137,25 @@ mod tests {
 
     // Layout and paint only: CI has no GPU, but a story that panics or draws nothing fails here.
     #[test]
+    fn every_group_says_what_it_is_for() {
+        for def in super::all() {
+            assert!(
+                super::group_note(def.group).is_some(),
+                "{} has no note",
+                def.group
+            );
+        }
+    }
+
+    #[test]
     fn every_story_paints() {
         for def in super::all() {
             let mut story = (def.build)().unwrap_or_else(|error| panic!("{}: {error}", def.id));
             let painted = super::paint(story.as_mut(), def.size.0, def.size.1);
-            assert!(!painted.texts.is_empty(), "{} drew no text", def.id);
+            // The first rect is the background every story sits on.
+            let drew =
+                painted.rects.len() > 1 || !painted.texts.is_empty() || !painted.icons.is_empty();
+            assert!(drew, "{} drew nothing", def.id);
         }
     }
 }

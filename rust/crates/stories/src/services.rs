@@ -197,26 +197,34 @@ const TAB: (f32, f32) = (1000.0, 520.0);
 pub fn stories() -> Vec<StoryDef> {
     let story = |id, group, title, size, build| StoryDef {
         id,
-        page: "Services",
+        page: "Organisms",
         group,
         title,
         size,
         build,
     };
     vec![
-        story("services-panel", "Panel", "This machine", PANEL, || {
-            build(false, None, View::Panel)
-        }),
+        story(
+            "services-panel",
+            "Services panel",
+            "This machine",
+            PANEL,
+            || build(false, None, View::Panel),
+        ),
         story(
             "services-panel-stopped",
-            "Panel",
+            "Services panel",
             "One service stopped",
             PANEL,
             || build(false, Some("web/app"), View::Panel),
         ),
-        story("services-panel-host", "Panel", "On a host", PANEL, || {
-            build(true, None, View::Panel)
-        }),
+        story(
+            "services-panel-host",
+            "Services panel",
+            "On a host",
+            PANEL,
+            || build(true, None, View::Panel),
+        ),
         story(
             "services-tab-running",
             "Service tab",

@@ -74,6 +74,9 @@ struct Gallery {
     collapsed: Vec<&'static str>,
     menu: Option<Menu>,
     chrome_hovered: Option<u64>,
+    layers_scroll: f32,
+    /// Where the layer list sits, top to bottom, so the wheel over it scrolls it instead of the canvas.
+    layers_area: (f32, f32),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -125,6 +128,8 @@ impl Gallery {
             collapsed: Vec::new(),
             menu: None,
             chrome_hovered: None,
+            layers_scroll: 0.0,
+            layers_area: (0.0, 0.0),
         };
         gallery.open_page(page, saved.camera.is_none());
         gallery
@@ -365,19 +370,38 @@ impl Gallery {
             }
             gy += step;
         }
-        // Titles keep their screen size, so at low zoom one is pushed below the row above it and the
-        // board titles under it give way.
-        let mut title_floor = f32::MIN;
+        // Titles keep their screen size, so at low zoom the note goes first and then the board titles.
+        let frame_color = ui::Rgba::new(
+            theme.text_muted.r,
+            theme.text_muted.g,
+            theme.text_muted.b,
+            0.35,
+        );
         let mut board_title_floor = Vec::with_capacity(self.groups.len());
         for group in &self.groups {
-            let (sx, sy) = self.camera.to_screen(0.0, group.top);
-            let title_y = (sy - 52.0).max(title_floor);
+            let (x0, y0) = self
+                .camera
+                .to_screen(group.left - scene::FRAME_PAD, group.head - scene::FRAME_PAD);
+            let (x1, y1) = self.camera.to_screen(
+                group.right + scene::FRAME_PAD,
+                group.bottom + scene::FRAME_PAD,
+            );
+            dashed_frame(&mut base, canvas.x + x0, y0, x1 - x0, y1 - y0, frame_color);
+            let (sx, sy) = self.camera.to_screen(group.left, group.head);
+            let width = ((group.right - group.left) * zoom).clamp(220.0, 560.0);
+            let mut bottom = sy + 24.0;
             base.append(ui::render(
                 &chrome::group_title(group.title),
-                ui::Rect::new(canvas.x + sx, title_y, 600.0, 24.0, ui::Rgba::TRANSPARENT),
+                ui::Rect::new(canvas.x + sx, sy, width, 24.0, ui::Rgba::TRANSPARENT),
             ));
-            board_title_floor.push((group.title, title_y + 26.0));
-            title_floor = self.camera.to_screen(0.0, group.bottom).1 + 12.0;
+            if let Some(note) = group.note.filter(|_| scene::GROUP_HEADER * zoom >= 64.0) {
+                base.append(ui::render(
+                    &chrome::group_note(note, width),
+                    ui::Rect::new(canvas.x + sx, sy + 26.0, width, 36.0, ui::Rgba::TRANSPARENT),
+                ));
+                bottom = sy + 64.0;
+            }
+            board_title_floor.push((group.title, bottom));
         }
         for (index, board) in self.boards.iter().enumerate() {
             let (sx, sy) = self.camera.to_screen(board.x, board.y);
@@ -481,10 +505,11 @@ impl Gallery {
         self.focused_hits = live.hits.clone();
 
         let mut side = ui::Painted::default();
+        let mut list = ui::Painted::default();
+        let mut list_clip = None;
         let mut overlay = ui::Painted::default();
         if self.chrome {
-            let left = chrome::left(
-                h,
+            let (top, layers) = chrome::left(
                 &self.pages,
                 self.page,
                 &self.groups,
@@ -496,11 +521,42 @@ impl Gallery {
                 hovered: self.chrome_hovered,
                 pressed: None,
             };
+            side.rects.push(ui::Rect::new(
+                0.0,
+                0.0,
+                chrome::LEFT,
+                h,
+                theme.panel_background,
+            ));
+            let top_h = ui::measure(&top).1.ceil();
             side.append(ui::render_interactive(
-                &left,
-                ui::Rect::new(0.0, 0.0, chrome::LEFT, h, ui::Rgba::TRANSPARENT),
+                &top,
+                ui::Rect::new(0.0, 0.0, chrome::LEFT, top_h, ui::Rgba::TRANSPARENT),
                 interaction,
             ));
+            let layers_h = ui::measure(&layers).1.ceil();
+            let visible = (h - top_h).max(0.0);
+            self.layers_scroll = self.layers_scroll.clamp(0.0, (layers_h - visible).max(0.0));
+            list = ui::render_interactive(
+                &layers,
+                ui::Rect::new(
+                    0.0,
+                    top_h - self.layers_scroll,
+                    chrome::LEFT,
+                    layers_h,
+                    ui::Rgba::TRANSPARENT,
+                ),
+                interaction,
+            );
+            list.hits.retain_mut(|(rect, _)| {
+                let y0 = rect.y.max(top_h);
+                let y1 = (rect.y + rect.h).min(h);
+                rect.y = y0;
+                rect.h = y1 - y0;
+                rect.h > 0.0
+            });
+            list_clip = Some((0.0, top_h, chrome::LEFT, visible));
+            self.layers_area = (top_h, h);
             let right = chrome::right(h, &self.themes, self.theme, zoom);
             side.append(ui::render_interactive(
                 &right,
@@ -597,10 +653,11 @@ impl Gallery {
             }
         }
         self.chrome_hits = side.hits.clone();
+        self.chrome_hits.extend(list.hits.iter().copied());
         self.chrome_hits.extend(overlay.hits.iter().copied());
 
         let canvas_clip = Some((canvas.x, 0.0, canvas.w, canvas.h));
-        let layers: [ui::Layer; 4] = [
+        let layers: [ui::Layer; 5] = [
             (
                 base.rects.as_slice(),
                 base.tris.as_slice(),
@@ -621,6 +678,13 @@ impl Gallery {
                 side.texts.as_slice(),
                 side.icons.as_slice(),
                 None,
+            ),
+            (
+                list.rects.as_slice(),
+                list.tris.as_slice(),
+                list.texts.as_slice(),
+                list.icons.as_slice(),
+                list_clip,
             ),
             (
                 overlay.rects.as_slice(),
@@ -757,6 +821,13 @@ impl Gallery {
     fn wheel(&mut self, dx: f32, dy: f32) {
         let canvas = self.canvas();
         let (x, y) = self.cursor;
+        if self.chrome && x < chrome::LEFT {
+            if (self.layers_area.0..self.layers_area.1).contains(&y) {
+                self.layers_scroll -= dy;
+                self.redraw();
+            }
+            return;
+        }
         if self.modifiers.super_key() || self.modifiers.control_key() {
             self.zoom(1.0 + dy * 0.01, x - canvas.x, y);
             return;
@@ -1034,13 +1105,41 @@ impl ApplicationHandler for Gallery {
     }
 }
 
+/// Rects have no dash style, so the frame is laid out of short pieces along each edge.
+fn dashed_frame(painted: &mut ui::Painted, x: f32, y: f32, w: f32, h: f32, color: ui::Rgba) {
+    const DASH: f32 = 6.0;
+    const GAP: f32 = 4.0;
+    let mut along = 0.0;
+    while along < w {
+        let length = DASH.min(w - along);
+        painted
+            .rects
+            .push(ui::Rect::new(x + along, y, length, 1.0, color));
+        painted
+            .rects
+            .push(ui::Rect::new(x + along, y + h - 1.0, length, 1.0, color));
+        along += DASH + GAP;
+    }
+    along = 0.0;
+    while along < h {
+        let length = DASH.min(h - along);
+        painted
+            .rects
+            .push(ui::Rect::new(x, y + along, 1.0, length, color));
+        painted
+            .rects
+            .push(ui::Rect::new(x + w - 1.0, y + along, 1.0, length, color));
+        along += DASH + GAP;
+    }
+}
+
 /// A bare binary has no bundle, so the Dock would show a blank document without this.
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
     use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
 
-    const ICON: &[u8] = include_bytes!("../../pomelo/assets/AppIcon.icns");
+    const ICON: &[u8] = include_bytes!("../assets/gallery-icon.png");
     // SAFETY: plain AppKit class messages on the main thread; a null image is checked before use.
     unsafe {
         let data: *mut AnyObject = msg_send![

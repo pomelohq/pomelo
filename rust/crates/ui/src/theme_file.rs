@@ -289,6 +289,12 @@ pub fn set_syntax_colors(syntax: Vec<(String, Rgba)>) {
     }
 }
 
+/// The color a token names in `colors`, as a theme file would write it.
+pub fn token(colors: &ThemeColors, name: &str) -> Option<Rgba> {
+    let mut colors = *colors;
+    slot(&mut colors, name).map(|color| *color)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
