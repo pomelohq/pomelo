@@ -23,7 +23,7 @@ test-group = 'docker'
 slow-timeout = { period = "300s", terminate-after = 1 }
 
 [[profile.default.overrides]]
-filter = 'binary_id(pom_services::run_service) | binary_id(pom_services::port_drift) | binary_id(services_ui::panel)'
+filter = 'binary_id(pom_services::run_service) | binary_id(pom_services::port_drift)'
 test-group = 'service-ports'
 
 [[profile.default.overrides]]
