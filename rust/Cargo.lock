@@ -287,6 +287,7 @@ dependencies = [
  "base64",
  "ed25519-dalek",
  "serde_json",
+ "tempfile",
  "workspace_hack",
 ]
 
@@ -3599,6 +3600,7 @@ dependencies = [
 name = "pom_cli"
 version = "0.9.8"
 dependencies = [
+ "auto_update",
  "files",
  "git",
  "libc",

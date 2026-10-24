@@ -17,6 +17,7 @@ mod proxy;
 mod push;
 mod remote;
 mod run;
+mod self_update;
 mod server;
 mod transfer;
 mod workspaces;
@@ -243,6 +244,10 @@ agents (one workspace at a time; --json for stable output)
   agent release <workspace/role>
                      a person takes a session over, and hands it back
   completion bash|zsh|fish
+  self-update [--channel stable|nightly] [--version <v>] [--check]
+                     replace this pom (and the Linux app beside it) with the newest build of the
+                     channel (settings.json update_channel, else the build's own), or an exact
+                     version, after checking its signature; only a pom install.sh installed
   version, --version
 
 remote machines
@@ -317,6 +322,7 @@ enum Command {
     Host(remote::HostCommand),
     Server(server::ServerCommand),
     Projects { json: bool },
+    SelfUpdate(self_update::SelfUpdate),
     Github(push::WebhookSetup),
     SyncStatus(push::SyncStatus),
     Version,
@@ -408,6 +414,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
             return transfer::execute(command, &invocation, cwd, out, err);
         }
         Command::Projects { json } => projects(&StateDir::from_env(), json, out),
+        Command::SelfUpdate(ref request) => self_update::execute(request, out),
         Command::SyncStatus(ref request) => push::status(&StateDir::from_env(), request, out),
         Command::Queue(ref queue) => {
             return match Session::open(&invocation, cwd) {
@@ -572,6 +579,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "server"
                         | "project"
                         | "github"
+                        | "self-update"
                         | "sync")
                 )
             )
@@ -697,6 +705,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             }
         }
         "github" => Command::Github(push::parse_github(rest)?),
+        "self-update" => Command::SelfUpdate(self_update::parse(rest)?),
         "sync" => Command::SyncStatus(push::parse_sync(rest)?),
         "version" => Command::Version,
         "help" => Command::Help,
@@ -1039,6 +1048,7 @@ impl Session {
             | Command::Server(_)
             | Command::Transfer(_)
             | Command::Projects { .. }
+            | Command::SelfUpdate(_)
             | Command::SyncStatus(_)
             | Command::Queue(_)
             | Command::Version

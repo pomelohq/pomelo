@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
+pub mod linux_install;
 mod releases;
 pub use releases::{
     listing, newest, offers, releases_api, verify, Artifact, Channel, Offer, Version, NIGHTLY_TAG,
@@ -228,21 +229,46 @@ pub fn snapshot() -> Snapshot {
 pub fn supported() -> bool {
     static SUPPORTED: OnceLock<bool> = OnceLock::new();
     *SUPPORTED.get_or_init(|| {
-        std::env::var("POMELO_AUTO_UPDATE").as_deref() != Ok("0") && production_app_root().is_some()
+        std::env::var("POMELO_AUTO_UPDATE").as_deref() != Ok("0") && installed().is_some()
     })
 }
 
-fn production_app_root() -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") {
-        return None;
+/// Where the running app is installed, when it may replace itself there.
+#[derive(Clone, Debug, PartialEq)]
+enum Install {
+    /// The Pomelo.app bundle.
+    MacApp(PathBuf),
+    /// The prefix install.sh put the Linux app under (`<prefix>/bin/pomelo`).
+    Linux(PathBuf),
+}
+
+impl Install {
+    fn artifact(&self) -> Result<Artifact, String> {
+        match self {
+            Install::MacApp(_) => Ok(Artifact::MacApp),
+            Install::Linux(_) => linux_install::app_artifact(),
+        }
     }
+}
+
+fn installed() -> Option<Install> {
     let exe = std::env::current_exe().ok()?;
-    let app = exe.ancestors().nth(3)?; // pomelo -> MacOS -> Contents -> Pomelo.app
-    (app.file_name()?.to_str()? == "Pomelo.app").then(|| app.to_path_buf())
+    if cfg!(target_os = "macos") {
+        let app = exe.ancestors().nth(3)?; // pomelo -> MacOS -> Contents -> Pomelo.app
+        return (app.file_name()?.to_str()? == "Pomelo.app")
+            .then(|| Install::MacApp(app.to_path_buf()));
+    }
+    if cfg!(target_os = "linux") {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        return linux_install::self_managed_prefix(&exe, "pomelo", home.as_deref())
+            .ok()
+            .map(Install::Linux);
+    }
+    None
 }
 
 pub fn check(kind: CheckKind) {
-    let Some(app_root) = production_app_root() else {
+    let Some(install) = installed() else {
         return;
     };
     if !supported() || !update(|state| state.begin(kind)) {
@@ -250,7 +276,7 @@ pub fn check(kind: CheckKind) {
     }
     let spawned = std::thread::Builder::new()
         .name("update-check".into())
-        .spawn(move || match check_and_stage(&app_root) {
+        .spawn(move || match check_and_stage(&install) {
             Ok(()) => {
                 if snapshot().status == Status::UpToDate {
                     std::thread::sleep(UP_TO_DATE_SHOWN);
@@ -314,8 +340,8 @@ pub fn dismiss() {
 }
 
 pub fn restart() -> Result<std::convert::Infallible, String> {
-    let result = install_staged().and_then(|app_root| {
-        relaunch(&app_root)?;
+    let result = install_staged().and_then(|install| {
+        relaunch(&install)?;
         std::process::exit(0)
     });
     if let Err(error) = &result {
@@ -369,13 +395,21 @@ pub fn release_notes(version: &str) -> Result<String, String> {
         .to_string())
 }
 
+/// The releases `channel` chooses from, fetched from GitHub.
+pub fn fetch_releases(channel: Channel) -> Result<serde_json::Value, String> {
+    listing(channel, &|url| curl(url))
+}
+
 fn needs_download(latest: &Version, current: &Version, staged: Option<&Version>) -> bool {
     latest > current && staged.is_none_or(|staged| latest > staged)
 }
 
 fn cache_root() -> PathBuf {
     match std::env::var_os("HOME") {
-        Some(home) => PathBuf::from(home).join("Library/Caches/Pomelo"),
+        Some(home) if cfg!(target_os = "macos") => {
+            PathBuf::from(home).join("Library/Caches/Pomelo")
+        }
+        Some(home) => PathBuf::from(home).join(".cache/pomelo"),
         None => std::env::temp_dir().join("Pomelo"),
     }
 }
@@ -383,7 +417,10 @@ fn cache_root() -> PathBuf {
 /// Not under Caches: macOS may empty that while a staged update waits for a restart.
 fn staging_root() -> PathBuf {
     match std::env::var_os("HOME") {
-        Some(home) => PathBuf::from(home).join("Library/Application Support/Pomelo/update"),
+        Some(home) if cfg!(target_os = "macos") => {
+            PathBuf::from(home).join("Library/Application Support/Pomelo/update")
+        }
+        Some(home) => PathBuf::from(home).join(".local/state/pomelo/update"),
         None => cache_root().join("update"),
     }
 }
@@ -392,14 +429,14 @@ fn marker_path() -> PathBuf {
     cache_root().join("just-updated")
 }
 
-fn check_and_stage(app_root: &Path) -> Result<(), String> {
+fn check_and_stage(install: &Install) -> Result<(), String> {
     let releases = listing(channel(), &|url| curl(url))?;
     let current = Version::parse(current_version()).ok_or("bad current version")?;
     let staged = state()
         .staged
         .as_ref()
         .and_then(|staged| Version::parse(&staged.version));
-    let Some(release) = newest(&releases, channel(), Artifact::MacApp)
+    let Some(release) = newest(&releases, channel(), install.artifact()?)
         .filter(|release| needs_download(&release.version, &current, staged.as_ref()))
     else {
         update(|state| state.found_nothing(SystemTime::now()));
@@ -407,17 +444,16 @@ fn check_and_stage(app_root: &Path) -> Result<(), String> {
     };
     let version = release.version.to_string();
     eprintln!(
-        "[update] {} -> {version} available, downloading into {}",
-        current_version(),
-        app_root.display()
+        "[update] {} -> {version} available, downloading for {install:?}",
+        current_version()
     );
     update(|state| state.downloading(&version, release.size.map(|_| 0.0)));
-    let staged = download_and_stage(&release, &version)?;
+    let staged = download_and_stage(&release, &version, install)?;
     update(|state| state.staged(staged, SystemTime::now()));
     Ok(())
 }
 
-fn download_and_stage(release: &Offer, version: &str) -> Result<Staged, String> {
+fn download_and_stage(release: &Offer, version: &str, install: &Install) -> Result<Staged, String> {
     let root = staging_root();
     if let Err(error) = std::fs::remove_dir_all(&root) {
         if error.kind() != std::io::ErrorKind::NotFound {
@@ -426,24 +462,30 @@ fn download_and_stage(release: &Offer, version: &str) -> Result<Staged, String> 
     }
     let dir = root.join(version);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-    let tarball = dir.join("Pomelo.app.tar.gz");
+    let tarball = dir.join(&release.file_name);
     download(&release.url, release.size, &tarball, version)?;
 
     update(|state| state.verifying(version));
     let signature = curl(&release.signature_url)?;
     let bytes = std::fs::read(&tarball).map_err(|e| format!("read update: {e}"))?;
     verify(&bytes, signature.trim(), UPDATE_PUBLIC_KEY)?;
-    run(Command::new("tar")
-        .arg("-xzf")
-        .arg(&tarball)
-        .arg("-C")
-        .arg(&dir))?;
+    let app = match install {
+        Install::MacApp(_) => {
+            run(Command::new("tar")
+                .arg("-xzf")
+                .arg(&tarball)
+                .arg("-C")
+                .arg(&dir))?;
+            let app = dir.join("Pomelo.app");
+            if !app.is_dir() {
+                return Err("the download has no Pomelo.app".into());
+            }
+            app
+        }
+        Install::Linux(_) => linux_install::unpack(&tarball, &dir)?,
+    };
     if let Err(error) = std::fs::remove_file(&tarball) {
         eprintln!("[update] remove {}: {error}", tarball.display());
-    }
-    let app = dir.join("Pomelo.app");
-    if !app.is_dir() {
-        return Err("the download has no Pomelo.app".into());
     }
     Ok(Staged {
         version: version.to_string(),
@@ -490,33 +532,31 @@ fn download(url: &str, size: Option<u64>, to: &Path, version: &str) -> Result<()
     }
 }
 
-fn install_staged() -> Result<PathBuf, String> {
-    let app_root = production_app_root().ok_or("only the installed Pomelo updates itself")?;
+fn install_staged() -> Result<Install, String> {
+    let install = installed().ok_or("only the installed Pomelo updates itself")?;
     let staged = state().staged.clone().ok_or("no update is ready")?;
+    let present = match install {
+        Install::MacApp(_) => staged.app.join("Contents/MacOS").is_dir(),
+        Install::Linux(_) => staged.app.join("install.sh").is_file(),
+    };
     // macOS may purge ~/Library/Caches while the update waits there.
-    if !staged.app.join("Contents/MacOS").is_dir() {
+    if !present {
         state().staged = None;
         return Err("the downloaded update was removed; Try Again downloads it again".into());
     }
-    let parked = app_root.with_file_name(".Pomelo.app.previous");
-    if parked.exists() {
-        std::fs::remove_dir_all(&parked).map_err(|e| format!("clear {}: {e}", parked.display()))?;
-    }
-    std::fs::rename(&app_root, &parked).map_err(|e| format!("move the old app aside: {e}"))?;
-    if let Err(error) = move_into_place(&staged.app, &app_root) {
-        if let Err(cleanup) = std::fs::remove_dir_all(&app_root) {
-            eprintln!("[update] remove partial install: {cleanup}");
-        }
-        std::fs::rename(&parked, &app_root).map_err(|e| format!("{error}; restore: {e}"))?;
-        return Err(error);
-    }
-    if let Err(error) = std::fs::remove_dir_all(&parked) {
-        eprintln!("[update] remove {}: {error}", parked.display());
+    match &install {
+        Install::MacApp(app_root) => swap_app(&staged, app_root)?,
+        Install::Linux(prefix) => linux_install::run_install(&staged.app, prefix, false)?,
     }
     if let Err(error) = std::fs::remove_dir_all(staging_root()) {
         eprintln!("[update] clear staging: {error}");
     }
     let marker = marker_path();
+    if let Some(dir) = marker.parent() {
+        if let Err(error) = std::fs::create_dir_all(dir) {
+            eprintln!("[update] create {}: {error}", dir.display());
+        }
+    }
     if let Err(error) = std::fs::write(
         &marker,
         format!("{}\n{}\n", current_version(), staged.version),
@@ -524,7 +564,26 @@ fn install_staged() -> Result<PathBuf, String> {
         eprintln!("[update] write {}: {error}", marker.display());
     }
     state().staged = None;
-    Ok(app_root)
+    Ok(install)
+}
+
+fn swap_app(staged: &Staged, app_root: &Path) -> Result<(), String> {
+    let parked = app_root.with_file_name(".Pomelo.app.previous");
+    if parked.exists() {
+        std::fs::remove_dir_all(&parked).map_err(|e| format!("clear {}: {e}", parked.display()))?;
+    }
+    std::fs::rename(app_root, &parked).map_err(|e| format!("move the old app aside: {e}"))?;
+    if let Err(error) = move_into_place(&staged.app, app_root) {
+        if let Err(cleanup) = std::fs::remove_dir_all(app_root) {
+            eprintln!("[update] remove partial install: {cleanup}");
+        }
+        std::fs::rename(&parked, app_root).map_err(|e| format!("{error}; restore: {e}"))?;
+        return Err(error);
+    }
+    if let Err(error) = std::fs::remove_dir_all(&parked) {
+        eprintln!("[update] remove {}: {error}", parked.display());
+    }
+    Ok(())
 }
 
 /// A rename when both sit on one volume (atomic, nothing copied), else a copy.
@@ -552,13 +611,20 @@ fn explain_denied(error: String) -> String {
     }
 }
 
-fn relaunch(app_root: &Path) -> Result<(), String> {
+fn relaunch(install: &Install) -> Result<(), String> {
+    let (opener, target) = match install {
+        Install::MacApp(app_root) => ("exec /usr/bin/open \"$2\"", app_root.clone()),
+        Install::Linux(prefix) => ("exec \"$2\"", prefix.join("bin/pomelo")),
+    };
     Command::new("/bin/sh")
         .arg("-c")
-        .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$2\"")
+        .arg(format!(
+            "while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; {opener}"
+        ))
         .arg("relaunch")
         .arg(std::process::id().to_string())
-        .arg(app_root)
+        .arg(target)
+        .stdin(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("relaunch: {e}"))

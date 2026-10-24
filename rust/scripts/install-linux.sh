@@ -1,22 +1,44 @@
 #!/bin/sh
 # Install Pomelo for this user from an unpacked tarball: the app, the pom CLI, the icon and the desktop entry.
 # --cli-only (or a tarball without the app) installs pom alone, for a server without a desktop.
+# --channel stable|nightly or --version <v> installs that build instead: this tarball's pom downloads it, checks
+# its signature and runs its install.sh.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 prefix="${PREFIX:-$HOME/.local}"
 icon="share/icons/hicolor/512x512/apps/pomelo.png"
 entry="share/applications/pomelo.desktop"
+usage="usage: $0 [--cli-only] [--channel stable|nightly] [--version <v>]"
 
 cli_only=false
-for arg in "$@"; do
-  case "$arg" in
+channel=""
+version=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --cli-only) cli_only=true ;;
-    *) echo "usage: $0 [--cli-only]" >&2; exit 2 ;;
+    --channel) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; channel="$2"; shift ;;
+    --channel=*) channel="${1#--channel=}" ;;
+    --version) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; version="$2"; shift ;;
+    --version=*) version="${1#--version=}" ;;
+    *) echo "$usage" >&2; exit 2 ;;
   esac
+  shift
 done
 [ -f "$here/bin/pomelo" ] || cli_only=true
 
+if [ -n "$channel" ] || [ -n "$version" ]; then
+  set -- self-update --prefix "$prefix"
+  [ -n "$channel" ] && set -- "$@" --channel "$channel"
+  [ -n "$version" ] && set -- "$@" --version "$version"
+  if [ "$cli_only" = true ]; then set -- "$@" --cli-only; else set -- "$@" --app; fi
+  exec "$here/bin/pom" "$@"
+fi
+
 install -Dm755 "$here/bin/pom" "$prefix/bin/pom"
+# pom self-update and the app's updater replace only an install this script made.
+mkdir -p "$prefix/share/pomelo"
+printf 'install.sh\n' >"$prefix/share/pomelo/installed-by"
+chmod 644 "$prefix/share/pomelo/installed-by"
 if [ "$cli_only" = true ]; then
   echo "pom installed under $prefix/bin"
   case ":$PATH:" in
