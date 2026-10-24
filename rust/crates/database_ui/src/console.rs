@@ -176,7 +176,7 @@ impl ConsoleFooter {
                 colors.success
             }))
             .child(label("Run").size(12.0).color(colors.text))
-            .child(workspace::render_keystroke("cmd-enter", 11.0));
+            .child(ui::key_chip("cmd-enter", false));
         let (status, error) = if running {
             ("Running...".to_string(), false)
         } else {
