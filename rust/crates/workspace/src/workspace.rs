@@ -3991,36 +3991,14 @@ pub enum StatusKey {
 /// A tooltip bubble anchored ABOVE `anchor` (for the status bar, which sits at the very bottom).
 pub fn tooltip_above(anchor: Rect, text: &str, keys: Option<&str>, viewport_w: f32) -> Painted {
     let scale = ui::ui_text_scale();
-    let mut content = div()
-        .row()
-        .gap(8.0)
-        .items_center()
-        .child(label(text).size(12.0).color(text_c()));
-    if let Some(keys) = keys.filter(|keys| !keys.is_empty()) {
-        let mut strokes = div().row().gap(4.0).items_center();
-        for stroke in keys.split_whitespace() {
-            strokes = strokes.child(crate::render_keystroke(stroke, 12.0));
-        }
-        content = content.child(strokes);
-    }
-    let content: Node = content.into();
-    let w = (ui::measure(&content).0 + 16.0) * scale;
+    let node: Node = ui::tooltip_bubble(text, keys).into();
+    let w = ui::measure(&node).0 * scale;
     let h = 24.0 * scale;
     let mut x = anchor.x;
     if x + w > viewport_w - 6.0 * scale {
         x = (viewport_w - 6.0 * scale - w).max(6.0 * scale);
     }
     let y = anchor.y - h - 5.0 * scale;
-    let node: Node = div()
-        .row()
-        .items_center()
-        .px(8.0)
-        .h_px(24.0)
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
-        .child(content)
-        .into();
     let mut out = Painted::default();
     out.rects.push(Rect {
         x: x - 2.0 * scale,
@@ -4064,16 +4042,7 @@ pub fn tooltip(anchor: Rect, text: &str, viewport_w: f32) -> Painted {
         x = (viewport_w - 6.0 * scale - w).max(6.0 * scale);
     }
     let y = anchor.y + anchor.h + 5.0 * scale;
-    let node: Node = div()
-        .row()
-        .items_center()
-        .px(8.0)
-        .h_px(24.0)
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
-        .child(label(text).size(12.0).color(text_c()))
-        .into();
+    let node: Node = ui::tooltip_bubble(text, None).into();
     let mut out = Painted::default();
     // A faint shadow under the bubble.
     out.rects.push(Rect {

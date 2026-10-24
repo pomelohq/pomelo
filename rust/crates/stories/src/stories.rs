@@ -78,6 +78,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Status line" => "The result of a check, under the control that ran it.",
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
         "Divider" => "Separates sections; Faded inside a list.",
+        "Tooltip" => "Names what an icon does, with the keys that run it when there are any.",
         "Status dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
         "Input" => "A labeled text field with its hint or its error below.",
         "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. A long list gets a search line that filters as you type. A check marks the current choice; keys sit on the right; Danger for actions that lose data.",

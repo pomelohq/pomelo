@@ -1,6 +1,6 @@
 use git::working_copy::Staging;
 use git::ChangeStatus;
-use ui::{deferred, div, icon, label, theme, Corner, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
 
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
@@ -10,7 +10,6 @@ pub(crate) const TOOLBAR_H: f32 = 38.0;
 pub(crate) const INDENT: f32 = 16.0;
 const BUTTON_H: f32 = 26.0;
 const CHEVRON_W: f32 = 24.0;
-const TOOLTIP_H: f32 = 24.0;
 const PRIMARY_H: f32 = 28.0;
 
 pub(crate) fn checkbox(id: u64, staging: Staging, hot: bool) -> Node {
@@ -109,34 +108,6 @@ pub(crate) fn chevron(open: bool) -> Node {
 }
 
 /// A bubble under (or over) the hovered control, kept inside the panel.
-pub(crate) fn tooltip(target: Div, text: &str, above: bool) -> Div {
-    let width = ui::measure_text_width(text, 12.0, false, ui::ui_font_weight())
-        / ui::ui_text_scale()
-        + 16.0;
-    let bubble = div()
-        .row()
-        .items_center()
-        .px(8.0)
-        .h_px(TOOLTIP_H)
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
-        .child(label(text.to_string()).size(12.0).color(theme().text));
-    let (corner, dy) = if above {
-        (Corner::TopLeft, -(TOOLTIP_H + 4.0))
-    } else {
-        (Corner::BottomLeft, TOOLTIP_H + 4.0)
-    };
-    target.pin(
-        corner,
-        0.0,
-        dy,
-        width,
-        TOOLTIP_H,
-        deferred(bubble).priority(5).snap_to_window(),
-    )
-}
-
 pub(crate) fn icon_button(id: u64, kind: IconKind, hot: bool, enabled: bool) -> Div {
     let colors = theme();
     let mut button = div()

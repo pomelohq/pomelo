@@ -7,8 +7,8 @@ use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
     arrow_count, avatar, checkbox, chevron, chip, chip_count, chip_icon, chip_text, diff_stat,
-    ghost_button, icon_button, status_icon, text_width, tooltip, with_guides, ChipTone,
-    SplitButton, INDENT, ROW_H, SEGMENT_H, TAB_BAR_H, TOOLBAR_H,
+    ghost_button, icon_button, status_icon, text_width, with_guides, ChipTone, SplitButton, INDENT,
+    ROW_H, SEGMENT_H, TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -77,7 +77,7 @@ impl GitPanel {
         if self.hot(id) {
             let tip =
                 workspace::keymap::with_key_hint(tip, workspace::keymap::Action::GitToggleStaged);
-            tooltip(boxed, &tip, false).into()
+            ui::with_tooltip(boxed, &tip, false).into()
         } else {
             boxed.into()
         }
@@ -302,7 +302,7 @@ impl GitPanel {
         let id = self.fixed(VIEW_OPTIONS);
         let button = icon_button(id, IconKind::Filter, self.hot(id), true);
         if self.hot(id) {
-            tooltip(button, "View Options", false).into()
+            ui::with_tooltip(button, "View Options", false).into()
         } else {
             button.into()
         }
@@ -368,7 +368,7 @@ impl GitPanel {
                 }
                 if self.hot(view_diff) {
                     diff_button =
-                        tooltip(diff_button, "Every uncommitted change in one tab", false);
+                        ui::with_tooltip(diff_button, "Every uncommitted change in one tab", false);
                 }
                 let everything = Self::everything_staged(scan);
                 let split = SplitButton {
@@ -405,7 +405,7 @@ impl GitPanel {
                         "git fetch in every repo",
                         workspace::keymap::Action::GitFetch,
                     );
-                    button = tooltip(button, &tip, false);
+                    button = ui::with_tooltip(button, &tip, false);
                 }
                 fill(bar.child(button)).child(self.view_options()).into()
             }
@@ -1008,7 +1008,7 @@ impl GitPanel {
                     colors.text_placeholder
                 }));
             if self.hot(eye) {
-                button = tooltip(
+                button = ui::with_tooltip(
                     button.bg(colors.element_selected),
                     if reviewed {
                         "Mark as Not Reviewed"
@@ -1078,7 +1078,7 @@ impl GitPanel {
             let button = div().child(chip(chip_id, tone, parts, self.hot(chip_id)));
             trailing.push(
                 if self.hot(chip_id) {
-                    tooltip(button, tip, false)
+                    ui::with_tooltip(button, tip, false)
                 } else {
                     button
                 }
@@ -1189,7 +1189,7 @@ impl GitPanel {
             let external = self.id(index, Control::External);
             let mut link = icon_button(external, IconKind::ArrowUpRight, self.hot(external), true);
             if self.hot(external) {
-                link = tooltip(link, "Open in Browser", false);
+                link = ui::with_tooltip(link, "Open in Browser", false);
             }
             card = card.child(link);
         }
@@ -1318,7 +1318,7 @@ impl GitPanel {
                     .truncate(),
             );
         if self.hot(pick) {
-            picker = tooltip(
+            picker = ui::with_tooltip(
                 picker.bg(colors.ghost_element_hover),
                 "The branch of every repo in this workspace",
                 true,
@@ -1348,7 +1348,7 @@ impl GitPanel {
                 .on_click(link_id)
                 .child(label(text).size(13.0).color(colors.text_accent));
             if self.hot(link_id) {
-                link = tooltip(
+                link = ui::with_tooltip(
                     link.bg(colors.ghost_element_hover),
                     "Open the Remote tab",
                     true,
@@ -1379,7 +1379,7 @@ impl GitPanel {
                 label(text).size(13.0).color(colors.warning).truncate(),
             ));
         if self.hot(chip_id) {
-            chip = tooltip(chip, "Some repos are on another branch", true);
+            chip = ui::with_tooltip(chip, "Some repos are on another branch", true);
         }
         let rows = div()
             .col()
@@ -1431,7 +1431,7 @@ impl GitPanel {
                 };
                 let mut main = split.main_half();
                 if self.hot(self.fixed(SYNC)) && split.enabled {
-                    main = tooltip(main, "Pull, then push every repo that differs", true);
+                    main = ui::with_tooltip(main, "Pull, then push every repo that differs", true);
                 }
                 let sync_row = div()
                     .row()
@@ -1526,7 +1526,7 @@ impl GitPanel {
                 pick = pick.on_click(id);
             }
             if self.hot(id) {
-                pick = tooltip(
+                pick = ui::with_tooltip(
                     pick.bg(colors.ghost_element_hover),
                     "Each repo gets its own commit with this message; choose which repos",
                     true,
@@ -1554,7 +1554,7 @@ impl GitPanel {
         };
         let mut main = split.main_half();
         if self.hot(self.fixed(COMMIT)) {
-            main = tooltip(main, &plan.hint, true);
+            main = ui::with_tooltip(main, &plan.hint, true);
         }
         let commit_row = div()
             .row()
@@ -1623,7 +1623,7 @@ impl GitPanel {
                 } else {
                     "Uncommit (git reset HEAD^ --soft)"
                 };
-                undo_button = tooltip(undo_button, tip, true);
+                undo_button = ui::with_tooltip(undo_button, tip, true);
             }
             let last = div()
                 .col()
