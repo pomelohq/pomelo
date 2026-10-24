@@ -74,6 +74,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Toggle group" => "Mutually exclusive choices inside a form, with icons.",
         "Progress" => "How far a job of known length has got.",
         "Status pill" => "The state of a service or job in one word.",
+        "Attention pill" => "Something is waiting on the person: an agent asking, a workspace to look at.",
         "Status line" => "The result of a check, under the control that ran it.",
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
         "Divider" => "Separates sections; Faded inside a list.",

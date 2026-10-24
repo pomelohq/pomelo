@@ -380,6 +380,49 @@ pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
         .into()
 }
 
+/// A state in a word with its dot, on a neutral pill: Running, Stopped, Installs once.
+pub fn status_pill(text: &str, color: Rgba) -> Node {
+    div()
+        .row()
+        .items_center()
+        .gap(5.0)
+        .h_px(20.0)
+        .px(7.0)
+        .rounded(10.0)
+        .bg(theme().ghost_element_hover)
+        .child(dot(color, 6.0))
+        .child(
+            crate::label(text.to_string())
+                .size(11.0)
+                .medium()
+                .color(color),
+        )
+        .into()
+}
+
+/// Something waiting on the person, on the attention yellow.
+pub fn attention_pill(text: &str) -> Div {
+    let colors = theme();
+    let pill = div()
+        .row()
+        .h_px(20.0)
+        .px(7.0)
+        .items_center()
+        .rounded(10.0)
+        .bg(colors.attention)
+        .child(
+            crate::label(text.to_string())
+                .size(11.0)
+                .medium()
+                .color(colors.on_attention),
+        );
+    // The yellow is close to white, so on a light card it needs an edge to stand off it.
+    match colors.appearance {
+        crate::Appearance::Light => pill.border(1.0, colors.on_attention.alpha(0.22)),
+        crate::Appearance::Dark => pill,
+    }
+}
+
 /// A round status mark: running, failing, needs a look.
 pub fn dot(color: Rgba, size: f32) -> Div {
     div().w_px(size).h_px(size).rounded(size / 2.0).bg(color)

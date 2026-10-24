@@ -127,20 +127,6 @@ pub fn chip(text: &str, on: bool) -> Node {
 }
 
 /// A round status badge: a dot in the tone's color, then the word.
-pub fn pill(text: &str, tone: Rgba) -> Node {
-    div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .gap(5.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(theme().ghost_element_hover)
-        .child(ui::dot(tone, 6.0))
-        .child(label(text.to_string()).size(11.0).medium().color(tone))
-        .into()
-}
-
 /// A 14px radio mark: a hairline ring, or a thick accent ring when chosen.
 pub fn radio(on: bool) -> Node {
     let colors = theme();

@@ -167,20 +167,6 @@ pub fn modal_note(text: &str) -> Node {
         .into()
 }
 
-pub fn status_pill(text: &str, color: Rgba) -> Node {
-    div()
-        .row()
-        .items_center()
-        .gap(5.0)
-        .h_px(20.0)
-        .px(7.0)
-        .rounded(10.0)
-        .bg(theme().ghost_element_hover)
-        .child(ui::dot(color, 6.0))
-        .child(label(text.to_string()).size(11.0).medium().color(color))
-        .into()
-}
-
 /// An inline link-like action in the accent color, with an optional leading icon.
 pub fn accent_action(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
     let colors = theme();

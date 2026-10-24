@@ -348,7 +348,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
                     colors.text_muted
                 }),
         )
-        .child(view::pill("recommended", colors.success))
+        .child(ui::status_pill("recommended", colors.success))
         .into();
     let picker: Node = if any_agent {
         let options: Vec<(u64, &str, bool)> = AgentCli::ALL
