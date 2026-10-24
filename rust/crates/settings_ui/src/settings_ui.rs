@@ -70,9 +70,6 @@ fn title_c() -> Rgba {
 fn dim_c() -> Rgba {
     theme().text_muted
 }
-fn menu_c() -> Rgba {
-    theme().elevated_surface_background
-}
 
 const ROUND: f32 = 6.0;
 const SMALL_LINE_HEIGHT: f32 = 16.0;
@@ -1437,10 +1434,6 @@ fn set_clamped(field: &mut f32, delta: f32, min: f32, max: f32) -> bool {
 
 /// How many item rows the popover shows at once; longer lists scroll a window of this size.
 pub const POPOVER_VISIBLE: usize = 12;
-const POPOVER_ITEM_H: f32 = 30.0;
-const POPOVER_SEARCH_H: f32 = 32.0;
-const POPOVER_PAD: f32 = 4.0;
-const POPOVER_GAP: f32 = 2.0;
 
 /// Largest valid first-visible index for a list of `items_len` items.
 pub fn popover_max_scroll(items_len: usize) -> usize {
@@ -1487,20 +1480,13 @@ fn truncate_to_width(text: &str, size: f32, mono: bool, max_w: f32) -> String {
     out
 }
 
-const POPOVER_TEXT_INSET: f32 = 10.0; // px from the menu edge to search/item text (item: 4 inset + 6 inner)
-const POPOVER_ITEM_INSET: f32 = 4.0; // reference ListItem inset (Base04): the row's outer horizontal padding
-const POPOVER_ITEM_PAD: f32 = 6.0; // reference inner padding (Base06) inside the highlight
-const POPOVER_ITEM_VINSET: f32 = 2.0; // vertical inset so the highlight doesn't fill the whole row
-const POPOVER_ITEM_ROUND: f32 = 4.0;
 const POPOVER_BOTTOM_MARGIN: f32 = 8.0; // keep the menu this far from the window edge
-const POPOVER_MAX_H: f32 = 342.0; // reference max_height (rems(18)); the menu is this tall, not window-fit
+const POPOVER_MAX_H: f32 = 342.0; // the menu is this tall, not window-fit
+const POPOVER_CHROME: f32 = ui::MENU_SEARCH_ROW + 5.0 + 2.0 * ui::MENU_PAD;
 
-/// The fixed number of item rows the popover shows (reference `max_height`, ~10 rows). Scale cancels out, so
-/// this is a constant row count. The list scrolls within it rather than the menu shrinking to fit.
+/// The fixed number of item rows the popover shows; the list scrolls within it rather than the menu shrinking.
 fn popover_row_cap() -> usize {
-    // Each of the (rows + 1) children is separated by a gap, so a row effectively costs item_h + gap.
-    let rows = ((POPOVER_MAX_H - POPOVER_SEARCH_H - 2.0 * POPOVER_PAD)
-        / (POPOVER_ITEM_H + POPOVER_GAP))
+    let rows = ((POPOVER_MAX_H - POPOVER_CHROME) / ui::MENU_ROW)
         .floor()
         .max(1.0) as usize;
     POPOVER_VISIBLE.min(rows)
@@ -1531,15 +1517,10 @@ pub fn popover(
     viewport_h: f32,
 ) -> ui::Painted {
     let s = ui::ui_text_scale();
-    let item_h = POPOVER_ITEM_H * s;
-    let search_h = POPOVER_SEARCH_H * s;
-    let pad = POPOVER_PAD * s;
-    let gap = POPOVER_GAP * s;
-
     let matches = filter_indices(items, query);
-    let w = (210.0 * s).max(anchor.w);
-    // The reference anchors the menu's top-left to the trigger's left, then clamps it on screen: near the
-    // right edge it shifts left so the menu's right edge sits a small margin from the window edge.
+    let width = 210.0_f32.max(anchor.w / s);
+    let w = width * s;
+    // Anchored to the trigger's left, then shifted left near the window's right edge.
     let margin = POPOVER_BOTTOM_MARGIN * s;
     let mut x = anchor.x;
     if x + w > viewport_w - margin {
@@ -1547,30 +1528,20 @@ pub fn popover(
     }
     x = x.max(margin);
 
-    // Fixed height (the reference's max_height), not shrunk to the room below: the list scrolls inside it.
-    // Open below the trigger; if it would run past the window bottom, shift it up just enough to fit -- it
-    // may overlap the trigger, which is fine (the reference lets the menu cover its button). No flip-above.
-    // (rows + 1) children each separated by a gap: a row costs item_h + gap.
-    let chrome = search_h + 2.0 * pad;
-    let row_h = item_h + gap;
-    let menu_h = |rows: usize| chrome + rows as f32 * row_h;
+    // Fixed height, not shrunk to the room below: the list scrolls inside it. Near the window bottom it
+    // shifts up and may cover its trigger rather than flipping above.
+    let row_h = ui::MENU_ROW * s;
+    let chrome = POPOVER_CHROME * s;
     let avail = viewport_h - 2.0 * margin;
-    let visible = if menu_h(matches.len()) <= avail {
+    let visible = if chrome + matches.len() as f32 * row_h <= avail {
         matches.len().min(popover_row_cap())
     } else {
-        // Window shorter than the menu: cap rows to what fits at all.
         (((avail - chrome) / row_h).floor().max(1.0) as usize).min(popover_row_cap())
     };
-    let h = menu_h(visible);
-    let mut y = anchor.y + anchor.h + 2.0 * s;
-    if y + h > viewport_h - margin {
-        y = viewport_h - margin - h;
-    }
-    y = y.max(margin);
     let scroll = scroll.min(matches.len().saturating_sub(visible));
 
     // The highlighted "cursor" row: the sticky hovered item if it's still in the filtered list, else the
-    // current value if visible, else the first match. Keeps the highlight from vanishing/jumping on filter.
+    // current value, else the first match. Keeps the highlight from vanishing or jumping on filter.
     let id_of = |orig: usize| POPOVER_BASE + orig as u64;
     let cursor_id = hovered
         .filter(|h| matches.iter().any(|&o| id_of(o) == *h))
@@ -1582,64 +1553,32 @@ pub fn popover(
         })
         .or_else(|| matches.first().map(|&o| id_of(o)));
 
-    let search_label = if query.is_empty() {
-        label("Search...").size(12.0).color(dim_c())
-    } else {
-        label(query).size(12.0).color(title_c())
-    };
-    let mut col = div()
-        .col()
-        .bg(menu_c())
-        .rounded(8.0)
-        .border(1.0, border_c())
-        .p(POPOVER_PAD)
-        .gap(POPOVER_GAP)
-        // The picker's search bar is borderless: just the placeholder/query on the menu background (unlike the
-        // sidebar search, which is a bordered field).
-        .child(
-            div()
-                .h_px(POPOVER_SEARCH_H)
-                .px(POPOVER_TEXT_INSET)
-                .items_center()
-                .child(search_label),
-        );
-    for i in 0..visible {
-        let Some(&orig) = matches.get(scroll + i) else {
-            break;
-        };
-        let it = &items[orig];
-        let this_id = POPOVER_BASE + orig as u64;
-        let highlighted = cursor_id == Some(this_id);
-        let mut inner = div()
-            .row()
-            .flex(1.0)
-            .px(POPOVER_ITEM_PAD)
-            .items_center()
-            .justify_between()
-            .rounded(POPOVER_ITEM_ROUND)
-            .child(
-                label(truncate_to_width(it, 13.0, false, w - 44.0 * s))
-                    .size(13.0)
-                    .color(if highlighted { title_c() } else { dim_c() }),
-            );
-        if highlighted {
-            inner = inner.bg(sel_c());
-        }
-        col = col.child(
-            div()
-                .row()
-                .h_px(POPOVER_ITEM_H)
-                .px(POPOVER_ITEM_INSET)
-                .py(POPOVER_ITEM_VINSET)
-                .items_center()
-                .on_click(POPOVER_BASE + orig as u64)
-                .child(inner),
-        );
+    let rows: Vec<ui::MenuItem> = matches
+        .iter()
+        .skip(scroll)
+        .take(visible)
+        .map(|&orig| ui::MenuItem {
+            checked: items[orig] == *current,
+            ..ui::MenuItem::new(
+                id_of(orig),
+                truncate_to_width(&items[orig], 13.0, false, width - 44.0),
+            )
+        })
+        .collect();
+    let (card, _, height) = ui::menu(&rows)
+        .hovered(cursor_id)
+        .search(query)
+        .min_width(width)
+        .render();
+    let h = height * s;
+    let mut y = anchor.y + anchor.h + 2.0 * s;
+    if y + h > viewport_h - margin {
+        y = viewport_h - margin - h;
     }
-    let mut out = render(&col.into(), Rect::new(x, y, w, h, menu_c()));
+    y = y.max(margin);
+    let mut out = render(&card, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
 
-    // A soft drop shadow gives the menu elevation off the page. We fake a blur with a few stacked, growing,
-    // translucent rounded rects (no shadow primitive in the renderer yet), drawn behind the menu.
+    // A soft drop shadow: a few stacked, growing, translucent rects, since the renderer has no blur.
     let mut layered = Vec::with_capacity(out.rects.len() + 6);
     for i in (1..=6).rev() {
         let sp = i as f32 * 2.0 * s;
@@ -1657,25 +1596,14 @@ pub fn popover(
     layered.extend(out.rects);
     out.rects = layered;
 
-    // Divider between the search bar and the results (edge to edge), like the reference.
-    let bv = theme().border_variant;
-    out.rects.push(Rect {
-        x,
-        y: y + pad + search_h,
-        w,
-        h: 1.0 * s,
-        color: Rgba::new(bv.r, bv.g, bv.b, bv.a * 0.6),
-        radius: 0.0,
-        border: 0.0,
-        border_color: Rgba::TRANSPARENT,
-    });
-
-    // Caret at the end of the query (the search field is always focused while the popover is open).
+    let pad = ui::MENU_PAD * s;
+    let search_h = ui::MENU_SEARCH_ROW * s;
+    // The search field is always focused while the popover is open.
     if ui::caret_phase() {
         let caret_x = x
             + pad
-            + POPOVER_TEXT_INSET * s
-            + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight());
+            + ui::MENU_SEARCH_INSET * s
+            + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight()) * s;
         out.rects.push(Rect {
             x: caret_x,
             y: y + pad + (search_h - 15.0 * s) / 2.0,
@@ -1689,8 +1617,8 @@ pub fn popover(
     }
 
     if matches.len() > visible {
-        let track_top = y + pad + search_h + gap;
-        let track_h = visible as f32 * item_h;
+        let track_top = y + chrome - pad;
+        let track_h = visible as f32 * row_h;
         let thumb_h = (track_h * visible as f32 / matches.len() as f32).max(24.0 * s);
         let travel = track_h - thumb_h;
         let max_scroll = matches.len().saturating_sub(visible).max(1) as f32;
