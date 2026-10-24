@@ -22,8 +22,8 @@ mod workspace_view;
 pub use form::{
     accent_action, checkbox, field, field_label, is_window_modal_id, modal_footer, modal_frame,
     modal_header, modal_note, modal_section, overlay_ring, paragraph, progress_bar, prompt_card,
-    segmented, status_line, status_pill, text_line, toggle_button_group, InputField, ModalResult,
-    WindowModal, PROMPT_WIDTH, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
+    segmented, status_line, text_line, toggle_button_group, InputField, ModalResult, WindowModal,
+    PROMPT_WIDTH, WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
@@ -33,7 +33,7 @@ pub use panel::{
     TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
-pub use ui::{button, key_chip, Button, ButtonKind, ButtonSize, MenuItem};
+pub use ui::{button, key_chip, status_pill, Button, ButtonKind, ButtonSize, MenuItem};
 pub use update::{
     button as update_button, UpdateAction, UpdateButton, UpdateInfo, UpdateMenuItem, UpdateTone,
     UPDATE_BUTTON, UPDATE_DISMISS,

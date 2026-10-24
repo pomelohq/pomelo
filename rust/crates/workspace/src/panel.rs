@@ -1286,7 +1286,12 @@ fn workspace_row(
             format!("not cloned: {}", row.missing.join(", ")),
             colors.warning,
         )),
-        Upkeep::None if waiting => Some(attention_pill("Waiting for you")),
+        Upkeep::None if waiting => Some(
+            div()
+                .row()
+                .child(ui::attention_pill("Waiting for you"))
+                .into(),
+        ),
         Upkeep::None => match trouble {
             Some((_, trouble)) => Some(headline(trouble.label().into(), colors.error)),
             None if agent_working(row.agent) => Some(headline("Agent working".into(), colors.info)),
@@ -1429,7 +1434,12 @@ pub fn switcher_title(row: &WorkspaceRow) -> String {
 pub fn switcher_status(row: &WorkspaceRow) -> Option<Node> {
     let colors = theme();
     if row.agent == Some(AgentDot::AwaitingInput) {
-        return Some(attention_pill("Waiting for you"));
+        return Some(
+            div()
+                .row()
+                .child(ui::attention_pill("Waiting for you"))
+                .into(),
+        );
     }
     if let Some((_, trouble)) = pr_trouble(row) {
         return Some(headline(trouble.label().into(), colors.error));
@@ -1452,27 +1462,6 @@ fn headline(text: String, color: Rgba) -> Node {
 }
 
 /// The one thing that needs you, as a filled pill so it is found at a glance.
-fn attention_pill(text: &str) -> Node {
-    let colors = theme();
-    let mut pill = div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(colors.attention)
-        .child(
-            label(text.to_string())
-                .size(11.0)
-                .medium()
-                .color(colors.on_attention),
-        );
-    if colors.appearance == ui::Appearance::Light {
-        pill = pill.border(1.0, with_alpha(colors.on_attention, 0.22));
-    }
-    div().row().child(pill).into()
-}
-
 /// The row lifted off the list while it is dragged: the same row on an elevated card.
 pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
     div()

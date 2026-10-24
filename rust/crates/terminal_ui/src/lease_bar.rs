@@ -235,7 +235,7 @@ pub fn strip(
             .h_px(20.0)
             .gap(8.0)
             .items_center()
-            .child(attention_pill("Waiting for approval"))
+            .child(ui::attention_pill("Waiting for approval"))
             .child(what);
         let card = if width < ONE_LINE_W {
             div()
@@ -293,23 +293,6 @@ fn shadow() -> Rgba {
     match theme().appearance {
         Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
         Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
-    }
-}
-
-fn attention_pill(text: &str) -> Div {
-    let colors = theme();
-    let pill = div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(colors.attention)
-        .child(label(text).size(11.0).medium().color(colors.on_attention));
-    // The yellow is close to white, so on a light card it needs an edge to stand off it.
-    match colors.appearance {
-        Appearance::Light => pill.border(1.0, colors.on_attention.alpha(0.22)),
-        Appearance::Dark => pill,
     }
 }
 
