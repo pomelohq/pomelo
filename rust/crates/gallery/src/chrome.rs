@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, MenuItem, Node, Rgba};
 
 use crate::scene::{Board, Group};
 
@@ -341,17 +341,32 @@ fn theme_list(width: f32, themes: &[(&str, ui::Appearance)], current: &str) -> N
     list.into()
 }
 
-/// The theme list floating under the mini bar while the panels are hidden.
-pub fn theme_menu(themes: &[(&str, ui::Appearance)], current: &str) -> Node {
-    div()
-        .col()
-        .w_px(RIGHT)
-        .pb(INSET)
-        .rounded(10.0)
-        .bg(theme().panel_background)
-        .border(1.0, theme().border)
-        .child(theme_list(RIGHT, themes, current))
-        .into()
+/// The theme list floating under the mini bar while the panels are hidden, each theme marked by its accent.
+pub fn theme_menu(themes: &[(&str, ui::Appearance)], current: &str, hovered: Option<u64>) -> Node {
+    let mut items = Vec::new();
+    for (appearance, title) in [
+        (ui::Appearance::Dark, "Dark themes"),
+        (ui::Appearance::Light, "Light themes"),
+    ] {
+        items.push(MenuItem {
+            header: true,
+            sep: !items.is_empty(),
+            ..MenuItem::new(0, title)
+        });
+        items.extend(
+            themes
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, kind))| *kind == appearance)
+                .map(|(index, (name, _))| MenuItem {
+                    checked: *name == current,
+                    icon: Some(IconKind::Circle),
+                    color: Some(ui::by_name(name).text_accent),
+                    ..MenuItem::new(THEME + index as u64, name.to_string())
+                }),
+        );
+    }
+    ui::menu(&items).hovered(hovered).into()
 }
 
 fn panels_button() -> Node {
@@ -427,27 +442,17 @@ pub fn theme_pill(current: &str) -> Node {
     pill().child(picker(THEMES, swatch(current))).into()
 }
 
-pub fn page_menu(pages: &[&str], page: usize) -> Node {
-    let width = 200.0;
-    div()
-        .col()
-        .w_px(width)
-        .py(INSET)
-        .rounded(10.0)
-        .bg(theme().panel_background)
-        .border(1.0, theme().border)
-        .children(pages.iter().enumerate().map(|(index, name)| {
-            row(
-                PAGE + index as u64,
-                width,
-                0.0,
-                row_icon(IconKind::File, index == page),
-                name,
-                index == page,
-                None,
-            )
-        }))
-        .into()
+pub fn page_menu(pages: &[&str], page: usize, hovered: Option<u64>) -> Node {
+    let items: Vec<MenuItem> = pages
+        .iter()
+        .enumerate()
+        .map(|(index, name)| MenuItem {
+            checked: index == page,
+            icon: Some(IconKind::File),
+            ..MenuItem::new(PAGE + index as u64, name.to_string())
+        })
+        .collect();
+    ui::menu(&items).hovered(hovered).into()
 }
 
 /// The keys that hide and show the panels, shown while the pointer is on that button.
