@@ -148,13 +148,14 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
                 branch_error.as_deref(),
             )),
         );
-    let mode = view::segmented(
-        &[
-            (MODE_FOLDERS, "Folders", true),
-            (MODE_URLS, "Git URLs", true),
+    let mode = ui::segmented(
+        [
+            ui::segment(MODE_FOLDERS, "Folders"),
+            ui::segment(MODE_URLS, "Git URLs"),
         ],
         usize::from(form.add_mode == AddMode::Urls),
-    );
+    )
+    .size(ui::ButtonSize::Medium);
     let mut adder = div().row().items_center().gap(8.0).child(mode);
     let adder_hint = match form.add_mode {
         AddMode::Folders => {
@@ -351,24 +352,18 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         .child(ui::status_pill("recommended", colors.success))
         .into();
     let picker: Node = if any_agent {
-        let options: Vec<(u64, &str, bool)> = AgentCli::ALL
-            .iter()
-            .enumerate()
-            .map(|(index, cli)| {
-                (
-                    AGENT_BASE + index as u64,
-                    cli.title(),
-                    state.agent_installed(*cli),
-                )
-            })
-            .collect();
+        let options = AgentCli::ALL.iter().enumerate().map(|(index, cli)| {
+            ui::segment(AGENT_BASE + index as u64, cli.title()).enabled(state.agent_installed(*cli))
+        });
         let selected = AgentCli::ALL
             .iter()
             .position(|cli| *cli == form.agent)
             .unwrap_or(0);
         field(
             "Agent",
-            view::segmented(&options, selected),
+            ui::segmented(options, selected)
+                .size(ui::ButtonSize::Medium)
+                .into(),
             Some("only installed CLIs can be picked"),
             None,
         )

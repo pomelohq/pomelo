@@ -5,7 +5,7 @@ use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{toggle_button_group, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -425,21 +425,27 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         .gap(8.0)
         .px(CARD_INSET)
         .h_px(TOOLBAR_H)
-        .child(toggle_button_group(
-            &[
-                (KIND_BASE, None, "All"),
-                (KIND_BASE + 1, None, "Proxy"),
-                (KIND_BASE + 2, None, "Webhooks"),
-            ],
-            kind,
-        ))
-        .child(toggle_button_group(
-            &[
-                (STATUS_BASE, None, "Any Status"),
-                (STATUS_BASE + 1, None, "Errors"),
-            ],
-            usize::from(state.errors_only),
-        ))
+        .child(
+            ui::segmented(
+                [
+                    ui::segment(KIND_BASE, "All"),
+                    ui::segment(KIND_BASE + 1, "Proxy"),
+                    ui::segment(KIND_BASE + 2, "Webhooks"),
+                ],
+                kind,
+            )
+            .hovered(hovered),
+        )
+        .child(
+            ui::segmented(
+                [
+                    ui::segment(STATUS_BASE, "Any Status"),
+                    ui::segment(STATUS_BASE + 1, "Errors"),
+                ],
+                usize::from(state.errors_only),
+            )
+            .hovered(hovered),
+        )
         .child(field)
         .child(div().flex(1.0))
         .child(

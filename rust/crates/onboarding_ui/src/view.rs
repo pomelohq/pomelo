@@ -147,39 +147,6 @@ pub fn note_paragraph(text: &str, width: f32) -> Node {
     workspace::paragraph(text, 12.0, 16.0, width, theme().text_placeholder)
 }
 
-/// Mutually exclusive choices on a sunken track; the chosen one sits raised, unavailable ones are dimmed.
-pub fn segmented(options: &[(u64, &str, bool)], selected: usize) -> Node {
-    let colors = theme();
-    let mut group = div()
-        .row()
-        .p(2.0)
-        .gap(2.0)
-        .rounded(6.0)
-        .bg(colors.background);
-    for (index, (id, text, enabled)) in options.iter().enumerate() {
-        let chosen = index == selected;
-        let ink = if !enabled {
-            colors.text_disabled
-        } else if chosen {
-            colors.text
-        } else {
-            colors.text_muted
-        };
-        let mut cell = div()
-            .row()
-            .h_px(26.0)
-            .px(10.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(*id);
-        if chosen {
-            cell = cell.bg(colors.element_background);
-        }
-        group = group.child(cell.child(label(text.to_string()).size(12.0).color(ink)));
-    }
-    div().row().child(group).into()
-}
-
 /// A one-line input box around `field`, on the surface layer, ringed while focused.
 pub fn input(
     id: u64,

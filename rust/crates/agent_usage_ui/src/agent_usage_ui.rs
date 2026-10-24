@@ -243,37 +243,6 @@ fn model_family(model: &str) -> &'static str {
     }
 }
 
-fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .p(2.0)
-        .gap(2.0)
-        .rounded(5.0)
-        .bg(colors.element_background);
-    for (index, (id, text)) in options.iter().enumerate() {
-        let on = index == selected;
-        let mut part = div()
-            .row()
-            .px(10.0)
-            .py(3.0)
-            .rounded(4.0)
-            .on_click(*id)
-            .child(label(text.to_string()).size(12.5).color(if on {
-                colors.text
-            } else {
-                colors.text_muted
-            }));
-        if on {
-            part = part.bg(colors.element_selected);
-        } else if hovered == Some(*id) {
-            part = part.bg(colors.ghost_element_hover);
-        }
-        row = row.child(part);
-    }
-    row.into()
-}
-
 fn section(title: &str, trailing: Option<Node>, body: Node) -> Node {
     let colors = theme();
     let mut head = div().row().items_center().child(
@@ -399,15 +368,17 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .color(colors.text_muted),
                 ),
         )
-        .child(segmented(
-            &[
-                (PERIOD_BASE, "Today"),
-                (PERIOD_BASE + 1, "7 days"),
-                (PERIOD_BASE + 2, "30 days"),
-            ],
-            period_index,
-            hovered,
-        ));
+        .child(
+            ui::segmented(
+                [
+                    ui::segment(PERIOD_BASE, "Today"),
+                    ui::segment(PERIOD_BASE + 1, "7 days"),
+                    ui::segment(PERIOD_BASE + 2, "30 days"),
+                ],
+                period_index,
+            )
+            .hovered(hovered),
+        );
 
     let stat_w = (content_w - 30.0) / 4.0;
     let span = if state.period == 1 {
@@ -565,15 +536,16 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         Group::Agent => 1,
         Group::Model => 2,
     };
-    let group_picker = segmented(
-        &[
-            (GROUP_BASE, "Workspace"),
-            (GROUP_BASE + 1, "Agent"),
-            (GROUP_BASE + 2, "Model"),
+    let group_picker: Node = ui::segmented(
+        [
+            ui::segment(GROUP_BASE, "Workspace"),
+            ui::segment(GROUP_BASE + 1, "Agent"),
+            ui::segment(GROUP_BASE + 2, "Model"),
         ],
         group_index,
-        hovered,
-    );
+    )
+    .hovered(hovered)
+    .into();
     let mut chart_body = div().col().gap(6.0);
     if state.period > 1 {
         let days: Vec<i64> = (0..state.period)

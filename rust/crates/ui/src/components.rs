@@ -450,6 +450,118 @@ impl From<Chip> for Node {
     }
 }
 
+/// One choice of a [`Segmented`].
+pub struct Segment {
+    id: u64,
+    text: String,
+    icon: Option<IconKind>,
+    enabled: bool,
+}
+
+pub fn segment(id: u64, text: impl Into<String>) -> Segment {
+    Segment {
+        id,
+        text: text.into(),
+        icon: None,
+        enabled: true,
+    }
+}
+
+impl Segment {
+    pub fn icon(mut self, icon: Option<IconKind>) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+}
+
+/// Mutually exclusive choices on a sunken track, the chosen one raised: a toolbar filter or a form choice.
+pub struct Segmented {
+    segments: Vec<Segment>,
+    selected: usize,
+    hovered: Option<u64>,
+    size: ButtonSize,
+}
+
+pub fn segmented(segments: impl IntoIterator<Item = Segment>, selected: usize) -> Segmented {
+    Segmented {
+        segments: segments.into_iter().collect(),
+        selected,
+        hovered: None,
+        size: ButtonSize::Small,
+    }
+}
+
+impl Segmented {
+    pub fn hovered(mut self, hovered: Option<u64>) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    pub fn render(self) -> Div {
+        let colors = theme();
+        let size = self.size;
+        let mut track = div()
+            .row()
+            .p(SEGMENT_INSET)
+            .gap(SEGMENT_INSET)
+            .rounded(6.0)
+            .bg(colors.background);
+        for (index, segment) in self.segments.into_iter().enumerate() {
+            let chosen = index == self.selected;
+            let hot = !chosen && segment.enabled && self.hovered == Some(segment.id);
+            let ink = if !segment.enabled {
+                colors.text_disabled
+            } else if chosen || hot {
+                colors.text
+            } else {
+                colors.text_muted
+            };
+            let mut cell = div()
+                .row()
+                .h_px(size.height() - 2.0 * SEGMENT_INSET)
+                .px(size.pad_x())
+                .gap(6.0)
+                .items_center()
+                .rounded(4.0);
+            if segment.enabled {
+                cell = cell.on_click(segment.id);
+            }
+            if chosen {
+                cell = cell
+                    .bg(colors.element_background)
+                    .border(1.0, colors.border_variant);
+            } else if hot {
+                // The ghost hover token is darker than this track in some dark themes, so tint from the text color.
+                cell = cell.bg(colors.text.alpha(0.025));
+            }
+            if let Some(kind) = segment.icon {
+                cell = cell.child(crate::icon(kind).size(size.icon()).color(ink));
+            }
+            track =
+                track.child(cell.child(crate::label(segment.text).size(size.text()).color(ink)));
+        }
+        div().row().child(track)
+    }
+}
+
+impl From<Segmented> for Node {
+    fn from(segmented: Segmented) -> Node {
+        segmented.render().into()
+    }
+}
+
+const SEGMENT_INSET: f32 = 2.0;
+
 const TOOLTIP_HEIGHT: f32 = 24.0;
 
 /// The bubble a tooltip shows: its text, then the keys that run the action when there are any.

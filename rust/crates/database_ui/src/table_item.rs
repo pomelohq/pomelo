@@ -14,7 +14,7 @@ use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
 use workspace::{
-    field_label, segmented, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
+    field_label, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
 };
 
 use crate::details::{
@@ -1335,16 +1335,16 @@ impl TableItem {
             .child(crumb);
         if !self.is_redis() {
             let views = [
-                (VIEW_DATA, "Data"),
-                (VIEW_STRUCTURE, "Structure"),
-                (VIEW_DDL, "DDL"),
+                ui::segment(VIEW_DATA, "Data"),
+                ui::segment(VIEW_STRUCTURE, "Structure"),
+                ui::segment(VIEW_DDL, "DDL"),
             ];
             let selected = match self.view {
                 View::Data => 0,
                 View::Structure => 1,
                 View::Ddl => 2,
             };
-            bar = bar.child(segmented(&views, selected, self.hovered));
+            bar = bar.child(ui::segmented(views, selected).hovered(self.hovered));
         }
         if self.view == View::Data && self.side_fits {
             bar = bar.child(self.keyed_button(DETAILS, "Details", "shift-enter", self.details));
@@ -1553,7 +1553,10 @@ impl TableItem {
 
     fn side_head(&self) -> Node {
         let colors = theme();
-        let modes = [(SIDE_VALUE, "Value"), (SIDE_ROW, "Row")];
+        let modes = [
+            ui::segment(SIDE_VALUE, "Value"),
+            ui::segment(SIDE_ROW, "Row"),
+        ];
         div()
             .row()
             .h_px(SIDE_HEAD_H)
@@ -1561,11 +1564,7 @@ impl TableItem {
             .pr(8.0)
             .gap(8.0)
             .items_center()
-            .child(segmented(
-                &modes,
-                usize::from(self.side == Side::Row),
-                self.hovered,
-            ))
+            .child(ui::segmented(modes, usize::from(self.side == Side::Row)).hovered(self.hovered))
             .child(div().row().flex(1.0))
             .child(
                 div()
