@@ -132,10 +132,13 @@ drive them (`pom agent ...`, the MCP tools in `pom_mcp`).
   change to the `agents` section, and refuses to overwrite a `pom.yml` it cannot read, since the policy is
   read from it (`pom_mcp/src/config_files.rs`).
 - **Screen fallback.** When the hook cannot carry an answer (a person took the session over, or the wait
-  ran out), the answer is typed into the agent's dialog after the rendered screen is checked to show it
-  (Enter on a highlighted plain "yes", Esc to deny), and the folder-trust prompt shown at a session's
-  start is answered the same way (`pom_agent/src/driver.rs`, `screen.rs`). This fallback is being
-  restricted further.
+  ran out), the agent draws its own permission dialog. pom never types an allow into it: an allow from
+  `pom agent` or the MCP tools is refused with `allow_needs_hook`, and a person allows it at the terminal.
+  A deny is the dialog's own Esc. pom types nothing while a person drives the session, reads the screen
+  again right before every key and sends it only if the dialog is unchanged, and writes each key it sent or
+  held back to the workspace log as a `screen_fallback` event (`pom_agent/src/fallback.rs`,
+  `conversation.rs`). The folder-trust prompt at the start of a session pom launched is answered with yes
+  under the same rules (`drive.rs`); `--trust` marks the folder trusted in the agent's config instead.
 
 Trust boundary: these controls keep a well-behaved agent inside its workspace and keep mistakes from
 spreading. They are not a sandbox. Everything runs as your user, and approvals, leases and policy answers
@@ -172,7 +175,9 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
 - `pom_secrets` keeps each session's secrets in `~/.local/state/pom/secrets/<session>.bin`: a random nonce
   and AES-256-GCM of the name/value map, under a per-machine key in `~/.local/state/pom/secret.key`. Both
   are written `0600`. The key sits next to the data, so encryption at rest protects a copied or backed-up
-  file, not the data from a process of your own user.
+  file, not the data from a process of your own user. The key is created only when it is missing, never in
+  place of one that cannot be read or has the wrong length: those are errors that leave the file as it is,
+  so a backup can be put back.
 - Onboarding imports a project's gitignored `.env*` values into this store. Config refers to them as
   `{{secret.NAME}}`; agents and the MCP server only ever see names.
 - Values are injected into a service's environment at spawn, and also written into the generated env files
@@ -183,8 +188,11 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
   decrypted and re-sealed with a passphrase (scrypt, then AES-256-GCM; `pom_bundle`). The machine key never
   travels. The archive's strength is the passphrase's, so use a long one and send it separately.
 - Importing an archive applies its patches, untracked files, database dumps and volumes into a workspace:
-  only import archives from people you trust. Archive entries are restricted to the expected names
-  (`pom_transfer/src/pom_transfer.rs`, `allowed_entry`).
+  only import archives from people you trust. Archive entries must be plain files under the expected names,
+  and every path the manifest names must be one of them; repo names are single folder names
+  (`pom_transfer/src/pom_transfer.rs`, `allowed_entry`). The untracked-files tar unpacks only plain files
+  and folders inside the worktree, never under a `.git`, with setuid bits dropped; a link or any other entry
+  stops the import (`pom_workspace/src/import.rs`).
 - Settings store env-var names, never secret values. The proxy token and Jira token fall back to the
   encrypted store when no env var is set.
 
