@@ -1,6 +1,6 @@
 name: Nightly
 
-# Each night, when main moved since the last nightly: build main as `<next patch>-nightly.<YYYYMMDD>` with
+# Each night, when main moved since the last nightly: build main as `<next patch>-nightly.<YYYYMMDD>.<run>` with
 # build.yml (signed, notarized, Sparkle-signed like a release) and publish it into the one rolling `nightly`
 # prerelease, its assets named by version. The last 7 nights' builds stay there, so a host can still install the
 # exact nightly an app runs. It never touches appcast.xml or the latest stable release, and the release is never
@@ -55,7 +55,8 @@ jobs:
           fi
           CURRENT=$(sed -n 's/^version = "\(.*\)"/\1/p' rust/Cargo.toml | head -1)
           IFS=. read -r MAJOR MINOR PATCH <<<"$CURRENT"
-          VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-nightly.$(date -u +%Y%m%d)"
+          # The run number orders two builds of one day (make nightly); the date still orders the days.
+          VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))-nightly.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
           BUILD=true
           if [ "$COMMIT" = "$LAST" ] && [ "$FORCE" != true ] && [ "$DRY_RUN" != true ]; then
             BUILD=false

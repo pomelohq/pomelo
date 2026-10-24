@@ -15,18 +15,20 @@ Semver in `rust/Cargo.toml` (`[workspace.package] version`), tagged `v<version>`
 
 - **Stable**: the releases below, cut with `make patch|minor|major`. The default.
 - **Nightly**: `.github/workflows/nightly.yml` builds `main` every night at 02:17 UTC when it moved since the
-  last nightly, as `<next patch>-nightly.<YYYYMMDD>` (`0.9.9-nightly.20261024` after `v0.9.8`), signed and
+  last nightly, as `<next patch>-nightly.<YYYYMMDD>.<run>` (`0.9.9-nightly.20261024.41` after `v0.9.8`), signed and
   notarized like a release. It publishes into the one `nightly` prerelease, never marked latest and never
   touching `appcast.xml`: the DMG, the update tarball and the Linux tarballs, each with its `.sig`, plus
   `checksums-<v>.txt` and `nightly.json` (the version and commit). The builds of the last 7 nights stay there,
-  named by version; older ones are removed. Its tag moves to the commit of the newest build.
+  named by version (every build of a day counts as that night); older ones are removed. Its tag moves to the
+  commit of the newest build.
 
 The app picks the channel in Settings > General (`update_channel`; dev and nightly builds follow nightly
 until one is picked). Stable ignores prereleases; nightly takes the highest version of both, and a release
-ranks above its own nightlies (`0.9.9` > `0.9.9-nightly.20261024`), so nightly users get every stable and
+ranks above its own nightlies (`0.9.9` > `0.9.9-nightly.20261024.41`), so nightly users get every stable and
 every hotfix at once. Switching from nightly to stable never downgrades: it takes effect at the next stable.
 
-Run the nightly by hand from Actions, or with `gh workflow run nightly.yml -f dry_run=true`: a dry run (the
+`make nightly` publishes a nightly of main right away (the run number keeps a second build of the day ahead of
+the first). Run it by hand from Actions, or with `gh workflow run nightly.yml -f dry_run=true`: a dry run (the
 default for a manual run) builds, signs and notarizes but publishes nothing and moves no tag; `force` builds
 even when main has not moved. `release.yml` run by hand builds the current version the same way and
 publishes nothing. Both call `.github/workflows/build.yml`, the one build every published download comes
