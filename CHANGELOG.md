@@ -12,9 +12,12 @@ All notable changes to Pomelo are documented here. The format is based on
 
 ### Changed
 - The app and pom server agree on a protocol both speak, so a newer app keeps working with an older pom on a host. A host with a newer pom than the app now says to update the app instead of offering to replace pom there with an older one. (#402)
+- Buttons, selects, menus, chips, pills, tooltips and status dots each come from one shared component, so a control looks the same in every panel. Chips (branches, key kinds, plans, a detected stack) now share one shape. (#420, #421, #422, #433, #434, #435, #436)
+- A Settings dropdown without room below opens above its control or lines up with its right edge, and keeps its search line next to the control. (#423, #428, #430)
 
 ### Fixed
 - Settings descriptions and section notes sit on the same line height as the rest of the small text, so long pages no longer drift lower note by note. (#410)
+- Starting several services at once no longer fails now and then with "No such file or directory" when two of them set up their socket folder at the same moment. (#425)
 
 ## [0.9.9] - 2026-10-24
 
