@@ -4,6 +4,18 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.10] - 2026-10-24
+
+### Security
+- The dev proxy asks for its token on any request that carries `X-Forwarded-For`, `X-Real-IP`, `Forwarded` or `X-Forwarded-Host`, also one from this machine, so a tunnel or proxy on loopback no longer passes as local. `pom doctor` warns (`proxy.untrusted_forwarder`) about a peer that sends those headers without being in `proxy.trusted_proxies`. (#401)
+- wasmtime, which loads grammar packages, moves to 48.0.7 and tokio to 1.54.1, fixing their published advisories. (#400)
+
+### Changed
+- The app and pom server agree on a protocol both speak, so a newer app keeps working with an older pom on a host. A host with a newer pom than the app now says to update the app instead of offering to replace pom there with an older one. (#402)
+
+### Fixed
+- Settings descriptions and section notes sit on the same line height as the rest of the small text, so long pages no longer drift lower note by note. (#410)
+
 ## [0.9.9] - 2026-10-24
 
 ### Security
