@@ -18,6 +18,7 @@ All notable changes to Pomelo are documented here. The format is based on
 - Linux updates: Linux tarballs ship with a signature, the app installed by `install.sh` updates itself like on macOS, and `pom self-update [--channel] [--version] [--check]` verifies before it installs. `install.sh` takes `--channel` and `--version`. A package-managed install is never replaced. (#389)
 
 ### Changed
+- Settings opened from a remote window has two tabs in its title bar, This Mac and the host. The host tab changes the host's own settings (workspaces, pom server, agent command, terminal shell, dev services, Jira) and opens its settings.json in the remote editor; This Mac notes which sections apply only here. Needs this pom on the host. (#393)
 - In a remote window, the main agent starts with the host's Agent Command and new terminals use the host's Terminal Shell, read from the host's own settings. Needs this pom on the host. (#371, #349)
 - SECURITY.md describes the screen fallback, the secrets key and imports as they work now. (#385)
 
