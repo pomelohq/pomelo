@@ -1,4 +1,4 @@
-use components::field_label;
+use components::section_header;
 use std::collections::HashSet;
 
 use pom_services::{ServiceExplain, ServiceTarget};
@@ -205,7 +205,7 @@ impl EnvItem {
         div()
             .col()
             .gap(6.0)
-            .child(field_label(title))
+            .child(section_header(title))
             .child(
                 components::select(id, value)
                     .placeholder("-")
@@ -298,7 +298,7 @@ impl EnvItem {
             .px(8.0)
             .pt(14.0)
             .pb(6.0)
-            .child(field_label(&title))
+            .child(section_header(&title))
             .into()
     }
 

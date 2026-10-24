@@ -557,7 +557,6 @@ impl OutlineView {
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {
-        let colors = theme();
         let Some((entry, symbol)) = self
             .entries
             .get(row)
@@ -565,22 +564,15 @@ impl OutlineView {
         else {
             return div().into();
         };
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .rounded(4.0)
-            .on_click(id_base + OutlineClick::Row(row).offset());
-        if row == self.selected {
-            item = item.bg(colors.element_selected);
-        }
         let text = div()
             .row()
             .items_center()
             .pl(symbol.depth as f32 * DEPTH_INDENT)
             .children(label_segments(symbol, &entry.positions));
-        div().row().px(4.0).child(item.child(text)).into()
+        components::list_row(id_base + OutlineClick::Row(row).offset())
+            .selected(row == self.selected)
+            .child(text)
+            .into()
     }
 }
 

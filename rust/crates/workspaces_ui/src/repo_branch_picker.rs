@@ -2,7 +2,7 @@
 //! origin branches, narrowed as you type, and a row that creates the typed branch when nothing matches. Opening
 //! it fetches origin in the background, so branches pushed since show up, tagged new.
 
-use components::{field_label, text_line};
+use components::{section_header, text_line};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
@@ -330,7 +330,7 @@ impl BranchPicker {
                     .row()
                     .flex(1.0)
                     .items_center()
-                    .child(field_label(title)),
+                    .child(section_header(title)),
             )
             .child(self.status_label())
             .into()

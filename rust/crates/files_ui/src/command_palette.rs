@@ -995,7 +995,6 @@ impl CommandPalette {
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {
-        let colors = theme();
         let Some((found, command)) = self
             .matches
             .get(row)
@@ -1003,41 +1002,28 @@ impl CommandPalette {
         else {
             return div().into();
         };
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .rounded(4.0)
-            .on_click(id_base + PaletteClick::Row(row).offset());
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        }
         let keys = div().row().items_center().gap(4.0).children(
             command
                 .binding
                 .iter()
                 .map(|keystroke| render_keystroke(keystroke, LabelSize::Default.px())),
         );
-        div()
-            .row()
-            .px(4.0)
+        components::list_row(id_base + PaletteClick::Row(row).offset())
+            .selected(row == self.selected)
             .child(
-                item.child(
-                    div()
-                        .row()
-                        .flex(1.0)
-                        .py(1.0)
-                        .items_center()
-                        .justify_between()
-                        .gap(8.0)
-                        .child(highlighted_label(
-                            &command.name,
-                            &found.positions,
-                            LabelSize::Default.px(),
-                        ))
-                        .child(keys),
-                ),
+                div()
+                    .row()
+                    .flex(1.0)
+                    .py(1.0)
+                    .items_center()
+                    .justify_between()
+                    .gap(8.0)
+                    .child(highlighted_label(
+                        &command.name,
+                        &found.positions,
+                        LabelSize::Default.px(),
+                    ))
+                    .child(keys),
             )
             .into()
     }

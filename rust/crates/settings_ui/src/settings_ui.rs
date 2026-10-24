@@ -4507,14 +4507,7 @@ fn section_header(name: &str, anchor: u64, noted: bool) -> Node {
         .pt(22.0)
         .pb(if noted { 6.0 } else { 8.0 })
         .on_click(anchor) // geometry marker only: lets the app read this section's y to scroll the navbar to it
-        .child(
-            div().row().h_px(14.0).items_center().child(
-                label(name.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(dim_c()),
-            ),
-        )
+        .child(components::section_header(name))
         .into()
 }
 

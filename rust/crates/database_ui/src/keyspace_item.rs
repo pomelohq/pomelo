@@ -2,7 +2,7 @@
 //! selected key's value the way its type holds it (JSON as a tree, a hash as fields, a list with its indexes, a
 //! sorted set with scores, a set's members). The TTL can be changed, and a key or every match deleted.
 
-use components::{field_label, ButtonKind};
+use components::{section_header, ButtonKind};
 use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
@@ -429,7 +429,7 @@ impl KeyspaceItem {
                 },
             )
             .on_click(id)
-            .child(field_label(prefix))
+            .child(section_header(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,

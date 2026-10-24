@@ -115,12 +115,7 @@ pub(crate) fn section(title: &str) -> Node {
         .row()
         .pt(12.0)
         .pb(4.0)
-        .child(
-            label(title.to_uppercase())
-                .size(10.5)
-                .weight(600)
-                .color(theme().text_placeholder),
-        )
+        .child(components::section_header(title).render().flex(1.0))
         .into()
 }
 

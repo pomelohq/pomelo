@@ -275,30 +275,15 @@ impl LanguageSelector {
             return div().into();
         };
         let id = id_base + row as u64;
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id);
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        } else if self.hovered == Some(id) {
-            item = item.bg(colors.ghost_element_hover);
-        }
-        div()
-            .row()
-            .px(4.0)
-            .child(item.child(material_icon(candidate.icon).size(14.0)).child(
-                crate::file_finder::highlighted(
-                    &text,
-                    &found.positions,
-                    colors.text,
-                    LabelSize::Default,
-                ),
+        components::list_row(id)
+            .selected(row == self.selected)
+            .hovered(self.hovered)
+            .child(material_icon(candidate.icon).size(14.0))
+            .child(crate::file_finder::highlighted(
+                &text,
+                &found.positions,
+                colors.text,
+                LabelSize::Default,
             ))
             .into()
     }

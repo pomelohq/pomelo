@@ -720,18 +720,23 @@ impl Item for BucketItem {
             .gap(10.0)
             .items_center()
             .child(div().w_px(16.0))
-            .child(div().row().flex(1.0).child(components::field_label("Name")))
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .child(components::section_header("Name")),
+            )
             .child(
                 div()
                     .row()
                     .w_px(110.0)
-                    .child(components::field_label("Size")),
+                    .child(components::section_header("Size")),
             )
             .child(
                 div()
                     .row()
                     .w_px(130.0)
-                    .child(components::field_label("Modified")),
+                    .child(components::section_header("Modified")),
             );
         let card = |w: f32| {
             div()

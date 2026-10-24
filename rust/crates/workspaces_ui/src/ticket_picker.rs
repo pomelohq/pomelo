@@ -2,7 +2,7 @@
 //! (ranked mine-first, best match), with the list they come from: a board's sprint or backlog, or every
 //! open ticket assigned to the user.
 
-use components::{field_label, status_line, text_line};
+use components::{section_header, status_line, text_line};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
@@ -341,7 +341,7 @@ impl TicketPicker {
             .items_center()
             .gap(6.0)
             .h_px(14.0)
-            .child(field_label(self.field.label));
+            .child(section_header(self.field.label));
         if let Some(name) = self.source_name() {
             let mut anchor = div()
                 .col()

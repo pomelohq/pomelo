@@ -1,7 +1,9 @@
 //! Atoms put together into one control: a menu of choices, and a select with its menu open.
 
-use components::MenuItem;
-use ui::{div, IconKind, Node};
+use components::{BannerTone, ButtonKind, MenuItem};
+use ui::{div, label, theme, IconKind, Node};
+use workspace::text_field::{FieldFont, TextField};
+use workspace::InputField;
 
 use crate::{still, Story, StoryDef};
 
@@ -238,6 +240,75 @@ fn at_edge(select_at: (f32, f32), searchable: bool) -> Node {
     }
 }
 
+const WIDE: (f32, f32) = (360.0, 120.0);
+
+fn on_board(width: f32, node: impl Into<Node>) -> Node {
+    div().col().w_px(width).p(INSET).child(node).into()
+}
+
+fn field(hint: Option<&str>, error: Option<&str>, text: &str) -> Node {
+    let mut input = InputField::new("Branch", "feat-login");
+    input.field.set_text(text);
+    input.field.move_to_end();
+    on_board(WIDE.0, input.render(ID, false, hint, error))
+}
+
+fn search_field(text: &str, focused: bool) -> Node {
+    let mut query = TextField::default();
+    query.set_text(text);
+    query.move_to_end();
+    let mut box_ = components::search_box(ID, focused).w_px(240.0).child(
+        div().row().flex(1.0).items_center().child(query.render(
+            "Filter by name",
+            focused,
+            theme().text,
+            20.0,
+            FieldFont::Ui,
+        )),
+    );
+    if !text.is_empty() {
+        box_ = box_.child(
+            components::icon_button(ID + 1, IconKind::Close).size(components::ButtonSize::XSmall),
+        );
+    }
+    on_board(WIDE.0, box_)
+}
+
+fn list(rows: &[(&str, IconKind)], selected: usize, hovered: Option<u64>) -> Node {
+    let mut column = div()
+        .col()
+        .w_px(280.0)
+        .py(4.0)
+        .rounded(8.0)
+        .bg(theme().elevated_surface_background);
+    for (index, (text, kind)) in rows.iter().enumerate() {
+        let id = ID + index as u64;
+        column = column.child(
+            components::list_row(id)
+                .selected(index == selected)
+                .hovered(hovered)
+                .child(ui::icon(*kind).size(14.0).color(theme().icon_muted))
+                .child(label(text.to_string()).size(13.0).color(theme().text)),
+        );
+    }
+    div().p(INSET).child(column).into()
+}
+
+const ROWS: [(&str, IconKind); 3] = [
+    ("api/src/server.rs", IconKind::File),
+    ("web/src/pages/Login.tsx", IconKind::File),
+    ("docs", IconKind::Folder),
+];
+
+fn toast_board(action: Option<&str>) -> Node {
+    let (node, width, _) = components::toast(
+        "Pulled feat-login in 3 repos",
+        action.map(|text| (text, ID)),
+        ID + 1,
+    );
+    div().p(INSET).child(div().w_px(width).child(node)).into()
+}
+
 pub fn stories() -> Vec<StoryDef> {
     let story = |id, group, title, size, build: fn() -> anyhow::Result<Box<dyn Story>>| StoryDef {
         id,
@@ -248,6 +319,117 @@ pub fn stories() -> Vec<StoryDef> {
         build,
     };
     vec![
+        story("field-hint", "Field", "With a hint", (360.0, 112.0), || {
+            still(|_, _| field(Some("A new worktree for every repo"), None, ""))
+        }),
+        story(
+            "field-error",
+            "Field",
+            "With an error",
+            (360.0, 130.0),
+            || still(|_, _| field(None, Some("A branch name has no spaces"), "feat login")),
+        ),
+        story(
+            "search-field-empty",
+            "Search field",
+            "Empty",
+            (360.0, 60.0),
+            || still(|_, _| search_field("", false)),
+        ),
+        story(
+            "search-field-typed",
+            "Search field",
+            "Typed",
+            (360.0, 60.0),
+            || still(|_, _| search_field("api", true)),
+        ),
+        story(
+            "section-header-count",
+            "Section header",
+            "With a count",
+            (320.0, 48.0),
+            || still(|_, _| on_board(320.0, components::section_header("This workspace").count(3))),
+        ),
+        story(
+            "section-header-action",
+            "Section header",
+            "With an action",
+            (320.0, 56.0),
+            || {
+                still(|_, _| {
+                    on_board(
+                        320.0,
+                        components::section_header("Shared - all workspaces").trailing(
+                            components::icon_button(ID, IconKind::Plus)
+                                .size(components::ButtonSize::XSmall),
+                        ),
+                    )
+                })
+            },
+        ),
+        story(
+            "list-row-selected",
+            "List row",
+            "Selected",
+            (312.0, 128.0),
+            || still(|_, _| list(&ROWS, 0, None)),
+        ),
+        story(
+            "list-row-hovered",
+            "List row",
+            "One hovered",
+            (312.0, 128.0),
+            || still(|_, _| list(&ROWS, 0, Some(ID + 1))),
+        ),
+        story(
+            "banner-warning",
+            "Banner",
+            "Warning with its fix",
+            (520.0, 80.0),
+            || {
+                still(|_, _| {
+                    on_board(
+                        520.0,
+                        components::banner(BannerTone::Warning, "Docker is not running")
+                            .action(components::button(ID, "Start Docker")),
+                    )
+                })
+            },
+        ),
+        story(
+            "banner-commands",
+            "Banner",
+            "With the commands it runs",
+            (520.0, 136.0),
+            || {
+                still(|_, _| {
+                    on_board(
+                        520.0,
+                        components::banner(BannerTone::Error, "pom on dev is older than this app")
+                            .action(components::button(ID, "Update pom").kind(ButtonKind::Primary))
+                            .commands(vec!["pom self-update".into(), "pom server restart".into()]),
+                    )
+                })
+            },
+        ),
+        story("banner-busy", "Banner", "Busy", (520.0, 80.0), || {
+            still(|_, _| {
+                on_board(
+                    520.0,
+                    components::banner(BannerTone::Busy, "Updating pom on dev..."),
+                )
+            })
+        }),
+        story("toast", "Toast", "Message", (420.0, 68.0), || {
+            still(|_, _| toast_board(None))
+        }),
+        story(
+            "toast-action",
+            "Toast",
+            "With an action",
+            (420.0, 68.0),
+            || still(|_, _| toast_board(Some("Switch"))),
+        ),
         story(
             "menu-context",
             "Menu",

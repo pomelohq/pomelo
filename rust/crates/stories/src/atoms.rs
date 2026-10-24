@@ -38,13 +38,7 @@ fn sized(kind: ButtonKind) -> Node {
     )
 }
 
-fn input(
-    field: InputField,
-    text: &str,
-    focused: bool,
-    hint: Option<&str>,
-    error: Option<&str>,
-) -> Node {
+fn input(field: InputField, text: &str, focused: bool, error: bool) -> Node {
     let mut field = field;
     field.field.set_text(text);
     field.field.move_to_end();
@@ -52,7 +46,7 @@ fn input(
         .col()
         .w_px(INPUT.0)
         .p(16.0)
-        .child(field.render(ID, focused, hint, error))
+        .child(field.render_input(ID, focused, error))
         .into()
 }
 
@@ -433,15 +427,7 @@ pub fn stories() -> Vec<StoryDef> {
             })
         }),
         story("input-empty", "Input", "Empty", INPUT, || {
-            still(|_, _| {
-                input(
-                    InputField::new("Branch", "feat-login"),
-                    "",
-                    false,
-                    Some("A new worktree for every repo"),
-                    None,
-                )
-            })
+            still(|_, _| input(InputField::new("Branch", "feat-login"), "", false, false))
         }),
         story("input-focused", "Input", "Focused", INPUT, || {
             still(|_, _| {
@@ -449,8 +435,7 @@ pub fn stories() -> Vec<StoryDef> {
                     InputField::new("Branch", "feat-login"),
                     "feat-signup",
                     true,
-                    None,
-                    None,
+                    false,
                 )
             })
         }),
@@ -460,8 +445,7 @@ pub fn stories() -> Vec<StoryDef> {
                     InputField::new("Branch", "feat-login"),
                     "feat login",
                     false,
-                    None,
-                    Some("A branch name has no spaces"),
+                    true,
                 )
             })
         }),
@@ -473,8 +457,7 @@ pub fn stories() -> Vec<StoryDef> {
                         .with_icon(IconKind::Terminal),
                     "bin/rails server -p $PORT",
                     false,
-                    None,
-                    None,
+                    false,
                 )
             })
         }),
@@ -484,8 +467,7 @@ pub fn stories() -> Vec<StoryDef> {
                     InputField::new("Token", "Paste a token").masked(),
                     "abcdefgh",
                     false,
-                    None,
-                    None,
+                    false,
                 )
             })
         }),

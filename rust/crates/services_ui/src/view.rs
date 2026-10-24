@@ -1,7 +1,7 @@
 //! Drawing pieces of the Services panel that carry no state of their own.
 
 use components::{ButtonKind, ButtonSize};
-use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
+use ui::{div, icon, measure, theme, IconKind, Node, Rgba};
 
 /// A row's standing, as its icon and trailing text show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,29 +139,17 @@ pub(crate) fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
 
 /// An uppercase section title with an optional count at the right.
 pub(crate) fn section(title: &str, count: Option<usize>) -> Node {
-    let colors = theme();
-    let mut row = div()
+    let mut header = components::section_header(title);
+    if let Some(count) = count {
+        header = header.count(count);
+    }
+    div()
         .row()
         .h_px(26.0)
-        .pl(10.0)
-        .pr(10.0)
+        .px(10.0)
         .items_center()
-        .child(
-            div().row().flex(1.0).items_center().child(
-                label(title.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(colors.text_placeholder),
-            ),
-        );
-    if let Some(count) = count {
-        row = row.child(
-            label(count.to_string())
-                .size(11.0)
-                .color(colors.text_placeholder),
-        );
-    }
-    row.into()
+        .child(header.render().flex(1.0))
+        .into()
 }
 
 /// How long the holder whose pidfile is `pidfile` has been running: "41m 58s", "2h 5m".

@@ -28,17 +28,6 @@ pub fn input_box(click_id: u64, focused: bool, error: bool) -> Div {
     }
 }
 
-/// A field's label: small, uppercase and muted, as every form labels its inputs.
-pub fn field_label(text: &str) -> Node {
-    text_line(
-        14.0,
-        label(text.to_uppercase())
-            .size(11.0)
-            .weight(600)
-            .color(theme().text_placeholder),
-    )
-}
-
 /// `text` in a box of the design's line height, so stacked lines keep the rhythm the type scale sets.
 pub fn text_line(height: f32, text: Label) -> Node {
     div().row().h_px(height).items_center().child(text).into()
@@ -69,7 +58,7 @@ pub fn field(title: &str, control: Node, hint: Option<&str>, error: Option<&str>
     let mut column = div()
         .col()
         .gap(6.0)
-        .child(field_label(title))
+        .child(crate::section_header(title))
         .child(control);
     if let Some(note) = field_note(hint, error) {
         column = column.child(note);

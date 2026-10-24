@@ -8956,61 +8956,12 @@ fn update_ready_notification(title: String, message: String) -> Notification {
     }
 }
 
-const TOAST_HEIGHT: f32 = 36.0;
-
-/// A toast's pill: the message, its action and a close button; also its width and height.
 fn toast_row(message: &str, action: Option<&str>) -> (ui::Node, f32, f32) {
-    let colors = ui::theme();
-    let weight = ui::ui_font_weight();
-    let (pad_left, pad_right, gap, close_w) = (14.0, 6.0, 10.0, 24.0);
-    let message_w = ui::measure_text_width(message, 13.0, false, weight);
-    let action_w = action
-        .map(|text| ui::measure_text_width(text, 12.0, false, weight) + 16.0 + gap)
-        .unwrap_or(0.0);
-    let width = pad_left + message_w + action_w + gap + close_w + pad_right;
-    let mut row = ui::div()
-        .row()
-        .items_center()
-        .h_px(TOAST_HEIGHT)
-        .pl(pad_left)
-        .pr(pad_right)
-        .gap(gap)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
-        .child(ui::label(message.to_string()).size(13.0).color(colors.text));
-    if let Some(text) = action {
-        row = row.child(
-            ui::div()
-                .row()
-                .h_px(24.0)
-                .px(8.0)
-                .rounded(6.0)
-                .items_center()
-                .on_click(TOAST_ACTION)
-                .child(
-                    ui::label(text.to_string())
-                        .size(12.0)
-                        .medium()
-                        .color(colors.text),
-                ),
-        );
-    }
-    let row = row.child(
-        ui::div()
-            .w_px(close_w)
-            .h_px(close_w)
-            .rounded(6.0)
-            .items_center()
-            .justify_center()
-            .on_click(TOAST_CLOSE)
-            .child(
-                ui::icon(IconKind::Close)
-                    .size(12.0)
-                    .color(colors.icon_muted),
-            ),
-    );
-    (row.into(), width, TOAST_HEIGHT)
+    components::toast(
+        message,
+        action.map(|text| (text, TOAST_ACTION)),
+        TOAST_CLOSE,
+    )
 }
 
 /// A toast alone, as the window draws it above the status bar.

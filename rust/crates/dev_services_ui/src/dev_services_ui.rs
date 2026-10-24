@@ -540,13 +540,6 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     column.into()
 }
 
-fn section_title(text: &str) -> ui::Label {
-    label(text.to_uppercase())
-        .size(11.0)
-        .weight(600)
-        .color(theme().text_placeholder)
-}
-
 fn key_value(name: ui::Label, value: ui::Label) -> Node {
     div()
         .row()
@@ -668,7 +661,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .row()
         .items_center()
         .gap(8.0)
-        .child(section_title("Body"))
+        .child(components::section_header("Body"))
         .child(small(meta, colors.text_placeholder))
         .into();
     let mut column = div().col().child(section_head(title, copy.map(Node::from)));
@@ -892,7 +885,10 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             &entry.request_headers
         };
         column = column
-            .child(section_head(section_title("Headers").into(), None))
+            .child(section_head(
+                components::section_header("Headers").into(),
+                None,
+            ))
             .child(headers_block(headers));
         if tab == DetailTab::Response && webhook {
             column = column.child(div().row().px(DETAIL_PAD).child(small(

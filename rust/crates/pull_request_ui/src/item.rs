@@ -446,17 +446,7 @@ impl PrItem {
     }
 
     fn section(title: &str) -> Node {
-        div()
-            .row()
-            .h_px(14.0)
-            .items_center()
-            .child(
-                label(title.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(theme().text_placeholder),
-            )
-            .into()
+        components::section_header(title).into()
     }
 
     /// A centered message for a tab with no PR to show: still looking, none yet, or the lookup failed.

@@ -1,5 +1,6 @@
 //! Pomelo's design system: every control a screen is built from, each in one file, each shown in the gallery.
 
+mod banner;
 mod button;
 mod checkbox;
 mod chip;
@@ -9,14 +10,18 @@ mod icon_button;
 mod input;
 mod key_chip;
 mod link;
+mod list_row;
 mod menu;
 mod pill;
 mod progress;
+mod section_header;
 mod segmented;
 mod select;
 mod status_line;
+mod toast;
 mod tooltip;
 
+pub use banner::*;
 pub use button::*;
 pub use checkbox::*;
 pub use chip::*;
@@ -26,10 +31,13 @@ pub use icon_button::*;
 pub use input::*;
 pub use key_chip::*;
 pub use link::*;
+pub use list_row::*;
 pub use menu::*;
 pub use pill::*;
 pub use progress::*;
+pub use section_header::*;
 pub use segmented::*;
 pub use select::*;
 pub use status_line::*;
+pub use toast::*;
 pub use tooltip::*;

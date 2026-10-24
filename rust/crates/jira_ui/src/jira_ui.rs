@@ -1,7 +1,7 @@
 //! A workspace's Jira ticket as a tab: key and status, title, the description and comments as markdown, and
 //! the ticket's web links. Opens on what the cache holds and fetches the ticket again in the background.
 
-use components::field_label;
+use components::section_header;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -250,7 +250,7 @@ impl TicketItem {
     }
 
     fn section(title: String) -> Node {
-        div().row().pt(6.0).child(field_label(&title)).into()
+        div().row().pt(6.0).child(section_header(&title)).into()
     }
 
     fn callout(text: &str, width: f32) -> Node {

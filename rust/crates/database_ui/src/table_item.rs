@@ -5,7 +5,7 @@
 //! in place and saved together in one transaction. Structure and DDL views show the table's shape.
 //! A Redis keyspace tab lists its keys instead (no filter, paging or editing).
 
-use components::{field_label, ButtonKind};
+use components::{section_header, ButtonKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -1231,7 +1231,7 @@ impl TableItem {
                 },
             )
             .on_click(id)
-            .child(field_label(prefix))
+            .child(section_header(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,

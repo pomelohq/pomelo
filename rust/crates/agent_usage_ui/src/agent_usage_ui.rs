@@ -244,19 +244,11 @@ fn model_family(model: &str) -> &'static str {
 }
 
 fn section(title: &str, trailing: Option<Node>, body: Node) -> Node {
-    let colors = theme();
-    let mut head = div().row().items_center().child(
-        div().row().flex(1.0).child(
-            label(title.to_uppercase())
-                .size(11.0)
-                .weight(600)
-                .color(colors.text_placeholder),
-        ),
-    );
+    let mut header = components::section_header(title);
     if let Some(trailing) = trailing {
-        head = head.child(trailing);
+        header = header.trailing(trailing);
     }
-    div().col().gap(10.0).child(head).child(body).into()
+    div().col().gap(10.0).child(header).child(body).into()
 }
 
 fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {

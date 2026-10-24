@@ -343,20 +343,6 @@ impl FileFinder {
             .copied()
             .filter(|position| *position < folder.chars().count())
             .collect();
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id_base + row as u64);
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        } else if self.hovered == Some(id_base + row as u64) {
-            item = item.bg(colors.ghost_element_hover);
-        }
         let name_label = highlighted(name, &name_positions, colors.text, LabelSize::Default);
         let folder_budget = WIDTH - ROW_CHROME - ui::measure(&name_label).0;
         let (folder, folder_positions) = elide_folder(folder, &folder_positions, |text| {
@@ -384,14 +370,12 @@ impl FileFinder {
         } else {
             div().w_px(12.0).into()
         };
-        div()
-            .row()
-            .px(4.0)
-            .child(
-                item.child(material_icon(crate::file_icon(name)).size(14.0))
-                    .child(path_labels)
-                    .child(end),
-            )
+        components::list_row(id_base + row as u64)
+            .selected(row == self.selected)
+            .hovered(self.hovered)
+            .child(material_icon(crate::file_icon(name)).size(14.0))
+            .child(path_labels)
+            .child(end)
             .into()
     }
 }
