@@ -963,7 +963,7 @@ impl ServicesPanel {
                     .items_center()
                     .child(label(target.service.clone()).color(colors.text).truncate());
                 if let Some(mode) = self.mode(target).filter(|mode| !mode.is_empty()) {
-                    name = name.child(view::tag(&mode));
+                    name = name.child(ui::chip(mode).color(theme().text_muted));
                 }
                 body.child(self.guide_column())
                     .child(view::status_icon(&state))
@@ -1068,8 +1068,11 @@ impl ServicesPanel {
         };
         let status = label(status).size(11.5).color(colors.text_muted);
         let status_w = ui::measure(&status.clone().into()).0;
-        let ticket =
-            (!self.model.context.ticket.is_empty()).then(|| view::tag(&self.model.context.ticket));
+        let ticket = (!self.model.context.ticket.is_empty()).then(|| {
+            ui::chip(&self.model.context.ticket)
+                .color(theme().text_muted)
+                .into()
+        });
         let ticket_w = ticket.as_ref().map_or(0.0, |tag| ui::measure(tag).0 + 6.0);
         let name = label(self.model.context.branch.clone())
             .medium()

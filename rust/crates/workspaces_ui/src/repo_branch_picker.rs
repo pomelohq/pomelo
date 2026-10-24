@@ -505,10 +505,10 @@ impl BranchPicker {
                 }
             }));
         if fresh {
-            title_row = title_row.child(tag("new", colors.text_accent));
+            title_row = title_row.child(ui::status_pill("new", colors.text_accent));
         }
         if remote {
-            title_row = title_row.child(tag("origin", colors.info));
+            title_row = title_row.child(ui::status_pill("origin", colors.info));
         }
         let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
         if !subtitle.is_empty() {
@@ -535,25 +535,6 @@ impl BranchPicker {
             .child(text)
             .into()
     }
-}
-
-/// A small pill after a branch name: a dot and the word in `color` on a faint wash.
-fn tag(text: &str, color: Rgba) -> Node {
-    let wash = match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-        ui::Appearance::Light => theme().element_active,
-    };
-    div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .gap(5.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(wash)
-        .child(ui::dot(color, 6.0))
-        .child(label(text.to_string()).size(11.0).medium().color(color))
-        .into()
 }
 
 fn display_name(info: &BranchInfo) -> String {
