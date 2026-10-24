@@ -45,13 +45,9 @@ pub(crate) fn progress(state: &Onboarding, width: f32, _hovered: Option<u64>) ->
             "The project was not created",
             error,
             None,
-            vec![view::button(
-                BACK_TO_FORM,
-                "Back to the form",
-                None,
-                ButtonKind::Secondary,
-                true,
-            )],
+            vec![workspace::button(BACK_TO_FORM, "Back to the form")
+                .size(ui::ButtonSize::Medium)
+                .into()],
             width,
         ));
     } else if let Some(card) = finding_card(run, width) {
@@ -69,59 +65,55 @@ pub(crate) fn progress_footer(state: &Onboarding) -> Node {
     if run.error.is_none() {
         if run.agent_configuring() {
             if run.agent != pom_agent::AgentCli::Claude {
-                leading.push(view::button(
-                    VERIFY_NOW,
-                    "It is done - verify",
-                    None,
-                    ButtonKind::Ghost,
-                    true,
-                ));
+                leading.push(
+                    workspace::button(VERIFY_NOW, "It is done - verify")
+                        .size(ui::ButtonSize::Medium)
+                        .kind(ButtonKind::Ghost)
+                        .into(),
+                );
             }
-            leading.push(view::button(
-                SKIP_AGENT,
-                "Skip the agent",
-                None,
-                ButtonKind::Ghost,
-                true,
-            ));
+            leading.push(
+                workspace::button(SKIP_AGENT, "Skip the agent")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Ghost)
+                    .into(),
+            );
         }
         if run.agent_skipped {
-            leading.push(view::button(
-                RESUME_AGENT,
-                &format!("Let {} finish it", run.agent.title()),
-                None,
-                ButtonKind::Ghost,
-                true,
-            ));
+            leading.push(
+                workspace::button(RESUME_AGENT, format!("Let {} finish it", run.agent.title()))
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Ghost)
+                    .into(),
+            );
         }
         if run.agent_active() {
-            buttons.push(view::button(
-                AGENT_CLI,
-                if run.agent_shown {
-                    "Hide agent CLI"
-                } else {
-                    "Show agent CLI"
-                },
-                None,
-                ButtonKind::Ghost,
-                true,
-            ));
+            buttons.push(
+                workspace::button(
+                    AGENT_CLI,
+                    if run.agent_shown {
+                        "Hide agent CLI"
+                    } else {
+                        "Show agent CLI"
+                    },
+                )
+                .size(ui::ButtonSize::Medium)
+                .kind(ButtonKind::Ghost)
+                .into(),
+            );
         }
-        buttons.push(view::button(
-            PAUSE,
-            if run.paused { "Resume" } else { "Pause" },
-            None,
-            ButtonKind::Ghost,
-            true,
-        ));
+        buttons.push(
+            workspace::button(PAUSE, if run.paused { "Resume" } else { "Pause" })
+                .size(ui::ButtonSize::Medium)
+                .kind(ButtonKind::Ghost)
+                .into(),
+        );
     }
-    buttons.push(view::button(
-        STOP,
-        "Cancel",
-        None,
-        ButtonKind::Secondary,
-        true,
-    ));
+    buttons.push(
+        workspace::button(STOP, "Cancel")
+            .size(ui::ButtonSize::Medium)
+            .into(),
+    );
     view::footer(None, leading, buttons)
 }
 
@@ -375,45 +367,38 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
     };
     let mut buttons = Vec::new();
     if finding.fixing {
-        buttons.push(view::button(
-            CANCEL_FIX,
-            "Cancel",
-            None,
-            ButtonKind::Secondary,
-            true,
-        ));
+        buttons.push(
+            workspace::button(CANCEL_FIX, "Cancel")
+                .size(ui::ButtonSize::Medium)
+                .into(),
+        );
     } else {
         if run.agent_active() {
-            buttons.push(view::button(
-                FIX_AGENT,
-                &format!("Fix with {}", run.agent.title()),
-                None,
-                ButtonKind::Primary,
-                true,
-            ));
+            buttons.push(
+                workspace::button(FIX_AGENT, format!("Fix with {}", run.agent.title()))
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .into(),
+            );
         }
-        buttons.push(view::button(
-            FIX_MANUAL,
-            "Fix manually",
-            None,
-            ButtonKind::Secondary,
-            true,
-        ));
-        buttons.push(view::button(
-            RETRY,
-            "Verify again",
-            None,
-            ButtonKind::Ghost,
-            true,
-        ));
+        buttons.push(
+            workspace::button(FIX_MANUAL, "Fix manually")
+                .size(ui::ButtonSize::Medium)
+                .into(),
+        );
+        buttons.push(
+            workspace::button(RETRY, "Verify again")
+                .size(ui::ButtonSize::Medium)
+                .kind(ButtonKind::Ghost)
+                .into(),
+        );
         if matches!(check.kind, CheckKind::Boot { .. }) {
-            buttons.push(view::button(
-                SKIP_SERVICE,
-                "Skip this service",
-                None,
-                ButtonKind::Ghost,
-                true,
-            ));
+            buttons.push(
+                workspace::button(SKIP_SERVICE, "Skip this service")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Ghost)
+                    .into(),
+            );
         }
     }
     let hint = if finding.fixing {
@@ -432,19 +417,17 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
         .items_center()
         .gap(8.0)
         .child(view::muted("Fix it yourself:"))
-        .child(workspace::outlined_button(
-            OPEN_CONFIG,
-            Some(IconKind::File),
-            "Open pom.yml",
-            true,
-        ));
+        .child(
+            workspace::button(OPEN_CONFIG, "Open pom.yml")
+                .size(ui::ButtonSize::Medium)
+                .icon(Some(IconKind::File)),
+        );
     if let Some(repo) = finding_repo(&check.kind) {
-        manual = manual.child(workspace::outlined_button(
-            OPEN_TERMINAL,
-            Some(IconKind::Terminal),
-            &format!("Open a terminal in {repo}"),
-            true,
-        ));
+        manual = manual.child(
+            workspace::button(OPEN_TERMINAL, format!("Open a terminal in {repo}"))
+                .size(ui::ButtonSize::Medium)
+                .icon(Some(IconKind::Terminal)),
+        );
     }
     Some(
         div()
@@ -614,13 +597,11 @@ pub(crate) fn done_footer(state: &Onboarding) -> Node {
     view::footer(
         None,
         Vec::new(),
-        vec![view::button(
-            OPEN_WORKSPACE,
-            &workspace_title(run),
-            Some("enter"),
-            ButtonKind::Primary,
-            true,
-        )],
+        vec![workspace::button(OPEN_WORKSPACE, workspace_title(run))
+            .size(ui::ButtonSize::Medium)
+            .kind(ButtonKind::Primary)
+            .keystroke(Some("enter"))
+            .into()],
     )
 }
 

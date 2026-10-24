@@ -127,25 +127,13 @@ fn banner(index: usize, check: &MachineCheck, hovered: Option<u64>) -> Node {
             ),
         );
     if let Some(fix) = &check.fix {
-        line = line.child(crate::small_button(
-            WELCOME_FIX_BASE + index as u64,
-            None,
-            fix,
-            None,
-            crate::ButtonKind::Secondary,
-            true,
-            hovered,
-        ));
+        line = line.child(crate::button(WELCOME_FIX_BASE + index as u64, fix).hovered(hovered));
     } else {
-        line = line.child(crate::small_button(
-            WELCOME_RECHECK,
-            None,
-            "Check again",
-            None,
-            crate::ButtonKind::Ghost,
-            true,
-            hovered,
-        ));
+        line = line.child(
+            crate::button(WELCOME_RECHECK, "Check again")
+                .kind(ui::ButtonKind::Ghost)
+                .hovered(hovered),
+        );
     }
     line.into()
 }
@@ -382,15 +370,12 @@ fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> O
     } else {
         crate::ButtonKind::Secondary
     };
-    Some(crate::small_button(
-        NOTICE_ACTION_BASE + index as u64,
-        None,
-        &button.label,
-        None,
-        kind,
-        true,
-        hovered,
-    ))
+    Some(
+        crate::button(NOTICE_ACTION_BASE + index as u64, &button.label)
+            .kind(kind)
+            .hovered(hovered)
+            .into(),
+    )
 }
 
 fn notice_banner(

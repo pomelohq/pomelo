@@ -14,9 +14,9 @@ use std::sync::Arc;
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
 use ui::{div, icon, label, theme, IconKind, Node};
 use workspace::{
-    modal_button, modal_footer, modal_frame, modal_header, modal_note, modal_section, ButtonKind,
-    CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
-    WindowModal, WINDOW_MODAL_BASE,
+    modal_footer, modal_frame, modal_header, modal_note, modal_section, ButtonKind, CenterNotice,
+    EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone, WindowModal,
+    WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 480.0;
@@ -310,7 +310,11 @@ impl WindowModal for ConnectHostModal {
         };
         let mut buttons = div().row().items_center().gap(8.0);
         if back {
-            buttons = buttons.child(modal_button(BACK, "Back", None, ButtonKind::Ghost, true));
+            buttons = buttons.child(
+                ui::button(BACK, "Back")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Ghost),
+            );
             if matches!(
                 &self.step,
                 Step::Projects {
@@ -318,22 +322,14 @@ impl WindowModal for ConnectHostModal {
                     ..
                 }
             ) {
-                buttons = buttons.child(modal_button(
-                    RETRY,
-                    "Retry",
-                    None,
-                    ButtonKind::Secondary,
-                    true,
-                ));
+                buttons = buttons.child(ui::button(RETRY, "Retry").size(ui::ButtonSize::Medium));
             }
         }
-        buttons = buttons.child(modal_button(
-            CANCEL,
-            "Cancel",
-            Some("escape"),
-            ButtonKind::Secondary,
-            true,
-        ));
+        buttons = buttons.child(
+            ui::button(CANCEL, "Cancel")
+                .size(ui::ButtonSize::Medium)
+                .keystroke(Some("escape")),
+        );
         modal_frame(WIDTH)
             .child(modal_header(&title, Some(CLOSE)))
             .child(section)

@@ -5,9 +5,7 @@ use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{
-    small_button, toggle_button_group, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome,
-};
+use workspace::{toggle_button_group, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -457,15 +455,12 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                 )),
         );
     if !state.served_elsewhere {
-        bar = bar.child(small_button(
-            RESTART,
-            Some(IconKind::RotateCw),
-            "Restart",
-            None,
-            ButtonKind::Ghost,
-            true,
-            hovered,
-        ));
+        bar = bar.child(
+            ui::button(RESTART, "Restart")
+                .kind(ButtonKind::Ghost)
+                .icon(Some(IconKind::RotateCw))
+                .hovered(hovered),
+        );
     }
     bar.into()
 }
@@ -679,15 +674,10 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .as_ref()
         .is_some_and(|(text, _)| !text.is_empty())
         .then(|| {
-            small_button(
-                COPY_BODY,
-                Some(IconKind::Copy),
-                "Copy",
-                None,
-                ButtonKind::Ghost,
-                true,
-                hovered,
-            )
+            ui::button(COPY_BODY, "Copy")
+                .kind(ButtonKind::Ghost)
+                .icon(Some(IconKind::Copy))
+                .hovered(hovered)
         });
     let title = div()
         .row()
@@ -696,7 +686,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .child(section_title("Body"))
         .child(small(meta, colors.text_placeholder))
         .into();
-    let mut column = div().col().child(section_head(title, copy));
+    let mut column = div().col().child(section_head(title, copy.map(Node::from)));
     for note in notes {
         column = column.child(
             div()

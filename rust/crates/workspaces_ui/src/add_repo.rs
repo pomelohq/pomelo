@@ -1,8 +1,8 @@
 use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{
-    checkbox, field, modal_button, modal_footer, modal_frame, modal_header, modal_section,
-    outlined_button, status_line, toggle_button_group, ButtonKind, EditKey, InputField,
-    ModalResult, WindowModal, WINDOW_MODAL_BASE,
+    checkbox, field, modal_footer, modal_frame, modal_header, modal_section, status_line,
+    toggle_button_group, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
+    WINDOW_MODAL_BASE,
 };
 
 /// Opens the system folder picker; returns the folders chosen.
@@ -160,7 +160,7 @@ impl WindowModal for AddRepoModal {
                 self.focus == Focus::Source,
                 source_error.is_some(),
             )))
-            .child(outlined_button(CHOOSE_FOLDER, None, "Folder...", true));
+            .child(ui::button(CHOOSE_FOLDER, "Folder...").size(ui::ButtonSize::Medium));
         let mut section = modal_section(16.0)
             .child(field(
                 self.source.label,
@@ -201,20 +201,18 @@ impl WindowModal for AddRepoModal {
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Add",
-                Some("enter"),
-                ButtonKind::Primary,
-                self.can_add(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Add")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(self.can_add()),
+            );
         modal_frame(WIDTH)
             .child(modal_header("Add Repository", Some(CLOSE)))
             .child(section)
@@ -378,32 +376,29 @@ impl WindowModal for CloneReposModal {
                         None,
                         None,
                     )))
-                    .child(outlined_button(
-                        CLONE_FOLDER_BASE + index as u64,
-                        Some(IconKind::FolderOpen),
-                        "Folder...",
-                        true,
-                    )),
+                    .child(
+                        ui::button(CLONE_FOLDER_BASE + index as u64, "Folder...")
+                            .size(ui::ButtonSize::Medium)
+                            .icon(Some(IconKind::FolderOpen)),
+                    ),
             );
         }
         let buttons = div()
             .row()
             .items_center()
             .gap(8.0)
-            .child(modal_button(
-                CANCEL,
-                "Cancel",
-                Some("escape"),
-                ButtonKind::Secondary,
-                true,
-            ))
-            .child(modal_button(
-                CONFIRM,
-                "Clone",
-                Some("enter"),
-                ButtonKind::Primary,
-                !self.sources().is_empty(),
-            ));
+            .child(
+                ui::button(CANCEL, "Cancel")
+                    .size(ui::ButtonSize::Medium)
+                    .keystroke(Some("escape")),
+            )
+            .child(
+                ui::button(CONFIRM, "Clone")
+                    .size(ui::ButtonSize::Medium)
+                    .kind(ButtonKind::Primary)
+                    .keystroke(Some("enter"))
+                    .enabled(!self.sources().is_empty()),
+            );
         modal_frame(WIDTH)
             .child(modal_header("Clone Missing Repos", Some(CLOSE)))
             .child(section)

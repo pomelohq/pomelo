@@ -1345,12 +1345,9 @@ impl FileItem {
                     .size(13.0)
                     .color(theme().text_muted),
             )
-            .child(div().row().child(ui::button_sized(
-                OPEN_IN_TERMINAL,
-                "Open in terminal",
-                ui::ButtonStyle::Filled,
-                ui::ButtonSize::Medium,
-            )))
+            .child(div().row().child(
+                ui::button(OPEN_IN_TERMINAL, "Open in terminal").size(ui::ButtonSize::Medium),
+            ))
             .into();
         (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)
     }

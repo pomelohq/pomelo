@@ -1,6 +1,6 @@
 //! The shared controls screens are built from, one state per board.
 
-use ui::{div, theme, ButtonSize, ButtonStyle, IconKind, Node};
+use ui::{div, theme, ButtonSize, IconKind, Node};
 use workspace::{ButtonKind, InputField};
 
 use crate::{still, Story, StoryDef};
@@ -21,31 +21,19 @@ fn alone(control: impl Into<Node>) -> Node {
         .into()
 }
 
-fn styled(style: ButtonStyle) -> Node {
+/// One kind at both sizes, so the two read side by side.
+fn sized(kind: ButtonKind) -> Node {
     alone(
         div()
             .items_center()
             .gap(12.0)
-            .child(ui::button(ID, "Default", style))
-            .child(ui::button_sized(
-                ID + 1,
-                "Medium",
-                style,
-                ButtonSize::Medium,
-            )),
+            .child(workspace::button(ID, "Small").kind(kind))
+            .child(
+                workspace::button(ID + 1, "Medium")
+                    .kind(kind)
+                    .size(ButtonSize::Medium),
+            ),
     )
-}
-
-fn small(kind: ButtonKind) -> Node {
-    alone(workspace::small_button(
-        ID, None, "Restart", None, kind, true, None,
-    ))
-}
-
-fn modal(kind: ButtonKind, keystroke: Option<&str>, enabled: bool) -> Node {
-    alone(workspace::modal_button(
-        ID, "Create", keystroke, kind, enabled,
-    ))
 }
 
 fn input(
@@ -76,171 +64,62 @@ pub fn stories() -> Vec<StoryDef> {
         build,
     };
     vec![
-        story("button-filled", "Button", "Filled", BUTTON, || {
-            still(|_, _| styled(ButtonStyle::Filled))
+        story("button-primary", "Button", "Primary", BUTTON, || {
+            still(|_, _| sized(ButtonKind::Primary))
         }),
-        story("button-outlined", "Button", "Outlined", BUTTON, || {
-            still(|_, _| styled(ButtonStyle::Outlined))
+        story("button-secondary", "Button", "Secondary", BUTTON, || {
+            still(|_, _| sized(ButtonKind::Secondary))
+        }),
+        story("button-ghost", "Button", "Ghost", BUTTON, || {
+            still(|_, _| sized(ButtonKind::Ghost))
+        }),
+        story("button-danger", "Button", "Danger", BUTTON, || {
+            still(|_, _| sized(ButtonKind::Danger))
+        }),
+        story("button-icon-key", "Button", "Icon and key", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    workspace::button(ID, "Start all")
+                        .icon(Some(IconKind::Play))
+                        .keystroke(Some("cmd-shift-s")),
+                )
+            })
         }),
         story(
-            "button-outlined-ghost",
+            "button-primary-key",
             "Button",
-            "Outlined ghost",
+            "Primary with key",
             BUTTON,
-            || still(|_, _| styled(ButtonStyle::OutlinedGhost)),
+            || {
+                still(|_, _| {
+                    alone(
+                        workspace::button(ID, "Create")
+                            .kind(ButtonKind::Primary)
+                            .size(ButtonSize::Medium)
+                            .keystroke(Some("enter")),
+                    )
+                })
+            },
         ),
-        story("button-subtle", "Button", "Subtle", BUTTON, || {
-            still(|_, _| styled(ButtonStyle::Subtle))
+        story("button-hovered", "Button", "Hovered", BUTTON, || {
+            still(|_, _| alone(workspace::button(ID, "Restart").hovered(Some(ID))))
         }),
-        story("button-tinted", "Button", "Tinted accent", BUTTON, || {
-            still(|_, _| styled(ButtonStyle::TintedAccent))
+        story("button-disabled", "Button", "Disabled", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    div()
+                        .items_center()
+                        .gap(12.0)
+                        .child(workspace::button(ID, "Restart").enabled(false))
+                        .child(
+                            workspace::button(ID + 1, "Create")
+                                .kind(ButtonKind::Primary)
+                                .enabled(false),
+                        ),
+                )
+            })
         }),
-        story(
-            "small-button-primary",
-            "Small button",
-            "Primary",
-            BUTTON,
-            || still(|_, _| small(ButtonKind::Primary)),
-        ),
-        story(
-            "small-button-secondary",
-            "Small button",
-            "Secondary",
-            BUTTON,
-            || still(|_, _| small(ButtonKind::Secondary)),
-        ),
-        story(
-            "small-button-ghost",
-            "Small button",
-            "Ghost",
-            BUTTON,
-            || still(|_, _| small(ButtonKind::Ghost)),
-        ),
-        story(
-            "small-button-danger",
-            "Small button",
-            "Danger",
-            BUTTON,
-            || still(|_, _| small(ButtonKind::Danger)),
-        ),
-        story(
-            "small-button-icon-key",
-            "Small button",
-            "Icon and key",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::small_button(
-                        ID,
-                        Some(IconKind::Play),
-                        "Start all",
-                        Some("cmd-shift-s"),
-                        ButtonKind::Secondary,
-                        true,
-                        None,
-                    ))
-                })
-            },
-        ),
-        story(
-            "small-button-hovered",
-            "Small button",
-            "Hovered",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::small_button(
-                        ID,
-                        None,
-                        "Restart",
-                        None,
-                        ButtonKind::Secondary,
-                        true,
-                        Some(ID),
-                    ))
-                })
-            },
-        ),
-        story(
-            "small-button-disabled",
-            "Small button",
-            "Disabled",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::small_button(
-                        ID,
-                        None,
-                        "Restart",
-                        None,
-                        ButtonKind::Secondary,
-                        false,
-                        None,
-                    ))
-                })
-            },
-        ),
-        story(
-            "modal-button-primary",
-            "Modal button",
-            "Primary",
-            BUTTON,
-            || still(|_, _| modal(ButtonKind::Primary, Some("cmd-enter"), true)),
-        ),
-        story(
-            "modal-button-secondary",
-            "Modal button",
-            "Secondary",
-            BUTTON,
-            || still(|_, _| modal(ButtonKind::Secondary, Some("escape"), true)),
-        ),
-        story(
-            "modal-button-danger",
-            "Modal button",
-            "Danger",
-            BUTTON,
-            || still(|_, _| modal(ButtonKind::Danger, None, true)),
-        ),
-        story(
-            "modal-button-disabled",
-            "Modal button",
-            "Disabled",
-            BUTTON,
-            || still(|_, _| modal(ButtonKind::Primary, Some("cmd-enter"), false)),
-        ),
-        story(
-            "outlined-button",
-            "Outlined button",
-            "Enabled",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::outlined_button(
-                        ID,
-                        Some(IconKind::Plus),
-                        "Add repo",
-                        true,
-                    ))
-                })
-            },
-        ),
-        story(
-            "outlined-button-disabled",
-            "Outlined button",
-            "Disabled",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::outlined_button(
-                        ID,
-                        Some(IconKind::Plus),
-                        "Add repo",
-                        false,
-                    ))
-                })
-            },
-        ),
-        story("accent-action", "Accent action", "Enabled", BUTTON, || {
+        story("link", "Link", "Enabled", BUTTON, || {
             still(|_, _| {
                 alone(workspace::accent_action(
                     ID,
@@ -250,22 +129,16 @@ pub fn stories() -> Vec<StoryDef> {
                 ))
             })
         }),
-        story(
-            "accent-action-disabled",
-            "Accent action",
-            "Disabled",
-            BUTTON,
-            || {
-                still(|_, _| {
-                    alone(workspace::accent_action(
-                        ID,
-                        Some(IconKind::ArrowUpRight),
-                        "Open in browser",
-                        false,
-                    ))
-                })
-            },
-        ),
+        story("link-disabled", "Link", "Disabled", BUTTON, || {
+            still(|_, _| {
+                alone(workspace::accent_action(
+                    ID,
+                    Some(IconKind::ArrowUpRight),
+                    "Open in browser",
+                    false,
+                ))
+            })
+        }),
         story("checkbox-checked", "Checkbox", "Checked", CONTROL, || {
             still(|_, _| alone(workspace::checkbox(ID, true, "Start with the workspace")))
         }),

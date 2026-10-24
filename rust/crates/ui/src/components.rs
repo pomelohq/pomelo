@@ -2,7 +2,7 @@
 //! buttons (by style), and dividers. Values (text sizes, button height/padding, token mapping) are taken
 //! from the reference so screens compose these instead of hand-styling divs.
 
-use crate::{div, theme, Div, Label, Rgba};
+use crate::{div, theme, Div, IconKind, Label, Node, Rgba};
 
 /// UI text sizes (absolute px), matching the reference's `LabelSize` -> `text_ui_*`.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -53,98 +53,183 @@ impl TextColor {
     }
 }
 
-/// Button visual styles, mirroring the reference's `ButtonStyle`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum ButtonStyle {
-    Filled,
-    Outlined,
-    OutlinedGhost,
-    Subtle,
-    TintedAccent,
+/// How a button reads: the one action it is for, a plain alternative, a quiet one, or a destructive one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonKind {
+    Primary,
+    Secondary,
+    Ghost,
+    Danger,
 }
 
-impl ButtonStyle {
-    /// (background, border, label) resolved from the active theme. `None` = transparent / no border.
-    fn colors(self) -> (Option<Rgba>, Option<Rgba>, Rgba) {
-        let t = theme();
-        match self {
-            ButtonStyle::Filled => (Some(t.element_background), None, t.text),
-            ButtonStyle::Outlined => (Some(t.element_background), Some(t.border_variant), t.text),
-            ButtonStyle::OutlinedGhost => (None, Some(t.border_variant), t.text),
-            ButtonStyle::Subtle => (None, None, t.text),
-            ButtonStyle::TintedAccent => (Some(t.info_background), Some(t.info_border), t.text),
-        }
-    }
-}
-
-const BUTTON_RADIUS: f32 = 4.0;
-
-/// Button heights/paddings, from the reference's `ButtonSize` (Default is what the files header uses; Medium
-/// is the larger size dropdown triggers use).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// Small sits in panels, cards and toolbars; Medium in dialog footers and forms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonSize {
-    Default,
+    Small,
     Medium,
 }
 
 impl ButtonSize {
     fn height(self) -> f32 {
         match self {
-            ButtonSize::Default => 22.0,
+            ButtonSize::Small => 24.0,
             ButtonSize::Medium => 28.0,
         }
     }
+
     fn pad_x(self) -> f32 {
-        // reference DynamicSpacing at default density: Base04 (4px) for Default, Base08 (8px) for Medium.
         match self {
-            ButtonSize::Default => 4.0,
-            ButtonSize::Medium => 8.0,
+            ButtonSize::Small => 8.0,
+            ButtonSize::Medium => 10.0,
+        }
+    }
+
+    fn text(self) -> f32 {
+        match self {
+            ButtonSize::Small => 12.0,
+            ButtonSize::Medium => 13.0,
+        }
+    }
+
+    fn icon(self) -> f32 {
+        match self {
+            ButtonSize::Small => 12.0,
+            ButtonSize::Medium => 14.0,
         }
     }
 }
 
-fn button_impl(text: String, style: ButtonStyle, size: ButtonSize, click: Option<u64>) -> Div {
-    let (bg, border, label_color) = style.colors();
-    let mut b = div()
-        .h_px(size.height())
-        .px(size.pad_x())
-        .gap(4.0)
+/// The one button every screen uses; build it with [`button`] and set what differs from a small secondary.
+#[derive(Clone)]
+pub struct Button {
+    id: u64,
+    text: String,
+    kind: ButtonKind,
+    size: ButtonSize,
+    leading: Option<IconKind>,
+    keystroke: Option<String>,
+    enabled: bool,
+    hovered: bool,
+}
+
+pub fn button(id: u64, text: impl Into<String>) -> Button {
+    Button {
+        id,
+        text: text.into(),
+        kind: ButtonKind::Secondary,
+        size: ButtonSize::Small,
+        leading: None,
+        keystroke: None,
+        enabled: true,
+        hovered: false,
+    }
+}
+
+impl Button {
+    pub fn kind(mut self, kind: ButtonKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    pub fn icon(mut self, leading: Option<IconKind>) -> Self {
+        self.leading = leading;
+        self
+    }
+
+    /// The key that runs it, shown in a chip after the label.
+    pub fn keystroke(mut self, keystroke: Option<&str>) -> Self {
+        self.keystroke = keystroke.map(str::to_string);
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// For views drawn without pointer tracking, which pass the hovered id themselves.
+    pub fn hovered(mut self, hovered: Option<u64>) -> Self {
+        self.hovered = hovered == Some(self.id);
+        self
+    }
+}
+
+impl From<Button> for Node {
+    fn from(button: Button) -> Node {
+        let colors = theme();
+        let enabled = button.enabled;
+        let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
+        let primary = button.kind == ButtonKind::Primary;
+        let ink = match button.kind {
+            ButtonKind::Primary => colors.on_accent,
+            ButtonKind::Secondary | ButtonKind::Ghost => colors.text,
+            ButtonKind::Danger => colors.error,
+        };
+        let mut node = div()
+            .row()
+            .items_center()
+            .gap(if button.leading.is_some() { 6.0 } else { 4.0 })
+            .h_px(button.size.height())
+            .px(button.size.pad_x())
+            .rounded(6.0);
+        node = match button.kind {
+            ButtonKind::Primary => node.bg(dim(colors.accent_fill)),
+            ButtonKind::Secondary => node
+                .bg(dim(colors.element_background))
+                .border(1.0, dim(colors.border)),
+            ButtonKind::Ghost | ButtonKind::Danger => node,
+        };
+        if enabled {
+            node = node.on_click(button.id);
+            if !primary {
+                node = node.hover_bg(colors.ghost_element_hover);
+                if button.hovered {
+                    node = node.bg(colors.ghost_element_hover);
+                }
+            }
+        }
+        if let Some(kind) = button.leading {
+            node = node.child(crate::icon(kind).size(button.size.icon()).color(dim(ink)));
+        }
+        node = node.child(
+            crate::label(button.text)
+                .size(button.size.text())
+                .medium()
+                .color(dim(ink)),
+        );
+        if let Some(keystroke) = &button.keystroke {
+            node = node.child(key_chip(keystroke, primary));
+        }
+        node.into()
+    }
+}
+
+/// A key binding in a small cap, for buttons and footers; `on_accent` when it sits on an accent fill.
+pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
+    let colors = theme();
+    let (fill, ink) = if on_accent {
+        (Rgba::new(1.0, 1.0, 1.0, 0.18), colors.on_accent)
+    } else {
+        let fill = match colors.appearance {
+            crate::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
+            crate::Appearance::Light => colors.element_active,
+        };
+        (fill, colors.text_muted)
+    };
+    div()
+        .row()
+        .h_px(18.0)
+        .px(5.0)
         .items_center()
-        .rounded(BUTTON_RADIUS);
-    if let Some(id) = click {
-        b = b.on_click(id);
-    }
-    if let Some(bg) = bg {
-        b = b.bg(bg);
-    }
-    if let Some(border) = border {
-        b = b.border(1.0, border);
-    }
-    b.child(
-        crate::label(text)
-            .label_size(LabelSize::Default)
-            .color(label_color),
-    )
-}
-
-/// A labeled button in the given style at the default (files-header) size; `id` is its click id.
-pub fn button(id: u64, text: impl Into<String>, style: ButtonStyle) -> Div {
-    button_impl(text.into(), style, ButtonSize::Default, Some(id))
-}
-
-/// A clickable button at a chosen size; `id` is its click id.
-pub fn button_sized(id: u64, text: impl Into<String>, style: ButtonStyle, size: ButtonSize) -> Div {
-    button_impl(text.into(), style, size, Some(id))
-}
-
-/// A display-only button (no click region) for controls whose action isn't wired yet.
-pub fn button_static(text: impl Into<String>, style: ButtonStyle) -> Div {
-    button_impl(text.into(), style, ButtonSize::Default, None)
-}
-
-/// A display-only button at a chosen size (e.g. Medium for dropdown triggers).
-pub fn button_static_sized(text: impl Into<String>, style: ButtonStyle, size: ButtonSize) -> Div {
-    button_impl(text.into(), style, size, None)
+        .rounded(4.0)
+        .bg(fill)
+        .child(crate::render_keystroke_in(keystroke, 11.0, ink))
+        .into()
 }
 
 /// A 1px horizontal divider in the default border color.

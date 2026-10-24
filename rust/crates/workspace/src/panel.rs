@@ -1596,21 +1596,6 @@ fn status_line(glyph: IconKind, color: Rgba, text: String) -> Node {
         .into()
 }
 
-fn small_button(text: &str, id: u64) -> Node {
-    let colors = theme();
-    div()
-        .row()
-        .items_center()
-        .h_px(18.0)
-        .px(7.0)
-        .rounded(4.0)
-        .bg(with_alpha(colors.text, 0.07))
-        .border(1.0, colors.border)
-        .on_click(id)
-        .child(label(text.to_string()).size(10.5).color(colors.text))
-        .into()
-}
-
 fn icon_button(kind: IconKind, id: u64) -> Node {
     div()
         .row()
@@ -1712,7 +1697,7 @@ fn op_details(
     let mut fixes = div().row().gap(6.0).items_center();
     let mut fixes_w = 0.0;
     if op.retryable {
-        fixes = fixes.child(small_button("Retry", base + crate::WORKSPACE_OP_RETRY));
+        fixes = fixes.child(crate::button(base + crate::WORKSPACE_OP_RETRY, "Retry"));
         fixes_w += button_width("Retry", 0.0) + 6.0;
     }
     if !op.remote {
@@ -1985,12 +1970,13 @@ impl Panel for AgentEmptyPanel {
                     .size(13.0)
                     .color(theme().text_muted),
             )
-            .child(div().row().child(crate::outlined_button(
-                crate::AGENT_TOGGLE,
-                Some(IconKind::Sparkle),
-                "Start Agent",
-                true,
-            )))
+            .child(
+                div().row().child(
+                    crate::button(crate::AGENT_TOGGLE, "Start Agent")
+                        .size(ui::ButtonSize::Medium)
+                        .icon(Some(IconKind::Sparkle)),
+                ),
+            )
             .into()
     }
 }

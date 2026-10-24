@@ -457,11 +457,9 @@ impl ProjectDiagnostics {
                 } else {
                     "warnings"
                 };
-                column = column.child(ui::button_sized(
+                column = column.child(ui::button(
                     SHOW_WARNINGS,
                     format!("Show {} {noun}", self.warnings),
-                    ui::ButtonStyle::Outlined,
-                    ui::ButtonSize::Default,
                 ));
             }
         }

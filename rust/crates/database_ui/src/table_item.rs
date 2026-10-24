@@ -14,8 +14,7 @@ use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
 use workspace::{
-    field_label, segmented, small_button, ButtonKind, EditKey, Item, ItemTick, PanelRequest,
-    TerminalKeyOutcome,
+    field_label, segmented, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
 };
 
 use crate::details::{
@@ -1203,7 +1202,10 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        small_button(id, None, &text, None, kind, true, self.hovered)
+        ui::button(id, &text)
+            .kind(kind)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn keyed_button(&self, id: u64, text: &str, keys: &str, on: bool) -> Node {
@@ -1212,7 +1214,11 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        small_button(id, None, text, Some(keys), kind, true, self.hovered)
+        ui::button(id, text)
+            .kind(kind)
+            .keystroke(Some(keys))
+            .hovered(self.hovered)
+            .into()
     }
 
     fn input(
@@ -1480,15 +1486,12 @@ impl TableItem {
             ),
         );
         if !self.is_redis() && data {
-            bar = bar.child(small_button(
-                EXPORT,
-                Some(IconKind::Download),
-                "Export CSV",
-                None,
-                ButtonKind::Ghost,
-                true,
-                self.hovered,
-            ));
+            bar = bar.child(
+                ui::button(EXPORT, "Export CSV")
+                    .kind(ui::ButtonKind::Ghost)
+                    .icon(Some(IconKind::Download))
+                    .hovered(self.hovered),
+            );
         }
         bar.into()
     }
@@ -1539,15 +1542,12 @@ impl TableItem {
             )
             .child(self.text_button(REVIEW, "Review SQL".into(), false))
             .child(self.text_button(DISCARD, "Discard".into(), false))
-            .child(small_button(
-                APPLY,
-                None,
-                "Apply",
-                Some("cmd-s"),
-                ButtonKind::Primary,
-                true,
-                self.hovered,
-            ))
+            .child(
+                ui::button(APPLY, "Apply")
+                    .kind(ui::ButtonKind::Primary)
+                    .keystroke(Some("cmd-s"))
+                    .hovered(self.hovered),
+            )
             .into()
     }
 

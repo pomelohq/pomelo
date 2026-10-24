@@ -45,30 +45,6 @@ pub(super) struct Pending {
     pub merging: bool,
 }
 
-fn small_button(id: u64, text: &str, primary: bool, enabled: bool) -> Node {
-    let colors = theme();
-    let ink = match (enabled, primary) {
-        (false, _) => colors.text_disabled,
-        (true, true) => colors.on_accent,
-        (true, false) => colors.text,
-    };
-    let mut button = div()
-        .row()
-        .h_px(24.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .child(label(text.to_string()).size(12.0).color(ink));
-    if enabled {
-        button = button.on_click(id);
-    }
-    if primary && enabled {
-        button.rounded(4.0).bg(colors.accent_fill).into()
-    } else {
-        raised(button, 4.0)
-    }
-}
-
 /// "Checks are failing", "Changes were requested" read as one sentence.
 fn sentence(parts: &[String]) -> String {
     parts
@@ -251,7 +227,7 @@ impl PrItem {
         }
         let mut actions = div().row().gap(8.0).items_center();
         if self.confirm_merge && enabled {
-            actions = actions.child(small_button(MERGE_CANCEL, "Cancel", false, true));
+            actions = actions.child(ui::button(MERGE_CANCEL, "Cancel"));
         }
         actions = actions.child(
             div()
@@ -373,14 +349,18 @@ impl PrItem {
                     .child(field),
             );
         if focused && !self.reply.text().trim().is_empty() {
-            row = row.child(small_button(base + SEND_REPLY, "Reply", true, !busy));
+            row = row.child(
+                ui::button(base + SEND_REPLY, "Reply")
+                    .kind(ui::ButtonKind::Primary)
+                    .enabled(!busy),
+            );
         }
         let toggle = if resolved {
             "Unresolve thread"
         } else {
             "Resolve thread"
         };
-        row.child(small_button(base + TOGGLE_RESOLVED, toggle, false, !busy))
+        row.child(ui::button(base + TOGGLE_RESOLVED, toggle).enabled(!busy))
             .into()
     }
 
@@ -403,12 +383,15 @@ impl PrItem {
         );
         let mut buttons = div().row().gap(8.0).items_center();
         for (index, event) in REVIEW_EVENTS.iter().enumerate() {
-            buttons = buttons.child(small_button(
-                REVIEW_EVENT_BASE + index as u64,
-                event.label(),
-                *event == ReviewEvent::Approve,
-                !busy,
-            ));
+            buttons = buttons.child(
+                ui::button(REVIEW_EVENT_BASE + index as u64, event.label())
+                    .kind(if *event == ReviewEvent::Approve {
+                        ui::ButtonKind::Primary
+                    } else {
+                        ui::ButtonKind::Secondary
+                    })
+                    .enabled(!busy),
+            );
         }
         Some(
             div()

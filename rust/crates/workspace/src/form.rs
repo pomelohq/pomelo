@@ -5,7 +5,7 @@ use std::any::Any;
 
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{button, div, icon, label, theme, ButtonKind, IconKind, LabelSize, Node, Rgba};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -68,15 +68,6 @@ const INPUT_FONT: f32 = 13.0;
 const MODAL_RADIUS: f32 = 10.0;
 /// Horizontal inset of the header title and the body.
 const MODAL_INSET: f32 = 18.0;
-
-/// How a modal's button reads: the one action it is for, a plain alternative, a quiet one, or a destructive one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ButtonKind {
-    Primary,
-    Secondary,
-    Ghost,
-    Danger,
-}
 
 /// The hairline ring around a floating surface; on light layers it needs a dark tint to stand off the page.
 pub fn overlay_ring() -> Rgba {
@@ -176,117 +167,6 @@ pub fn modal_note(text: &str) -> Node {
         .into()
 }
 
-/// A key binding in a small cap, for buttons and footers; `on_accent` when it sits on an accent fill.
-pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
-    let colors = theme();
-    let (fill, ink) = if on_accent {
-        (Rgba::new(1.0, 1.0, 1.0, 0.18), colors.on_accent)
-    } else {
-        let fill = match colors.appearance {
-            ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-            ui::Appearance::Light => colors.element_active,
-        };
-        (fill, colors.text_muted)
-    };
-    div()
-        .row()
-        .h_px(18.0)
-        .px(5.0)
-        .items_center()
-        .rounded(4.0)
-        .bg(fill)
-        .child(ui::render_keystroke_in(keystroke, 11.0, ink))
-        .into()
-}
-
-/// A footer button: its label, then the key that runs it in a chip.
-pub fn modal_button(
-    id: u64,
-    text: &str,
-    keystroke: Option<&str>,
-    kind: ButtonKind,
-    enabled: bool,
-) -> Node {
-    let colors = theme();
-    let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
-    let ink = match kind {
-        ButtonKind::Primary => colors.on_accent,
-        ButtonKind::Secondary | ButtonKind::Ghost => colors.text,
-        ButtonKind::Danger => colors.error,
-    };
-    let mut button = div()
-        .row()
-        .items_center()
-        .gap(4.0)
-        .h_px(28.0)
-        .px(10.0)
-        .rounded(6.0);
-    button = match kind {
-        ButtonKind::Primary => button.bg(dim(colors.accent_fill)),
-        ButtonKind::Secondary => button
-            .bg(dim(colors.element_background))
-            .border(1.0, dim(colors.border)),
-        ButtonKind::Ghost | ButtonKind::Danger => button,
-    };
-    if enabled {
-        button = button.on_click(id);
-        if kind != ButtonKind::Primary {
-            button = button.hover_bg(colors.ghost_element_hover);
-        }
-    }
-    button = button.child(label(text.to_string()).size(13.0).medium().color(dim(ink)));
-    if let Some(keystroke) = keystroke {
-        button = button.child(key_chip(keystroke, kind == ButtonKind::Primary));
-    }
-    button.into()
-}
-
-pub fn small_button(
-    id: u64,
-    leading: Option<IconKind>,
-    text: &str,
-    keystroke: Option<&str>,
-    kind: ButtonKind,
-    enabled: bool,
-    hovered: Option<u64>,
-) -> Node {
-    let colors = theme();
-    let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
-    let ink = match kind {
-        ButtonKind::Primary => colors.on_accent,
-        ButtonKind::Secondary | ButtonKind::Ghost => colors.text,
-        ButtonKind::Danger => colors.error,
-    };
-    let mut button = div()
-        .row()
-        .items_center()
-        .gap(4.0)
-        .h_px(24.0)
-        .px(8.0)
-        .rounded(6.0);
-    button = match kind {
-        ButtonKind::Primary => button.bg(dim(colors.accent_fill)),
-        ButtonKind::Secondary => button
-            .bg(dim(colors.element_background))
-            .border(1.0, dim(colors.border)),
-        ButtonKind::Ghost | ButtonKind::Danger => button,
-    };
-    if enabled {
-        button = button.on_click(id);
-        if kind != ButtonKind::Primary && hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-    }
-    if let Some(kind) = leading {
-        button = button.child(icon(kind).size(12.0).color(dim(ink)));
-    }
-    button = button.child(label(text.to_string()).size(12.0).medium().color(dim(ink)));
-    if let Some(keystroke) = keystroke {
-        button = button.child(key_chip(keystroke, kind == ButtonKind::Primary));
-    }
-    button.into()
-}
-
 pub fn status_pill(text: &str, color: Rgba) -> Node {
     div()
         .row()
@@ -298,34 +178,6 @@ pub fn status_pill(text: &str, color: Rgba) -> Node {
         .bg(theme().ghost_element_hover)
         .child(div().w_px(6.0).h_px(6.0).rounded(3.0).bg(color))
         .child(label(text.to_string()).size(11.0).medium().color(color))
-        .into()
-}
-
-/// A secondary action inside the form, with an optional leading icon.
-pub fn outlined_button(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
-    let colors = theme();
-    let color = if enabled {
-        colors.text
-    } else {
-        colors.text_disabled
-    };
-    let mut button = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(28.0)
-        .px(10.0)
-        .rounded(6.0)
-        .border(1.0, colors.border)
-        .bg(colors.element_background);
-    if enabled {
-        button = button.on_click(id);
-    }
-    if let Some(kind) = leading {
-        button = button.child(icon(kind).size(14.0).color(color));
-    }
-    button
-        .child(label(text.to_string()).size(13.0).medium().color(color))
         .into()
 }
 
@@ -470,13 +322,12 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
         } else {
             None
         };
-        buttons = buttons.child(modal_button(
-            button_base + index as u64,
-            text,
-            keystroke,
-            kind,
-            true,
-        ));
+        buttons = buttons.child(
+            button(button_base + index as u64, text)
+                .size(ui::ButtonSize::Medium)
+                .kind(kind)
+                .keystroke(keystroke),
+        );
     }
     let cancel = prompt
         .buttons
@@ -766,6 +617,7 @@ pub fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>)
         .bg(colors.element_background);
     for (index, (id, text)) in options.iter().enumerate() {
         let on = index == selected;
+        let hot = !on && hovered == Some(*id);
         let mut part = div()
             .row()
             .px(10.0)
@@ -775,12 +627,17 @@ pub fn segmented(options: &[(u64, &str)], selected: usize, hovered: Option<u64>)
             .child(
                 label(text.to_string())
                     .label_size(LabelSize::Small)
-                    .color(if on { colors.text } else { colors.text_muted }),
+                    .color(if on || hot {
+                        colors.text
+                    } else {
+                        colors.text_muted
+                    }),
             );
         if on {
             part = part.bg(colors.element_selected);
-        } else if hovered == Some(*id) {
-            part = part.bg(colors.ghost_element_hover);
+        } else if hot {
+            // The ghost hover token is darker than this track in some dark themes, so tint from the text color.
+            part = part.bg(colors.text.alpha(0.045));
         }
         row = row.child(part);
     }

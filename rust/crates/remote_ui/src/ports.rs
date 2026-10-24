@@ -7,7 +7,7 @@ use pom_remote::{ForwardKind, ForwardState, PortForward, RemotePorts};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{small_button, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const PORTS_TAB_ID: &str = "remote-ports";
 
@@ -358,15 +358,7 @@ impl PortsPage {
             .px(CARD_INSET)
             .h_px(TOOLBAR_H)
             .child(field)
-            .child(small_button(
-                FORWARD,
-                None,
-                "Forward",
-                None,
-                ButtonKind::Secondary,
-                true,
-                self.hovered,
-            ))
+            .child(ui::button(FORWARD, "Forward").hovered(self.hovered))
             .child(div().flex(1.0))
             .child(
                 div()
