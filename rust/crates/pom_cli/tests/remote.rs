@@ -2026,7 +2026,7 @@ fn a_real_sshd_session_killed_mid_terminal_reconnects() {
 
 impl Fixture {
     /// A release folder as GitHub serves it: a pom tarball whose install.sh records how it ran and puts in
-    /// place a pom that is this build, and the checksums list, `tamper` making the tarball's entry wrong.
+    /// place a pom that is this build, and its signature, `tamper` signing other bytes.
     fn fake_release(&self, version: &str, tamper: bool) -> pom_remote::update::Release {
         let release = self
             .temp
@@ -2054,22 +2054,20 @@ impl Fixture {
             .expect("tar");
         assert!(packed.status.success(), "{}", text(&packed));
         let bytes = std::fs::read(release.join(&tarball)).expect("tarball");
-        let hash = if tamper {
-            "0".repeat(64)
-        } else {
-            pom_remote::update::sha256_hex(&bytes)
-        };
+        use base64::Engine;
+        use ed25519_dalek::Signer;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let signed: &[u8] = if tamper { b"another tarball" } else { &bytes };
         std::fs::write(
-            release.join(pom_remote::update::CHECKSUMS),
-            format!(
-                "{hash}  {tarball}\n{}  pom-{version}-linux-aarch64.tar.gz\n",
-                "1".repeat(64)
-            ),
+            release.join(format!("{tarball}.sig")),
+            engine.encode(key.sign(signed).to_bytes()),
         )
-        .expect("checksums");
+        .expect("signature");
         pom_remote::update::Release {
             version: version.to_string(),
-            base: format!("file://{}", release.display()),
+            source: pom_remote::update::Source::Folder(format!("file://{}", release.display())),
+            public_key: engine.encode(key.verifying_key().to_bytes()),
         }
     }
 
@@ -2096,7 +2094,7 @@ impl Fixture {
 }
 
 #[test]
-fn updating_pom_installs_the_checked_release_tarball_and_moves_to_its_server() {
+fn updating_pom_installs_the_signed_release_tarball_and_moves_to_its_server() {
     use pom_remote::update::UpdateStep;
     use pom_remote::ProjectSource;
     let fixture = Fixture::new();
@@ -2114,14 +2112,14 @@ fn updating_pom_installs_the_checked_release_tarball_and_moves_to_its_server() {
     assert!(
         refused
             .as_ref()
-            .is_err_and(|error| error.contains("does not match the release's checksum")),
+            .is_err_and(|error| error.contains("signature did not verify")),
         "{refused:?}"
     );
     assert!(
         !std::fs::read_to_string(&installed)
             .unwrap_or_default()
             .contains("installed by the update"),
-        "a tarball that fails its checksum is never installed"
+        "a tarball whose signature fails is never installed"
     );
     assert!(!fixture.temp.path().join("home/install-args").exists());
     assert_eq!(source.link().map(|report| report.restarts), Some(0));
