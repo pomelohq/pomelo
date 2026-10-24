@@ -4,7 +4,16 @@
 //! own title bar, so both columns inset their top for the traffic lights. Controls are read-only rounded
 //! chips until input handling lands (edit `~/.config/pomelo/settings.json`). Pure — the binary owns display.
 
+mod host_tab;
 mod settings_view;
+pub use host_tab::{
+    HostAnswer, HostError, HostLink, HostLoad, HostPage, HostSettingsStore, RemoteHost,
+    CTRL_HOST_OPEN_JSON, CTRL_HOST_RETRY, CTRL_HOST_UPDATE_POM, CTRL_IDLE_EXIT_DEC,
+    CTRL_IDLE_EXIT_EDIT, CTRL_IDLE_EXIT_INC, CTRL_IDLE_SLEEP_DEC, CTRL_IDLE_SLEEP_EDIT,
+    CTRL_IDLE_SLEEP_INC, CTRL_MAX_RUNNING_DEC, CTRL_MAX_RUNNING_EDIT, CTRL_MAX_RUNNING_INC,
+    CTRL_RETENTION_DEC, CTRL_RETENTION_EDIT, CTRL_RETENTION_INC, CTRL_TAB_HOST, CTRL_TAB_MAC,
+    HOST_CATEGORIES,
+};
 pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
@@ -1015,6 +1024,9 @@ pub fn is_default(id: u64, s: &Settings) -> bool {
             s.diagnostics.inline.min_column == d.diagnostics.inline.min_column
         }
         id if language_control(id).is_some() => language_is_default(id, s).unwrap_or(true),
+        id if host_tab::is_host_number_edit(id) => {
+            host_tab::host_number_is_default(id, s).unwrap_or(true)
+        }
         id => sound_event(id).is_none_or(|event| s.sound_for(event) == d.sound_for(event)),
     }
 }
@@ -1100,6 +1112,9 @@ pub fn reset_to_default(id: u64, s: &mut Settings) -> bool {
             s.diagnostics.inline.min_column = d.diagnostics.inline.min_column
         }
         id if language_control(id).is_some() => return language_reset(id, s).unwrap_or(false),
+        id if host_tab::is_host_number_edit(id) => {
+            return host_tab::reset_host_number(id, s).unwrap_or(false)
+        }
         id => {
             let Some(event) = sound_event(id) else {
                 return false;
@@ -1307,7 +1322,7 @@ pub fn handle_control(id: u64, s: &mut Settings) -> bool {
             std::mem::replace(slot, next) != next
         }
         id if language_control(id).is_some() => handle_language_control(id, s),
-        _ => false,
+        id => host_tab::step_host_number(id, s),
     }
 }
 
@@ -1766,9 +1781,19 @@ pub fn chrome(
     nav_scroll: f32,
     project: &ProjectPage,
     language: Option<usize>,
+    host: Option<&HostPage>,
 ) -> Chrome {
-    let project_scope = (matches!(selected, PROJECT | INTEGRATIONS) && !project.session.is_empty())
-        .then_some(project);
+    let host_shown = host.filter(|host| host.shown);
+    let project_pages: &[usize] = match host {
+        Some(host) if host.shown => &[INTEGRATIONS],
+        Some(_) => &[PROJECT],
+        None => &[PROJECT, INTEGRATIONS],
+    };
+    let project_scope =
+        (project_pages.contains(&selected) && !project.session.is_empty()).then_some(project);
+    let user_on = host_shown
+        .filter(|_| project_scope.is_none())
+        .map(|host| host.name.as_str());
     let sub_page = language
         .filter(|_| selected == LANGUAGES_TOOLS)
         .and_then(|index| language_names().get(index).copied());
@@ -1798,6 +1823,25 @@ pub fn chrome(
             .into(),
         Rect::new(0.0, 0.0, w, rem(TITLE_H), Rgba::TRANSPARENT),
     );
+    if let Some(host) = host {
+        let tabs = host_tab::tabs(host);
+        let (tabs_w, tabs_h) = ui::measure(&tabs);
+        let placed = render(
+            &tabs,
+            Rect::new(
+                ((w - tabs_w) / 2.0).max(0.0),
+                ((rem(TITLE_H) - tabs_h) / 2.0).max(0.0),
+                tabs_w,
+                tabs_h,
+                Rgba::TRANSPARENT,
+            ),
+        );
+        out.rects.extend(placed.rects);
+        out.tris.extend(placed.tris);
+        out.texts.extend(placed.texts);
+        out.icons.extend(placed.icons);
+        out.hits.extend(placed.hits);
+    }
     out.rects.insert(
         0,
         Rect {
@@ -1862,7 +1906,7 @@ pub fn chrome(
     );
     let origin = nav_top - nav_scroll;
     let nav = render(
-        &sidebar_nav(selected, hovered, active_section, expanded, search),
+        &sidebar_nav(selected, hovered, active_section, expanded, search, host),
         Rect::new(gap, origin, rem(NAV_W), h.max(1.0) * 4.0, Rgba::TRANSPARENT),
     );
     let nav_height = nav
@@ -1893,7 +1937,7 @@ pub fn chrome(
             Some(name) => {
                 sub_page_header(&["User", CATEGORIES[LANGUAGES_TOOLS].0, "Languages", name])
             }
-            None => toolbar(project_scope),
+            None => toolbar(project_scope, user_on),
         })
         .into();
     let sp = render(
@@ -1956,7 +2000,13 @@ pub fn page(
         ..Default::default()
     };
     let jira = &state.jira;
-    let tree: Node = if selected == APPEARANCE {
+    let host = state.host.as_ref();
+    let tree: Node = if let Some(host) = host.filter(|host| host.shown) {
+        host_body(selected, host, jira, search, editing, w)
+    } else if let Some(page) = host.and_then(|host| mac_page_beside_host(selected, s, state, host))
+    {
+        render_page(&page, search, editing, w)
+    } else if selected == APPEARANCE {
         render_page(&appearance_page(s), search, editing, w)
     } else if selected == WINDOW_LAYOUT {
         render_page(&window_layout_page(s), search, editing, w)
@@ -1975,6 +2025,7 @@ pub fn page(
                 search,
                 editing,
                 w,
+                &[],
             ),
             None => render_page(&languages_tools_page(s), search, editing, w),
         }
@@ -2085,6 +2136,7 @@ pub fn panel(
         0.0,
         &state.project,
         state.language,
+        state.host.as_ref(),
     );
     for part in [ch.fixed, ch.nav] {
         out.rects.extend(part.rects);
@@ -2160,14 +2212,22 @@ fn sidebar_nav(
     active_section: Option<usize>,
     expanded: &[bool],
     search: &str,
+    host: Option<&HostPage>,
 ) -> Node {
     let mut col = div().col().w_px(NAV_W).px(6.0).gap(1.0);
     let searching = !search.is_empty();
     let q = search.to_lowercase();
-    for (i, (name, subs)) in CATEGORIES.iter().enumerate() {
+    let shown: Vec<usize> = match host {
+        Some(host) if host.shown => HOST_CATEGORIES.to_vec(),
+        _ => (0..CATEGORIES.len()).collect(),
+    };
+    for i in shown {
+        let Some((name, subs)) = CATEGORIES.get(i) else {
+            continue;
+        };
         // While searching, the navbar shows only categories with matching sections (or a matching name), and
         // lists just the matching sections -- mirroring the reference's filtered navbar.
-        let sections: Vec<(usize, &str)> = matching_sections(i, &q);
+        let sections: Vec<(usize, &str)> = matching_sections(i, &q, host);
         let name_matches = !searching || name.to_lowercase().contains(&q);
         if searching && sections.is_empty() && !name_matches {
             continue;
@@ -2175,7 +2235,10 @@ fn sidebar_nav(
 
         let is_selected = i == selected;
         let is_hovered = hovered == Some(i as u64) || hovered == Some(NAV_TOGGLE_BASE + i as u64);
-        let has_subs = !subs.is_empty();
+        let has_subs = match host {
+            Some(host) if host.shown => !sections.is_empty(),
+            _ => !subs.is_empty(),
+        };
         // Searching force-expands so matches are visible; otherwise honor the stored expansion state.
         let is_expanded = searching || expanded.get(i).copied().unwrap_or(false);
 
@@ -2276,8 +2339,23 @@ fn page_for(cat: usize) -> Option<Page> {
     }
 }
 
-fn matching_sections(cat: usize, query: &str) -> Vec<(usize, &'static str)> {
-    let Some(page) = page_for(cat) else {
+/// The page the navbar lists `cat`'s sections from: the host's while its tab is shown.
+fn nav_page(cat: usize, host: Option<&HostPage>) -> Option<Page> {
+    match host {
+        Some(host) if host.shown => host_tab::host_page(cat, host, &IntegrationsPage::default()),
+        Some(host) if cat == INTEGRATIONS => {
+            Some(mac_integrations_page(&Settings::default(), &host.name))
+        }
+        _ => page_for(cat),
+    }
+}
+
+fn matching_sections(
+    cat: usize,
+    query: &str,
+    host: Option<&HostPage>,
+) -> Vec<(usize, &'static str)> {
+    let Some(page) = nav_page(cat, host) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -2295,6 +2373,7 @@ fn matching_sections(cat: usize, query: &str) -> Vec<(usize, &'static str)> {
                 cur = Some((idx, name, m));
                 idx += 1;
             }
+            PageItem::Note(_) => {}
             PageItem::Row(row) => {
                 if let Some((_, _, matched)) = cur.as_mut() {
                     if !*matched && row_matches(row, query) {
@@ -2336,8 +2415,19 @@ fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
 /// edge (never pushed off-window); the left group truncates/overlaps under it when space is tight.
 /// The scope the page edits: the user's settings file, or (Project and Integrations) the open project, whose
 /// config the right button then opens.
-fn toolbar(project: Option<&ProjectPage>) -> Node {
-    let (scope, file) = match project {
+fn toolbar(project: Option<&ProjectPage>, host: Option<&str>) -> Node {
+    let (scope, file) = match (project, host) {
+        (None, Some(host)) => (
+            format!("User on {host}"),
+            Some((CTRL_HOST_OPEN_JSON, "Edit in settings.json")),
+        ),
+        _ => toolbar_scope(project),
+    };
+    toolbar_chip(scope, file)
+}
+
+fn toolbar_scope(project: Option<&ProjectPage>) -> (String, Option<(u64, &'static str)>) {
+    match project {
         // A remote project's pom.yml is on its machine: nothing here to open.
         Some(ProjectPage {
             session,
@@ -2352,7 +2442,10 @@ fn toolbar(project: Option<&ProjectPage>) -> Node {
             "User".to_string(),
             Some((CTRL_OPEN_JSON, "Edit in settings.json")),
         ),
-    };
+    }
+}
+
+fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
     let chip = div()
         .row()
         .h_px(26.0)
@@ -2459,6 +2552,8 @@ enum Control {
     SubPage {
         id: u64,
     },
+    /// A value not known yet.
+    Placeholder,
 }
 
 struct SettingRow {
@@ -2470,6 +2565,8 @@ struct SettingRow {
 
 enum PageItem {
     Header(&'static str),
+    /// A line under the section header before it.
+    Note(String),
     Row(SettingRow),
 }
 
@@ -2881,7 +2978,7 @@ pub struct KeymapPage {
 }
 
 /// What the pages show that lives outside the settings file.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PageState {
     pub jira: IntegrationsPage,
     pub project: ProjectPage,
@@ -2891,6 +2988,8 @@ pub struct PageState {
     pub keymap: KeymapPage,
     /// The language whose own page is open over Languages & Tools, by its index in `language_names`.
     pub language: Option<usize>,
+    /// Opened from a remote window: its host's tab.
+    pub host: Option<HostPage>,
 }
 
 fn registration_text(registration: &Registration, done: &str) -> String {
@@ -3847,6 +3946,32 @@ fn dev_services_page(s: &Settings, services: &DevServicesPage) -> Page {
 }
 
 fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
+    let mut items = jira_items(jira);
+    items.extend(display_items(s));
+    // Keeping main fresh runs here; a remote project's main lives on its machine.
+    if jira.kept_on.is_none() {
+        items.extend(main_workspace_items(jira));
+    }
+    Page {
+        title: "Integrations",
+        items,
+    }
+}
+
+/// This Mac's Integrations beside a host tab: how tickets show here; Jira itself is set up on the host's tab.
+fn mac_integrations_page(s: &Settings, host: &str) -> Page {
+    let mut items = vec![
+        PageItem::Header("Jira"),
+        PageItem::Note(format!("Jira itself is set up on the {host} tab")),
+    ];
+    items.extend(display_items(s));
+    Page {
+        title: "Integrations",
+        items,
+    }
+}
+
+fn jira_items(jira: &IntegrationsPage) -> Vec<PageItem> {
     let token_row = match jira.token {
         TokenSource::Missing => SettingRow {
             title: "API Token".into(),
@@ -3903,39 +4028,45 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
         }));
     }
     items.extend(vec![
-            PageItem::Row(SettingRow {
-                title: "Site URL".into(),
-                description: "Your Jira Cloud address.".into(),
-                control: Control::TextInput {
-                    id: CTRL_JIRA_SITE,
-                    value: jira.site.clone(),
-                    placeholder: "https://acme.atlassian.net",
-                    masked: false,
-                },
-                reset: None,
-            }),
-            PageItem::Row(SettingRow {
-                title: "Account Email".into(),
-                description: "The email you sign in to Jira with.".into(),
-                control: Control::TextInput {
-                    id: CTRL_JIRA_EMAIL,
-                    value: jira.email.clone(),
-                    placeholder: "you@example.com",
-                    masked: false,
-                },
-                reset: None,
-            }),
-            PageItem::Row(token_row),
-            PageItem::Row(SettingRow {
-                title: "Connection".into(),
-                description: connection,
-                control: Control::Button {
-                    id: CTRL_JIRA_TEST,
-                    label: "Test Connection",
-                    enabled: ready && !testing,
-                },
-                reset: None,
-            }),
+        PageItem::Row(SettingRow {
+            title: "Site URL".into(),
+            description: "Your Jira Cloud address.".into(),
+            control: Control::TextInput {
+                id: CTRL_JIRA_SITE,
+                value: jira.site.clone(),
+                placeholder: "https://acme.atlassian.net",
+                masked: false,
+            },
+            reset: None,
+        }),
+        PageItem::Row(SettingRow {
+            title: "Account Email".into(),
+            description: "The email you sign in to Jira with.".into(),
+            control: Control::TextInput {
+                id: CTRL_JIRA_EMAIL,
+                value: jira.email.clone(),
+                placeholder: "you@example.com",
+                masked: false,
+            },
+            reset: None,
+        }),
+        PageItem::Row(token_row),
+        PageItem::Row(SettingRow {
+            title: "Connection".into(),
+            description: connection,
+            control: Control::Button {
+                id: CTRL_JIRA_TEST,
+                label: "Test Connection",
+                enabled: ready && !testing,
+            },
+            reset: None,
+        }),
+    ]);
+    items
+}
+
+fn display_items(s: &Settings) -> Vec<PageItem> {
+    vec![
             PageItem::Row(SettingRow {
                 title: "Only Show My Tickets".into(),
                 description: "The new-workspace ticket picker lists only tickets assigned to you."
@@ -3955,10 +4086,11 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: reset_if_changed(CTRL_GROUP_WORKSPACES, s),
             }),
-    ]);
-    // Keeping main fresh runs here; a remote project's main lives on its machine.
-    if jira.kept_on.is_none() {
-        items.extend(vec![
+    ]
+}
+
+fn main_workspace_items(jira: &IntegrationsPage) -> Vec<PageItem> {
+    vec![
             PageItem::Header("Main Workspace"),
             PageItem::Row(SettingRow {
                 title: "Keep Main Fresh".into(),
@@ -3980,12 +4112,7 @@ fn integrations_page(s: &Settings, jira: &IntegrationsPage) -> Page {
                 },
                 reset: None,
             }),
-        ]);
-    }
-    Page {
-        title: "Integrations",
-        items,
-    }
+    ]
 }
 
 fn project_page(project: &ProjectPage) -> Page {
@@ -4154,7 +4281,80 @@ fn render_page(page: &Page, query: &str, editing: Option<(u64, &str)>, w: f32) -
     } else {
         format!("Results for \"{query}\"")
     };
-    render_page_under(page_title(&title), page, query, editing, w)
+    render_page_under(page_title(&title), page, query, editing, w, &[])
+}
+
+/// A This Mac page beside a host tab: each section the host has its own of says so once, and Integrations keeps
+/// only how tickets show here.
+fn mac_page_beside_host(
+    selected: usize,
+    s: &Settings,
+    state: &PageState,
+    host: &HostPage,
+) -> Option<Page> {
+    let mut page = match selected {
+        AGENT => agent_page(s, &state.agent),
+        TERMINAL => terminal_page(s),
+        DEV_SERVICES => dev_services_page(s, &state.dev_services),
+        INTEGRATIONS => return Some(mac_integrations_page(s, &host.name)),
+        _ => return None,
+    };
+    let sections = host_tab::mac_only_sections(selected);
+    let mut items = Vec::with_capacity(page.items.len() + sections.len());
+    for item in page.items {
+        let noted = matches!(&item, PageItem::Header(name) if sections.contains(name));
+        items.push(item);
+        if noted {
+            items.push(PageItem::Note(host_tab::mac_note(&host.name)));
+        }
+    }
+    page.items = items;
+    Some(page)
+}
+
+/// A host tab page: its rows once the host answers, what is wrong instead when it cannot.
+fn host_body(
+    selected: usize,
+    host: &HostPage,
+    jira: &IntegrationsPage,
+    search: &str,
+    editing: Option<(u64, &str)>,
+    w: f32,
+) -> Node {
+    let Some(page) = host_tab::host_page(selected, host, jira) else {
+        return stub_body(CATEGORIES.get(selected).map_or("", |(name, _)| *name));
+    };
+    let title = if search.is_empty() {
+        page.title.to_string()
+    } else {
+        format!("Results for \"{search}\"")
+    };
+    let mut heading = div().col().child(page_title(&title));
+    let from_host_settings = selected != INTEGRATIONS;
+    if let Some(line) = host_tab::state_line(host).filter(|_| from_host_settings) {
+        heading = heading.child(line);
+    }
+    let blocked = from_host_settings
+        && matches!(
+            host.load,
+            HostLoad::Unreachable(_) | HostLoad::Outdated(_) | HostLoad::Failed(_)
+        );
+    let page = if blocked {
+        Page {
+            title: page.title,
+            items: Vec::new(),
+        }
+    } else {
+        page
+    };
+    render_page_under(
+        heading.into(),
+        &page,
+        search,
+        editing,
+        w,
+        &host.control_errors(),
+    )
 }
 
 fn page_title(text: &str) -> Node {
@@ -4177,6 +4377,7 @@ fn render_page_under(
     query: &str,
     editing: Option<(u64, &str)>,
     w: f32,
+    errors: &[(u64, String)],
 ) -> Node {
     // Widths are in design px (the element builders re-apply the UI scale).
     let scale = ui::ui_text_scale();
@@ -4195,6 +4396,7 @@ fn render_page_under(
             for (j, later) in page.items.iter().enumerate().skip(i + 1) {
                 match later {
                     PageItem::Header(_) => break,
+                    PageItem::Note(_) => {}
                     PageItem::Row(_) => {
                         if visible[j] {
                             any = true;
@@ -4230,6 +4432,11 @@ fn render_page_under(
     let last_visible_row = (0..n)
         .rev()
         .find(|&i| visible[i] && matches!(page.items[i], PageItem::Row(_)));
+    for i in 0..n {
+        if matches!(page.items[i], PageItem::Note(_)) {
+            visible[i] = i > 0 && visible[i - 1];
+        }
+    }
     for (i, item) in page.items.iter().enumerate() {
         let is_header = matches!(item, PageItem::Header(_));
         if !visible[i] {
@@ -4253,6 +4460,7 @@ fn render_page_under(
                 table_open = false;
                 section_idx += 1;
             }
+            PageItem::Note(text) => col = col.child(inset(host_tab::note(text))),
             PageItem::Row(row) => {
                 let control = match &row.control {
                     Control::Dropdown { id, value } => dropdown(value, *id),
@@ -4293,7 +4501,14 @@ fn render_page_under(
                     Control::Value { text } => value_text(text),
                     Control::Keys { binding } => keys(binding),
                     Control::SubPage { id } => sub_page_button(*id),
+                    Control::Placeholder => host_tab::placeholder(),
                 };
+                let error = control_id(&row.control).and_then(|id| {
+                    errors
+                        .iter()
+                        .find(|(errored, _)| *errored == id)
+                        .map(|(_, message)| message.as_str())
+                });
                 let last = last_visible_row == Some(i);
                 let binding = in_bindings
                     && !row.description.is_empty()
@@ -4347,6 +4562,7 @@ fn render_page_under(
                         row_w,
                         searching,
                         last,
+                        error,
                     ));
                 }
             }
@@ -4413,6 +4629,18 @@ fn divider() -> Node {
     div().h_px(1.0).bg(line_c()).into()
 }
 
+/// The control a row's error is keyed by: the one its value is edited with.
+fn control_id(control: &Control) -> Option<u64> {
+    match control {
+        Control::Dropdown { id, .. }
+        | Control::Toggle { id, .. }
+        | Control::TextInput { id, .. } => Some(*id),
+        Control::Stepper { edit, .. } => Some(*edit),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn row_frame(
     title: &str,
     desc: &str,
@@ -4421,6 +4649,7 @@ fn row_frame(
     row_w: f32,
     hit: bool,
     last: bool,
+    error: Option<&str>,
 ) -> Node {
     let mut right = div().row().gap(6.0).items_center();
     if let Some(primary) = reset {
@@ -4438,6 +4667,9 @@ fn row_frame(
     );
     if !desc.is_empty() {
         left = left.child(description_node(desc, left_col_w));
+    }
+    if let Some(error) = error {
+        left = left.child(host_tab::row_error(error, left_col_w));
     }
     // The spacer pushes the control to the right edge and holds the row to the 58px minimum height.
     let row = div()
@@ -4819,7 +5051,7 @@ mod tests {
             .iter()
             .filter_map(|it| match it {
                 PageItem::Header(name) => Some(*name),
-                PageItem::Row(_) => None,
+                PageItem::Note(_) | PageItem::Row(_) => None,
             })
             .collect();
         assert_eq!(headers, APPEARANCE_SECTIONS.to_vec());

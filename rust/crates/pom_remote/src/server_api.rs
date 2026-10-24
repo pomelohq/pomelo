@@ -1188,6 +1188,8 @@ pub struct SettingsSetParams {
 pub struct HostSettings {
     pub values: serde_json::Value,
     pub keys: Vec<String>,
+    /// Where the host keeps them; empty from a pom that does not say.
+    pub path: String,
 }
 
 impl HostSettings {
@@ -1198,6 +1200,12 @@ impl HostSettings {
                 .iter()
                 .map(|key| key.to_string())
                 .collect(),
+            path: String::new(),
         }
+    }
+
+    pub fn kept_in(mut self, path: &std::path::Path) -> HostSettings {
+        self.path = path.display().to_string();
+        self
     }
 }

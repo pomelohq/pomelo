@@ -655,6 +655,8 @@ struct App {
     settings_app: Option<ui::Application>,
     settings_handle: Option<ui::WindowHandle>,
     settings_entity: Option<ui::Entity<settings_ui::SettingsView>>,
+    /// The remote window Settings was opened from: its host tab's window.
+    settings_remote: Option<WindowId>,
     caret_last_toggle: Option<Instant>,
     /// Cmd+K was pressed; the next key completes a two-stroke editor binding.
     pending_cmd_k: bool,
@@ -2226,8 +2228,15 @@ impl App {
             problems: self.keymap_problems.clone(),
         };
         let project = self.project_page();
+        let host_status = self
+            .settings_remote
+            .and_then(|id| self.mains.get(&id))
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.host_status());
         let changed = self.with_settings_view(|view, _| {
-            let project_changed = view.set_project_page(project);
+            let host_changed =
+                host_status.is_some_and(|(link, version)| view.set_host_status(link, &version));
+            let project_changed = view.set_project_page(project) || host_changed;
             let agent_changed = view.set_agent_page(agent);
             let general_changed = view.set_general_page(general);
             let keymap_changed = view.set_keymap_page(keymap);
@@ -3038,6 +3047,10 @@ impl App {
         let jira_remote = focused
             .and_then(|main| main.remote.as_ref())
             .map(|remote| remote.settings_jira());
+        let remote_host = focused
+            .and_then(|main| main.remote.as_ref())
+            .map(|remote| remote.settings_host());
+        self.settings_remote = self.focused_main.filter(|_| remote_host.is_some());
         let local = match focused {
             Some(main) if main.remote.is_some() => None,
             _ => focused
@@ -3064,6 +3077,7 @@ impl App {
                 if jira_remote.is_some() {
                     view.set_jira_remote(jira_remote);
                 }
+                view.set_remote_host(remote_host);
                 view.set_project_config(project_config);
                 view
             },
@@ -3243,6 +3257,20 @@ impl App {
         }
         if effects.edit_settings_json {
             self.edit_settings_json();
+        }
+        let remote = self
+            .settings_remote
+            .filter(|id| self.mains.get(id).is_some_and(|main| main.remote.is_some()));
+        if let Some(id) = remote {
+            if effects.update_host_pom {
+                self.update_remote_pom(id);
+                if let Some(main) = self.mains.get(&id) {
+                    main.window.focus_window();
+                }
+            }
+            if let Some(path) = &effects.edit_host_settings {
+                self.open_remote_path(id, path);
+            }
         }
         if effects.open_themes {
             self.open_themes_folder();

@@ -67,6 +67,46 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         "settings-agent" => (settings_ui::AGENT, &[]),
         "settings-languages" => (settings_ui::LANGUAGES_TOOLS, &[]),
         "settings-search" => (settings_ui::APPEARANCE, &[("SETTINGSSEARCH", "font")]),
+        // Settings from a remote window: This Mac's tab or the host's, its settings read, being read or not.
+        "settings-mac-agent" => (settings_ui::AGENT, &[("HOSTTAB", "mac"), ("LIVE", "1")]),
+        "settings-mac-dev-services" => (
+            settings_ui::DEV_SERVICES,
+            &[("HOSTTAB", "mac"), ("LIVE", "1")],
+        ),
+        "settings-host-general" => (settings_ui::GENERAL, &[("HOSTTAB", "host")]),
+        "settings-host-agent" => (settings_ui::AGENT, &[("HOSTTAB", "host")]),
+        "settings-host-terminal" => (settings_ui::TERMINAL, &[("HOSTTAB", "host")]),
+        "settings-host-dev-services" => (settings_ui::DEV_SERVICES, &[("HOSTTAB", "host")]),
+        "settings-host-integrations" => (
+            settings_ui::INTEGRATIONS,
+            &[("HOSTTAB", "host"), ("JIRA", "1"), ("REMOTE", "1")],
+        ),
+        "settings-host-loading" => (
+            settings_ui::GENERAL,
+            &[("HOSTTAB", "host"), ("HOSTSTATE", "reading")],
+        ),
+        "settings-host-unreachable" => (
+            settings_ui::GENERAL,
+            &[("HOSTTAB", "host"), ("HOSTSTATE", "unreachable")],
+        ),
+        "settings-host-refused" => (
+            settings_ui::DEV_SERVICES,
+            &[("HOSTTAB", "host"), ("HOSTSTATE", "refused")],
+        ),
+        "settings-mac-integrations" => (settings_ui::INTEGRATIONS, &[("HOSTTAB", "mac")]),
+        "settings-remote-jira-older" => (
+            settings_ui::INTEGRATIONS,
+            &[
+                ("HOSTTAB", "host"),
+                ("JIRA", "1"),
+                ("REMOTE", "1"),
+                ("JIRAOLDER", "1"),
+            ],
+        ),
+        "settings-host-outdated" => (
+            settings_ui::GENERAL,
+            &[("HOSTTAB", "host"), ("HOSTSTATE", "outdated")],
+        ),
         // The main window as the window boards draw it: rail folded, the Files tree, three tabs, the agent dock.
         "window-proposed" => (0, &[("MAINVIEW", "window"), ("RAIL", "1")]),
         "project-sidebar-window" => (0, &[("MAINVIEW", "window")]),
@@ -463,6 +503,7 @@ fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
         // A project on another machine from a stand-in source; REMOTEVIEW names the state. The window is laid
         // out at the boards' 1440x900 and cropped to the part a board is about.
         "remote-connected" => (0, &[("REMOTEVIEW", "connected")]),
+        "remote-window" => (0, &[("REMOTEVIEW", "files-open")]),
         "remote-disconnected" => (
             0,
             &[("REMOTEVIEW", "disconnected"), ("CROP", REMOTE_CENTER)],
@@ -5037,16 +5078,24 @@ fn main() -> anyhow::Result<()> {
     let jira = if std::env::var("JIRA").is_ok() {
         settings_ui::IntegrationsPage {
             session: "myproject".into(),
-            kept_on: remote.then(|| {
-                (
-                    "dev".to_string(),
-                    "Jira is read on dev with these settings; the token never leaves it."
+            kept_on: if std::env::var("JIRAOLDER").is_ok() {
+                Some((
+                    "This Mac".to_string(),
+                    "The pom on dev cannot keep Jira settings yet; update it there to keep them on dev."
                         .to_string(),
-                )
-            }),
+                ))
+            } else {
+                remote.then(|| {
+                    (
+                        "dev".to_string(),
+                        "Jira is read on dev with these settings; the token never leaves it."
+                            .to_string(),
+                    )
+                })
+            },
             keep_main_fresh: true,
             refresh_minutes: 30,
-            site: "https://acme.atlassian.net".into(),
+            site: "https://myproject.atlassian.net".into(),
             email: "you@example.com".into(),
             token: settings_ui::TokenSource::Secret,
             status: settings_ui::ConnectionStatus::SignedIn("Sam (you@example.com)".into()),
@@ -5133,6 +5182,7 @@ fn main() -> anyhow::Result<()> {
         language: std::env::var("LANGUAGE")
             .ok()
             .and_then(|index| index.parse().ok()),
+        host: host_tab_fixture(),
     };
     let fs_edit = std::env::var("FSEDIT").ok();
     let editing = fs_edit
@@ -5159,6 +5209,7 @@ fn main() -> anyhow::Result<()> {
             0.0,
             &state.project,
             state.language,
+            state.host.as_ref(),
         );
         let mut chrome = parts.fixed;
         chrome.rects.extend(parts.nav.rects);
@@ -5270,6 +5321,54 @@ fn main() -> anyhow::Result<()> {
     enc.write_header()?.write_image_data(&rgba)?;
     println!("wrote {out} ({w}x{h})");
     Ok(())
+}
+
+/// HOSTTAB=mac|host: Settings opened from the window of a project on `dev`, on that tab; HOSTSTATE=reading,
+/// unreachable or outdated puts the host's settings in that state instead of read.
+fn host_tab_fixture() -> Option<settings_ui::HostPage> {
+    let tab = std::env::var("HOSTTAB").ok()?;
+    let mut host = settings_ui::HostPage::new("dev", env!("CARGO_PKG_VERSION"));
+    host.shown = tab == "host";
+    let mut values = settings::Settings::default();
+    values.workspaces.idle_sleep_minutes = 60;
+    values.workspaces.max_running = 3;
+    values.agent_command = "claude --model opus".into();
+    values.terminal_shell = "/usr/bin/zsh".into();
+    values.modules_size_limit_gb = 40;
+    let answer = settings_ui::HostAnswer {
+        values: serde_json::to_value(values).unwrap_or_default(),
+        keys: settings::HOST_KEYS
+            .iter()
+            .map(|key| key.to_string())
+            .collect(),
+        path: "/home/dev/.config/pomelo/settings.json".into(),
+    };
+    match std::env::var("HOSTSTATE").unwrap_or_default().as_str() {
+        "reading" => {}
+        "unreachable" => {
+            host.load = settings_ui::HostLoad::Unreachable(
+                "ssh: connect to host dev.example.net port 22: Operation timed out".into(),
+            );
+            host.link = settings_ui::HostLink::Disconnected;
+        }
+        "outdated" => {
+            host.version = "0.9.7".into();
+            host.load = settings_ui::HostLoad::Outdated(
+                "Changing the settings of dev needs a newer pom on dev; update it there".into(),
+            );
+        }
+        "refused" => {
+            host.take_answer(answer);
+            host.errors.push((
+                "proxy.bind".into(),
+                "10.0.0.300 is not an IP address (like 127.0.0.1 or 100.64.0.10)".into(),
+            ));
+        }
+        _ => {
+            host.take_answer(answer);
+        }
+    }
+    Some(host)
 }
 
 /// A tab with nothing behind it, for the tab bar scenes.

@@ -1040,7 +1040,7 @@ impl ProjectSource for LocalSource {
     fn host_settings(&self) -> Result<crate::server_api::HostSettings, SourceError> {
         let path = settings_file()?;
         settings::read_host_settings(&path)
-            .map(crate::server_api::HostSettings::new)
+            .map(|values| crate::server_api::HostSettings::new(values).kept_in(&path))
             .map_err(|error| SourceError::Failed(error.to_string()))
     }
 
@@ -1055,8 +1055,11 @@ impl ProjectSource for LocalSource {
         }
         let path = settings_file()?;
         settings::write_host_settings(&path, &values)
-            .map(crate::server_api::HostSettings::new)
-            .map_err(|error| SourceError::Failed(error.to_string()))
+            .map(|values| crate::server_api::HostSettings::new(values).kept_in(&path))
+            .map_err(|error| match error {
+                settings::HostSettingsError::File(message) => SourceError::Failed(message),
+                refused => SourceError::Refused(refused.to_string()),
+            })
     }
 }
 
