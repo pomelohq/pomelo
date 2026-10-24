@@ -11,6 +11,11 @@ All notable changes to Pomelo are documented here. The format is based on
 - An agent can only deny another agent's permission prompt; an allow comes from a person or an orchestrator, unless pom.yml sets `agents.peer_approve: true`. (#383)
 - Importing a workspace archive unpacks only plain files: untracked files never land under a `.git`, links and other special entries stop the import, setuid bits are dropped, and the manifest's paths and repo names are checked. (#384)
 - The secrets key is no longer replaced when it cannot be read or has the wrong length, which lost every stored secret; it is created only when missing. (#381)
+- Update pom on a host installs only a tarball whose signature verifies, and picks the app's own version (or, for a nightly no longer kept, the newest nightly). (#390)
+
+### Added
+- Update channels: Settings > General > Update Channel picks stable or nightly. Stable never offers a nightly; nightly takes the newest of both, so a later stable replaces it and switching back never downgrades. Each night main is built, signed and notarized into one rolling `nightly` prerelease. (#386, #388)
+- Linux updates: Linux tarballs ship with a signature, the app installed by `install.sh` updates itself like on macOS, and `pom self-update [--channel] [--version] [--check]` verifies before it installs. `install.sh` takes `--channel` and `--version`. A package-managed install is never replaced. (#389)
 
 ### Changed
 - In a remote window, the main agent starts with the host's Agent Command and new terminals use the host's Terminal Shell, read from the host's own settings. Needs this pom on the host. (#371, #349)
