@@ -30,9 +30,9 @@ esac
 VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 # Apps from before the rewrite update through Sparkle, which refuses a new version that drops the EdDSA key
 # they trust ("improperly signed"): every bundle names it, from the one the in-app updater checks against.
-UPDATE_KEY="$(sed -n 's/^pub const UPDATE_PUBLIC_KEY: &str = "\(.*\)";/\1/p' crates/auto_update/src/auto_update.rs)"
+UPDATE_KEY="$(sed -n 's/^pub const UPDATE_PUBLIC_KEY: &str = "\(.*\)";/\1/p' crates/auto_update/src/releases.rs)"
 if [ -z "$UPDATE_KEY" ]; then
-  echo "bundle-macos: no UPDATE_PUBLIC_KEY in crates/auto_update/src/auto_update.rs" >&2
+  echo "bundle-macos: no UPDATE_PUBLIC_KEY in crates/auto_update/src/releases.rs" >&2
   exit 1
 fi
 APP="target/${APP_NAME}.app"

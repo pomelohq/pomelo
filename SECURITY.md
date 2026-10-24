@@ -200,7 +200,7 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
 
 - **macOS app.** Releases are built, Developer ID signed and notarized in CI only. The in-app updater
   downloads the update tarball and installs it only if its Ed25519 signature verifies against the public key
-  built into the app (`auto_update/src/auto_update.rs`, `verify`); the Sparkle `appcast.xml` is signed with
+  built into the app (`auto_update/src/releases.rs`, `verify`); the Sparkle `appcast.xml` is signed with
   the same key. The private key exists only as a CI secret and is never regenerated.
 - **Linux.** The release publishes `checksums-linux.txt` (sha256) next to the tarballs.
 - **`pom` on a host.** "Update pom on host" downloads the host's tarball on this machine over https only,

@@ -1583,6 +1583,7 @@ impl App {
         if !self.updates.waker_installed() {
             self.updates.install_waker();
         }
+        self.apply_update_channel();
         auto_update::check(auto_update::CheckKind::Automatic);
     }
 

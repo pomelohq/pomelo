@@ -46,6 +46,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("show_session_name", "Window & Layout", "Show the current session name in the title bar."),
     ("restore_on_startup", "General", "`\"last_session\"` reopens each workspace's tabs from last time; `\"none\"` starts without them."),
     ("auto_update", "General", "The installed app checks for a newer release. Nothing installs until you restart."),
+    ("update_channel", "General", "`\"stable\"` installs releases only; `\"nightly\"` also installs the nightly build of main, and any stable release newer than it. Empty follows the build: nightly for dev and nightly builds, else stable. Switching back to stable takes effect at the next stable release, never as a downgrade."),
     ("soft_wrap", "Editor", "Newly opened files wrap long lines at the editor's width."),
     ("split_diff", "Editor", "Diffs open side by side when the pane is wide enough, else in one column."),
     ("external_editor", "Editor", "The app \"Open in External Editor\" uses; empty picks the first one installed."),

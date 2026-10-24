@@ -146,7 +146,7 @@ jobs:
       - name: Check the bundle keeps the update key
         run: |
           KEY=$(/usr/libexec/PlistBuddy -c "Print :SUPublicEDKey" target/Pomelo.app/Contents/Info.plist)
-          grep -q "UPDATE_PUBLIC_KEY: &str = \"$KEY\"" crates/auto_update/src/auto_update.rs
+          grep -q "UPDATE_PUBLIC_KEY: &str = \"$KEY\"" crates/auto_update/src/releases.rs
 
       - name: Update tarball, signatures and feed
         run: |

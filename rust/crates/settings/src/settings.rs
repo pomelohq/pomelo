@@ -132,6 +132,8 @@ pub struct Settings {
     pub sound_compacting: String,
     /// The installed app checks for a newer release on launch.
     pub auto_update: bool,
+    /// "stable" or "nightly"; empty takes the build's own (`default_update_channel`).
+    pub update_channel: String,
     pub buffer_font_size: f32,
     pub buffer_font_family: String,
     pub buffer_font_weight: f32,
@@ -236,6 +238,7 @@ impl Default for Settings {
             sound_needs_input: "Ping".into(),
             sound_compacting: String::new(),
             auto_update: true,
+            update_channel: String::new(),
             buffer_font_size: 13.0,
             buffer_font_family: ".PomeloMono".into(),
             buffer_font_weight: 400.0,
@@ -462,6 +465,15 @@ pub const SYSTEM_SOUNDS: [&str; 14] = [
     "Tink",
 ];
 
+/// Dev builds and nightly builds follow nightly until a channel is picked; releases follow stable.
+pub fn default_update_channel() -> &'static str {
+    if cfg!(debug_assertions) || env!("CARGO_PKG_VERSION").contains("-nightly") {
+        "nightly"
+    } else {
+        "stable"
+    }
+}
+
 /// A line height setting as a multiple of the font size: "comfortable" (1.618), "standard" (1.3), a number or
 /// `{"custom": n}`; anything else is `fallback`.
 pub fn line_height_ratio(value: &serde_json::Value, fallback: f32) -> f32 {
@@ -536,6 +548,14 @@ impl Settings {
     /// Whether an agent event is announced; `viewing` means the user is looking at that workspace.
     pub fn announces(&self, viewing: bool) -> bool {
         self.notify_claude && (!viewing || self.notify_when_focused)
+    }
+
+    /// The update channel in effect: the one picked, else the build's own.
+    pub fn update_channel(&self) -> &str {
+        match self.update_channel.as_str() {
+            channel @ ("stable" | "nightly") => channel,
+            _ => default_update_channel(),
+        }
     }
 
     pub fn path() -> Option<PathBuf> {
@@ -632,6 +652,16 @@ mod tests {
             saved.contains("\"languages\":{}"),
             "no empty language entries"
         );
+    }
+
+    #[test]
+    fn an_unpicked_update_channel_is_the_builds_own() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.update_channel(), default_update_channel());
+        settings.update_channel = "nightly".into();
+        assert_eq!(settings.update_channel(), "nightly");
+        settings.update_channel = "beta".into();
+        assert_eq!(settings.update_channel(), default_update_channel());
     }
 
     #[test]
