@@ -27,9 +27,14 @@ So the CHANGELOG must be curated BEFORE tagging — that is this skill's whole j
    the user gets), not copied commit subjects; end each bullet with `(#<pr>)`.
    Keep bullets to one short line each. Commit this on `main` (or the release PR) —
    never on feature branches, to avoid conflicts on long-lived PRs.
-6. Only now run `make patch|minor|major`. Verify the pushed tag points at the commit
+6. Check the cut commit passed a green nightly: `rust/scripts/nightly-passed.sh HEAD` (`make patch` runs it
+   and refuses otherwise). It passes when a successful Nightly run built HEAD, or a commit HEAD differs from
+   only in `CHANGELOG.md`. For an urgent fix that cannot wait for a nightly, `make patch HOTFIX=1` skips this
+   rule only; `make hotfix` (from the last tag, with cherry-picks) is for when main is not releasable. See
+   RELEASE.md, Hotfixes.
+7. Only now run `make patch|minor|major`. Verify the pushed tag points at the commit
    that contains the new CHANGELOG block (`git show <tag>:CHANGELOG.md | head`).
-7. Watch the `Release` workflow to green; confirm the GitHub Release notes and the
+8. Watch the `Release` workflow to green; confirm the GitHub Release notes and the
    appcast match the CHANGELOG block.
 
 ## Guardrails

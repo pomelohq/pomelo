@@ -11,18 +11,43 @@ Semver in `rust/Cargo.toml` (`[workspace.package] version`), tagged `v<version>`
 - **minor**: a significant feature or a change of surface.
 - **major**: a breaking change (config schema, CLI, storage).
 
+## Channels
+
+- **Stable**: the releases below, cut with `make patch|minor|major`. The default.
+- **Nightly**: `.github/workflows/nightly.yml` builds `main` every night at 02:17 UTC when it moved since the
+  last nightly, as `<next patch>-nightly.<YYYYMMDD>` (`0.9.9-nightly.20261024` after `v0.9.8`), signed and
+  notarized like a release. It publishes into the one `nightly` prerelease, never marked latest and never
+  touching `appcast.xml`: the DMG, the update tarball and the Linux tarballs, each with its `.sig`, plus
+  `checksums-<v>.txt` and `nightly.json` (the version and commit). The builds of the last 7 nights stay there,
+  named by version; older ones are removed. Its tag moves to the commit of the newest build.
+
+The app picks the channel in Settings > General (`update_channel`; dev and nightly builds follow nightly
+until one is picked). Stable ignores prereleases; nightly takes the highest version of both, and a release
+ranks above its own nightlies (`0.9.9` > `0.9.9-nightly.20261024`), so nightly users get every stable and
+every hotfix at once. Switching from nightly to stable never downgrades: it takes effect at the next stable.
+
+Run the nightly by hand from Actions, or with `gh workflow run nightly.yml -f dry_run=true`: a dry run (the
+default for a manual run) builds, signs and notarizes but publishes nothing and moves no tag; `force` builds
+even when main has not moved. `release.yml` run by hand builds the current version the same way and
+publishes nothing. Both call `.github/workflows/build.yml`, the one build every published download comes
+from.
+
 ## Steps
 
-1. Land the changes on `main` with CI green (`make check` locally).
+1. Land the changes on `main` with CI green (`make check` locally), and let a nightly build them: a stable
+   release is cut from a commit a green nightly built (or one that differs from it only in `CHANGELOG.md`).
 2. Curate `CHANGELOG.md`: move the `## [Unreleased]` items into `## [<version>] - <YYYY-MM-DD>` and commit it
    (the `release-audit` skill checks it).
-3. `make patch` (or `minor` / `major`) on `main`: bumps the version, commits `release: v<x>`, tags `v<x>` and
-   pushes.
+3. `make patch` (or `minor` / `major`) on `main`: checks the nightly rule (`scripts/nightly-passed.sh`),
+   bumps the version, commits `release: v<x>`, tags `v<x>` and pushes.
 4. The tag runs `.github/workflows/release.yml` on a macOS runner:
    - builds `Pomelo.app`, signs it with the Developer ID (hardened runtime) and notarizes the DMG;
    - signs the update tarball and the DMG with the Sparkle EdDSA key;
    - publishes the GitHub Release: `Pomelo-<x>.dmg`, `Pomelo-<x>.app.tar.gz` + `.sig`, `latest.json`,
-     `appcast.xml`, `checksums.txt`, with notes from the CHANGELOG block.
+     `appcast.xml`, `checksums.txt`, with notes from the CHANGELOG block;
+   - adds the Linux tarballs `Pomelo-<x>-linux-<arch>.tar.gz` and `pom-<x>-linux-<arch>.tar.gz`, each with a
+     `.sig` made with the same key (signed on macOS, where Sparkle's `sign_update` runs), and
+     `checksums-linux.txt`.
 
    Watch it with `gh run watch --repo pomelohq/pomelo`.
 5. Regenerate the docs site's reference pages from the tag: in a `pomelo-docs` checkout,
@@ -35,10 +60,32 @@ Secrets (Settings > Secrets > Actions): `MACOS_CERT_P12` (base64 .p12), `MACOS_C
 
 `make dmg` builds a local DMG for testing; there is no local publish path.
 
+## Hotfixes
+
+By default a hotfix is a normal release from `main`, which is kept releasable: land the fix, curate its
+CHANGELOG block, then `make patch HOTFIX=1`, which skips only the nightly rule (CI still has to pass). Nightly
+users get it at once, since it ranks above their nightly.
+
+Only when `main` is not releasable, cut it from the last release instead:
+
+1. `make hotfix`: branches `hotfix/v<next patch>` from the newest `v<x.y.z>` tag.
+2. `git cherry-pick -x <commit>` the fixes from `main`; add the `## [<next patch>]` CHANGELOG block and commit.
+3. `make hotfix-release`: bumps the version, commits `release: v<x>`, tags it and pushes the branch and tag;
+   the Release workflow publishes it as usual.
+4. Open a PR to `main` with the version bump and the CHANGELOG block, so main's next release follows it.
+
 ## Updates
 
-- The app checks GitHub Releases, downloads `Pomelo-<x>.app.tar.gz`, verifies its `.sig` against the Sparkle
-  public key built into the app, and only then swaps itself and relaunches.
+- The app checks GitHub Releases for its channel, downloads `Pomelo-<x>.app.tar.gz`, verifies its `.sig`
+  against the Sparkle public key built into the app, and only then swaps itself and relaunches.
+- On Linux an install made by `install.sh` (it writes `<prefix>/share/pomelo/installed-by`) does the same with
+  `Pomelo-<x>-linux-<arch>.tar.gz`, running the new tarball's install.sh at restart; `pom self-update
+  [--channel] [--version]` updates pom (and the app beside it) the same way, and `install.sh --channel` /
+  `--version` hand off to it. An install a package manager made never replaces itself.
+- "Update pom on host" installs the app's own version on the host when it is still published (its stable
+  release, or a nightly the nightly release keeps), else the newest nightly, after its `.sig` verifies. The
+  same version works fully; different versions use only what the host's HELLO declares, and the app offers
+  the update once the major or minor version differs.
 - Apps from before the Rust rewrite (0.6.x and older) poll `.../releases/latest/download/appcast.xml` with
   Sparkle; the feed points them at the new DMG, signed with the same key, so they move over by themselves.
   The `latest` release must keep carrying `appcast.xml`.

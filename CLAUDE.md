@@ -34,8 +34,10 @@ plain `/bin/sh`.
 `make patch|minor|major` on an up-to-date `main`: bumps `rust/Cargo.toml`, commits `release: v<x>`, tags
 `v<x>`, pushes. The tag runs `.github/workflows/release.yml`: build, Developer ID sign, notarize the DMG, sign
 the update tarball and the Sparkle `appcast.xml` with the Sparkle EdDSA key, publish the GitHub Release. **No
-local publish path.** Details and required secrets: `RELEASE.md`. Never delete old releases; never regenerate
-the Sparkle EdDSA key (installed apps verify updates with its public half).
+local publish path.** Details and required secrets: `RELEASE.md`. `nightly.yml` builds main each night into the
+one rolling `nightly` prerelease (the nightly update channel); `make patch` refuses a commit no green nightly
+built unless `HOTFIX=1`, and `make hotfix` cuts from the last tag when main is not releasable. Never delete old
+releases; never regenerate the Sparkle EdDSA key (installed apps verify updates with its public half).
 
 Before cutting a release, run the `release-audit` skill: release notes and the Sparkle feed come from the
 `## [<version>]` block of `CHANGELOG.md`, which must be curated and committed before the tag is pushed.

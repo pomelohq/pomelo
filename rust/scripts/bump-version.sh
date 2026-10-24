@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Bump the workspace version (patch|minor|major), commit, tag v<version> and push. Pushing the tag is what
-# triggers the release workflow, so this runs on an up-to-date main only.
+# triggers the release workflow, so this runs on an up-to-date main only, cut from a commit a nightly built
+# green (HOTFIX=1 skips that rule for an urgent fix; CI still has to pass).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,6 +24,12 @@ fi
 if [ -n "$(git status --porcelain)" ]; then
   echo "working tree not clean; commit or stash first" >&2
   exit 1
+fi
+if [ "${HOTFIX:-}" != 1 ]; then
+  scripts/nightly-passed.sh HEAD || {
+    echo "cut a release from a commit a green nightly built, or run 'make patch HOTFIX=1' for an urgent fix" >&2
+    exit 1
+  }
 fi
 # The release notes and the update feed come from this block; the release workflow refuses a tag without it.
 if ! grep -q "^## \[${NEW}\]" ../CHANGELOG.md; then
