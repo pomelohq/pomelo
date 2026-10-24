@@ -184,6 +184,8 @@ pub struct Drive {
     pub tool_path: String,
     /// pom.yml's `limits:`, which cap the agents' holders with the rest of their workspace.
     pub limits: pom_config::LimitsConfig,
+    /// pom.yml's `agents:`; `peer_approve` decides whether an agent may allow another agent's prompt.
+    pub agents: pom_config::AgentsConfig,
 }
 
 fn view_of(record: &SessionState, alive: bool, drivable: bool, now: u64) -> SessionView {
@@ -915,6 +917,7 @@ mod tests {
             binary: PathBuf::from("/bin/false"),
             tool_path: "/usr/bin:/bin".into(),
             limits: Default::default(),
+            agents: Default::default(),
         }
     }
 

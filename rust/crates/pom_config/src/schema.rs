@@ -268,6 +268,7 @@ impl Config {
 pub struct AgentsConfig {
     pub policy: String,
     pub policy_timeout_sec: i64,
+    pub peer_approve: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -336,6 +337,7 @@ impl Config {
             .map(|node| AgentsConfig {
                 policy: decoder.string(key(node, Section::Agents, "policy")),
                 policy_timeout_sec: decoder.int(key(node, Section::Agents, "policy_timeout_sec")),
+                peer_approve: decoder.bool(key(node, Section::Agents, "peer_approve")),
             });
         if let Some(node) = field("limits").and_then(|node| decoder.fields(node, "LimitsConfig")) {
             config.limits = crate::limits::LimitsConfig {

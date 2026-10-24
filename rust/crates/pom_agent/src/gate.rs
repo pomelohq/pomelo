@@ -89,6 +89,7 @@ pub enum Refusal {
         cap_s: u64,
     },
     ApproveAlwaysNotAllowed,
+    AllowNeedsPerson,
     LeaseHeld {
         by: String,
     },
@@ -108,6 +109,7 @@ impl Refusal {
             Refusal::QueueNotAllowed => "queue",
             Refusal::WaitTooLong { .. } => "wait_cap",
             Refusal::ApproveAlwaysNotAllowed => "approve_always",
+            Refusal::AllowNeedsPerson => "allow_needs_person",
             Refusal::LeaseHeld { .. } => "lease",
         }
     }
@@ -176,6 +178,9 @@ impl std::fmt::Display for Refusal {
             Refusal::ApproveAlwaysNotAllowed => write!(
                 formatter,
                 "an agent may only approve once; \"always\" is for a person"
+            ),
+            Refusal::AllowNeedsPerson => formatter.write_str(
+                "an agent may only deny another agent's prompt; a person allows it, or set agents.peer_approve in pom.yml",
             ),
             Refusal::LeaseHeld { by } => {
                 write!(formatter, "{by} drives this session; take over first")
@@ -316,6 +321,14 @@ impl<'a> Gate<'a> {
         self.drivable_target(holder)?;
         if self.caller.is_agent() && scope == ApproveScope::Always {
             return Err(Refusal::ApproveAlwaysNotAllowed);
+        }
+        Ok(())
+    }
+
+    /// An agent steered by injected text could otherwise allow its peers' tool calls past the policy.
+    pub fn allow_prompt(&self, peer_approve: bool) -> Result<(), Refusal> {
+        if self.caller.is_agent() && !peer_approve {
+            return Err(Refusal::AllowNeedsPerson);
         }
         Ok(())
     }

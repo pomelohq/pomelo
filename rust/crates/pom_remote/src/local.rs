@@ -305,6 +305,7 @@ impl LocalSource {
     fn drive(&self, config: &pom_config::Config) -> Drive {
         Drive {
             limits: config.limits.clone(),
+            agents: config.agents.clone().unwrap_or_default(),
             state: self.state.clone(),
             holders: self.holders.clone(),
             project: config.session.clone(),

@@ -119,7 +119,9 @@ drive them (`pom agent ...`, the MCP tools in `pom_mcp`).
   `pending approval <id>` until that exact call is approved (`pom agent approve`).
 - **PermissionRequest.** The agent's own permission prompts are recorded with an id. While pom holds the
   session, the hook waits for an answer from `pom agent allow|deny` or the `agent_approve` MCP tool; an id
-  that no longer waits is refused as stale (`pom_agent/src/permission.rs`, `conversation.rs`).
+  that no longer waits is refused as stale (`pom_agent/src/permission.rs`, `conversation.rs`). An agent may
+  only deny another agent's prompt; an allow comes from a person or an orchestrator outside the agents,
+  unless the project sets `agents.peer_approve` (`gate.rs`), which `config_set` cannot change.
 - **Who may drive what.** `pom_agent/src/gate.rs` is the single place for these rules. The caller is
   classified by walking its process ancestry to an agent holder, not by environment variables
   (`caller.rs`). An agent may only reach sessions of its own workspace, with rate limits, a depth limit and

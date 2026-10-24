@@ -55,6 +55,7 @@ impl Workspace {
         let config = self.config_for_agents()?;
         Ok(Drive {
             limits: config.limits.clone(),
+            agents: config.agents.clone().unwrap_or_default(),
             state: self.state.clone(),
             holders: SocketDir::from_env(),
             project: config.session,
@@ -267,7 +268,7 @@ pub fn agent_tools(workspace: Rc<Workspace>) -> Vec<Tool> {
     }});
     tools.push(tool(
         "agent_approve",
-        "Answer the permission prompt another agent session of THIS workspace waits on, once (allow, or deny with deny: true): its own tool prompt, if you drive that session, or its workspace policy's ask. A request id that no longer waits is refused (stale). A prompt the agent drew as its own dialog (answer_by terminal) can only be denied here, never allowed. Use it only for a call you would make yourself.",
+        "Answer the permission prompt another agent session of THIS workspace waits on, once (allow, or deny with deny: true): its own tool prompt, if you drive that session, or its workspace policy's ask. A request id that no longer waits is refused (stale). A prompt the agent drew as its own dialog (answer_by terminal) can only be denied here, never allowed. You can only deny unless the project sets agents.peer_approve in pom.yml (refused as allow_needs_person); a person allows the rest.",
         schema,
         false,
         Box::new(move |args| {
