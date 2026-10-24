@@ -187,9 +187,14 @@ impl From<Button> for Node {
         if enabled {
             node = node.on_click(button.id);
             if !primary {
-                node = node.hover_bg(colors.ghost_element_hover);
+                let hover = if button.kind == ButtonKind::Secondary {
+                    raised_hover()
+                } else {
+                    colors.ghost_element_hover
+                };
+                node = node.hover_bg(hover);
                 if button.hovered {
-                    node = node.bg(colors.ghost_element_hover);
+                    node = node.bg(hover);
                 }
             }
         }
@@ -206,6 +211,149 @@ impl From<Button> for Node {
             node = node.child(key_chip(keystroke, primary));
         }
         node.into()
+    }
+}
+
+/// Hover for a control on the element fill. The hover tokens are tuned for the panel and some dark themes
+/// set them darker than this fill, so it lifts the fill with the text color instead.
+fn raised_hover() -> Rgba {
+    let colors = theme();
+    colors.text.alpha(0.06).over(colors.element_background)
+}
+
+/// The closed face of a pick-one control: the chosen value and an up-down chevron; clicking it opens the
+/// screen's menu of choices. Built with [`select`].
+#[derive(Clone)]
+pub struct Select {
+    id: u64,
+    value: String,
+    placeholder: String,
+    leading: Option<IconKind>,
+    size: ButtonSize,
+    width: Option<f32>,
+    min_width: f32,
+    enabled: bool,
+    hovered: bool,
+}
+
+pub fn select(id: u64, value: impl Into<String>) -> Select {
+    Select {
+        id,
+        value: value.into(),
+        placeholder: String::new(),
+        leading: None,
+        size: ButtonSize::Medium,
+        width: None,
+        min_width: 0.0,
+        enabled: true,
+        hovered: false,
+    }
+}
+
+impl Select {
+    /// What shows, dimmed, while nothing is chosen.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder = placeholder.into();
+        self
+    }
+
+    pub fn icon(mut self, leading: Option<IconKind>) -> Self {
+        self.leading = leading;
+        self
+    }
+
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// A fixed width; a longer value is cut short.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Hugs its value but never narrower than this, so a column of selects lines up.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = width;
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    /// For views drawn without pointer tracking, which pass the hovered id themselves.
+    pub fn hovered(mut self, hovered: Option<u64>) -> Self {
+        self.hovered = hovered == Some(self.id);
+        self
+    }
+}
+
+impl From<Select> for Node {
+    fn from(select: Select) -> Node {
+        let colors = theme();
+        let enabled = select.enabled;
+        let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
+        let size = select.size;
+        let empty = select.value.is_empty();
+        let text = if empty {
+            select.placeholder
+        } else {
+            select.value
+        };
+        let icon_size = size.icon() - 2.0;
+        let gap = 8.0;
+        let natural = size.pad_x() * 2.0
+            + crate::measure_text_width(&text, size.text(), false, crate::ui_font_weight())
+            + gap
+            + icon_size
+            + select.leading.map_or(0.0, |_| size.icon() + gap);
+        let mut node = div()
+            .row()
+            .items_center()
+            .gap(gap)
+            .h_px(size.height())
+            .px(size.pad_x())
+            .rounded(6.0)
+            .bg(dim(colors.element_background))
+            .border(1.0, dim(colors.border));
+        node = match select.width {
+            Some(width) => node.w_px(width),
+            None => node.w_px(natural.max(select.min_width)),
+        };
+        if enabled {
+            node = node.on_click(select.id).hover_bg(raised_hover());
+            if select.hovered {
+                node = node.bg(raised_hover());
+            }
+        }
+        if let Some(kind) = select.leading {
+            node = node.child(
+                crate::icon(kind)
+                    .size(size.icon())
+                    .color(dim(colors.icon_muted)),
+            );
+        }
+        node.child(
+            div().row().flex(1.0).child(
+                crate::label(text)
+                    .size(size.text())
+                    .color(dim(if empty {
+                        colors.text_placeholder
+                    } else {
+                        colors.text
+                    }))
+                    .truncate(),
+            ),
+        )
+        .child(
+            crate::icon(IconKind::ChevronUpDown)
+                .size(icon_size)
+                .color(dim(colors.icon_muted)),
+        )
+        .into()
     }
 }
 

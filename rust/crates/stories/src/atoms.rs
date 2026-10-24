@@ -139,6 +139,58 @@ pub fn stories() -> Vec<StoryDef> {
                 ))
             })
         }),
+        story("select-chosen", "Select", "Chosen", CONTROL, || {
+            still(|_, _| alone(ui::select(ID, "Pomelo Dark").min_width(188.0)))
+        }),
+        story("select-empty", "Select", "Nothing chosen", CONTROL, || {
+            still(|_, _| {
+                alone(
+                    ui::select(ID, "")
+                        .placeholder("Select database")
+                        .min_width(188.0),
+                )
+            })
+        }),
+        story(
+            "select-icon-small",
+            "Select",
+            "Small with icon",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        ui::select(ID, "main")
+                            .icon(Some(IconKind::Cylinder))
+                            .size(ButtonSize::Small),
+                    )
+                })
+            },
+        ),
+        story("select-hovered", "Select", "Hovered", CONTROL, || {
+            still(|_, _| {
+                alone(
+                    ui::select(ID, "Pomelo Dark")
+                        .min_width(188.0)
+                        .hovered(Some(ID)),
+                )
+            })
+        }),
+        story(
+            "select-cut",
+            "Select",
+            "Long value, fixed width",
+            CONTROL,
+            || still(|_, _| alone(ui::select(ID, "api/.env.development.local").width(160.0))),
+        ),
+        story("select-disabled", "Select", "Disabled", CONTROL, || {
+            still(|_, _| {
+                alone(
+                    ui::select(ID, "Pomelo Dark")
+                        .min_width(188.0)
+                        .enabled(false),
+                )
+            })
+        }),
         story("checkbox-checked", "Checkbox", "Checked", CONTROL, || {
             still(|_, _| alone(workspace::checkbox(ID, true, "Start with the workspace")))
         }),

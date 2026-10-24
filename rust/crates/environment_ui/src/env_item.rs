@@ -201,44 +201,15 @@ impl EnvItem {
     }
 
     fn picker(&self, id: u64, title: &str, value: &str) -> Node {
-        let colors = theme();
         div()
             .col()
             .gap(6.0)
             .child(field_label(title))
             .child(
-                div()
-                    .row()
-                    .w_px(PICKER_W)
-                    .h_px(28.0)
-                    .px(10.0)
-                    .gap(10.0)
-                    .items_center()
-                    .rounded(6.0)
-                    .border(1.0, colors.border)
-                    .bg(if self.hovered == Some(id) {
-                        colors.ghost_element_hover
-                    } else {
-                        colors.element_background
-                    })
-                    .on_click(id)
-                    .child(
-                        div().row().flex(1.0).child(
-                            label(if value.is_empty() {
-                                "-".to_string()
-                            } else {
-                                value.to_string()
-                            })
-                            .size(12.0)
-                            .color(colors.text)
-                            .truncate(),
-                        ),
-                    )
-                    .child(
-                        ui::icon(IconKind::ChevronUpDown)
-                            .size(11.0)
-                            .color(colors.icon_muted),
-                    ),
+                ui::select(id, value)
+                    .placeholder("-")
+                    .width(PICKER_W)
+                    .hovered(self.hovered),
             )
             .into()
     }
