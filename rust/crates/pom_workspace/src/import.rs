@@ -319,10 +319,140 @@ fn apply(worktree: &Path, patch: &Path, cached: bool) -> Result<(), String> {
     git(worktree, &args).map(|_| ())
 }
 
+/// Writes only plain files and folders inside the worktree, never under a `.git`: a planted hook or config
+/// there would run at the next git command, before anything else is started.
 fn unpack(archive: &Path, worktree: &Path) -> Result<(), String> {
     let file = std::fs::File::open(archive).map_err(|error| error.to_string())?;
     let mut archive = tar::Archive::new(file);
-    archive.set_preserve_permissions(true);
     archive.set_overwrite(true);
-    archive.unpack(worktree).map_err(|error| error.to_string())
+    for entry in archive.entries().map_err(|error| error.to_string())? {
+        let mut entry = entry.map_err(|error| error.to_string())?;
+        let path = entry
+            .path()
+            .map_err(|error| error.to_string())?
+            .into_owned();
+        let kind = entry.header().entry_type();
+        if !(kind.is_file() || kind.is_dir()) {
+            return Err(format!("{} is not a plain file", path.display()));
+        }
+        if !untracked_path(&path) {
+            return Err(format!("{} is not a path inside the repo", path.display()));
+        }
+        let inside = entry
+            .unpack_in(worktree)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        if !inside {
+            return Err(format!("{} is not a path inside the repo", path.display()));
+        }
+    }
+    Ok(())
+}
+
+fn untracked_path(path: &Path) -> bool {
+    use std::path::Component;
+    path.components().all(|part| match part {
+        Component::Normal(name) => !name.eq_ignore_ascii_case(".git"),
+        Component::CurDir => true,
+        _ => false,
+    }) && path
+        .components()
+        .any(|part| matches!(part, Component::Normal(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn archive_with(dir: &Path, build: impl FnOnce(&mut tar::Builder<std::fs::File>)) -> PathBuf {
+        let path = dir.join("untracked.tar");
+        let mut builder = tar::Builder::new(std::fs::File::create(&path).expect("create"));
+        build(&mut builder);
+        builder.finish().expect("finish");
+        path
+    }
+
+    fn file(builder: &mut tar::Builder<std::fs::File>, path: &str, body: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o4755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, body)
+            .expect("append");
+    }
+
+    fn link(builder: &mut tar::Builder<std::fs::File>, kind: tar::EntryType, path: &str) {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_size(0);
+        builder
+            .append_link(&mut header, path, "/etc/hosts")
+            .expect("link");
+    }
+
+    #[test]
+    fn plain_files_unpack_without_their_setuid_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().expect("temp");
+        let worktree = temp.path().join("api");
+        std::fs::create_dir_all(&worktree).expect("dir");
+        let archive = archive_with(temp.path(), |builder| {
+            file(builder, "notes/todo.txt", b"hi")
+        });
+        unpack(&archive, &worktree).expect("unpack");
+        let written = worktree.join("notes/todo.txt");
+        assert_eq!(std::fs::read(&written).expect("read"), b"hi");
+        let mode = std::fs::metadata(&written)
+            .expect("meta")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o4000, 0);
+    }
+
+    #[test]
+    fn git_folders_links_and_escapes_are_refused() {
+        let temp = tempfile::tempdir().expect("temp");
+        let worktree = temp.path().join("api");
+        std::fs::create_dir_all(&worktree).expect("dir");
+        let refused = |archive: PathBuf| unpack(&archive, &worktree).is_err();
+        assert!(refused(archive_with(temp.path(), |builder| file(
+            builder,
+            ".git/hooks/pre-commit",
+            b"#!/bin/sh\n"
+        ))));
+        assert!(refused(archive_with(temp.path(), |builder| file(
+            builder,
+            "vendor/lib/.GIT/config",
+            b"[core]\n"
+        ))));
+        assert!(refused(archive_with(temp.path(), |builder| link(
+            builder,
+            tar::EntryType::Symlink,
+            "hosts"
+        ))));
+        assert!(refused(archive_with(temp.path(), |builder| link(
+            builder,
+            tar::EntryType::Link,
+            "hosts"
+        ))));
+        let escape = temp.path().join("escape.tar");
+        {
+            let mut bytes = Vec::new();
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o644);
+            let name = b"../outside.txt";
+            header.as_old_mut().name[..name.len()].copy_from_slice(name);
+            header.set_cksum();
+            bytes.extend_from_slice(header.as_bytes());
+            let mut block = [0u8; 512];
+            block[0] = b'x';
+            bytes.extend_from_slice(&block);
+            bytes.extend_from_slice(&[0u8; 1024]);
+            std::fs::write(&escape, bytes).expect("write");
+        }
+        assert!(refused(escape));
+        assert!(!temp.path().join("outside.txt").exists());
+        assert!(!worktree.join(".git").exists());
+    }
 }

@@ -4,7 +4,7 @@ use std::path::Path;
 use indexmap::IndexMap;
 use pom_workspace::{CreateRequest, ImportRequest, RepoImport, WorkspaceContext};
 
-use crate::{git_text, normalize_remote, Manifest, SECRETS_FILE};
+use crate::{git_text, normalize_remote, plain_name, staged_file, Manifest, SECRETS_FILE};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ImportOptions {
@@ -43,8 +43,14 @@ pub fn plan_import(
     let mut repos = Vec::new();
     let mut names = Vec::new();
     let mut repo_branches = IndexMap::new();
-    let staged = |relative: &Option<String>| relative.as_ref().map(|path| staging.join(path));
+    let staged = |relative: &Option<String>| {
+        relative
+            .as_deref()
+            .map(|path| staged_file(staging, path))
+            .transpose()
+    };
     for entry in &manifest.repos {
+        plain_name(&entry.name)?;
         if !config.repos.contains_key(&entry.name) {
             return Err(format!(
                 "repo {} of the archive is not in this project's pom.yml",
@@ -75,11 +81,11 @@ pub fn plan_import(
         repos.push(RepoImport {
             name: entry.name.clone(),
             head: entry.head.clone(),
-            bundle: staged(&entry.bundle)
+            bundle: staged(&entry.bundle)?
                 .map(|path| (path, format!("refs/heads/{}", entry.branch))),
-            patch: staged(&entry.patch),
-            staged_patch: staged(&entry.staged_patch),
-            untracked: staged(&entry.untracked),
+            patch: staged(&entry.patch)?,
+            staged_patch: staged(&entry.staged_patch)?,
+            untracked: staged(&entry.untracked)?,
         });
     }
 
@@ -114,7 +120,7 @@ pub fn plan_import(
             ));
             continue;
         }
-        databases.push((name.clone(), staging.join(&entry.dump)));
+        databases.push((name.clone(), staged_file(staging, &entry.dump)?));
         renamed.push((entry.name.clone(), name));
     }
 
@@ -126,9 +132,9 @@ pub fn plan_import(
                 Some(rest) => format!("{}{rest}", config.session),
                 None => volume.name.clone(),
             };
-            (name, staging.join(&volume.archive))
+            Ok((name, staged_file(staging, &volume.archive)?))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
 
     let sealed = staging.join(SECRETS_FILE);
     let secrets = if sealed.is_file() {
