@@ -71,10 +71,14 @@ request is forwarded or logged. `pom doctor` reports a refused or unauthenticate
 Gaps and non-goals:
 
 - "Local" means a loopback peer, or a peer whose address equals the listening address, that is not in
-  `proxy.trusted_proxies` and asks by a `localhost` name (`localhost`, `*.localhost`, or a loopback IP). A
-  request to the public domain, or one a trusted proxy forwards, always needs the token. List the reverse
-  proxy in `proxy.trusted_proxies`: one that is not listed and rewrites `Host` to a loopback address still
-  counts as local. Every local process needs no token, including other users of a shared host.
+  `proxy.trusted_proxies`, asks by a `localhost` name (`localhost`, `*.localhost`, or a loopback IP) and sends
+  none of `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP` or `Forwarded` (`access.rs`, `forwarded`). A
+  request to the public domain, one a trusted proxy forwards, or one carrying a forwarding header always needs
+  the token. A reverse proxy on the same machine that rewrites `Host` to a loopback address and adds none of
+  those headers still counts as local; list it in `proxy.trusted_proxies`. When a peer outside
+  `proxy.trusted_proxies` sends forwarding headers, the proxy logs it once and keeps it for a week in
+  `proxy/forwarders.json` in the state directory, and `pom doctor` warns about it until it is trusted. Every
+  local process needs no token, including other users of a shared host.
 - The token cookie holds the raw token. Rotate with `pom proxy token new`.
 - The in-memory request log (shown in the app) keeps request headers, but replaces the values of credential
   headers (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, and names containing `token`,
@@ -93,7 +97,7 @@ tunnel (cloudflared, ngrok, a reverse proxy).
 - Without a proxy token, anyone who learns a tunnel's public URL can post to the routed services. Keep tunnel
   URLs private and verify signatures in the app.
 - With a token, a request that is not local (as for the proxy: a `localhost` name from this machine, not from
-  a trusted proxy) must present it, as `?pom_token=` in the webhook URL or `X-Pom-Token`; a tunnel that keeps
+  a trusted proxy, with no forwarding header) must present it, as `?pom_token=` in the webhook URL or `X-Pom-Token`; a tunnel that keeps
   the public `Host` therefore needs it too. It is removed before fan-out (`relay_token`).
 - Cross-site browser requests are refused with `403` on every relay path.
 - Bodies are capped at 32 MiB and each delivery has a timeout.

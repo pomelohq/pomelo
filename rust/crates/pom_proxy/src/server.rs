@@ -144,6 +144,13 @@ impl Shared {
 }
 
 impl Shared {
+    fn note_forwarding(&self, peer: Peer, headers: &HeaderMap) {
+        let address = peer.address.ip().to_canonical();
+        if crate::access::forwarded(headers) && !self.network.trusts(address) {
+            self.router.note_forwarder(address);
+        }
+    }
+
     pub fn set_github(&self, hook: GithubHook) {
         if let Ok(mut current) = self.github.write() {
             *current = Some(hook);
@@ -170,9 +177,10 @@ pub(crate) struct Peer {
 }
 
 impl Peer {
-    /// Someone on this machine asked for it by a `localhost` name, so the token is not needed.
-    fn this_machine(&self, host: &str) -> bool {
-        self.local && crate::access::localhost_name(host)
+    /// Someone on this machine asked for it by a `localhost` name, not through a reverse proxy, so the token is not
+    /// needed.
+    fn this_machine(&self, headers: &HeaderMap, host: &str) -> bool {
+        self.local && crate::access::localhost_name(host) && !crate::access::forwarded(headers)
     }
 }
 
@@ -416,7 +424,7 @@ fn handle_control(
     if request.uri().path() != crate::faults::RELOAD_PATH {
         return text_response(404, "dev-proxy: no such pom endpoint");
     }
-    if !is_fault_reload(request, peer.this_machine(host)) {
+    if !is_fault_reload(request, peer.this_machine(request.headers(), host)) {
         return text_response(
             405,
             "dev-proxy: `pom proxy fault` reloads the rules here (POST from this machine)",
@@ -490,10 +498,11 @@ async fn handle_proxy(
             &format!("dev-proxy: {host:?} is not a name this proxy serves (use <service>.<repo>.<workspace>.{} or localhost)", shared.network.domain),
         );
     }
+    shared.note_forwarding(peer, request.headers());
     let query = match check_token(
         shared.token.as_deref(),
         &shared.network,
-        peer.this_machine(&host),
+        peer.this_machine(request.headers(), &host),
         &mut request,
         &host,
     ) {
@@ -873,9 +882,10 @@ async fn handle_webhook(
     if request.uri().path().trim_end_matches('/') == GITHUB_PATH {
         return handle_github(shared, request).await;
     }
+    shared.note_forwarding(peer, request.headers());
     let query = match relay_token(
         shared.token.as_deref(),
-        peer.this_machine(&host),
+        peer.this_machine(request.headers(), &host),
         &mut request,
     ) {
         Ok(query) => query,
@@ -1294,8 +1304,30 @@ mod tests {
             address: peer("127.0.0.1:5000"),
             local: true,
         };
-        assert!(local.this_machine("web.web.main.localhost:8767"));
-        assert!(local.this_machine("127.0.0.1:8767"));
-        assert!(!local.this_machine(HOST));
+        let plain = HeaderMap::new();
+        assert!(local.this_machine(&plain, "web.web.main.localhost:8767"));
+        assert!(local.this_machine(&plain, "127.0.0.1:8767"));
+        assert!(!local.this_machine(&plain, HOST));
+    }
+
+    #[test]
+    fn a_forwarded_request_from_loopback_is_never_this_machine() {
+        let local = Peer {
+            address: SocketAddr::from(([127, 0, 0, 1], 5000)),
+            local: true,
+        };
+        for (name, value) in [
+            ("x-forwarded-for", "192.0.2.7"),
+            ("x-real-ip", "192.0.2.7"),
+            ("forwarded", "for=192.0.2.7"),
+            ("x-forwarded-host", "web.web.main.localhost"),
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(name, HeaderValue::from_static(value));
+            assert!(
+                !local.this_machine(&headers, "web.web.main.localhost:8767"),
+                "{name}"
+            );
+        }
     }
 }

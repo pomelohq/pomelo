@@ -786,6 +786,7 @@ pub(crate) fn doctor(
         Box::new(|| {
             let network = pom_env::dev_network();
             let token = pom_proxy::proxy_token(&network, &StateDir::from_env());
+            let forwarders = pom_proxy::untrusted_forwarders(&network, &StateDir::from_env());
             pom_doctor::proxy_exposure(
                 network.reach(),
                 network.trusted_proxies.len(),
@@ -793,6 +794,7 @@ pub(crate) fn doctor(
                 pom_proxy::refusal(&network, token.as_ref()),
             )
             .into_iter()
+            .chain(pom_doctor::untrusted_forwarders(&forwarders))
             .collect()
         }),
     ));

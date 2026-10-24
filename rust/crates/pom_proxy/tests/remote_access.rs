@@ -234,6 +234,26 @@ fn this_machine_needs_no_token_only_under_a_localhost_name() {
 }
 
 #[test]
+fn a_forwarded_request_from_loopback_needs_the_token_under_a_localhost_name() {
+    let (sender, _seen) = mpsc::channel();
+    let proxy = start(network(&["10.0.0.0/8"]), backend(sender));
+    let port = proxy.ports().proxy;
+    let host = format!("web.web.proj-101.localhost:{port}");
+    for header in [
+        "X-Forwarded-For: 192.0.2.7\r\n",
+        "X-Real-IP: 192.0.2.7\r\n",
+        "Forwarded: for=192.0.2.7;proto=https\r\n",
+    ] {
+        let response = request(port, &host, header);
+        assert!(response.starts_with("HTTP/1.1 401"), "{header}: {response}");
+        let response = request(port, &host, &format!("{header}{TOKEN_HEADER}"));
+        assert!(response.starts_with("HTTP/1.1 200"), "{header}: {response}");
+    }
+    let response = request(port, &host, "");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+}
+
+#[test]
 fn an_untrusted_client_cannot_spoof_forwarded_headers() {
     let (sender, seen) = mpsc::channel();
     let proxy = start(network(&["10.0.0.0/8"]), backend(sender));

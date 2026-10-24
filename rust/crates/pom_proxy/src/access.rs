@@ -114,6 +114,20 @@ pub(crate) fn localhost_name(host: &str) -> bool {
             .is_ok_and(|address| address.to_canonical().is_loopback())
 }
 
+const FORWARDING_HEADERS: [&str; 4] = [
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-real-ip",
+];
+
+/// A reverse proxy adds one of these, so the request is someone else's whatever address it comes from.
+pub(crate) fn forwarded(headers: &HeaderMap) -> bool {
+    FORWARDING_HEADERS
+        .iter()
+        .any(|name| headers.contains_key(*name))
+}
+
 fn token_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~')
 }

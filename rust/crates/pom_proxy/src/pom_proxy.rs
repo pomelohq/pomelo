@@ -2,6 +2,7 @@ mod access;
 mod activity;
 mod error_page;
 mod faults;
+mod forwarders;
 mod machine;
 mod routing;
 mod server;
@@ -22,6 +23,7 @@ pub use faults::{
     add_fault, clear_faults, faults_path, load_faults, now_ms as faults_now, reload_running_faults,
     remove_fault, Fault, FaultRule, LoadedFaults, ReloadReply,
 };
+pub use forwarders::{read_forwarders, untrusted_forwarders, Forwarder, FORWARDERS_FILE};
 pub use machine::{listening_ports_in_tree, SystemMachine, Waker};
 pub use routing::{
     branch_labels, host_labels, host_name, reachable, resolve_service_key, rewrite_external_cookie,

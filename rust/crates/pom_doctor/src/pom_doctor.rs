@@ -349,6 +349,26 @@ pub fn proxy_exposure(
     )
 }
 
+/// Peers outside `proxy.trusted_proxies` that the dev proxy saw send forwarded headers lately: most likely a
+/// reverse proxy left off the list, whose headers are ignored and whose requests all need the token.
+pub fn untrusted_forwarders(peers: &[String]) -> Option<Finding> {
+    let first = peers.first()?;
+    Some(
+        Finding::new(
+            "proxy.untrusted_forwarder",
+            Severity::Warn,
+            "Dev proxy gets forwarded requests from an untrusted peer",
+        )
+        .detail(format!(
+            "{} sent X-Forwarded-For, X-Real-IP or Forwarded but is not in proxy.trusted_proxies: its forwarded headers are ignored and every request it forwards needs the proxy token",
+            peers.join(", ")
+        ))
+        .fix(format!(
+            "if it is your reverse proxy, `pom proxy config set trusted_proxies {first}`; otherwise find what on that address forwards to the proxy"
+        )),
+    )
+}
+
 /// Adds `finding`, dropping the lone "ready" finding it contradicts.
 pub fn add_finding(findings: &mut Vec<Finding>, finding: Finding) {
     findings.retain(|existing| existing.severity != Severity::Ok);
@@ -534,6 +554,19 @@ mod tests {
             [("quick", false), ("slow", true), ("medium", false)]
         );
         assert!(timings[2].duration_ms >= 300);
+    }
+
+    #[test]
+    fn untrusted_forwarders_are_named_with_the_fix() {
+        assert!(untrusted_forwarders(&[]).is_none());
+        let finding =
+            untrusted_forwarders(&["127.0.0.1".into(), "10.0.0.5".into()]).expect("finding");
+        assert_eq!(finding.id, "proxy.untrusted_forwarder");
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.starts_with("127.0.0.1, 10.0.0.5 sent"));
+        assert!(finding
+            .fix
+            .contains("pom proxy config set trusted_proxies 127.0.0.1"));
     }
 
     #[test]
