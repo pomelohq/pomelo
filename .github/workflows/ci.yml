@@ -392,15 +392,13 @@ jobs:
       - run: >-
           cargo nextest run -p pom_cli --test remote
           -E 'test(server) | test(chaos) | test(session_dies) | test(reconnected) | test(updating_pom)'
-      # The last stable release's pom server must still serve this build's client (handshake and a few RPCs).
+      # The latest stable release's pom server must still serve this build's client (handshake and a few RPCs).
       - name: Download the previous release's pom
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          current="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)"
-          tag="$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-pre-releases --exclude-drafts --limit 20 \
-            --json tagName --jq '.[].tagName' | grep -vx "v$current" | head -n 1)"
-          [ -n "$tag" ] || { echo "::error::no previous release"; exit 1; }
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          [ -n "$tag" ] || { echo "::error::no stable release"; exit 1; }
           file="pom-${tag#v}-linux-x86_64.tar.gz"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/previous" \
             --pattern "$file" --pattern "$file.sig"

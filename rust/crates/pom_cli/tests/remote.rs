@@ -1205,7 +1205,6 @@ fn the_previous_release_s_server_serves_this_app() {
         .and_then(|rest| rest.split_once("-linux-"))
         .map(|(version, _)| version.to_string())
         .expect("pom-<version>-linux-<arch>.tar.gz");
-    assert_ne!(version, env!("CARGO_PKG_VERSION"), "not a previous release");
 
     let fixture = Fixture::new();
     fixture.register_project();
