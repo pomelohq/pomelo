@@ -16,7 +16,7 @@ unless you ask otherwise.
 
 ## Supported versions
 
-Only the latest release gets security fixes. The app updates itself (macOS) and `pom` on a host can be
+Only the latest release gets security fixes. The app updates itself (macOS, and Linux installed with install.sh) and `pom` on a host can be
 updated from the app, so the fix for an issue is the next release, not a backport.
 
 ## Summary
@@ -29,7 +29,7 @@ updated from the app, so the fix for an issue is the next release, not a backpor
 | Agent control (hooks, `pom agent`, MCP) | Processes running as you, including agents | Agents are guarded against mistakes, not against a hostile process of your own user | Hooks wired by pom, fail-closed policy, per-workspace gate, rate limits |
 | Remote (`pom server`) | Your own user on the host, over ssh | ssh is the authentication | Private Unix socket, peer uid check, no network port, path guards |
 | Secrets | Your own user | The machine is yours | AES-256-GCM at rest, `0600` files, values never shown to agents |
-| Updates | GitHub releases | The release signing key and the GitHub release | EdDSA signature on macOS updates; sha256 list on Linux |
+| Updates | GitHub releases | The release signing key and the GitHub release | EdDSA signature on every download the updaters install (macOS, Linux, host pom) |
 | Local processes (PTY holders) | Your own user | Unix permissions | `0700` socket folder, `0600` sockets |
 
 Non-goals for every surface: defending against malware already running as your user, against root, or
@@ -202,15 +202,22 @@ A project on another machine is reached over ssh. The app runs `pom server proxy
   downloads the update tarball and installs it only if its Ed25519 signature verifies against the public key
   built into the app (`auto_update/src/releases.rs`, `verify`); the Sparkle `appcast.xml` is signed with
   the same key. The private key exists only as a CI secret and is never regenerated.
-- **Linux.** The release publishes `checksums-linux.txt` (sha256) next to the tarballs.
+- **Linux.** Each tarball has a `.sig` made with the same key. The Linux app installed with `install.sh`
+  and `pom self-update` install a tarball only after its signature verifies (`auto_update/src/linux_install.rs`);
+  an install `install.sh` did not make (a package manager, a copy elsewhere) never replaces itself.
+  `checksums-linux.txt` (sha256) stays next to the tarballs.
 - **`pom` on a host.** "Update pom on host" downloads the host's tarball on this machine over https only,
-  checks it against the release's sha256 list, then streams it over ssh to a temp folder on the host and
-  runs its `install.sh --cli-only` (`pom_remote/src/update.rs`). The host downloads nothing itself.
+  checks its signature against the key built into the app, then streams it over ssh to a temp folder on the
+  host and runs its `install.sh --cli-only` (`pom_remote/src/update.rs`). The host downloads nothing itself.
+  It installs the app's own version, or for a nightly app whose build has left the nightly release, the
+  newest nightly.
+- **Nightly builds** are built, signed and notarized by the same CI steps as a release and published to the
+  `nightly` prerelease; only apps on the nightly channel install them.
 - **Grammar packages** are wasm files whose signature is checked against a key built into the app (`grammars`).
 
-Gap: Linux tarballs and host updates are checked against a checksum list served from the same GitHub
-release, which proves integrity in transit but not who built them. They are not signed like the macOS update
-yet.
+App and host versions: the same version works fully. With different versions the app uses only what the
+host's `pom server` declares in its HELLO, and offers "Update pom on host" once their major or minor version
+differs.
 
 ## Local processes
 

@@ -1,18 +1,20 @@
-//! Updating pom on a host from the app. The tarball for the host's machine comes from the app's own GitHub
-//! release and is checked against that release's checksums here, before a byte reaches the host; it then goes
-//! through ssh into a temp folder there, whose install.sh puts pom in place. The host never downloads anything.
+//! Updating pom on a host from the app. The tarball for the host's machine is the app's own version when it is
+//! still published (a stable release, or a nightly the nightly release keeps), else the newest nightly; its
+//! signature is checked here against the release key, before a byte reaches the host. It then goes through ssh
+//! into a temp folder there, whose install.sh puts pom in place. The host never downloads anything.
+//!
+//! An app and a host's pom of the same version work together fully. Of different versions, the app uses only
+//! what the server's HELLO declares, and offers this update once their major or minor version differs.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
+use auto_update::{Artifact, Channel, Offer, Version};
 
 use crate::{Host, Ssh};
 
 pub const RELEASES: &str = "https://github.com/pomelohq/pomelo/releases/download";
-/// The `sha256sum` list the release publishes for its Linux tarballs.
-pub const CHECKSUMS: &str = "checksums-linux.txt";
 const DOWNLOAD_LIMIT: Duration = Duration::from_secs(300);
 const SCRIPT_LIMIT: Duration = Duration::from_secs(120);
 
@@ -39,25 +41,78 @@ impl UpdateStep {
     }
 }
 
-/// Where a version's tarballs are published.
+/// Where the pom for a version comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// GitHub Releases: the version's own release, or the kept builds of the nightly release.
+    GitHub,
+    /// A folder holding the version's tarball and its `.sig`; only `https://` (and `file://`, for tests).
+    Folder(String),
+}
+
+/// The pom a host should get: `version` (the app's), signed by `public_key`'s key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
-    /// The folder of the release's files; only `https://` (and `file://`, for tests) is fetched.
-    pub base: String,
+    pub source: Source,
+    pub public_key: String,
 }
 
 impl Release {
     pub fn published(version: &str) -> Release {
         Release {
             version: version.to_string(),
-            base: format!("{RELEASES}/v{version}"),
+            source: Source::GitHub,
+            public_key: auto_update::UPDATE_PUBLIC_KEY.to_string(),
         }
     }
 
     pub fn tarball(&self, arch: &str) -> String {
         format!("pom-{}-linux-{arch}.tar.gz", self.version)
     }
+
+    /// The signed download to install for `arch`.
+    pub fn resolve(&self, arch: &'static str) -> Result<Offer, String> {
+        let file_name = self.tarball(arch);
+        match &self.source {
+            Source::Folder(base) => {
+                let base = base.trim_end_matches('/');
+                Ok(Offer {
+                    version: Version::parse(&self.version)
+                        .ok_or_else(|| format!("{:?} is not a version", self.version))?,
+                    url: format!("{base}/{file_name}"),
+                    signature_url: format!("{base}/{file_name}.sig"),
+                    size: None,
+                    file_name,
+                })
+            }
+            Source::GitHub => {
+                let releases = auto_update::fetch_releases(Channel::Nightly)?;
+                let offers =
+                    auto_update::offers(&releases, Channel::Nightly, Artifact::LinuxCli(arch));
+                pick(&offers, &self.version).ok_or_else(|| {
+                    format!("no signed {file_name} is published; update pom on the host by hand")
+                })
+            }
+        }
+    }
+}
+
+/// The app's own version when it is published, else for a nightly app the newest nightly: a nightly leaves the
+/// nightly release after 7 nights, and the newest one speaks the same protocol as far as HELLO says.
+pub fn pick(offers: &[Offer], wanted: &str) -> Option<Offer> {
+    let wanted = Version::parse(wanted)?;
+    if let Some(exact) = offers.iter().find(|offer| offer.version == wanted) {
+        return Some(exact.clone());
+    }
+    if !wanted.is_nightly() {
+        return None;
+    }
+    offers
+        .iter()
+        .filter(|offer| offer.version.is_nightly())
+        .max_by(|left, right| left.version.cmp(&right.version))
+        .cloned()
 }
 
 /// The release arch for `uname -sm` output; only Linux hosts have a pom tarball.
@@ -74,22 +129,6 @@ pub fn linux_arch(uname: &str) -> Result<&'static str, String> {
         "aarch64" | "arm64" => Ok("aarch64"),
         other => Err(format!("no pom is published for {other} machines")),
     }
-}
-
-/// The sha256 a `sha256sum` list gives `file`.
-pub fn checksum_for(list: &str, file: &str) -> Option<String> {
-    list.lines().find_map(|line| {
-        let (hash, name) = line.split_once(char::is_whitespace)?;
-        let name = name.trim_start().trim_start_matches('*');
-        (name == file && hash.len() == 64).then(|| hash.to_ascii_lowercase())
-    })
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 fn valid_version(version: &str) -> bool {
@@ -214,7 +253,7 @@ pub fn install_script(version: &str) -> Result<String, String> {
     ))
 }
 
-/// Installs `release`'s pom on `host`: the tarball for its machine, checked against the release's checksums
+/// Installs `release`'s pom on `host`: the tarball for its machine, refused unless its signature verifies,
 /// before it leaves this machine. The running server is left to the caller.
 pub fn install_pom(
     ssh: &Ssh,
@@ -226,28 +265,21 @@ pub fn install_pom(
     let uname = run_script(ssh, host, "uname -sm", b"", SCRIPT_LIMIT)?;
     let arch = linux_arch(uname.trim())?;
     progress(UpdateStep::Download);
-    let base = release.base.trim_end_matches('/');
-    let tarball_name = release.tarball(arch);
-    let checksums = download(&format!("{base}/{CHECKSUMS}"), DOWNLOAD_LIMIT)?;
-    let tarball = download(&format!("{base}/{tarball_name}"), DOWNLOAD_LIMIT)?;
+    let offer = release.resolve(arch)?;
+    let tarball = download(&offer.url, DOWNLOAD_LIMIT)?;
+    let signature = download(&offer.signature_url, DOWNLOAD_LIMIT)?;
     progress(UpdateStep::Verify);
-    let expected =
-        checksum_for(&String::from_utf8_lossy(&checksums), &tarball_name).ok_or_else(|| {
-            format!(
-                "{CHECKSUMS} of v{} lists no {tarball_name}",
-                release.version
-            )
-        })?;
-    if sha256_hex(&tarball) != expected {
-        return Err(format!(
-            "{tarball_name} does not match the release's checksum; nothing was installed"
-        ));
-    }
+    auto_update::verify(
+        &tarball,
+        &String::from_utf8_lossy(&signature),
+        &release.public_key,
+    )
+    .map_err(|error| format!("{}: {error}; nothing was installed", offer.file_name))?;
     progress(UpdateStep::Install);
     run_script(
         ssh,
         host,
-        &install_script(&release.version)?,
+        &install_script(&offer.version.to_string())?,
         &tarball,
         SCRIPT_LIMIT,
     )?;
@@ -256,7 +288,8 @@ pub fn install_pom(
 
 /// What to run on `host` by hand when the app cannot install pom itself (a build with no release).
 pub fn manual_commands(version: &str) -> Vec<String> {
-    let base = Release::published(version).base;
+    let tag = Version::parse(version).map_or_else(|| format!("v{version}"), |parsed| parsed.tag());
+    let base = format!("{RELEASES}/{tag}");
     vec![
         format!("curl -fLO {base}/pom-{version}-linux-$(uname -m).tar.gz"),
         format!(
@@ -279,28 +312,41 @@ mod tests {
             Release::published("1.2.3").tarball("x86_64"),
             "pom-1.2.3-linux-x86_64.tar.gz"
         );
-        assert_eq!(
-            Release::published("1.2.3").base,
-            "https://github.com/pomelohq/pomelo/releases/download/v1.2.3"
-        );
+        assert!(manual_commands("1.2.3")[0]
+            .contains("https://github.com/pomelohq/pomelo/releases/download/v1.2.3/"));
+        assert!(manual_commands("1.2.4-nightly.20261024")[0]
+            .contains("/releases/download/nightly/pom-1.2.4-nightly.20261024-linux-"));
+    }
+
+    fn offer(version: &str) -> Offer {
+        Offer {
+            version: Version::parse(version).unwrap_or_else(|| panic!("{version}")),
+            file_name: format!("pom-{version}-linux-x86_64.tar.gz"),
+            url: String::new(),
+            signature_url: String::new(),
+            size: None,
+        }
     }
 
     #[test]
-    fn a_checksum_list_is_read_as_sha256sum_writes_it() {
-        let hash = "a".repeat(64);
-        let list = format!(
-            "{hash}  pom-1.2.3-linux-x86_64.tar.gz\n{}  pom-1.2.3-linux-aarch64.tar.gz\n",
-            "b".repeat(64)
+    fn the_apps_own_version_wins_and_a_nightly_gone_from_the_release_takes_the_newest() {
+        let offers = vec![
+            offer("0.9.8"),
+            offer("0.9.9-nightly.20261023"),
+            offer("0.9.9-nightly.20261024"),
+        ];
+        let picked = |wanted: &str| pick(&offers, wanted).map(|offer| offer.version.to_string());
+        assert_eq!(picked("0.9.8"), Some("0.9.8".into()));
+        assert_eq!(
+            picked("0.9.9-nightly.20261023"),
+            Some("0.9.9-nightly.20261023".into())
         );
         assert_eq!(
-            checksum_for(&list, "pom-1.2.3-linux-x86_64.tar.gz"),
-            Some(hash)
+            picked("0.9.9-nightly.20261001"),
+            Some("0.9.9-nightly.20261024".into())
         );
-        assert_eq!(checksum_for(&list, "pom-1.2.3-linux-riscv.tar.gz"), None);
-        assert_eq!(
-            sha256_hex(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        assert_eq!(picked("0.9.7"), None);
+        assert_eq!(picked("not a version"), None);
     }
 
     #[test]

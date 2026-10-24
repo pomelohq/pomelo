@@ -45,6 +45,8 @@ serde_json.workspace = true
 workspace_hack = { version = "0.1", path = "../workspace_hack" }
 
 [dev-dependencies]
+base64 = "0.22"
+ed25519-dalek = "2"
 files = { path = "../files" }
 libc = "0.2"
 pom_rpc = { path = "../pom_rpc" }

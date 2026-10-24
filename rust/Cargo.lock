@@ -3601,6 +3601,8 @@ name = "pom_cli"
 version = "0.9.8"
 dependencies = [
  "auto_update",
+ "base64",
+ "ed25519-dalek",
  "files",
  "git",
  "libc",
@@ -3865,6 +3867,7 @@ name = "pom_remote"
 version = "0.9.8"
 dependencies = [
  "agent_usage",
+ "auto_update",
  "files",
  "git",
  "libc",
@@ -3884,7 +3887,6 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
- "sha2 0.10.9",
  "tempfile",
  "workspace_hack",
 ]
