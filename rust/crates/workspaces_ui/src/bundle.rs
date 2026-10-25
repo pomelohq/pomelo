@@ -1,12 +1,10 @@
 use components::{checkbox, status_line, ButtonKind};
 use std::path::PathBuf;
 
+use components::{modal_footer, modal_frame, modal_header, modal_section};
 use pom_bundle::Contents;
 use ui::{div, label, theme, IconKind, LabelSize, Node};
-use workspace::{
-    modal_footer, modal_frame, modal_header, modal_section, EditKey, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 480.0;
 const PREVIEW_WIDTH: f32 = 580.0;

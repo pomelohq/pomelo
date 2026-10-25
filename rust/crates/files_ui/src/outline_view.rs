@@ -425,7 +425,7 @@ impl OutlineView {
                 root = root
                     .h_px(height)
                     .child(results)
-                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .child(components::divider())
                     .child(render_preview(preview));
             }
             _ => root = root.child(results),
@@ -448,15 +448,10 @@ impl OutlineView {
                 FieldFont::Ui,
             ));
         let mut list = if self.entries.is_empty() {
-            div().col().py(8.0).child(
-                div().row().px(4.0).child(
-                    div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
-                        label("No matches")
-                            .label_size(ui::LabelSize::Default)
-                            .color(colors.text_muted),
-                    ),
-                ),
-            )
+            div()
+                .col()
+                .py(4.0)
+                .child(components::empty_state("No matches").compact())
         } else {
             let visible = self.visible_rows();
             let end = (self.scroll_top + visible).min(self.entries.len());
@@ -486,9 +481,9 @@ impl OutlineView {
         let mut column = div()
             .col()
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(list)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(self.render_footer(id_base));
         // The preview fills what the results leave, so borders and dividers never push it past the edge.
         column = match self.preview {
@@ -533,7 +528,7 @@ impl OutlineView {
                 button.into()
             };
             controls = controls
-                .child(div().w_px(1.0).h_px(16.0).bg(colors.border_variant))
+                .child(components::vertical_divider(16.0))
                 .child(div().w_px(4.0))
                 .child(layout_button(
                     OutlineClick::PreviewBelow,
@@ -586,12 +581,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
         .bg(colors.editor_background);
     let Some(content) = content else {
         return pane
-            .p(8.0)
-            .child(
-                label("No results to preview")
-                    .label_size(ui::LabelSize::Default)
-                    .color(colors.text_muted),
-            )
+            .child(components::empty_state("No results to preview").compact())
             .into();
     };
     let rows = content.rows.into_iter().map(|row| {

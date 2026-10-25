@@ -944,15 +944,7 @@ impl CommandPalette {
             div()
                 .col()
                 .py(8.0)
-                .child(
-                    div().row().px(4.0).child(
-                        div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
-                            label(self.empty_text())
-                                .label_size(LabelSize::Default)
-                                .color(colors.text_muted),
-                        ),
-                    ),
-                )
+                .child(components::empty_state(self.empty_text()).compact())
                 .into()
         } else {
             let end = self.visible_end(self.scroll_top);
@@ -986,9 +978,9 @@ impl CommandPalette {
             .render()
             .w_px(WIDTH)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(footer)
             .into()
     }

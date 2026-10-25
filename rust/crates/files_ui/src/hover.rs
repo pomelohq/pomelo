@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use ui::{div, theme, Node, Rect, Rgba};
+use ui::{theme, Node, Rect, Rgba};
 
 use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
 use markdown::{Markdown, MarkdownLayout, MarkdownStyle};
@@ -28,7 +28,6 @@ const DIAGNOSTIC_PADDING_LEFT: f32 = 8.0;
 const DIAGNOSTIC_PADDING_RIGHT: f32 = 32.0;
 const DIAGNOSTIC_PADDING_Y: f32 = 4.0;
 const BORDER: f32 = 1.0;
-const RADIUS: f32 = 8.0;
 
 /// A laid-out document kept for the width it was laid out at.
 /// Info popover markdown with code in the editor's font.
@@ -163,15 +162,15 @@ impl HoverState {
     }
 }
 
-fn severity_colors(severity: lsp::lsp_types::DiagnosticSeverity) -> (Rgba, Rgba) {
+fn severity_color(severity: lsp::lsp_types::DiagnosticSeverity) -> Rgba {
     use lsp::lsp_types::DiagnosticSeverity as Severity;
     let colors = theme();
     match severity {
-        Severity::ERROR => (colors.error_background, colors.error_border),
-        Severity::WARNING => (colors.warning_background, colors.warning_border),
-        Severity::INFORMATION => (colors.info_background, colors.info_border),
-        Severity::HINT => (colors.hint_background, colors.hint_border),
-        _ => (colors.ignored_background, colors.ignored_border),
+        Severity::ERROR => colors.error,
+        Severity::WARNING => colors.warning,
+        Severity::INFORMATION => colors.info,
+        Severity::HINT => colors.hint,
+        _ => colors.text_muted,
     }
 }
 
@@ -579,7 +578,6 @@ impl FileItem {
         max_height: f32,
     ) -> Measured {
         let scale = ui::ui_text_scale();
-        let colors = theme();
         let layout = popover.layout.get(
             &popover.markdown,
             max_width,
@@ -588,27 +586,20 @@ impl FileItem {
         let first = popover.scroll.min(layout.line_count().saturating_sub(1));
         let count = layout.lines_fitting(first, max_height);
         let body_height = layout.height_of(first, count);
-        let (background, border) = severity_colors(popover.severity);
         let width =
             layout.width + DIAGNOSTIC_PADDING_LEFT + DIAGNOSTIC_PADDING_RIGHT + BORDER * 2.0;
         let height = body_height + DIAGNOSTIC_PADDING_Y * 2.0 + BORDER * 2.0;
-        let inner = div()
-            .col()
+        let node = components::card()
+            .padding(0.0)
+            .tint(severity_color(popover.severity))
+            .raised()
+            .render()
             .w_px(width)
             .pl(DIAGNOSTIC_PADDING_LEFT)
             .pr(DIAGNOSTIC_PADDING_RIGHT)
             .py(DIAGNOSTIC_PADDING_Y)
-            .bg(background)
-            .border(BORDER, border)
-            .rounded(RADIUS)
-            .child(layout.render(first, count, layout.width));
-        let node = div()
-            .col()
-            .w_px(width)
-            .rounded(RADIUS)
-            .bg(colors.elevated_surface_background)
             .on_click(crate::HOVER_BASE)
-            .child(inner)
+            .child(layout.render(first, count, layout.width))
             .into();
         Measured {
             node,
@@ -619,7 +610,6 @@ impl FileItem {
 
     fn measure_info(&self, popover: &InfoPopover, max_width: f32, max_height: f32) -> Measured {
         let scale = ui::ui_text_scale();
-        let colors = theme();
         let text_width = (max_width - INFO_PADDING * 2.0).max(1.0);
         let layout = popover
             .layout
@@ -629,13 +619,11 @@ impl FileItem {
         let body_height = layout.height_of(first, count);
         let width = layout.width + INFO_PADDING * 2.0 + BORDER * 2.0;
         let height = body_height + INFO_PADDING * 2.0 + BORDER * 2.0;
-        let node = div()
-            .col()
+        let node = components::card()
+            .padding(INFO_PADDING)
+            .raised()
+            .render()
             .w_px(width)
-            .p(INFO_PADDING)
-            .rounded(RADIUS)
-            .border(BORDER, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .on_click(crate::HOVER_BASE + 1)
             .child(layout.render(first, count, layout.width))
             .into();

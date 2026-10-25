@@ -2289,7 +2289,7 @@ impl Item for TableItem {
                 &div()
                     .col()
                     .child(self.side_head())
-                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .child(components::divider())
                     .into(),
                 Rect::new(side.x, side.y, side.w, head_h + scale, Rgba::TRANSPARENT),
             );

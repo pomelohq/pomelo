@@ -123,7 +123,7 @@ impl GoToLine {
                 INPUT_FONT * FieldFont::Ui.line_height(),
                 FieldFont::Ui,
             )))
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(
                 div()
                     .row()

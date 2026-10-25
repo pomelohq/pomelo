@@ -20,8 +20,7 @@ mod usage;
 mod welcome;
 mod workspace_view;
 pub use form::{
-    is_window_modal_id, modal_footer, modal_frame, modal_header, modal_note, modal_section,
-    overlay_ring, paragraph, prompt_card, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
+    is_window_modal_id, prompt_card, InputField, ModalResult, WindowModal, PROMPT_WIDTH,
     WINDOW_MODAL_BASE, WINDOW_MODAL_END,
 };
 pub use panel::{
@@ -3444,10 +3443,7 @@ fn push_into(out: &mut Painted, node: &Node, area: Rect) {
 }
 
 fn menu_divider() -> Node {
-    div()
-        .py(4.0)
-        .child(div().h_px(1.0).bg(theme().border_variant))
-        .into()
+    div().py(4.0).child(components::divider()).into()
 }
 
 fn caret(visible: bool) -> Node {
@@ -3573,36 +3569,18 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     let dim = text_dim_c();
     // A dock toggle: the icon turns accent (blue) when its dock is open; the fill only shows on hover/press.
     let badged = |kind: ui::IconKind, id: u64, active: bool, badge: bool| {
-        let color = if active { theme().icon_accent } else { dim };
-        let mut glyph = div()
-            .row()
-            .gap(1.0)
-            .child(ui::icon(kind).size(13.0).color(color));
-        if badge {
-            glyph = glyph.child(
-                div()
-                    .col()
-                    .h_px(13.0)
-                    .justify_end()
-                    .child(components::dot(theme().success, 6.0)),
-            );
-        }
-        let mut b = div()
-            .w_px(26.0)
-            .h_px(20.0)
-            .rounded(5.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .child(glyph);
-        if hovered == Some(id) {
-            b = b.bg(theme().element_hover);
-        }
-        b
+        components::status_item(Some(id))
+            .badged_icon(
+                kind,
+                if active { theme().icon_accent } else { dim },
+                badge.then(|| theme().success),
+            )
+            .width(26.0)
+            .hovered(hovered == Some(id))
     };
     let toggle = |kind: ui::IconKind, id: u64, active: bool| badged(kind, id, active, false);
     // A small vertical divider between groups (a thin), 1px on the theme border color.
-    let vsep = || div().w_px(1.0).h_px(14.0).bg(theme().border);
+    let vsep = || components::vertical_divider(14.0);
 
     // One dock's panel buttons (editor's `PanelButtons`): a row of icon buttons — the functions on this side,
     // the terminal if it lives here, and the agent (right dock's default). No dividers between the buttons;
@@ -3676,31 +3654,10 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
             let servers = &layout.language_servers;
             if ui::chrome().language_servers && !servers.servers.is_empty() {
                 let (dot, _) = servers.health();
-                let mut glyph = div().row().gap(1.0).child(
-                    ui::icon(ui::IconKind::BoltOutlined)
-                        .size(14.0)
-                        .color(theme().icon_muted),
-                );
-                if let Some(dot) = dot {
-                    glyph = glyph.child(
-                        div()
-                            .col()
-                            .h_px(14.0)
-                            .justify_end()
-                            .child(components::dot(dot, 6.0)),
-                    );
-                }
-                let mut button = div()
-                    .w_px(26.0)
-                    .h_px(20.0)
-                    .rounded(5.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(LANGUAGE_SERVERS_BUTTON)
-                    .child(glyph);
-                if hovered == Some(LANGUAGE_SERVERS_BUTTON) {
-                    button = button.bg(theme().element_hover);
-                }
+                let button = components::status_item(Some(LANGUAGE_SERVERS_BUTTON))
+                    .badged_icon(ui::IconKind::BoltOutlined, theme().icon_muted, dot)
+                    .width(26.0)
+                    .hovered(hovered == Some(LANGUAGE_SERVERS_BUTTON));
                 row = row.child(button);
             }
             if ui::chrome().diagnostics {
@@ -3742,30 +3699,17 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             );
                     }
                 }
-                let mut button = div()
-                    .row()
-                    .h_px(20.0)
-                    .px(4.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .on_click(DIAGNOSTICS_BUTTON)
-                    .child(indicator);
-                if hovered == Some(DIAGNOSTICS_BUTTON) {
-                    button = button.bg(colors.ghost_element_hover);
-                }
-                row = row.child(button);
+                row = row.child(
+                    components::status_item(Some(DIAGNOSTICS_BUTTON))
+                        .child(indicator)
+                        .hovered(hovered == Some(DIAGNOSTICS_BUTTON)),
+                );
                 if let Some(message) = summary.current {
-                    let mut button = div()
-                        .h_px(20.0)
-                        .px(4.0)
-                        .rounded(4.0)
-                        .items_center()
-                        .on_click(DIAGNOSTIC_MESSAGE)
-                        .child(label(message).size(12.0).color(colors.text));
-                    if hovered == Some(DIAGNOSTIC_MESSAGE) {
-                        button = button.bg(colors.ghost_element_hover);
-                    }
-                    row = row.child(button);
+                    row = row.child(
+                        components::status_item(Some(DIAGNOSTIC_MESSAGE))
+                            .text(message, colors.text)
+                            .hovered(hovered == Some(DIAGNOSTIC_MESSAGE)),
+                    );
                 }
             }
             if let Some(activity) = &layout.language_servers.activity {
@@ -3774,24 +3718,15 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     ActivityIcon::Download => ui::IconKind::Download,
                     ActivityIcon::Warning => ui::IconKind::Warning,
                 };
-                let mut button = div()
-                    .row()
-                    .h_px(20.0)
-                    .px(4.0)
-                    .gap(4.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .on_click(LANGUAGE_ACTIVITY)
-                    .child(ui::icon(icon).size(14.0).color(theme().icon_muted))
-                    .child(
-                        label(trail_off(&activity.message, ACTIVITY_MESSAGE_LIMIT))
-                            .size(12.0)
-                            .color(theme().text),
-                    );
-                if hovered == Some(LANGUAGE_ACTIVITY) {
-                    button = button.bg(theme().ghost_element_hover);
-                }
-                row = row.child(button);
+                row = row.child(
+                    components::status_item(Some(LANGUAGE_ACTIVITY))
+                        .icon(icon, theme().icon_muted)
+                        .text(
+                            trail_off(&activity.message, ACTIVITY_MESSAGE_LIMIT),
+                            theme().text,
+                        )
+                        .hovered(hovered == Some(LANGUAGE_ACTIVITY)),
+                );
             }
             row
         })
@@ -3804,27 +3739,15 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 .and_then(|v| v.cursor_position())
                 .filter(|_| ch.cursor_position);
             if let Some(mode) = layout.files_view.as_ref().and_then(|v| v.mode_label()) {
-                row = row.child(
-                    div()
-                        .h_px(20.0)
-                        .px(4.0)
-                        .items_center()
-                        .child(label(mode).size(12.0).mono().color(theme().text_muted)),
-                );
+                row = row.child(components::status_item(None).mono(mode, theme().text_muted));
             }
             let shows_position = position.is_some();
             if let Some(text) = position {
-                let mut button = div()
-                    .h_px(20.0)
-                    .px(4.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .on_click(CURSOR_POSITION)
-                    .child(label(text).size(12.0).color(theme().text));
-                if hovered == Some(CURSOR_POSITION) {
-                    button = button.bg(theme().ghost_element_hover);
-                }
-                row = row.child(button);
+                row = row.child(
+                    components::status_item(Some(CURSOR_POSITION))
+                        .text(text, theme().text)
+                        .hovered(hovered == Some(CURSOR_POSITION)),
+                );
             }
             let language = layout
                 .files_view
@@ -3835,17 +3758,11 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                 if shows_position {
                     row = row.child(vsep());
                 }
-                let mut button = div()
-                    .h_px(20.0)
-                    .px(4.0)
-                    .rounded(4.0)
-                    .items_center()
-                    .on_click(ACTIVE_LANGUAGE)
-                    .child(label(language).size(12.0).color(dim));
-                if hovered == Some(ACTIVE_LANGUAGE) {
-                    button = button.bg(theme().ghost_element_hover);
-                }
-                row = row.child(button);
+                row = row.child(
+                    components::status_item(Some(ACTIVE_LANGUAGE))
+                        .text(language, dim)
+                        .hovered(hovered == Some(ACTIVE_LANGUAGE)),
+                );
             }
             if let Some(today) = &layout.usage.today {
                 row = row.child(vsep()).child(crate::usage::status_item(

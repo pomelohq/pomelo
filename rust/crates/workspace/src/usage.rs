@@ -62,26 +62,14 @@ pub fn tone(used: f32) -> Rgba {
 }
 
 fn meter(used: f32, width: Option<f32>, height: f32) -> Node {
-    let fill = (used / 100.0).clamp(0.0, 1.0);
-    let track = div()
-        .row()
-        .h_px(height)
-        .rounded(height / 2.0)
-        .bg(Rgba::new(1.0, 1.0, 1.0, 0.1));
-    let track = match width {
-        Some(width) => track.w_px(width),
-        None => track.flex(1.0),
-    };
-    track
-        .child(
-            div()
-                .flex(fill.max(0.0001))
-                .h_px(height)
-                .rounded(height / 2.0)
-                .bg(tone(used)),
-        )
-        .child(div().flex((1.0 - fill).max(0.0001)))
-        .into()
+    let bar = components::progress_bar(used / 100.0)
+        .height(height)
+        .color(tone(used));
+    match width {
+        Some(width) => bar.width(width),
+        None => bar,
+    }
+    .into()
 }
 
 fn percent(used: f32) -> String {
@@ -260,24 +248,11 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
 /// The status bar's usage: today's total.
 pub fn status_item(today: &UsageToday, hot: bool) -> Node {
     let colors = theme();
-    let mut item = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(20.0)
-        .px(6.0)
-        .rounded(4.0)
-        .on_click(USAGE_STATUS)
-        .child(icon(IconKind::Sparkle).size(12.0).color(colors.icon_muted))
-        .child(
-            label(format!("{} today", today.total))
-                .size(12.0)
-                .color(colors.text_muted),
-        );
-    if hot {
-        item = item.bg(colors.ghost_element_hover);
-    }
-    item.into()
+    components::status_item(Some(USAGE_STATUS))
+        .icon(IconKind::Sparkle, colors.icon_muted)
+        .text(format!("{} today", today.total), colors.text_muted)
+        .hovered(hot)
+        .into()
 }
 
 /// The card over the status item: the windows, and today by workspace.
@@ -339,7 +314,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
     let mut rows = div().col().rounded(6.0).border(1.0, colors.border_variant);
     for (index, (workspace, value)) in today.by_workspace.iter().enumerate() {
         if index > 0 {
-            rows = rows.child(div().h_px(1.0).bg(colors.border_variant));
+            rows = rows.child(components::divider());
         }
         rows = rows.child(
             div()

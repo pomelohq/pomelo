@@ -7357,8 +7357,6 @@ pub struct FilesView {
     replacing: Vec<std::sync::mpsc::Receiver<project_search::ReplaceReport>>,
 }
 
-const OFFLINE_NOTICE_H: f32 = 48.0;
-
 /// Prompt tokens for a save's conflict, apart from the tree's and the workspace's own.
 const SAVE_PROMPT_TOKENS: u64 = 1 << 40;
 
@@ -7584,34 +7582,13 @@ impl FilesView {
     /// wait for it to come back.
     fn offline_notice(&self) -> Node {
         let host = self.fs.host().unwrap_or("the host");
-        let line = div()
-            .row()
-            .h_px(OFFLINE_NOTICE_H - 1.0)
-            .px(12.0)
-            .gap(8.0)
-            .items_center()
-            .child(components::dot(theme().warning, 8.0))
-            .child(
-                div()
-                    .col()
-                    .gap(2.0)
-                    .child(
-                        label(format!("Reconnecting to {host}..."))
-                            .size(13.0)
-                            .color(theme().text),
-                    )
-                    .child(
-                        label("Edits stay here; saves wait for it.")
-                            .size(12.0)
-                            .color(theme().text_muted),
-                    ),
-            );
-        div()
-            .col()
-            .bg(theme().panel_background)
-            .child(line)
-            .child(div().h_px(1.0).bg(theme().border))
-            .into()
+        components::banner(
+            components::BannerTone::Warning,
+            format!("Reconnecting to {host}..."),
+        )
+        .detail("Edits stay here; saves wait for it.")
+        .flush()
+        .into()
     }
 
     /// Tells open files whether their machine answers, and asks about the first save that found its file
@@ -9736,7 +9713,7 @@ impl FunctionView for FilesView {
             self.flat_dirty = false;
         }
         let notice_h = if self.offline_notice_shown() {
-            OFFLINE_NOTICE_H
+            ui::measure(&self.offline_notice()).1
         } else {
             0.0
         };
@@ -9928,7 +9905,7 @@ impl FunctionView for FilesView {
                 }
                 // Separator under the pinned stack: a 1px border then a soft shadow fading into the content.
                 sticky = sticky
-                    .child(div().h_px(1.0).bg(theme().border))
+                    .child(components::edge_divider())
                     .child(div().h_px(4.0).bg(Rgba::new(0.0, 0.0, 0.0, 0.10)));
             }
         }

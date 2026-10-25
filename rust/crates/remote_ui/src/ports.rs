@@ -205,32 +205,14 @@ fn head() -> Node {
 }
 
 fn empty(branch: &str, host: &str) -> Node {
-    let colors = theme();
-    div()
-        .col()
-        .items_center()
-        .gap(8.0)
-        .pt(60.0)
-        .child(
-            icon(IconKind::ArrowUpRight)
-                .size(20.0)
-                .color(colors.text_placeholder),
-        )
-        .child(
-            label("No ports forwarded")
-                .size(13.0)
-                .medium()
-                .color(colors.text_placeholder),
-        )
-        .child(workspace::paragraph(
-            &format!(
+    components::empty_state("No ports forwarded")
+        .icon(IconKind::ArrowUpRight)
+        .body(
+            format!(
                 "Shared services of {branch} are forwarded once they run. Forward any other port of {host} above."
             ),
-            12.0,
-            16.0,
             360.0,
-            colors.text_muted,
-        ))
+        )
         .into()
 }
 

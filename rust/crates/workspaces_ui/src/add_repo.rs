@@ -1,9 +1,7 @@
 use components::{checkbox, field, status_line, ButtonKind};
+use components::{modal_footer, modal_frame, modal_header, modal_section};
 use ui::{div, label, theme, IconKind, LabelSize, Node};
-use workspace::{
-    modal_footer, modal_frame, modal_header, modal_section, EditKey, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 /// Opens the system folder picker; returns the folders chosen.
 pub type FolderChooser = Box<dyn Fn() -> Vec<std::path::PathBuf>>;

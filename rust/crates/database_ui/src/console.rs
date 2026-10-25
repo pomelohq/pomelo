@@ -266,7 +266,7 @@ impl ItemFooter for ConsoleFooter {
             .h_px(area.h / scale)
             .bg(colors.editor_background)
             .child(self.toolbar())
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
             .into();
         let painted = ui::render(&tree, area);

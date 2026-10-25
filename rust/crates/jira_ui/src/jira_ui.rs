@@ -232,30 +232,10 @@ impl TicketItem {
     }
 
     fn callout(text: &str, width: f32) -> Node {
-        let colors = theme();
-        let text = label(text.to_string())
-            .size(13.0)
-            .color(colors.text)
-            .wrap(width - 3.0 - 14.0 - 14.0 - 24.0);
-        let line_h = ui::measure(&text.clone().into()).1.max(20.0);
-        div()
-            .row()
+        components::banner(components::BannerTone::Info, text)
+            .wrap(width - 64.0)
+            .render()
             .w_px(width)
-            .rounded(6.0)
-            .bg(colors.panel_background)
-            .child(div().w_px(3.0).h_px(line_h + 24.0).bg(colors.info))
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .pl(11.0)
-                    .pr(14.0)
-                    .py(12.0)
-                    .gap(10.0)
-                    .items_center()
-                    .child(icon(IconKind::Info).size(14.0).color(colors.info))
-                    .child(text),
-            )
             .into()
     }
 

@@ -1,4 +1,4 @@
-use ui::{div, theme, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, Node, Rgba};
 
 use crate::key_chip;
 
@@ -122,6 +122,14 @@ impl Button {
 
 impl From<Button> for Node {
     fn from(button: Button) -> Node {
+        button.render().into()
+    }
+}
+
+impl Button {
+    /// The button as a box, for a caller that wraps it in a tooltip or sizes it.
+    pub fn render(self) -> Div {
+        let button = self;
         let colors = theme();
         let enabled = button.enabled;
         let dim = |color: Rgba| if enabled { color } else { color.alpha(0.45) };
@@ -179,7 +187,7 @@ impl From<Button> for Node {
         if let Some(keystroke) = &button.keystroke {
             node = node.child(key_chip(keystroke, primary));
         }
-        node.into()
+        node
     }
 }
 

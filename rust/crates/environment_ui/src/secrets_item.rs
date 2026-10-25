@@ -246,11 +246,7 @@ impl SecretsItem {
         {
             row = row.bg(colors.element_hover);
         }
-        div()
-            .col()
-            .child(row)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .into()
+        div().col().child(row).child(components::divider()).into()
     }
 
     fn field(&mut self) -> Option<&mut TextField> {

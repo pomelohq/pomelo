@@ -12,12 +12,12 @@ use components::ButtonKind;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
+use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
 use ui::{div, icon, label, theme, IconKind, Node};
 use workspace::{
-    modal_footer, modal_frame, modal_header, modal_note, modal_section, CenterNotice, EditKey,
-    ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone, WindowModal,
-    WINDOW_MODAL_BASE,
+    CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 480.0;

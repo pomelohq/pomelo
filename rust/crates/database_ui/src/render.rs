@@ -588,13 +588,7 @@ pub(crate) fn render_panel(
         ));
     let mut list = div().col().pb(8.0);
     if panel.model.databases.is_empty() {
-        list = list.child(
-            div().row().h_px(ROW_H).px(12.0).items_center().child(
-                label("No databases in pom.yml")
-                    .size(12.0)
-                    .color(colors.text_muted),
-            ),
-        );
+        list = list.child(components::empty_state("No databases in pom.yml").compact());
     }
     for index in visible {
         if let Some(row) = panel.rows.get(*index) {

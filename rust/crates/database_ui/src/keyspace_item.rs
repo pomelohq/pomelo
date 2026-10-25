@@ -669,7 +669,7 @@ impl KeyspaceItem {
             .rounded(6.0)
             .border(1.0, colors.border_variant)
             .child(head_row(head))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         for (first, second) in rows {
             table = table.child(
                 div()
@@ -705,7 +705,7 @@ impl KeyspaceItem {
                         ),
                     ),
             );
-            table = table.child(div().h_px(1.0).bg(colors.border_variant));
+            table = table.child(components::divider());
         }
         table.into()
     }

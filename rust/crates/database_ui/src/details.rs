@@ -407,7 +407,7 @@ pub(crate) fn json_box(
         .border(1.0, colors.border_variant)
         .bg(colors.editor_background)
         .child(bar)
-        .child(div().h_px(1.0).bg(colors.border_variant))
+        .child(components::divider())
         .child(div().col().pl(8.0).pr(6.0).child(tree))
         .into()
 }
@@ -829,11 +829,7 @@ fn table_head(columns: &[(&str, f32)]) -> Node {
             cell.flex(1.0)
         });
     }
-    div()
-        .col()
-        .child(row)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .into()
+    div().col().child(row).child(components::divider()).into()
 }
 
 fn table_line(cells: Vec<(Node, f32)>, id: Option<u64>, hovered: Option<u64>) -> Node {
@@ -853,11 +849,7 @@ fn table_line(cells: Vec<(Node, f32)>, id: Option<u64>, hovered: Option<u64>) ->
             row = row.bg(colors.ghost_element_hover);
         }
     }
-    div()
-        .col()
-        .child(row)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .into()
+    div().col().child(row).child(components::divider()).into()
 }
 
 fn mono(text: impl Into<String>, color: Rgba) -> Node {

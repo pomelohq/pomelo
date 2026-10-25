@@ -7,8 +7,8 @@ use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
     arrow_count, avatar, checkbox, chevron, chip, chip_count, chip_icon, chip_text, diff_stat,
-    ghost_button, icon_button, status_icon, text_width, with_guides, ChipTone, SplitButton, INDENT,
-    ROW_H, TAB_BAR_H, TOOLBAR_H,
+    ghost_button, icon_button, status_icon, text_width, with_guides, ChipTone, INDENT, ROW_H,
+    TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -120,13 +120,13 @@ impl GitPanel {
                 .w_px(width)
                 .h_px(height)
                 .child(self.render_tab_bar(width, &scan))
-                .child(div().col().w_px(width).p(12.0).child(workspace::paragraph(
-                    &reason,
-                    12.0,
-                    18.0,
-                    (width - 24.0).max(40.0),
-                    theme().text_muted,
-                )))
+                .child(
+                    div().col().w_px(width).p(12.0).child(Node::from(
+                        components::paragraph(reason, (width - 24.0).max(40.0))
+                            .size(12.0, 18.0)
+                            .color(theme().text_muted),
+                    )),
+                )
                 .into();
         }
         self.rows = self.build_rows(&scan);
@@ -335,19 +335,17 @@ impl GitPanel {
                     );
                 }
                 let everything = Self::everything_staged(scan);
-                let split = SplitButton {
-                    main: self.fixed(STAGE_ALL),
-                    menu: self.fixed(STAGE_MENU),
-                    text: if everything {
+                let split = components::split_button(
+                    self.fixed(STAGE_ALL),
+                    self.fixed(STAGE_MENU),
+                    if everything {
                         "Unstage All"
                     } else {
                         "Stage All"
                     },
-                    note: None,
-                    enabled: scan.repos.iter().any(|repo| !repo.status.is_empty()),
-                    hover: self.hover,
-                    primary: false,
-                };
+                )
+                .enabled(scan.repos.iter().any(|repo| !repo.status.is_empty()))
+                .hovered(self.hover);
                 let main = split.main_half();
                 fill(bar.child(diff_button))
                     .child(self.view_options())
@@ -1373,17 +1371,14 @@ impl GitPanel {
                     Some(progress) if self.commit.remote_running().is_some() => progress,
                     _ => summary,
                 };
-                let split = SplitButton {
-                    main: self.fixed(SYNC),
-                    menu: self.fixed(SYNC_MENU),
-                    text: &action,
-                    note: None,
-                    enabled: differ > 0 && !self.commit.busy(),
-                    hover: self.hover,
-                    primary: true,
-                };
+                let split =
+                    components::split_button(self.fixed(SYNC), self.fixed(SYNC_MENU), &action)
+                        .enabled(differ > 0 && !self.commit.busy())
+                        .hovered(self.hover)
+                        .primary()
+                        .size(components::ButtonSize::Medium);
                 let mut main = split.main_half();
-                if self.hot(self.fixed(SYNC)) && split.enabled {
+                if self.hot(self.fixed(SYNC)) && split.is_enabled() {
                     main = components::with_tooltip(
                         main,
                         "Pull, then push every repo that differs",
@@ -1500,15 +1495,13 @@ impl GitPanel {
         .map(|(_, text)| *text)
         .collect();
         let note = (!options.is_empty()).then(|| format!("+{}", options.join(", ")));
-        let split = SplitButton {
-            main: self.fixed(COMMIT),
-            menu: self.fixed(COMMIT_MENU),
-            text: plan.title,
-            note: note.as_deref(),
-            enabled: plan.enabled,
-            hover: self.hover,
-            primary: true,
-        };
+        let split =
+            components::split_button(self.fixed(COMMIT), self.fixed(COMMIT_MENU), plan.title)
+                .note(note.as_deref())
+                .enabled(plan.enabled)
+                .hovered(self.hover)
+                .primary()
+                .size(components::ButtonSize::Medium);
         let mut main = split.main_half();
         if self.hot(self.fixed(COMMIT)) {
             main = components::with_tooltip(main, &plan.hint, true);

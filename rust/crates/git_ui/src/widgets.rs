@@ -7,40 +7,17 @@ pub(crate) const ROW_H: f32 = 26.0;
 pub(crate) const TAB_BAR_H: f32 = 38.0;
 pub(crate) const TOOLBAR_H: f32 = 38.0;
 pub(crate) const INDENT: f32 = 16.0;
-const BUTTON_H: f32 = 26.0;
-const CHEVRON_W: f32 = 24.0;
-const PRIMARY_H: f32 = 28.0;
 
 pub(crate) fn checkbox(id: u64, staging: Staging, hot: bool) -> Node {
-    let colors = theme();
-    let mut square = div()
-        .w_px(14.0)
-        .h_px(14.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center();
-    square = match staging {
-        Staging::Staged => square
-            .bg(colors.accent_fill)
-            .child(icon(IconKind::Check).size(10.0).color(colors.on_accent)),
-        Staging::Partial => square
-            .bg(colors.accent_fill)
-            .child(div().w_px(7.0).h_px(2.0).rounded(1.0).bg(colors.on_accent)),
-        // A clear fill of the ring's own color keeps the ring's inner edge from blending toward black.
-        Staging::Unstaged if hot => square
-            .bg(colors.text_accent.alpha(0.0))
-            .border(1.5, colors.text_accent),
-        Staging::Unstaged => square
-            .bg(colors.border.alpha(0.0))
-            .border(1.5, colors.border),
-    };
     div()
-        .w_px(14.0)
+        .row()
         .h_px(20.0)
         .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(square)
+        .child(
+            components::checkbox(id, staging == Staging::Staged, "")
+                .partial(staging == Staging::Partial)
+                .hovered(hot),
+        )
         .into()
 }
 
@@ -128,125 +105,11 @@ pub(crate) fn icon_button(id: u64, kind: IconKind, hot: bool, enabled: bool) -> 
 }
 
 pub(crate) fn ghost_button(id: u64, leading: Option<IconKind>, text: &str, hot: bool) -> Div {
-    let colors = theme();
-    let mut button = div()
-        .row()
-        .h_px(BUTTON_H)
-        .px(8.0)
-        .gap(6.0)
-        .rounded(4.0)
-        .items_center()
-        .on_click(id);
-    if let Some(kind) = leading {
-        button = button.child(icon(kind).size(13.0).color(colors.icon_muted));
-    }
-    button = button.child(label(text.to_string()).size(12.0).color(colors.text));
-    if hot {
-        button = button.bg(colors.ghost_element_hover);
-    }
-    button
-}
-
-/// The main action and a chevron that opens its menu, as one bordered control.
-pub(crate) struct SplitButton<'a> {
-    pub main: u64,
-    pub menu: u64,
-    pub text: &'a str,
-    pub note: Option<&'a str>,
-    pub enabled: bool,
-    pub hover: Option<u64>,
-    /// The panel's main action: filled with the accent instead of sitting on the surface.
-    pub primary: bool,
-}
-
-impl SplitButton<'_> {
-    fn ink(&self) -> Rgba {
-        let colors = theme();
-        match (self.enabled, self.primary) {
-            (false, _) => colors.text_placeholder,
-            (true, true) => colors.on_accent,
-            (true, false) => colors.text,
-        }
-    }
-
-    /// The main half (for a tooltip) and the whole control, built by `finish`.
-    pub fn main_half(&self) -> Div {
-        let colors = theme();
-        let mut main = div()
-            .row()
-            .h_px(if self.primary { PRIMARY_H } else { BUTTON_H })
-            .px(if self.primary { 12.0 } else { 10.0 })
-            .gap(6.0)
-            .items_center();
-        // A disabled button still takes the pointer, so its tooltip can say why.
-        main = main.on_click(self.main);
-        if self.enabled && self.hover == Some(self.main) {
-            main = main.bg(if self.primary {
-                colors.on_accent.alpha(0.12)
-            } else {
-                colors.ghost_element_hover
-            });
-        }
-        let size = if self.primary { 13.0 } else { 12.0 };
-        let mut text = label(self.text.to_string()).size(size).color(self.ink());
-        if self.primary {
-            text = text.weight(600);
-        }
-        main = main.child(text);
-        if let Some(note) = self.note {
-            main = main.child(label(note.to_string()).size(size).color(
-                if self.primary && self.enabled {
-                    colors.on_accent.alpha(0.85)
-                } else {
-                    colors.text_placeholder
-                },
-            ));
-        }
-        main
-    }
-
-    pub fn finish(&self, main: Div) -> Node {
-        let colors = theme();
-        let height = if self.primary { PRIMARY_H } else { BUTTON_H };
-        let mut chevron = div()
-            .row()
-            .w_px(if self.primary {
-                CHEVRON_W + 2.0
-            } else {
-                CHEVRON_W
-            })
-            .h_px(height)
-            .items_center()
-            .justify_center()
-            .on_click(self.menu)
-            .child(icon(IconKind::ChevronDown).size(12.0).color(
-                match (self.enabled, self.primary) {
-                    (true, true) => colors.on_accent,
-                    _ => colors.icon_muted,
-                },
-            ));
-        if self.hover == Some(self.menu) {
-            chevron = chevron.bg(colors.ghost_element_hover);
-        }
-        let (fill, divider) = match (self.enabled, self.primary) {
-            (true, true) => (colors.accent_fill, colors.on_accent.alpha(0.2)),
-            (false, true) => (colors.element_hover, colors.border_variant),
-            _ => (colors.element_background, colors.border_variant),
-        };
-        let mut control = div()
-            .row()
-            .rounded(if self.primary { 6.0 } else { 4.0 })
-            .items_center()
-            .bg(fill);
-        if !self.primary {
-            control = control.border(1.0, colors.border_variant);
-        }
-        control
-            .child(main)
-            .child(div().w_px(1.0).h_px(height).bg(divider))
-            .child(chevron)
-            .into()
-    }
+    components::button(id, text)
+        .kind(components::ButtonKind::Ghost)
+        .icon(leading)
+        .hovered(hot.then_some(id))
+        .render()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

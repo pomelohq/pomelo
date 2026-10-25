@@ -309,9 +309,9 @@ impl FileFinder {
             .render()
             .w_px(WIDTH)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(picker_footer(vec![
                 picker_action(None, &["enter"], "Open"),
                 picker_action(None, &["up", "down"], "Move"),

@@ -2216,7 +2216,7 @@ impl WorkspaceView {
                         .flex(1.0)
                         .h_px(crate::pane::TAB_H)
                         .child(ui::div().flex(1.0))
-                        .child(ui::div().h_px(1.0).bg(ui::theme().border)),
+                        .child(components::edge_divider()),
                 );
             let p = ui::render(
                 &bar.into(),

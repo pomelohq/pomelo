@@ -267,20 +267,9 @@ fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
 }
 
 fn meter(used: f32) -> Node {
-    let fill = (used / 100.0).clamp(0.0, 1.0);
-    div()
-        .row()
-        .h_px(6.0)
-        .rounded(3.0)
-        .bg(theme().border_variant)
-        .child(
-            div()
-                .flex(fill.max(0.0001))
-                .h_px(6.0)
-                .rounded(3.0)
-                .bg(workspace::usage_tone(used)),
-        )
-        .child(div().flex((1.0 - fill).max(0.0001)))
+    components::progress_bar(used / 100.0)
+        .height(6.0)
+        .color(workspace::usage_tone(used))
         .into()
 }
 
@@ -289,7 +278,7 @@ fn rows(items: Vec<Node>) -> Node {
     let mut column = div().col().rounded(8.0).border(1.0, colors.border_variant);
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
-            column = column.child(div().h_px(1.0).bg(colors.border_variant));
+            column = column.child(components::divider());
         }
         column = column.child(item);
     }
@@ -440,7 +429,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         .w_px(content_w)
         .gap(22.0)
         .child(header)
-        .child(div().h_px(1.0).bg(colors.border_variant))
+        .child(components::divider())
         .child(stats);
 
     if let (Some(account), Some(session), Some(weekly)) = (
@@ -607,7 +596,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         }
         chart_body = chart_body
             .child(bars)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(axis);
     }
     let mut legend: Vec<Node> = Vec::new();

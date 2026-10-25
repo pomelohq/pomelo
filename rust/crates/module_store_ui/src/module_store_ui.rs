@@ -13,7 +13,7 @@ pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
-use workspace::{paragraph, Item, ItemTick};
+use workspace::{Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
@@ -386,33 +386,36 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
         })
         .collect();
     let mut column = popover_frame(OPTIMIZE_POPOVER_W)
-        .child(paragraph(
-            &format!("Optimize: {}", parts.join(", ")),
-            13.0,
-            20.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.text,
+        .child(Node::from(
+            components::paragraph(
+                format!("Optimize: {}", parts.join(", ")),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(13.0, 20.0)
+            .color(colors.text),
         ))
-        .child(paragraph(
-            &format!(
-                "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
-                format_size(plan_frees(overview, &steps))
-            ),
-            12.0,
-            16.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.text_muted,
+        .child(Node::from(
+            components::paragraph(
+                format!(
+                    "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
+                    format_size(plan_frees(overview, &steps))
+                ),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.text_muted),
         ));
     if !restarted.is_empty() {
-        column = column.child(paragraph(
-            &format!(
-                "Services are stopped and started again in {}.",
-                restarted.join(", ")
-            ),
-            12.0,
-            16.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.warning,
+        column = column.child(Node::from(
+            components::paragraph(
+                format!(
+                    "Services are stopped and started again in {}.",
+                    restarted.join(", ")
+                ),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.warning),
         ));
     }
     column
@@ -725,18 +728,19 @@ fn confirm_strip(
     });
     let mut column = popover_frame(SWAP_POPOVER_W)
         .child(
-            paragraph(&format!("Use the shared copy in {workspace}?"), 13.0, 20.0, SWAP_POPOVER_W - 24.0, colors.text),
+            Node::from(components::paragraph(format!("Use the shared copy in {workspace}?"), SWAP_POPOVER_W - 24.0).size(13.0, 20.0).color(colors.text)),
         )
-        .child(paragraph(&format!(
+        .child(Node::from(components::paragraph(format!(
                 "Its node_modules is replaced by a clone of the stored copy; the old folder is kept until the new one is in place.{freed}"
-            ), 12.0, 16.0, SWAP_POPOVER_W - 24.0, colors.text_muted));
+            ), SWAP_POPOVER_W - 24.0).size(12.0, 16.0).color(colors.text_muted)));
     if running {
-        column = column.child(paragraph(
-            "Its services are running: they are stopped first and started again after.",
-            12.0,
-            16.0,
-            SWAP_POPOVER_W - 24.0,
-            colors.warning,
+        column = column.child(Node::from(
+            components::paragraph(
+                "Its services are running: they are stopped first and started again after.",
+                SWAP_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.warning),
         ));
     }
     column
@@ -892,7 +896,6 @@ fn version_rows(
 }
 
 fn group(head: Node, rows: Vec<Node>) -> Node {
-    let colors = theme();
     let mut column = components::card().padding(0.0).render().child(
         div()
             .row()
@@ -903,9 +906,7 @@ fn group(head: Node, rows: Vec<Node>) -> Node {
             .child(head),
     );
     for row in rows {
-        column = column
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(row);
+        column = column.child(components::divider()).child(row);
     }
     column.into()
 }

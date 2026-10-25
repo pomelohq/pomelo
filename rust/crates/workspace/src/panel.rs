@@ -1441,11 +1441,10 @@ fn headline(text: String, color: Rgba) -> Node {
 /// The one thing that needs you, as a filled pill so it is found at a glance.
 /// The row lifted off the list while it is dragged: the same row on an elevated card.
 pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
-    div()
-        .col()
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
+    components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .child(workspace_row(row, true, false, Upkeep::None, 240.0, None))
         .into()
 }
@@ -1453,15 +1452,15 @@ pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
 /// A group header lifted off the list while it is dragged, with its colour so it reads as the whole group.
 pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
     let colors = theme();
-    div()
+    components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .row()
         .h_px(30.0)
         .px(10.0)
         .gap(6.0)
         .items_center()
-        .rounded(6.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(div().w_px(6.0).h_px(6.0).rounded(2.0).bg(group.color()))
         .child(label(group.label()).size(12.0).color(colors.text))
         .child(div().row().flex(1.0))

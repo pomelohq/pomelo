@@ -121,7 +121,11 @@ pub fn muted(text: &str) -> ui::Label {
 
 /// Small muted copy broken into lines that fit `width`.
 pub fn note_paragraph(text: &str, width: f32) -> Node {
-    workspace::paragraph(text, 12.0, 16.0, width, theme().text_placeholder)
+    Node::from(
+        components::paragraph(text, width)
+            .size(12.0, 16.0)
+            .color(theme().text_placeholder),
+    )
 }
 
 /// A one-line input box around `field`, on the surface layer, ringed while focused.

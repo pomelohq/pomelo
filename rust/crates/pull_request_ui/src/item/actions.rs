@@ -197,46 +197,21 @@ impl PrItem {
             )
         };
         let enabled = ready && !merging && self.pending.is_none();
-        let (fill, ink) = if enabled {
-            (colors.success, ui::Rgba::new(1.0, 1.0, 1.0, 1.0))
-        } else {
-            (colors.element_background, colors.text_disabled)
-        };
         let text = if self.confirm_merge && enabled {
             format!("Confirm {}", method.label().to_lowercase())
         } else {
             method.label().to_string()
         };
-        let mut main = div()
-            .row()
-            .h_px(30.0)
-            .pl(12.0)
-            .pr(4.0)
-            .items_center()
-            .child(label(text).size(12.0).weight(600).color(ink));
-        let mut chevron = div()
-            .row()
-            .h_px(30.0)
-            .pl(4.0)
-            .pr(12.0)
-            .items_center()
-            .child(icon(IconKind::ChevronDown).size(12.0).color(ink));
-        if enabled {
-            main = main.on_click(MERGE);
-            chevron = chevron.on_click(MERGE_METHODS);
-        }
         let mut actions = div().row().gap(8.0).items_center();
         if self.confirm_merge && enabled {
             actions = actions.child(components::button(MERGE_CANCEL, "Cancel"));
         }
         actions = actions.child(
-            div()
-                .row()
-                .items_center()
-                .rounded(6.0)
-                .bg(fill)
-                .child(main)
-                .child(chevron),
+            components::split_button(MERGE, MERGE_METHODS, text)
+                .enabled(enabled)
+                .hovered(None)
+                .primary()
+                .size(components::ButtonSize::Medium),
         );
         let text_w = (width - 300.0).max(160.0);
         let row = div()
@@ -274,32 +249,21 @@ impl PrItem {
                     }),
             )
             .child(actions);
-        let mut column = div().col().gap(6.0).child(raised(row, 10.0));
+        let mut column = div().col().gap(6.0).child(raised(row));
         if self.merge_menu && enabled {
-            let mut menu = div().col().p(4.0).w_px(220.0);
-            for (index, choice) in MergeMethod::ALL.iter().enumerate() {
-                let mark: Node = if *choice == method {
-                    icon(IconKind::Check)
-                        .size(12.0)
-                        .color(colors.text_muted)
-                        .into()
-                } else {
-                    div().w_px(12.0).into()
-                };
-                menu = menu.child(
-                    div()
-                        .row()
-                        .h_px(28.0)
-                        .px(8.0)
-                        .gap(8.0)
-                        .items_center()
-                        .rounded(6.0)
-                        .on_click(METHOD_BASE + index as u64)
-                        .child(mark)
-                        .child(label(choice.label()).size(12.0).color(colors.text)),
-                );
-            }
-            column = column.child(div().row().justify_end().child(raised(menu, 8.0)));
+            let items: Vec<components::MenuItem> = MergeMethod::ALL
+                .iter()
+                .enumerate()
+                .map(|(index, choice)| components::MenuItem {
+                    checked: *choice == method,
+                    ..components::MenuItem::new(METHOD_BASE + index as u64, choice.label())
+                })
+                .collect();
+            let (menu, _, _) = components::menu(&items)
+                .hovered(None)
+                .min_width(220.0)
+                .render();
+            column = column.child(div().row().justify_end().child(menu));
         }
         Some(column.into())
     }

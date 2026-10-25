@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -500,7 +500,6 @@ fn row(entry: &ProxyLogEntry, hovered: bool, selected: bool) -> Node {
 }
 
 fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
-    let colors = theme();
     let mut column = div().col();
     let mut any = false;
     for entry in state.visible() {
@@ -518,23 +517,9 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             "Nothing matches these filters."
         };
         column = column.child(
-            div()
-                .col()
-                .items_center()
-                .gap(8.0)
-                .pt(60.0)
-                .child(
-                    icon(IconKind::ArrowUpRight)
-                        .size(20.0)
-                        .color(colors.text_placeholder),
-                )
-                .child(
-                    label("No requests")
-                        .size(13.0)
-                        .medium()
-                        .color(colors.text_placeholder),
-                )
-                .child(centered_lines(hint, 360.0)),
+            components::empty_state("No requests")
+                .icon(IconKind::ArrowUpRight)
+                .body(hint, 360.0),
         );
     }
     column.into()
@@ -553,36 +538,6 @@ fn key_value(name: ui::Label, value: ui::Label) -> Node {
 
 fn fact(name: &str, value: impl Into<String>, color: Rgba) -> Node {
     key_value(small(name, theme().text_muted), small(value, color))
-}
-
-fn centered_lines(text: &str, width: f32) -> Node {
-    let colors = theme();
-    let fits = |candidate: &str| {
-        ui::measure_text_width(candidate, 12.0, false, ui::ui_font_weight()) / ui::ui_text_scale()
-            <= width
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(line) if fits(&format!("{line} {word}")) => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(word.to_string()),
-        }
-    }
-    let mut column = div().col().w_px(width);
-    for line in lines {
-        column = column.child(
-            div()
-                .row()
-                .h_px(16.0)
-                .items_center()
-                .justify_center()
-                .child(small(line, colors.text_muted)),
-        );
-    }
-    column.into()
 }
 
 fn key_values(rows: Vec<Node>) -> Node {
@@ -864,7 +819,7 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             .px(DETAIL_PAD)
             .pt(4.0)
             .child(strip)
-            .child(div().h_px(1.0).bg(colors.border_variant)),
+            .child(components::divider()),
     );
     if tab == DetailTab::FanOut {
         let mut deliveries = div().col().px(DETAIL_PAD).py(6.0);

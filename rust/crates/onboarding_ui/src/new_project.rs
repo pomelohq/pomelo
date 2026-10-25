@@ -526,12 +526,10 @@ fn review(state: &Onboarding, width: f32) -> Node {
                     20.0,
                     label(key).size(13.0).color(colors.text_placeholder),
                 )))
-                .child(workspace::paragraph(
-                    &value,
-                    13.0,
-                    20.0,
-                    value_w,
-                    colors.text,
+                .child(Node::from(
+                    components::paragraph(value, value_w)
+                        .size(13.0, 20.0)
+                        .color(colors.text),
                 ))
                 .into()
         })

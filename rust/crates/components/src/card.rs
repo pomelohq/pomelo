@@ -54,10 +54,16 @@ impl Card {
     pub fn render(self) -> Div {
         let colors = theme();
         let (fill, edge) = match (self.tint, self.raised) {
-            (Some(tint), _) => (
-                tint.alpha(if self.hovered { 0.1 } else { 0.06 }),
-                tint.alpha(0.3),
-            ),
+            (Some(tint), raised) => {
+                let wash = tint.alpha(if self.hovered { 0.1 } else { 0.06 });
+                // A raised card floats over text, so its tint sits on an opaque surface.
+                let fill = if raised {
+                    wash.over(colors.elevated_surface_background)
+                } else {
+                    wash
+                };
+                (fill, tint.alpha(0.3))
+            }
             (None, true) => (colors.elevated_surface_background, colors.border),
             (None, false) if self.hovered => (colors.element_hover, colors.border_variant),
             (None, false) => (colors.element_background, colors.border_variant),

@@ -563,7 +563,192 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story(
+            "checkbox-partial",
+            "Checkbox",
+            "Some of it on",
+            CONTROL,
+            || still(|_, _| alone(components::checkbox(ID, false, "Stage api").partial(true))),
+        ),
+        story(
+            "progress-meter",
+            "Progress",
+            "A usage meter",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        components::progress_bar(0.82)
+                            .height(6.0)
+                            .width(120.0)
+                            .color(theme().warning),
+                    )
+                })
+            },
+        ),
+        story(
+            "divider-vertical",
+            "Divider",
+            "Between groups in a row",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        div()
+                            .row()
+                            .gap(8.0)
+                            .items_center()
+                            .child(ui::label("Ln 12, Col 4").size(12.0).color(theme().text))
+                            .child(components::vertical_divider(14.0))
+                            .child(ui::label("Rust").size(12.0).color(theme().text_muted)),
+                    )
+                })
+            },
+        ),
+        story(
+            "status-item",
+            "Status item",
+            "On the status bar",
+            (320.0, 60.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    alone(
+                        div()
+                            .row()
+                            .gap(6.0)
+                            .items_center()
+                            .child(
+                                components::status_item(Some(ID))
+                                    .badged_icon(
+                                        IconKind::Server,
+                                        colors.icon_accent,
+                                        Some(colors.success),
+                                    )
+                                    .width(26.0),
+                            )
+                            .child(
+                                components::status_item(Some(ID + 1))
+                                    .icon(IconKind::Terminal, colors.icon_muted)
+                                    .width(26.0)
+                                    .hovered(true),
+                            )
+                            .child(components::vertical_divider(14.0))
+                            .child(
+                                components::status_item(Some(ID + 2))
+                                    .text("Ln 12, Col 4", colors.text),
+                            )
+                            .child(components::status_item(None).mono("NORMAL", colors.text_muted)),
+                    )
+                })
+            },
+        ),
+        story(
+            "split-button",
+            "Split button",
+            "Secondary",
+            (260.0, 72.0),
+            || still(|_, _| alone(components::split_button(ID, ID + 1, "Stage All"))),
+        ),
+        story(
+            "split-button-primary",
+            "Split button",
+            "Primary, with a note",
+            (300.0, 72.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        components::split_button(ID, ID + 1, "Commit")
+                            .note(Some("+amend"))
+                            .primary()
+                            .size(ButtonSize::Medium),
+                    )
+                })
+            },
+        ),
+        story(
+            "split-button-disabled",
+            "Split button",
+            "Disabled",
+            (260.0, 72.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        components::split_button(ID, ID + 1, "Sync")
+                            .primary()
+                            .enabled(false),
+                    )
+                })
+            },
+        ),
+        story("tab-active", "Tab", "Active", (260.0, 64.0), || {
+            still(|_, _| alone(tab("main.rs").active(true)))
+        }),
+        story("tab-idle", "Tab", "Not active", (260.0, 64.0), || {
+            still(|_, _| alone(tab("main.rs")))
+        }),
+        story("tab-hovered", "Tab", "Hovered", (260.0, 64.0), || {
+            still(|_, _| alone(tab("main.rs").hovered(true)))
+        }),
+        story("tab-unsaved", "Tab", "Unsaved", (260.0, 64.0), || {
+            still(|_, _| alone(tab("main.rs").unsaved(Some(theme().text_muted))))
+        }),
+        story(
+            "tab-pinned-preview",
+            "Tab",
+            "Pinned, and a preview",
+            (360.0, 64.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        div()
+                            .row()
+                            .gap(4.0)
+                            .child(tab("pom.yml").pinned(true))
+                            .child(tab("README.md").preview(true)),
+                    )
+                })
+            },
+        ),
+        story(
+            "tab-floating",
+            "Tab",
+            "Carried while dragged",
+            (260.0, 64.0),
+            || still(|_, _| alone(tab("main.rs").floating())),
+        ),
+        story("paragraph", "Paragraph", "Wrapped", (320.0, 100.0), || {
+            still(|_, _| {
+                alone(components::paragraph(
+                    "Shared services of feat-login are forwarded once they run. Forward any other port of dev above.",
+                    260.0,
+                ))
+            })
+        }),
+        story(
+            "paragraph-centered",
+            "Paragraph",
+            "Centered",
+            (320.0, 100.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        components::paragraph(
+                            "Requests the frontend sends through the proxy show up here.",
+                            220.0,
+                        )
+                        .centered(),
+                    )
+                })
+            },
+        ),
     ]
+}
+
+fn tab(title: &str) -> components::Tab {
+    components::tab(ID, title)
+        .glyph(ui::material_icon(ui::MaterialIcon::Document).size(14.0))
+        .close(ID + 1)
 }
 
 fn filters(hovered: Option<u64>) -> components::Segmented {

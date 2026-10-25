@@ -650,7 +650,7 @@ impl ProjectSearch {
                 div()
                     .row()
                     .px(2.0)
-                    .child(div().w_px(1.0).h_px(18.0).bg(colors.border_variant)),
+                    .child(components::vertical_divider(18.0)),
             )
             .child(self.icon_button(PREVIOUS, IconKind::ChevronLeft, false, has_match))
             .child(self.icon_button(NEXT, IconKind::ChevronRight, false, has_match))
@@ -763,15 +763,10 @@ impl ProjectSearch {
                     ),
             );
         }
-        div()
-            .col()
-            .child(bar)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .into()
+        div().col().child(bar).child(components::divider()).into()
     }
 
     fn landing(&self) -> Node {
-        let colors = theme();
         let (heading, detail) = match self.phase {
             Phase::Searching => ("Searching...", None),
             Phase::Done if self.error.is_none() => (
@@ -783,42 +778,21 @@ impl ProjectSearch {
                 Some("Include/exclude specific paths with the filter option. Matching exact word and/or casing is available too."),
             ),
         };
-        let mut column = div()
-            .col()
-            .gap(8.0)
-            .items_center()
-            .child(label(heading).size(15.0).weight(600).color(colors.text));
+        let mut state = components::empty_state(heading);
         if let Some(detail) = detail {
-            let mut lines = div().col().items_center();
-            for line in wrap_words(detail, 12.0, 380.0) {
-                lines = lines.child(
-                    div()
-                        .row()
-                        .h_px(16.0)
-                        .items_center()
-                        .child(label(line).size(12.0).color(colors.text_muted)),
-                );
-            }
-            column = column.child(lines);
+            state = state.body(detail, 380.0);
         }
         if self.phase == Phase::Idle {
-            column = column.child(
+            state = state.action(
                 div()
                     .row()
-                    .pt(8.0)
                     .gap(6.0)
                     .items_center()
                     .child(key_chip("enter", false))
-                    .child(label("Search").size(12.0).color(colors.text_placeholder)),
+                    .child(label("Search").size(12.0).color(theme().text_placeholder)),
             );
         }
-        div()
-            .row()
-            .flex(1.0)
-            .justify_center()
-            .pt(64.0)
-            .child(column)
-            .into()
+        state.into()
     }
 
     fn line_node(
@@ -1240,28 +1214,6 @@ impl Item for ProjectSearch {
 }
 
 /// `text` broken at spaces into lines no wider than `width`, so each can be centered on its own.
-fn wrap_words(text: &str, size: f32, width: f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{line} {word}")
-        };
-        if !line.is_empty() && ui::measure_text_width(&candidate, size, false, 400) > width {
-            lines.push(std::mem::take(&mut line));
-            line = word.to_string();
-        } else {
-            line = candidate;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-
 /// What a replace over files no tab holds did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReplaceReport {

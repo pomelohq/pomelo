@@ -1,7 +1,7 @@
 //! Dragging a tab between panes of a pane group: where a drop would land (onto a tab, the tab bar's free end,
 //! a pane edge to split, or a pane's middle) and moving the item there, pruning the pane it left.
 
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
+use ui::{icon, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
 
 use crate::pane::{Pane, TAB_H};
 use crate::pane_group::{self, Member, SplitDirection};
@@ -62,24 +62,16 @@ impl TabDrag {
 
     /// A floating copy of the dragged tab for the pointer to carry: its node and size.
     pub fn ghost(&self) -> (Node, f32, f32) {
-        let width = (self.title.chars().count() as f32 * 7.5 + 52.0).clamp(90.0, 260.0);
         let glyph: Node = match self.glyph {
             Glyph::Mono(kind) => icon(kind).size(14.0).color(theme().icon_muted).into(),
             Glyph::File(kind) => material_icon(kind).size(14.0).into(),
         };
-        let node = div()
-            .row()
-            .items_center()
-            .gap(6.0)
-            .px(10.0)
-            .h_px(TAB_H)
-            .rounded(6.0)
-            .bg(theme().elevated_surface_background)
-            .border(1.0, theme().border)
-            .child(glyph)
-            .child(label(self.title.clone()).size(13.0).color(theme().text))
+        let node = components::tab(0, self.title.clone())
+            .glyph(glyph)
+            .floating()
             .into();
-        (node, width, TAB_H)
+        let width = ui::measure(&node).0;
+        (node, width, components::TAB_HEIGHT)
     }
 }
 
@@ -263,7 +255,7 @@ mod tests {
             self.0.to_string()
         }
         fn render(&mut self) -> Node {
-            div().into()
+            ui::div().into()
         }
     }
 

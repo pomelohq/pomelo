@@ -396,7 +396,6 @@ impl CompletionsMenu {
         let body = layout.height_of(first, count);
         let width = layout.width + ASIDE_PADDING_X * 2.0 + 2.0;
         let height = body + PADDING_Y + 2.0;
-        let _colors = theme();
         let node = components::card()
             .padding(0.0)
             .raised()

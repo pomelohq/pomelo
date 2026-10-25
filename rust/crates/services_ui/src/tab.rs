@@ -327,16 +327,16 @@ impl ServiceItem {
             .col()
             .w_px(width)
             .child(self.header(&state))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         if let Some(trouble) = self.trouble(&state, crash.as_ref(), error.as_deref(), width) {
             top = top.child(trouble);
         }
         let shown = self.shown();
         let top = top
             .child(self.facts(&state, crash.as_ref(), width))
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(self.logs_bar(&state, shown.len()))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         let top: Node = top.into();
         let used = ui::measure(&top).1;
         let list_h = (height - used).max(0.0);

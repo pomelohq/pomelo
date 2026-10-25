@@ -2253,7 +2253,7 @@ impl SidePanelView for ServicesPanel {
                     zone = zone.child(self.render_row(index, row));
                 }
             }
-            panel = panel.child(div().h_px(1.0).bg(colors.border)).child(zone);
+            panel = panel.child(components::edge_divider()).child(zone);
         }
         panel.into()
     }

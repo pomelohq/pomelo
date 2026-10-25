@@ -752,11 +752,7 @@ impl Item for BucketItem {
             .px(CARD_INSET)
             .pb(CARD_GAP)
             .gap(CARD_GAP)
-            .child(
-                card(main_w)
-                    .child(head)
-                    .child(div().h_px(1.0).bg(colors.border_variant)),
-            );
+            .child(card(main_w).child(head).child(components::divider()));
         if side_w > 0.0 {
             cards = cards.child(card(side_w));
         }

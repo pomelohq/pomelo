@@ -572,14 +572,9 @@ impl Grid {
                 .child(name)
                 .child(div().w_px(1.0).h_px(HEADER_H).bg(edge));
         }
-        let mut grid = div()
-            .col()
-            .child(header)
-            .child(div().h_px(1.0).bg(colors.border_variant));
+        let mut grid = div().col().child(header).child(components::divider());
         if let Some(below) = below {
-            grid = grid
-                .child(below)
-                .child(div().h_px(1.0).bg(colors.border_variant));
+            grid = grid.child(below).child(components::divider());
         }
 
         let last = (self.first_row + self.visible_rows()).min(self.rows.len());
@@ -705,9 +700,7 @@ impl Grid {
                 }
                 line = line.child(cell);
             }
-            grid = grid
-                .child(line)
-                .child(div().h_px(1.0).bg(colors.border_variant));
+            grid = grid.child(line).child(components::divider());
         }
         grid.into()
     }

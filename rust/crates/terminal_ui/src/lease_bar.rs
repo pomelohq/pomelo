@@ -1,5 +1,5 @@
 //! The strip over an agent tab someone else drives: who drives it, Take over, and a tool call waiting for an
-//! approval with Allow and Deny, each a raised card on the panel's tray.
+//! approval with Allow and Deny, each a banner on the panel's tray.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use pom_agent::PendingApproval;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use ui::{div, icon, label, theme, Appearance, Div, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, Node};
 use workspace::keymap::{key_hint, Action};
 
 const TAKE_OVER: u64 = 0;
@@ -168,132 +168,64 @@ pub fn strip(
     let mut cards = Vec::new();
     if let Some(driver) = driver {
         cards.push(
-            div()
-                .row()
-                .h_px(36.0)
-                .pl(12.0)
-                .pr(6.0)
-                .gap(8.0)
-                .items_center()
-                .child(
-                    icon(IconKind::Eye)
-                        .size(14.0)
-                        .color(colors.text_placeholder),
-                )
-                .child(
-                    div().row().flex(1.0).child(
-                        label(format!("Watching - {driver} drives this session"))
-                            .size(12.0)
-                            .color(colors.text)
-                            .truncate(),
-                    ),
-                )
-                .child(button(base + TAKE_OVER, None, "Take over", None, false)),
+            components::banner(
+                components::BannerTone::Info,
+                format!("Watching - {driver} drives this session"),
+            )
+            .icon(IconKind::Eye)
+            .action(button(base + TAKE_OVER, None, "Take over", None, false)),
         );
     }
     if let Some(pending) = pending {
-        let actions = div()
+        let lead = div()
             .row()
-            .gap(6.0)
-            .child(button(
-                base + ALLOW,
-                Some(IconKind::Check),
-                "Allow",
-                key_hint(Action::AgentAllow),
-                true,
-            ))
-            .child(button(
-                base + DENY,
-                Some(IconKind::Close),
-                "Deny",
-                key_hint(Action::AgentDeny),
-                false,
-            ));
-        let what = div()
-            .row()
-            .flex(1.0)
-            .h_px(20.0)
+            .gap(8.0)
             .items_center()
+            .child(components::pill("Waiting for approval").attention())
             .child(
-                label(format!("{} ", pending.tool))
+                label(pending.tool.clone())
                     .mono()
                     .size(12.0)
                     .weight(700)
                     .color(colors.text),
-            )
-            .child(
-                div().row().flex(1.0).child(
-                    label(pending.summary.clone())
-                        .mono()
-                        .size(12.0)
-                        .color(colors.text)
-                        .truncate(),
-                ),
             );
-        let head = div()
-            .row()
-            .h_px(20.0)
-            .gap(8.0)
-            .items_center()
-            .child(components::pill("Waiting for approval").attention())
-            .child(what);
-        let card = if width < ONE_LINE_W {
-            div()
-                .col()
-                .p(8.0)
-                .pl(12.0)
-                .gap(8.0)
-                .child(head)
-                .child(div().row().justify_end().child(actions))
-        } else {
-            div()
-                .row()
-                .p(8.0)
-                .pl(12.0)
-                .gap(8.0)
-                .items_center()
-                .child(div().row().flex(1.0).child(head))
-                .child(actions)
-        };
-        cards.push(card);
+        cards.push(
+            components::banner(components::BannerTone::Warning, pending.summary.clone())
+                .lead(lead)
+                .mono()
+                .action(button(
+                    base + ALLOW,
+                    Some(IconKind::Check),
+                    "Allow",
+                    key_hint(Action::AgentAllow),
+                    true,
+                ))
+                .action(button(
+                    base + DENY,
+                    Some(IconKind::Close),
+                    "Deny",
+                    key_hint(Action::AgentDeny),
+                    false,
+                ))
+                .stack_actions(width < ONE_LINE_W),
+        );
     }
     if cards.is_empty() {
         return None;
     }
-    Some(tray(cards, width))
-}
-
-/// Cards on the panel's tray over a tab.
-pub(crate) fn tray(cards: Vec<Div>, width: f32) -> Node {
-    let colors = theme();
-    // Each card sits on a ring with a darker edge under it, the way a raised card casts its shadow.
     let mut tray = div().col().w_px(width).px(7.0).pt(7.0).pb(5.0).gap(3.0);
     for card in cards {
-        tray = tray.child(
-            div().col().pb(1.0).rounded(11.0).bg(shadow()).child(
-                div()
-                    .col()
-                    .p(1.0)
-                    .rounded(11.0)
-                    .bg(colors.border)
-                    .child(card.rounded(10.0).bg(colors.element_background)),
-            ),
-        );
+        tray = tray.child(card);
     }
-    div()
-        .col()
-        .w_px(width)
-        .bg(colors.panel_background)
-        .child(tray)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .into()
-}
-
-fn shadow() -> Rgba {
-    match theme().appearance {
-        Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
-        Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
-    }
+    Some(
+        div()
+            .col()
+            .w_px(width)
+            .bg(colors.panel_background)
+            .child(tray)
+            .child(components::divider())
+            .into(),
+    )
 }
 
 /// A small button: filled with the accent when `primary`, else ghost, with its keys in a chip after the text.

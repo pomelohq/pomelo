@@ -147,7 +147,7 @@ impl ConsoleToolbar for SideAgentBar {
             .col()
             .w_px(width)
             .child(bar)
-            .child(div().h_px(1.0).bg(colors.border))
+            .child(components::edge_divider())
             .into()
     }
 

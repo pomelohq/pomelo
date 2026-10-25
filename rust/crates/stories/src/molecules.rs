@@ -573,6 +573,191 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story(
+            "banner-detail",
+            "Banner",
+            "With a second line, flush",
+            (420.0, 80.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(420.0)
+                        .child(
+                            components::banner(BannerTone::Warning, "Reconnecting to dev...")
+                                .detail("Edits stay here; saves wait for it.")
+                                .flush(),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "banner-wrap",
+            "Banner",
+            "A message that wraps",
+            (420.0, 110.0),
+            || {
+                still(|_, _| {
+                    div()
+                    .col()
+                    .w_px(420.0)
+                    .p(INSET)
+                    .child(
+                        components::banner(
+                            BannerTone::Info,
+                            "Jira answered 401. Sign in again under Settings > Integrations, then reload.",
+                        )
+                        .wrap(320.0),
+                    )
+                    .into()
+                })
+            },
+        ),
+        story(
+            "banner-decision",
+            "Banner",
+            "Waiting on a decision",
+            (620.0, 80.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(620.0)
+                        .p(INSET)
+                        .child(
+                            components::banner(BannerTone::Warning, "rm -rf target/debug")
+                                .lead(components::pill("Waiting for approval").attention())
+                                .mono()
+                                .action(
+                                    components::button(ID, "Allow")
+                                        .kind(components::ButtonKind::Primary),
+                                )
+                                .action(
+                                    components::button(ID + 1, "Deny")
+                                        .kind(components::ButtonKind::Ghost),
+                                ),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "banner-watching",
+            "Banner",
+            "Its own icon",
+            (520.0, 80.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(520.0)
+                        .p(INSET)
+                        .child(
+                            components::banner(
+                                BannerTone::Info,
+                                "Watching - an orchestrator drives this session",
+                            )
+                            .icon(IconKind::Eye)
+                            .action(
+                                components::button(ID, "Take over")
+                                    .kind(components::ButtonKind::Ghost),
+                            ),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "empty-state",
+            "Empty state",
+            "A pane with nothing yet",
+            (420.0, 220.0),
+            || {
+                still(|_, _| {
+                    div()
+                    .col()
+                    .w_px(420.0)
+                    .h_px(220.0)
+                    .child(
+                        components::empty_state("No ports forwarded")
+                            .icon(IconKind::ArrowUpRight)
+                            .body(
+                                "Shared services of feat-login are forwarded once they run. Forward any other port of dev above.",
+                                320.0,
+                            ),
+                    )
+                    .into()
+                })
+            },
+        ),
+        story(
+            "empty-state-action",
+            "Empty state",
+            "With what to do",
+            (420.0, 180.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(420.0)
+                        .h_px(180.0)
+                        .child(
+                            components::empty_state("No errors in workspace")
+                                .action(components::button(ID, "Show 3 warnings")),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "empty-state-compact",
+            "Empty state",
+            "Compact, in a list",
+            (320.0, 60.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(320.0)
+                        .p(INSET)
+                        .child(components::empty_state("No matches").compact())
+                        .into()
+                })
+            },
+        ),
+        story("modal", "Modal", "A form", (480.0, 220.0), || {
+            still(|_, _| {
+                div()
+                    .col()
+                    .p(INSET)
+                    .child(
+                        components::modal_frame(440.0)
+                            .child(components::modal_header("Rename Workspace", Some(ID)))
+                            .child(
+                                components::modal_section(8.0)
+                                    .child(ui::label("feat-login").size(13.0).color(theme().text)),
+                            )
+                            .child(components::modal_footer(
+                                Some(components::modal_note("The branch keeps its name.")),
+                                div()
+                                    .row()
+                                    .gap(8.0)
+                                    .child(
+                                        components::button(ID + 1, "Cancel")
+                                            .size(components::ButtonSize::Medium),
+                                    )
+                                    .child(
+                                        components::button(ID + 2, "Rename")
+                                            .kind(components::ButtonKind::Primary)
+                                            .size(components::ButtonSize::Medium),
+                                    )
+                                    .into(),
+                            )),
+                    )
+                    .into()
+            })
+        }),
     ]
 }
 

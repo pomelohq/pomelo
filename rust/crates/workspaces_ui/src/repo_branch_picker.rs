@@ -8,12 +8,13 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Instant;
 
+use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
 use ui::{deferred, div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{overlay_ring, WINDOW_MODAL_BASE};
+use workspace::WINDOW_MODAL_BASE;
 
 pub(crate) const PICKER_QUERY: u64 = WINDOW_MODAL_BASE + 9;
 pub(crate) const PICKER_REFRESH: u64 = WINDOW_MODAL_BASE + 10;

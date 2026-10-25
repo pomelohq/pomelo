@@ -328,72 +328,21 @@ impl PrItem {
         }
         let mut row = div().row().gap(8.0);
         for (kind, color, text) in chips {
-            row = row.child(raised(
-                div()
-                    .row()
-                    .h_px(28.0)
-                    .px(10.0)
-                    .gap(6.0)
-                    .items_center()
-                    .child(icon(kind).size(14.0).color(color))
-                    .child(label(text).size(12.0).color(colors.text)),
-                6.0,
-            ));
+            row = row.child(components::pill(text).icon(kind).color(color));
         }
         Some(row.into())
     }
 
     fn tabs(&self, checks: usize) -> Node {
-        let colors = theme();
-        let tab = |id: u64, text: &str, count: Option<usize>, active: bool| {
-            let mut segment = div()
-                .row()
-                .h_px(23.0)
-                .px(12.0)
-                .gap(6.0)
-                .items_center()
-                .rounded(4.0)
-                .on_click(id)
-                .child(label(text.to_string()).size(12.0).color(if active {
-                    colors.text
-                } else {
-                    colors.text_muted
-                }));
-            if let Some(count) = count {
-                segment = segment.child(
-                    label(count.to_string())
-                        .size(12.0)
-                        .color(colors.text_placeholder),
-                );
-            }
-            if active {
-                raised(segment, 4.0)
-            } else {
-                segment.into()
-            }
-        };
         div()
             .row()
-            .child(
-                div()
-                    .row()
-                    .p(2.0)
-                    .gap(2.0)
-                    .rounded(6.0)
-                    .bg(colors.background)
-                    .child(tab(
-                        OVERVIEW_TAB,
-                        "Overview",
-                        None,
-                        self.tab == Tab::Overview,
-                    ))
-                    .child(tab(
-                        CHECKS_TAB,
-                        "Checks",
-                        Some(checks),
-                        self.tab == Tab::Checks,
-                    )),
-            )
+            .child(components::segmented(
+                [
+                    components::segment(OVERVIEW_TAB, "Overview"),
+                    components::segment(CHECKS_TAB, "Checks").count(checks),
+                ],
+                usize::from(self.tab == Tab::Checks),
+            ))
             .into()
     }
 
@@ -913,27 +862,13 @@ fn duration(started: &str, completed: &str) -> Option<String> {
     })
 }
 
-/// A card lifted off its layer: a 1px ring and a darker edge under it stand in for a drop shadow.
-fn raised(content: ui::Div, radius: f32) -> Node {
-    let colors = theme();
-    let shadow = match colors.appearance {
-        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
-        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
-    };
-    // A light card stands off the page by its shadow, so its edge is barely there.
-    let edge = match colors.appearance {
-        ui::Appearance::Dark => colors.border_variant,
-        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.04).over(colors.element_background),
-    };
-    let card = div().col().pb(1.0).rounded(radius + 1.0).bg(shadow).child(
-        div()
-            .col()
-            .p(1.0)
-            .rounded(radius + 1.0)
-            .bg(edge)
-            .child(content.rounded(radius).bg(colors.element_background)),
-    );
-    card.into()
+fn raised(content: ui::Div) -> Node {
+    components::card()
+        .padding(0.0)
+        .raised()
+        .render()
+        .child(content)
+        .into()
 }
 
 fn hex_color(hex: &str) -> Option<Rgba> {

@@ -6,8 +6,8 @@ use std::any::Any;
 
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
-use components::{field, text_line};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use components::{field, modal_footer, modal_frame, modal_header, modal_section, MODAL_INSET};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -67,108 +67,6 @@ pub trait WindowModal: 'static {
 /// Content height of a one-line input: 30px box minus 5px padding top and bottom.
 const INPUT_HEIGHT: f32 = 20.0;
 const INPUT_FONT: f32 = 13.0;
-const MODAL_RADIUS: f32 = 10.0;
-/// Horizontal inset of the header title and the body.
-const MODAL_INSET: f32 = 18.0;
-
-/// The hairline ring around a floating surface; on light layers it needs a dark tint to stand off the page.
-pub fn overlay_ring() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.08),
-        ui::Appearance::Light => Rgba::hex("#1d17301f"),
-    }
-}
-
-/// The modal surface: the overlay layer, large rounding and a hairline ring.
-pub fn modal_frame(width: f32) -> ui::Div {
-    div()
-        .col()
-        .w_px(width)
-        .rounded(MODAL_RADIUS)
-        .ring(1.0, overlay_ring())
-        .bg(theme().elevated_surface_background)
-}
-
-/// The title (heading weight) with an optional close button that emits `close_id`.
-pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .items_center()
-        .justify_between()
-        .pl(MODAL_INSET)
-        .pr(12.0)
-        .pt(14.0)
-        .pb(6.0)
-        .gap(8.0)
-        .child(
-            div().row().flex(1.0).items_center().child(
-                label(title.to_string())
-                    .size(15.0)
-                    .weight(600)
-                    .color(colors.text)
-                    .truncate(),
-            ),
-        );
-    if let Some(id) = close_id {
-        row = row.child(
-            div()
-                .row()
-                .items_center()
-                .justify_center()
-                .w_px(28.0)
-                .h_px(24.0)
-                .rounded(6.0)
-                .on_click(id)
-                .hover_bg(colors.ghost_element_hover)
-                .child(icon(IconKind::Close).size(14.0).color(colors.icon)),
-        );
-    }
-    row.into()
-}
-
-/// The form body: the modal's inset at the sides, groups `gap` apart.
-pub fn modal_section(gap: f32) -> ui::Div {
-    div().col().px(MODAL_INSET).pt(10.0).pb(18.0).gap(gap)
-}
-
-/// The footer bar on the panel layer: `start` (a note) on the left, `end` (the buttons) on the right.
-pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
-    let colors = theme();
-    let row = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .px(14.0)
-        .pt(2.0)
-        .pb(12.0)
-        .child(
-            div()
-                .row()
-                .flex(1.0)
-                .items_center()
-                .child(start.unwrap_or_else(|| div().into())),
-        )
-        .child(end);
-    // The rounded bar keeps the frame's bottom corners; the strip above squares its top ones.
-    div()
-        .col()
-        .rounded(MODAL_RADIUS)
-        .bg(colors.panel_background)
-        .child(div().h_px(10.0).bg(colors.panel_background))
-        .child(row)
-        .into()
-}
-
-/// A muted one-line note for the footer's start.
-pub fn modal_note(text: &str) -> Node {
-    label(text.to_string())
-        .size(12.0)
-        .color(theme().text_placeholder)
-        .truncate()
-        .into()
-}
-
 /// Width of a confirmation in design px.
 pub const PROMPT_WIDTH: f32 = 460.0;
 
@@ -269,12 +167,10 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                         .items_center()
                         .child(icon(IconKind::Warning).size(14.0).color(colors.warning)),
                 )
-                .child(paragraph(
-                    warning,
-                    13.0,
-                    20.0,
-                    text_width - 46.0,
-                    colors.text,
+                .child(Node::from(
+                    components::paragraph(warning, text_width - 46.0)
+                        .size(13.0, 20.0)
+                        .color(colors.text),
                 )),
         );
     }
@@ -287,30 +183,6 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
     card.child(modal_footer(None, buttons.into())).into()
 }
 
-/// `text` broken at spaces into lines that fit `width`, each `line_height` tall, so wrapped copy keeps the
-/// type scale's leading.
-pub fn paragraph(text: &str, size: f32, line_height: f32, width: f32, color: Rgba) -> Node {
-    let fits = |candidate: &str| {
-        ui::measure_text_width(candidate, size, false, ui::ui_font_weight()) / ui::ui_text_scale()
-            <= width
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(line) if fits(&format!("{line} {word}")) => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(word.to_string()),
-        }
-    }
-    let mut column = div().col();
-    for line in lines {
-        column = column.child(text_line(line_height, label(line).size(size).color(color)));
-    }
-    column.into()
-}
-
 /// Muted body copy at the body line height, wrapping only when it does not fit `width`. A run between `**`
 /// marks is set strong, in the text color: the thing the sentence is about.
 fn body_text(text: &str, width: f32) -> Node {
@@ -320,7 +192,11 @@ fn body_text(text: &str, width: f32) -> Node {
         / ui::ui_text_scale()
         <= width;
     if !fits {
-        return paragraph(&plain, 13.0, 20.0, width, colors.text_muted);
+        return Node::from(
+            components::paragraph(plain, width)
+                .size(13.0, 20.0)
+                .color(colors.text_muted),
+        );
     }
     let mut row = div().row().h_px(20.0).items_center();
     for (index, run) in text.split("**").enumerate() {

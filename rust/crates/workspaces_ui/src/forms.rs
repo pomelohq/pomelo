@@ -6,14 +6,12 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
+use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use indexmap::IndexMap;
 use module_store::Outlook;
 use pom_agent::NameSuggestion;
 use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node};
-use workspace::{
-    modal_footer, modal_frame, modal_header, modal_note, modal_section, EditKey, InputField,
-    ModalResult, WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 use crate::repo_branch_picker::{
     BranchPicker, BranchSource, Entry, RepoBranches, ENTRY_BASE, ENTRY_END, PICKER_QUERY,

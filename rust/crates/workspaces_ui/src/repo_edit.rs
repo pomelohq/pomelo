@@ -2,11 +2,9 @@ use components::{checkbox, status_line, text_line, ButtonKind};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+use components::{modal_footer, modal_frame, modal_header, modal_section};
 use ui::{div, label, theme, IconKind, Node};
-use workspace::{
-    modal_footer, modal_frame, modal_header, modal_section, EditKey, InputField, ModalResult,
-    WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 460.0;
 const CLOSE: u64 = WINDOW_MODAL_BASE + 1;

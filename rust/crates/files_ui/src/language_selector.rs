@@ -3,7 +3,7 @@
 //! file to the chosen language.
 
 use editor::highlight::Lang;
-use ui::{div, label, material_icon, theme, LabelSize, MaterialIcon, Node};
+use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
 use crate::command_palette::scroll_rows;
@@ -235,13 +235,7 @@ impl LanguageSelector {
         let end = (self.scroll_top + visible).min(self.matches.len());
         let mut results = div().col().py(4.0);
         if self.matches.is_empty() {
-            results = results.child(
-                div().row().px(10.0).py(4.0).child(
-                    label("No matches")
-                        .label_size(LabelSize::Default)
-                        .color(colors.text_muted),
-                ),
-            );
+            results = results.child(components::empty_state("No matches").compact());
         } else {
             results = results
                 .children(crate::list_scrollbar::render(
@@ -260,7 +254,7 @@ impl LanguageSelector {
             .render()
             .w_px(WIDTH)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
             .into()
     }
