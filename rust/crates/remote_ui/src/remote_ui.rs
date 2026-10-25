@@ -8,15 +8,16 @@ pub use ports::{
     PORTS_TAB_ID,
 };
 
+use components::ButtonKind;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
+use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
 use ui::{div, icon, label, theme, IconKind, Node};
 use workspace::{
-    modal_footer, modal_frame, modal_header, modal_note, modal_section, ButtonKind, CenterNotice,
-    EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone, WindowModal,
-    WINDOW_MODAL_BASE,
+    CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
+    WindowModal, WINDOW_MODAL_BASE,
 };
 
 const WIDTH: f32 = 480.0;
@@ -311,8 +312,8 @@ impl WindowModal for ConnectHostModal {
         let mut buttons = div().row().items_center().gap(8.0);
         if back {
             buttons = buttons.child(
-                ui::button(BACK, "Back")
-                    .size(ui::ButtonSize::Medium)
+                components::button(BACK, "Back")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Ghost),
             );
             if matches!(
@@ -322,12 +323,13 @@ impl WindowModal for ConnectHostModal {
                     ..
                 }
             ) {
-                buttons = buttons.child(ui::button(RETRY, "Retry").size(ui::ButtonSize::Medium));
+                buttons = buttons
+                    .child(components::button(RETRY, "Retry").size(components::ButtonSize::Medium));
             }
         }
         buttons = buttons.child(
-            ui::button(CANCEL, "Cancel")
-                .size(ui::ButtonSize::Medium)
+            components::button(CANCEL, "Cancel")
+                .size(components::ButtonSize::Medium)
                 .keystroke(Some("escape")),
         );
         modal_frame(WIDTH)

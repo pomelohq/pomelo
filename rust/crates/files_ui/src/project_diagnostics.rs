@@ -402,18 +402,10 @@ impl ProjectDiagnostics {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, color: Rgba) -> Node {
-        let mut button = div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .child(icon(kind).size(14.0).color(color));
-        if self.hovered == Some(id) {
-            button = button.bg(theme().ghost_element_hover);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .color(color)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn toolbar(&self, width: f32) -> Node {
@@ -423,53 +415,33 @@ impl ProjectDiagnostics {
         } else {
             colors.text_disabled
         };
-        div()
-            .row()
+        components::toolbar()
+            .height(TOOLBAR_H)
+            .spacer()
+            .render()
             .w_px(width)
-            .h_px(TOOLBAR_H)
-            .px(8.0)
-            .gap(4.0)
-            .items_center()
-            .justify_end()
             .child(self.icon_button(REFRESH, IconKind::RotateCw, colors.icon))
             .child(self.icon_button(WARNINGS, IconKind::Warning, warnings_color))
             .into()
     }
 
     fn empty_state(&self) -> Node {
-        let colors = theme();
-        let mut column = div().col().gap(8.0).items_center();
         if self.errors == 0 && self.warnings == 0 {
-            column = column.child(
-                label("No problems in workspace")
-                    .size(14.0)
-                    .color(colors.text_muted),
-            );
-        } else {
-            column = column.child(
-                label("No errors in workspace")
-                    .size(14.0)
-                    .color(colors.text_muted),
-            );
-            if !self.include_warnings && self.warnings > 0 {
-                let noun = if self.warnings == 1 {
-                    "warning"
-                } else {
-                    "warnings"
-                };
-                column = column.child(ui::button(
-                    SHOW_WARNINGS,
-                    format!("Show {} {noun}", self.warnings),
-                ));
-            }
+            return components::empty_state("No problems in workspace").into();
         }
-        div()
-            .row()
-            .flex(1.0)
-            .items_center()
-            .justify_center()
-            .child(column)
-            .into()
+        let mut state = components::empty_state("No errors in workspace");
+        if !self.include_warnings && self.warnings > 0 {
+            let noun = if self.warnings == 1 {
+                "warning"
+            } else {
+                "warnings"
+            };
+            state = state.action(components::button(
+                SHOW_WARNINGS,
+                format!("Show {} {noun}", self.warnings),
+            ));
+        }
+        state.into()
     }
 
     fn header_node(&self, file: usize, id: u64) -> Node {

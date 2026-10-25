@@ -9,6 +9,7 @@ description = "The settings screen: renders settings::Settings into ui primitive
 path = "src/settings_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_jira = { path = "../pom_jira" }
 pom_config = { path = "../pom_config" }
 pom_sync = { path = "../pom_sync" }

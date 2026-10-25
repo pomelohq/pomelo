@@ -14,8 +14,7 @@ use super::{
     CTRL_MODULES_LIMIT_EDIT, CTRL_MODULES_LIMIT_INC, CTRL_PROXY_BIND, CTRL_PROXY_DOMAIN,
     CTRL_PROXY_PORT_DEC, CTRL_PROXY_PORT_EDIT, CTRL_PROXY_PORT_INC, CTRL_PROXY_PUBLIC_PORT,
     CTRL_PROXY_SCHEME, CTRL_PROXY_TRUSTED, CTRL_TERM_SHELL, CTRL_WEBHOOK_PORT_DEC,
-    CTRL_WEBHOOK_PORT_EDIT, CTRL_WEBHOOK_PORT_INC, DEV_SERVICES, GENERAL, INTEGRATIONS, ROUND,
-    TERMINAL,
+    CTRL_WEBHOOK_PORT_EDIT, CTRL_WEBHOOK_PORT_INC, DEV_SERVICES, GENERAL, INTEGRATIONS, TERMINAL,
 };
 
 pub const CTRL_TAB_MAC: u64 = 392;
@@ -590,74 +589,16 @@ pub fn tabs(host: &HostPage) -> Node {
         (_, HostLink::Reconnecting) => colors.warning,
         (_, HostLink::Disconnected) => colors.error,
     };
-    let cell = |id: u64, chosen: bool, glyph: Node, text: &str| -> Node {
-        let ink = if chosen {
-            colors.text
-        } else {
-            colors.text_muted
-        };
-        let mut cell = div()
-            .row()
-            .h_px(24.0)
-            .px(12.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id)
-            .child(glyph)
-            .child(label(text.to_string()).size(12.0).color(ink));
-        if chosen {
-            cell = cell.bg(colors.element_background);
-        }
-        cell.into()
-    };
-    let icon_ink = |chosen: bool| {
-        if chosen {
-            colors.text_muted
-        } else {
-            colors.text_placeholder
-        }
-    };
-    let ring = if host.shown {
-        colors.element_background
-    } else {
-        super::sidebar_c()
-    };
-    let server = div()
-        .row()
-        .w_px(12.0)
-        .h_px(12.0)
-        .child(
-            ui::icon(ui::IconKind::Server)
-                .size(12.0)
-                .color(icon_ink(host.shown)),
-        )
-        .pin(
-            ui::Corner::BottomRight,
-            -2.0,
-            -2.0,
-            6.0,
-            6.0,
-            ui::dot(dot, 6.0).ring(1.5, ring),
-        );
-    div()
-        .row()
-        .p(2.0)
-        .gap(2.0)
-        .rounded(ROUND)
-        .bg(super::sidebar_c())
-        .border(1.0, super::line_c())
-        .child(cell(
-            CTRL_TAB_MAC,
-            !host.shown,
-            ui::icon(ui::IconKind::Monitor)
-                .size(12.0)
-                .color(icon_ink(!host.shown))
-                .into(),
-            "This Mac",
-        ))
-        .child(cell(CTRL_TAB_HOST, host.shown, server.into(), &host.name))
-        .into()
+    components::segmented(
+        [
+            components::segment(CTRL_TAB_MAC, "This Mac").icon(Some(ui::IconKind::Monitor)),
+            components::segment(CTRL_TAB_HOST, host.name.clone())
+                .icon(Some(ui::IconKind::Server))
+                .dot(dot),
+        ],
+        usize::from(host.shown),
+    )
+    .into()
 }
 
 /// What the host tab says under a page's title while the host's settings are not shown.
@@ -676,7 +617,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                 .child(label(text).size(12.0).color(dim_c()).truncate())
                 .child(div().flex(1.0));
             if let Some((id, text)) = button {
-                row = row.child(super::action_button(id, text, true));
+                row = row.child(components::button(id, text));
             }
             row.into()
         };
@@ -729,11 +670,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                     .truncate(),
                 )
                 .child(div().flex(1.0))
-                .child(super::action_button(
-                    CTRL_HOST_UPDATE_POM,
-                    &format!("Update pom on {name}"),
-                    true,
-                ));
+                .child(components::button(CTRL_HOST_UPDATE_POM, format!("Update pom on {name}")));
             Some(
                 div()
                     .col()
@@ -752,16 +689,6 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
             )
         }
     }
-}
-
-/// A value still on its way from the host.
-pub fn placeholder() -> Node {
-    div()
-        .w_px(170.0)
-        .h_px(8.0)
-        .rounded(4.0)
-        .bg(theme().ghost_element_hover)
-        .into()
 }
 
 /// A section's note under its header: where it applies.

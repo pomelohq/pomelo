@@ -1,9 +1,9 @@
 //! The new project form: repositories, who sets it up and how, then a review before creating it.
 
+use components::{field, ButtonKind};
 use pom_agent::AgentCli;
 use ui::{div, label, theme, IconKind, Node};
 use workspace::text_field::FieldFont;
-use workspace::{field, ButtonKind};
 
 use crate::ids::*;
 use crate::model::{home_relative, AddMode, Field, Form, Onboarding, Request, Step};
@@ -35,26 +35,26 @@ pub(crate) fn footer(state: &Onboarding) -> Node {
     let mut buttons: Vec<Node> = Vec::new();
     if form.step == Step::Repositories {
         buttons.push(
-            workspace::button(CANCEL, "Cancel")
-                .size(ui::ButtonSize::Medium)
+            components::button(CANCEL, "Cancel")
+                .size(components::ButtonSize::Medium)
                 .keystroke(Some("escape"))
                 .into(),
         );
     } else {
         buttons.push(
-            workspace::button(BACK, "Back")
-                .size(ui::ButtonSize::Medium)
+            components::button(BACK, "Back")
+                .size(components::ButtonSize::Medium)
                 .into(),
         );
     }
     buttons.push(Node::from(match form.step {
-        Step::Review => workspace::button(CREATE, format!("Create {}", form.name()))
-            .size(ui::ButtonSize::Medium)
+        Step::Review => components::button(CREATE, format!("Create {}", form.name()))
+            .size(components::ButtonSize::Medium)
             .kind(ButtonKind::Primary)
             .keystroke(Some("cmd-enter"))
             .enabled(state.can_create()),
-        step => workspace::button(NEXT, "Continue")
-            .size(ui::ButtonSize::Medium)
+        step => components::button(NEXT, "Continue")
+            .size(components::ButtonSize::Medium)
             .kind(ButtonKind::Primary)
             .keystroke(Some("enter"))
             .enabled(step_ready(state, step)),
@@ -148,20 +148,20 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
                 branch_error.as_deref(),
             )),
         );
-    let mode = ui::segmented(
+    let mode = components::segmented(
         [
-            ui::segment(MODE_FOLDERS, "Folders"),
-            ui::segment(MODE_URLS, "Git URLs"),
+            components::segment(MODE_FOLDERS, "Folders"),
+            components::segment(MODE_URLS, "Git URLs"),
         ],
         usize::from(form.add_mode == AddMode::Urls),
     )
-    .size(ui::ButtonSize::Medium);
+    .size(components::ButtonSize::Medium);
     let mut adder = div().row().items_center().gap(8.0).child(mode);
     let adder_hint = match form.add_mode {
         AddMode::Folders => {
             adder = adder.child(
-                ui::button(CHOOSE, "Choose folders...")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CHOOSE, "Choose folders...")
+                    .size(components::ButtonSize::Medium)
                     .icon(Some(IconKind::FolderOpen)),
             );
             "A folder with a .git inside, or a folder of repos"
@@ -180,8 +180,8 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
                     .flex(1.0),
                 )
                 .child(
-                    ui::button(ADD_URL, "Add")
-                        .size(ui::ButtonSize::Medium)
+                    components::button(ADD_URL, "Add")
+                        .size(components::ButtonSize::Medium)
                         .enabled(!form.url.text().trim().is_empty()),
                 );
             "Paste one or several git URLs to clone"
@@ -330,7 +330,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
             .gap(12.0)
             .p(14.0)
             .on_click(id)
-            .child(div().col().pt(3.0).child(view::radio(on)))
+            .child(div().col().pt(3.0).child(components::radio(on)))
             .child(body)
             .into()
     };
@@ -349,11 +349,12 @@ fn setup(state: &Onboarding, width: f32) -> Node {
                     colors.text_muted
                 }),
         )
-        .child(ui::status_pill("recommended", colors.success))
+        .child(components::pill("recommended").color(colors.success))
         .into();
     let picker: Node = if any_agent {
         let options = AgentCli::ALL.iter().enumerate().map(|(index, cli)| {
-            ui::segment(AGENT_BASE + index as u64, cli.title()).enabled(state.agent_installed(*cli))
+            components::segment(AGENT_BASE + index as u64, cli.title())
+                .enabled(state.agent_installed(*cli))
         });
         let selected = AgentCli::ALL
             .iter()
@@ -361,8 +362,8 @@ fn setup(state: &Onboarding, width: f32) -> Node {
             .unwrap_or(0);
         field(
             "Agent",
-            ui::segmented(options, selected)
-                .size(ui::ButtonSize::Medium)
+            components::segmented(options, selected)
+                .size(components::ButtonSize::Medium)
                 .into(),
             Some("only installed CLIs can be picked"),
             None,
@@ -387,7 +388,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         div()
             .col()
             .gap(4.0)
-            .child(workspace::checkbox(id, on, text))
+            .child(components::checkbox(id, on, text))
             .child(div().col().pl(22.0).child(detail))
             .into()
     };
@@ -521,16 +522,14 @@ fn review(state: &Onboarding, width: f32) -> Node {
                 .gap(12.0)
                 .px(10.0)
                 .py(8.0)
-                .child(div().w_px(120.0).child(workspace::text_line(
+                .child(div().w_px(120.0).child(components::text_line(
                     20.0,
                     label(key).size(13.0).color(colors.text_placeholder),
                 )))
-                .child(workspace::paragraph(
-                    &value,
-                    13.0,
-                    20.0,
-                    value_w,
-                    colors.text,
+                .child(Node::from(
+                    components::paragraph(value, value_w)
+                        .size(13.0, 20.0)
+                        .color(colors.text),
                 ))
                 .into()
         })

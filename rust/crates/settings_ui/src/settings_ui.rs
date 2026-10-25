@@ -17,10 +17,7 @@ pub use host_tab::{
 pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
-use ui::{
-    chevron_down, chevron_right, close_icon, div, label, render, search_icon, theme, Div,
-    LabelSize, Node, Rect, Rgba,
-};
+use ui::{div, label, render, theme, LabelSize, Node, Rect, Rgba};
 
 // Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
 // the theme. Names map the screen's needs onto the design-system tokens.
@@ -31,12 +28,6 @@ fn bg_c() -> Rgba {
 }
 fn sidebar_c() -> Rgba {
     theme().panel_background
-}
-fn search_c() -> Rgba {
-    theme().editor_background
-}
-fn sel_c() -> Rgba {
-    theme().element_selected
 }
 fn chip_c() -> Rgba {
     theme().element_background
@@ -49,12 +40,6 @@ fn panel_edge_c() -> Rgba {
 }
 
 // Settings rules and control edges are translucent so they read the same on the panel and on a tinted hit row.
-fn line_c() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.06),
-        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.08),
-    }
-}
 fn border_c() -> Rgba {
     match theme().appearance {
         ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.12),
@@ -73,27 +58,6 @@ fn dim_c() -> Rgba {
 
 const ROUND: f32 = 6.0;
 const SMALL_LINE_HEIGHT: f32 = 16.0;
-const NAV_LEAD_W: f32 = 12.0;
-
-fn nav_guide() -> Rgba {
-    theme().border_variant
-}
-
-fn nav_item_box(active: bool, hovered: bool) -> Div {
-    let mut b = div()
-        .row()
-        .h_px(28.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(ROUND);
-    if active {
-        b = b.bg(sel_c());
-    } else if hovered {
-        b = b.bg(hover_c());
-    }
-    b
-}
 
 // Categories and their sub-sections. Trimmed to what we have (or will fill soon); a root with sub-sections
 // gets a disclosure chevron and expands to show them (indented, with a guide line).
@@ -1482,11 +1446,11 @@ fn truncate_to_width(text: &str, size: f32, mono: bool, max_w: f32) -> String {
 
 const POPOVER_BOTTOM_MARGIN: f32 = 8.0; // keep the menu this far from the window edge
 const POPOVER_MAX_H: f32 = 342.0; // the menu is this tall, not window-fit
-const POPOVER_CHROME: f32 = ui::MENU_SEARCH_ROW + 5.0 + 2.0 * ui::MENU_PAD;
+const POPOVER_CHROME: f32 = components::MENU_SEARCH_ROW + 5.0 + 2.0 * components::MENU_PAD;
 
 /// The fixed number of item rows the popover shows; the list scrolls within it rather than the menu shrinking.
 fn popover_row_cap() -> usize {
-    let rows = ((POPOVER_MAX_H - POPOVER_CHROME) / ui::MENU_ROW)
+    let rows = ((POPOVER_MAX_H - POPOVER_CHROME) / components::MENU_ROW)
         .floor()
         .max(1.0) as usize;
     POPOVER_VISIBLE.min(rows)
@@ -1522,7 +1486,7 @@ pub fn popover(
     let w = width * s;
     let margin = POPOVER_BOTTOM_MARGIN * s;
     // Fixed height, not shrunk to the room below: the list scrolls inside it.
-    let row_h = ui::MENU_ROW * s;
+    let row_h = components::MENU_ROW * s;
     let chrome = POPOVER_CHROME * s;
     let avail = viewport_h - 2.0 * margin;
     let visible = if chrome + matches.len() as f32 * row_h <= avail {
@@ -1545,20 +1509,20 @@ pub fn popover(
         })
         .or_else(|| matches.first().map(|&o| id_of(o)));
 
-    let rows: Vec<ui::MenuItem> = matches
+    let rows: Vec<components::MenuItem> = matches
         .iter()
         .skip(scroll)
         .take(visible)
-        .map(|&orig| ui::MenuItem {
+        .map(|&orig| components::MenuItem {
             checked: items[orig] == *current,
-            ..ui::MenuItem::new(
+            ..components::MenuItem::new(
                 id_of(orig),
                 truncate_to_width(&items[orig], 13.0, false, width - 44.0),
             )
         })
         .collect();
     let card = |search_at_bottom| {
-        ui::menu(&rows)
+        components::menu(&rows)
             .hovered(cursor_id)
             .search(query)
             .search_at_bottom(search_at_bottom)
@@ -1566,7 +1530,7 @@ pub fn popover(
             .render()
     };
     let h = card(false).2 * s;
-    let (x, y) = ui::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
+    let (x, y) = components::place_menu(anchor, (w, h), (viewport_w, viewport_h), 2.0 * s, margin);
     let opens_above = y < anchor.y;
     let (card, _, _) = card(opens_above);
     let mut out = render(&card, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
@@ -1589,8 +1553,8 @@ pub fn popover(
     layered.extend(out.rects);
     out.rects = layered;
 
-    let pad = ui::MENU_PAD * s;
-    let search_h = ui::MENU_SEARCH_ROW * s;
+    let pad = components::MENU_PAD * s;
+    let search_h = components::MENU_SEARCH_ROW * s;
     let search_y = if opens_above {
         y + h - pad - search_h
     } else {
@@ -1600,7 +1564,7 @@ pub fn popover(
     if ui::caret_phase() {
         let caret_x = x
             + pad
-            + ui::MENU_SEARCH_INSET * s
+            + components::MENU_SEARCH_INSET * s
             + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight()) * s;
         out.rects.push(Rect {
             x: caret_x,
@@ -2100,31 +2064,11 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
             .child(label(search).size(13.0).color(title_c()))
             .child(caret(show_caret))
     };
-    let mut search_box = div()
-        .row()
-        .h_px(30.0)
-        .px(10.0)
-        .gap(8.0)
-        .items_center()
-        .rounded(ROUND)
-        .bg(search_c())
-        .border(
-            1.0,
-            if search_active {
-                theme().text_accent
-            } else {
-                border_c()
-            },
-        )
-        .on_click(CTRL_SEARCH)
-        .child(search_icon().size(14.0).color(dim_c()))
-        .child(text_area);
+    let mut search_box = components::search_box(CTRL_SEARCH, search_active).child(text_area);
     if !search.is_empty() {
         search_box = search_box.child(
-            div()
-                .items_center()
-                .on_click(CTRL_SEARCH_CLEAR)
-                .child(close_icon().size(14.0).color(dim_c())),
+            components::icon_button(CTRL_SEARCH_CLEAR, ui::IconKind::Close)
+                .size(components::ButtonSize::XSmall),
         );
     }
     div()
@@ -2173,37 +2117,7 @@ fn sidebar_nav(
         // Searching force-expands so matches are visible; otherwise honor the stored expansion state.
         let is_expanded = searching || expanded.get(i).copied().unwrap_or(false);
 
-        // Disclosure chevron: its own click target (toggles expand) with a hover state, like the reference's
-        // IconButton. Clicking the row only selects; only the chevron collapses/expands.
         let toggle_id = NAV_TOGGLE_BASE + i as u64;
-        let lead: Node = if has_subs {
-            let chevron: Node = if is_expanded {
-                chevron_down()
-                    .size(12.0)
-                    .color(theme().text_placeholder)
-                    .into()
-            } else {
-                chevron_right()
-                    .size(12.0)
-                    .color(theme().text_placeholder)
-                    .into()
-            };
-            let mut btn = div()
-                .w_px(NAV_LEAD_W)
-                .h_px(20.0)
-                .items_center()
-                .justify_center()
-                .rounded(4.0)
-                .on_click(toggle_id)
-                .child(chevron);
-            if hovered == Some(toggle_id) {
-                btn = btn.bg(hover_c());
-            }
-            btn.into()
-        } else {
-            div().w_px(NAV_LEAD_W).into()
-        };
-
         // Single navbar highlight: a category shows its box only when selected AND no sub-section is active
         // (for a page with sections the active section carries the highlight instead), like the reference.
         let cat_active = is_selected && !searching;
@@ -2215,32 +2129,32 @@ fn sidebar_nav(
         if cat_active {
             name_label = name_label.medium();
         }
-        let inner = nav_item_box(cat_active, is_hovered)
-            .on_click(i as u64)
-            .child(lead)
-            .child(name_label);
-        col = col.child(inner);
+        let mut row = components::tree_row(i as u64, 0)
+            .height(28.0)
+            .rounded()
+            .selected(cat_active)
+            .hovered(is_hovered);
+        if has_subs {
+            row = row.expander(Some(is_expanded)).expander_id(toggle_id);
+        }
+        col = col.child(row.child(name_label));
 
-        if has_subs && is_expanded && !sections.is_empty() {
-            let count = sections.len() as f32;
-            let mut subs_col = div().col().flex(1.0).gap(1.0).pl(12.0);
+        if has_subs && is_expanded {
             for (section_idx, sub) in sections {
                 let id = NAV_JUMP_BASE + i as u64 * NAV_JUMP_STRIDE + section_idx as u64;
                 let is_active = !searching && is_selected && active_section == Some(section_idx);
-                subs_col = subs_col.child(sub_item(sub, id, hovered == Some(id), is_active));
+                col = col.child(
+                    components::tree_row(id, 1)
+                        .rounded()
+                        .flush_leaf()
+                        .hovered(hovered == Some(id))
+                        .child(label(sub).size(12.0).color(if is_active {
+                            theme().text_accent
+                        } else {
+                            dim_c()
+                        })),
+                );
             }
-            col = col.child(
-                div()
-                    .row()
-                    .pl(15.0)
-                    .child(
-                        div()
-                            .w_px(1.0)
-                            .h_px(count * 26.0 + (count - 1.0))
-                            .bg(nav_guide()),
-                    )
-                    .child(subs_col),
-            );
         }
     }
     col.into()
@@ -2322,25 +2236,6 @@ fn matching_sections(
     out
 }
 
-fn sub_item(name: &str, id: u64, hovered: bool, active: bool) -> Node {
-    let mut row = div()
-        .row()
-        .h_px(26.0)
-        .px(8.0)
-        .items_center()
-        .rounded(ROUND)
-        .on_click(id)
-        .child(
-            label(name)
-                .size(12.0)
-                .color(if active { theme().text_accent } else { dim_c() }),
-        );
-    if hovered {
-        row = row.bg(hover_c());
-    }
-    row.into()
-}
-
 /// The content-pane top bar: file switcher on the left, "Edit in settings.json" on the right. Like the
 /// reference's files header, it's `justify_between` so the right button stays pinned to the content's right
 /// edge (never pushed off-window); the left group truncates/overlaps under it when space is tight.
@@ -2378,7 +2273,7 @@ fn toolbar_scope(project: Option<&ProjectPage>) -> (String, Option<(u64, &'stati
 
 fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
     let accent = theme().text_accent;
-    let chip = ui::chip(scope)
+    let chip = components::chip(scope)
         .color(accent)
         .fill(accent.alpha(0.14))
         .border(accent.alpha(0.3));
@@ -2390,8 +2285,8 @@ fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
         .child(div().row().gap(8.0).items_center().child(chip))
         .child(match file {
             Some((id, text)) => Node::from(
-                ui::button(id, text)
-                    .kind(ui::ButtonKind::Ghost)
+                components::button(id, text)
+                    .kind(components::ButtonKind::Ghost)
                     .icon(Some(ui::IconKind::File)),
             ),
             None => div().into(),
@@ -3324,7 +3219,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
                 )
                 .child(crumbs),
         )
-        .child(ui::button(CTRL_OPEN_JSON, "Edit in settings.json"))
+        .child(components::button(CTRL_OPEN_JSON, "Edit in settings.json"))
         .into()
 }
 
@@ -4390,10 +4285,15 @@ fn render_page_under(
                         value,
                     } => {
                         let buf = editing.and_then(|(id, b)| (id == *edit).then_some(b));
-                        stepper(value, *dec, *inc, *edit, buf)
+                        components::stepper(value.as_str(), *dec, *inc, *edit)
+                            .editing(buf)
+                            .into()
                     }
-                    Control::EditInJson { id } => edit_in_json_button(*id),
-                    Control::Toggle { id, on } => toggle_switch(*on, *id),
+                    Control::EditInJson { id } => components::button(*id, "Edit in settings.json")
+                        .kind(components::ButtonKind::Ghost)
+                        .icon(Some(ui::IconKind::File))
+                        .into(),
+                    Control::Toggle { id, on } => components::switch(*id, *on),
                     Control::TextInput {
                         id,
                         value,
@@ -4409,18 +4309,22 @@ fn render_page_under(
                         button_label,
                         enabled,
                     } => configured_card(label, *button, button_label, *enabled),
-                    Control::Button { id, label, enabled } => action_button(*id, label, *enabled),
+                    Control::Button { id, label, enabled } => {
+                        components::button(*id, label.to_string())
+                            .enabled(*enabled)
+                            .into()
+                    }
                     Control::Buttons(buttons) => buttons
                         .iter()
                         .fold(div().row().gap(6.0).items_center(), |row, (id, label)| {
-                            row.child(action_button(*id, label, true))
+                            row.child(components::button(*id, label.to_string()))
                         })
                         .into(),
                     Control::Status { running } => status_chip(*running),
                     Control::Value { text } => value_text(text),
                     Control::Keys { binding } => keys(binding),
                     Control::SubPage { id } => sub_page_button(*id),
-                    Control::Placeholder => host_tab::placeholder(),
+                    Control::Placeholder => components::skeleton(170.0, 0.0, 0.0),
                 };
                 let error = control_id(&row.control).and_then(|id| {
                     errors
@@ -4513,14 +4417,7 @@ fn section_header(name: &str, anchor: u64, noted: bool) -> Node {
         .pt(22.0)
         .pb(if noted { 6.0 } else { 8.0 })
         .on_click(anchor) // geometry marker only: lets the app read this section's y to scroll the navbar to it
-        .child(
-            div().row().h_px(14.0).items_center().child(
-                label(name.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(dim_c()),
-            ),
-        )
+        .child(components::section_header(name))
         .into()
 }
 
@@ -4537,15 +4434,11 @@ fn binding_row(action: Node, name: Node, keys: Node, height: f32, last: bool) ->
         .col()
         .child(row)
         .child(if last {
-            div().h_px(1.0).into()
+            div().h_px(1.0)
         } else {
-            divider()
+            components::divider()
         })
         .into()
-}
-
-fn divider() -> Node {
-    div().h_px(1.0).bg(line_c()).into()
 }
 
 /// The control a row's error is keyed by: the one its value is edited with.
@@ -4572,7 +4465,11 @@ fn row_frame(
 ) -> Node {
     let mut right = div().row().gap(6.0).items_center();
     if let Some(primary) = reset {
-        right = right.child(reset_button(primary + RESET_OFFSET));
+        right = right.child(
+            components::icon_button(primary + RESET_OFFSET, ui::IconKind::Undo)
+                .size(components::ButtonSize::XSmall)
+                .color(theme().text_placeholder),
+        );
     }
     let right: Node = right.child(control).into();
     let inner_w = if hit { row_w - 24.0 } else { row_w };
@@ -4615,26 +4512,10 @@ fn row_frame(
         .col()
         .child(div().col().py(10.0).child(row))
         .child(if last {
-            div().h_px(1.0).into()
+            div().h_px(1.0)
         } else {
-            divider()
+            components::divider()
         })
-        .into()
-}
-
-fn reset_button(id: u64) -> Node {
-    div()
-        .w_px(18.0)
-        .h_px(18.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(
-            ui::icon(ui::IconKind::Undo)
-                .size(14.0)
-                .color(theme().text_placeholder),
-        )
         .into()
 }
 
@@ -4684,68 +4565,8 @@ fn display_value(value: &str) -> String {
 }
 
 fn dropdown(value: &str, id: u64) -> Node {
-    ui::select(id, display_value(value)).min_width(188.0).into()
-}
-
-fn toggle_switch(on: bool, id: u64) -> Node {
-    let knob_color = if on { theme().on_accent } else { dim_c() };
-    let knob = div().w_px(14.0).h_px(14.0).rounded(7.0).bg(knob_color);
-    let mut row = div()
-        .row()
-        .w_px(34.0)
-        .h_px(20.0)
-        .px(3.0)
-        .items_center()
-        .rounded(10.0)
-        .on_click(id);
-    if on {
-        row = row
-            .bg(theme().accent_fill)
-            .child(div().flex(1.0))
-            .child(knob);
-    } else {
-        row = row
-            .bg(theme().element_active)
-            .border(1.0, border_c())
-            .child(knob)
-            .child(div().flex(1.0));
-    }
-    row.into()
-}
-
-fn stepper(value: &str, dec: u64, inc: u64, edit_id: u64, edit: Option<&str>) -> Node {
-    let editing = edit.is_some();
-    let shown = edit.unwrap_or(value);
-    let mut value_box = div()
-        .row()
-        .h_px(28.0)
-        .w_px(42.0)
-        .gap(1.0)
-        .items_center()
-        .justify_center()
-        .on_click(edit_id)
-        .child(label(shown).size(13.0).mono().color(title_c()));
-    if editing {
-        // Reserve the caret slot while editing so the number doesn't shift as the caret blinks.
-        value_box = value_box.child(caret(ui::caret_phase()));
-    }
-    div()
-        .row()
-        .h_px(28.0)
-        .items_center()
-        .rounded(ROUND)
-        .bg(chip_c())
-        .border(
-            1.0,
-            if editing {
-                theme().border_focused
-            } else {
-                border_c()
-            },
-        )
-        .child(step_seg(ui::IconKind::Dash, dec))
-        .child(value_box)
-        .child(step_seg(ui::IconKind::Plus, inc))
+    components::select(id, display_value(value))
+        .min_width(188.0)
         .into()
 }
 
@@ -4773,44 +4594,18 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
     if editing {
         row = row.child(caret(ui::caret_phase()));
     }
-    div()
-        .row()
+    components::input_box(id, editing, false)
         .w_px(220.0)
         .h_px(28.0)
-        .px(10.0)
-        .items_center()
-        .rounded(ROUND)
-        .bg(chip_c())
-        .border(
-            1.0,
-            if editing {
-                theme().border_focused
-            } else {
-                border_c()
-            },
-        )
-        .on_click(id)
         .child(row)
         .into()
 }
 
 /// A stored secret: a check, what is set, and the button that clears it (the reference's configured-key card).
 fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -> Node {
-    let mut clear = div()
-        .row()
-        .h_px(22.0)
-        .px(6.0)
-        .items_center()
-        .rounded(4.0)
-        .border(1.0, theme().border_variant)
-        .child(label(button_label).size(12.0).color(if enabled {
-            title_c()
-        } else {
-            theme().text_disabled
-        }));
-    if enabled {
-        clear = clear.on_click(button);
-    }
+    let clear = components::button(button, button_label)
+        .size(components::ButtonSize::XSmall)
+        .enabled(enabled);
     div()
         .row()
         .h_px(32.0)
@@ -4830,35 +4625,12 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
         .into()
 }
 
-fn action_button(id: u64, text: &str, enabled: bool) -> Node {
-    if enabled {
-        ui::button(id, text).into()
-    } else {
-        div()
-            .row()
-            .h_px(24.0)
-            .px(8.0)
-            .items_center()
-            .rounded(ROUND)
-            .border(1.0, theme().border_variant)
-            .child(label(text).size(12.0).color(theme().text_disabled))
-            .into()
-    }
-}
-
 fn status_chip(running: bool) -> Node {
-    let (color, text) = if running {
-        (theme().success, "Running")
+    if running {
+        components::pill("Running").color(theme().success).into()
     } else {
-        (theme().error, "Stopped")
-    };
-    div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .child(ui::dot(color, 7.0))
-        .child(label(text).size(12.0).color(color))
-        .into()
+        components::pill("Stopped").color(theme().error).into()
+    }
 }
 
 fn value_text(text: &str) -> Node {
@@ -4881,13 +4653,6 @@ fn sub_page_button(id: u64) -> Node {
         .into()
 }
 
-fn edit_in_json_button(id: u64) -> Node {
-    ui::button(id, "Edit in settings.json")
-        .kind(ui::ButtonKind::Ghost)
-        .icon(Some(ui::IconKind::File))
-        .into()
-}
-
 /// A text caret: a fixed-width slot (so surrounding text never shifts) whose bar shows only on the blink's
 /// visible phase.
 fn caret(visible: bool) -> Node {
@@ -4899,17 +4664,6 @@ fn caret(visible: bool) -> Node {
         } else {
             Rgba::TRANSPARENT
         })
-        .into()
-}
-
-fn step_seg(kind: ui::IconKind, id: u64) -> Node {
-    div()
-        .w_px(28.0)
-        .h_px(28.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(ui::icon(kind).size(12.0).color(dim_c()))
         .into()
 }
 

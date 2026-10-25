@@ -1,7 +1,7 @@
 //! The agent dock's popovers: the "+" one that starts a side agent (what it is for, what it starts with),
 //! and the history of archived side agents to reopen.
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 use crate::{SideAgentRole, SideAgentStart};
 
@@ -60,18 +60,6 @@ fn role_note(role: SideAgentRole) -> &'static str {
     }
 }
 
-fn tag(text: &str, color: Rgba, border: Rgba) -> Node {
-    div()
-        .row()
-        .h_px(20.0)
-        .px(6.0)
-        .items_center()
-        .rounded(4.0)
-        .border(1.0, border)
-        .child(label(text.to_string()).size(12.0).color(color))
-        .into()
-}
-
 fn hot(hover: Option<u64>, id: u64) -> bool {
     hover == Some(id)
 }
@@ -90,13 +78,11 @@ pub fn new_agent(
 ) -> Node {
     let colors = theme();
     let inner = WIDTH - 24.0;
-    let mut card = div()
-        .col()
+    let mut card = components::card()
+        .padding(4.0)
+        .raised()
+        .render()
         .w_px(WIDTH)
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(
             div().row().h_px(30.0).px(10.0).items_center().child(
                 label(format!("New side agent in {branch}"))
@@ -141,7 +127,11 @@ pub fn new_agent(
                     .child(label(note).size(12.5).color(colors.text_muted).truncate()),
             )
             .child(div().flex(1.0))
-            .child(tag(tag_text, tag_color, tag_border));
+            .child(
+                components::chip(tag_text)
+                    .color(tag_color)
+                    .border(tag_border),
+            );
         if !unavailable {
             row = row.on_click(id);
         }
@@ -204,26 +194,7 @@ pub fn new_agent(
             note
         };
         let chosen = each == start && !disabled;
-        let radio = div()
-            .row()
-            .w_px(16.0)
-            .h_px(16.0)
-            .items_center()
-            .justify_center()
-            .rounded(8.0)
-            .border(
-                1.5,
-                if chosen {
-                    colors.text_accent
-                } else {
-                    colors.border
-                },
-            )
-            .child(if chosen {
-                Node::from(ui::dot(colors.text_accent, 8.0))
-            } else {
-                Node::from(div())
-            });
+        let radio = components::radio(chosen);
         let text_color = if disabled {
             colors.text_disabled
         } else {
@@ -361,13 +332,11 @@ pub fn new_agent(
 /// The history popover: side agents that were closed, newest first, to reopen with their transcript.
 pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
     let colors = theme();
-    let mut card = div()
-        .col()
+    let mut card = components::card()
+        .padding(4.0)
+        .raised()
+        .render()
         .w_px(WIDTH - 40.0)
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(
             div()
                 .row()
@@ -434,6 +403,6 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
 fn separator() -> Node {
     div()
         .py(4.0)
-        .child(div().w_px(WIDTH - 8.0).h_px(1.0).bg(theme().border_variant))
+        .child(components::divider().w_px(WIDTH - 8.0))
         .into()
 }

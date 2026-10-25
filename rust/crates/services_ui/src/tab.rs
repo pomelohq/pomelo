@@ -327,16 +327,16 @@ impl ServiceItem {
             .col()
             .w_px(width)
             .child(self.header(&state))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         if let Some(trouble) = self.trouble(&state, crash.as_ref(), error.as_deref(), width) {
             top = top.child(trouble);
         }
         let shown = self.shown();
         let top = top
             .child(self.facts(&state, crash.as_ref(), width))
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(self.logs_bar(&state, shown.len()))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         let top: Node = top.into();
         let used = ui::measure(&top).1;
         let list_h = (height - used).max(0.0);
@@ -555,17 +555,6 @@ impl ServiceItem {
         action_button(self.base + offset, Some(kind), text, tone, false)
     }
 
-    fn link(id: u64, text: &str) -> Node {
-        view::ghost(id)
-            .px(3.0)
-            .child(
-                label(text.to_string())
-                    .size(12.5)
-                    .color(theme().text_accent),
-            )
-            .into()
-    }
-
     /// One fact of the card: an uppercase title over its value, with the columns it spans.
     fn fact(title: &str, value: Node) -> (FactSpan, Node) {
         let span = match title {
@@ -589,56 +578,17 @@ impl ServiceItem {
         (span, node)
     }
 
-    /// The state as a pill: a dot and the words in the state's tone.
-    fn status_pill(text: String, tone: ui::Rgba) -> Node {
-        div()
-            .row()
-            .h_px(22.0)
-            .pl(8.0)
-            .pr(10.0)
-            .gap(7.0)
-            .rounded(11.0)
-            .items_center()
-            .bg(tone.alpha(0.14))
-            .child(ui::dot(tone, 7.0))
-            .child(label(text).size(12.0).medium().color(tone).truncate())
-            .into()
-    }
-
     /// A choice among `options` with `current` pressed; each option clicks at `base + index`.
     fn choice(&self, options: &[String], current: &str, base: u64) -> Node {
-        let colors = theme();
-        let mut row = div()
-            .row()
-            .gap(2.0)
-            .p(2.0)
-            .rounded(4.0)
-            .bg(colors.element_background);
-        for (index, option) in options.iter().enumerate() {
-            let pressed = option == current;
-            row = row.child(
-                div()
-                    .row()
-                    .h_px(18.0)
-                    .px(6.0)
-                    .items_center()
-                    .rounded(3.0)
-                    .on_click(self.base + base + index as u64)
-                    .hover_bg(colors.ghost_element_hover)
-                    .active_bg(colors.ghost_element_active)
-                    .bg(if pressed {
-                        colors.element_selected
-                    } else {
-                        ui::Rgba::TRANSPARENT
-                    })
-                    .child(label(option.clone()).size(12.0).color(if pressed {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    })),
-            );
-        }
-        row.into()
+        let segments = options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| components::segment(self.base + base + index as u64, option));
+        let selected = options
+            .iter()
+            .position(|option| option == current)
+            .unwrap_or(usize::MAX);
+        components::segmented(segments, selected).into()
     }
 
     /// The shared service's definition, when this tab follows one.
@@ -674,7 +624,6 @@ impl ServiceItem {
         let busy = matches!(state, State::Busy(_));
         let mut title = div()
             .row()
-            .flex(1.0)
             .gap(8.0)
             .items_center()
             .child(view::status_icon(state));
@@ -686,7 +635,7 @@ impl ServiceItem {
                         .medium()
                         .color(colors.text),
                 )
-                .child(view::tag("shared"))
+                .child(components::chip("shared").color(theme().text_muted))
         } else if self.target.is_workspace_level() {
             title.child(
                 label(self.target.service.clone())
@@ -714,12 +663,17 @@ impl ServiceItem {
             .map(|(_, service)| self.context.access.mode(&self.target, &service))
             .filter(|mode| !mode.is_empty())
         {
-            title = title.child(view::tag(&mode));
+            title = title.child(components::chip(mode).color(theme().text_muted));
         }
         let mut buttons = Vec::new();
         let controls = self.container.is_none() || self.offers(ServiceControl::Shared);
         if controls && (running || busy) {
-            buttons.push(view::disabled_button(Some(IconKind::Play), "Start"));
+            buttons.push(
+                components::button(0, "Start")
+                    .icon(Some(IconKind::Play))
+                    .enabled(false)
+                    .into(),
+            );
         } else if controls {
             buttons.push(self.button(START, IconKind::Play, "Start", Tone::Primary));
         }
@@ -736,34 +690,26 @@ impl ServiceItem {
                     Tone::Plain,
                 ));
             } else {
-                buttons.push(view::disabled_button(
-                    Some(IconKind::ArrowUpRight),
-                    "Open in browser",
-                ));
+                buttons.push(
+                    components::button(0, "Open in browser")
+                        .icon(Some(IconKind::ArrowUpRight))
+                        .enabled(false)
+                        .into(),
+                );
             }
         }
-        let mut row = div()
-            .row()
-            .h_px(44.0)
-            .px(14.0)
-            .gap(6.0)
-            .items_center()
-            .child(title);
+        let mut header = components::page_header(title).compact();
         for button in buttons {
-            row = row.child(button);
+            header = header.action(button);
         }
-        row.child(
-            view::ghost(self.base + MORE)
-                .w_px(24.0)
-                .h_px(24.0)
-                .rounded(4.0)
-                .child(
-                    icon(IconKind::Ellipsis)
-                        .size(14.0)
-                        .color(theme().icon_muted),
-                ),
-        )
-        .into()
+        div()
+            .col()
+            .px(14.0)
+            .child(header.action(components::icon_button(
+                self.base + MORE,
+                IconKind::Ellipsis,
+            )))
+            .into()
     }
 
     fn trouble(
@@ -858,26 +804,26 @@ impl ServiceItem {
 
     fn facts(&self, state: &State, crash: Option<&Crash>, width: f32) -> Node {
         let colors = theme();
-        let status: Node = match state {
+        let status = match state {
             State::Running => {
                 let mut text = "Running".to_string();
                 if let Some(uptime) = self.uptime() {
                     text.push_str(&format!(" - up {uptime}"));
                 }
-                Self::status_pill(text, colors.success)
+                components::pill(text).color(colors.success)
             }
-            State::Busy(text) => Self::status_pill(text.to_string(), colors.warning),
+            State::Busy(text) => components::pill(*text).color(colors.warning),
             State::Crashed => {
                 let text = match crash {
                     Some(crash) => format!("Crashed - {}", crash.exit),
                     None => "Crashed".to_string(),
                 };
-                Self::status_pill(text, colors.error)
+                components::pill(text).color(colors.error)
             }
-            State::Failed { .. } => Self::status_pill("Could not start".into(), colors.error),
-            State::Stopped => Self::status_pill("Stopped".into(), colors.text_placeholder),
+            State::Failed { .. } => components::pill("Could not start").color(colors.error),
+            State::Stopped => components::pill("Stopped").color(colors.text_placeholder),
         };
-        let mut facts = vec![Self::fact("Status", status)];
+        let mut facts = vec![Self::fact("Status", status.into())];
         if *state == State::Running {
             if let Some(pid) = self.context.access.pid(&self.process_holder()) {
                 facts.push(Self::fact(
@@ -916,8 +862,9 @@ impl ServiceItem {
                                 .color(colors.text),
                         )
                         .children(
-                            self.offers(ServiceControl::Relocate)
-                                .then(|| Self::link(self.base + NEW_PORT, "Change")),
+                            self.offers(ServiceControl::Relocate).then(|| {
+                                components::link(self.base + NEW_PORT, None, "Change", true)
+                            }),
                         )
                         .into(),
                 ));
@@ -931,7 +878,10 @@ impl ServiceItem {
                     self.choice(&modes, &current_mode, MODE_BASE),
                 ))
             } else if !current_mode.is_empty() {
-                Some(Self::fact("Mode", ui::chip(current_mode.clone()).into()))
+                Some(Self::fact(
+                    "Mode",
+                    components::chip(current_mode.clone()).into(),
+                ))
             } else {
                 None
             };
@@ -944,7 +894,7 @@ impl ServiceItem {
                         self.choice(&profiles, &current, PROFILE_BASE),
                     ));
                 } else if !current.is_empty() {
-                    facts.push(Self::fact("Env profile", ui::chip(current).into()));
+                    facts.push(Self::fact("Env profile", components::chip(current).into()));
                 }
                 if let Some(file) = dir.env_output.first() {
                     let shown = format!("{}/{}", self.target.repo, file.file);
@@ -955,7 +905,7 @@ impl ServiceItem {
                             .gap(8.0)
                             .items_center()
                             .child(label(shown).size(12.0).color(colors.text).truncate())
-                            .child(Self::link(self.base + OPEN_ENV, "Open"))
+                            .child(components::link(self.base + OPEN_ENV, None, "Open", true))
                             .into(),
                     ));
                 }
@@ -993,14 +943,6 @@ impl ServiceItem {
     }
 }
 
-/// White over a dark theme, the ink color over a light one, at the given strengths.
-fn translucent(dark: f32, light: f32) -> ui::Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => ui::Rgba::new(1.0, 1.0, 1.0, dark),
-        ui::Appearance::Light => ui::Rgba::new(0.114, 0.09, 0.188, light),
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FactSpan {
     One,
@@ -1012,7 +954,6 @@ enum FactSpan {
 /// at the end.
 fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
     const COL_GAP: f32 = 20.0;
-    let colors = theme();
     let inner = (width - 2.0 * 16.0 - 2.0 * 16.0).max(120.0);
     let column = (inner - 2.0 * COL_GAP) / 3.0;
     let (mut command, mut cells): (Vec<_>, Vec<_>) = facts
@@ -1046,14 +987,10 @@ fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
         .pt(4.0)
         .pb(14.0)
         .child(
-            div()
-                .col()
+            components::card()
+                .render()
                 .debug("fact-card")
                 .px(16.0)
-                .py(14.0)
-                .rounded(10.0)
-                .bg(colors.element_background)
-                .border(1.0, translucent(0.06, 0.08))
                 .child(grid),
         )
         .into()
@@ -1540,32 +1477,11 @@ impl ServiceItem {
         );
         if live {
             title = title
-                .child(ui::dot(colors.success, 6.0))
+                .child(components::dot(colors.success, 6.0))
                 .child(label("live").size(11.5).color(colors.success));
         }
-        let mut field = div()
-            .row()
+        let mut field = components::search_box(self.base + FILTER, self.filter_focused)
             .w_px(280.0)
-            .h_px(26.0)
-            .px(8.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(5.0)
-            .border(
-                1.0,
-                if self.filter_focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .bg(colors.editor_background)
-            .on_click(self.base + FILTER)
-            .child(
-                icon(IconKind::Search)
-                    .size(12.0)
-                    .color(colors.text_placeholder),
-            )
             .child(
                 div()
                     .row()

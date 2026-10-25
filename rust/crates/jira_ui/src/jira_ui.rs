@@ -1,6 +1,7 @@
 //! A workspace's Jira ticket as a tab: key and status, title, the description and comments as markdown, and
 //! the ticket's web links. Opens on what the cache holds and fetches the ticket again in the background.
 
+use components::section_header;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
@@ -9,7 +10,7 @@ use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{field_label, Item, ItemTick};
+use workspace::{Item, ItemTick};
 
 const PAD_X: f32 = 28.0;
 const PAD_Y: f32 = 20.0;
@@ -169,8 +170,20 @@ impl TicketItem {
 
     fn header(&self, width: f32) -> Node {
         let colors = theme();
-        let button = |id: u64, kind: IconKind, text: &str| ui::button(id, text).icon(Some(kind));
-        let mut top = div().row().gap(8.0).items_center().child(
+        let button =
+            |id: u64, kind: IconKind, text: &str| components::button(id, text).icon(Some(kind));
+        let title: Node = match &self.detail {
+            Some(detail) => components::page_title(detail.summary.clone(), width).into(),
+            None => {
+                let text = if self.loading.is_some() {
+                    format!("Loading {} from Jira...", self.key)
+                } else {
+                    format!("{} could not be loaded", self.key)
+                };
+                label(text).size(13.0).color(colors.text_muted).into()
+            }
+        };
+        let mut header = components::page_header(title).lead(
             label(self.key.clone())
                 .size(13.0)
                 .mono()
@@ -181,38 +194,24 @@ impl TicketItem {
             .as_ref()
             .filter(|detail| !detail.status.is_empty())
         {
-            let color = self.status_color();
-            top = top.child(
-                div()
-                    .row()
-                    .h_px(20.0)
-                    .px(9.0)
-                    .items_center()
-                    .rounded(10.0)
-                    .bg(color.alpha(0.16))
-                    .child(
-                        label(detail.status.clone())
-                            .size(12.0)
-                            .medium()
-                            .color(color),
-                    ),
-            );
+            header =
+                header.lead(components::pill(detail.status.clone()).color(self.status_color()));
         }
-        top = top.child(div().row().flex(1.0));
         if self
             .detail
             .as_ref()
             .is_some_and(|detail| !detail.url.is_empty())
         {
             let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
-            top = top.child(button(
-                COPY_LINK,
-                IconKind::Copy,
-                if copied { "Copied" } else { "Copy Link" },
-            ));
-            top = top.child(button(OPEN_IN_JIRA, IconKind::ArrowUpRight, "Open in Jira"));
+            header = header
+                .action(button(
+                    COPY_LINK,
+                    IconKind::Copy,
+                    if copied { "Copied" } else { "Copy Link" },
+                ))
+                .action(button(OPEN_IN_JIRA, IconKind::ArrowUpRight, "Open in Jira"));
         }
-        top = top.child(button(
+        header = header.action(button(
             RELOAD,
             IconKind::RotateCw,
             if self.loading.is_some() {
@@ -221,26 +220,7 @@ impl TicketItem {
                 "Reload"
             },
         ));
-        let mut column = div().col().gap(12.0).child(top);
-        match &self.detail {
-            Some(detail) => {
-                column = column.child(
-                    label(detail.summary.clone())
-                        .size(20.0)
-                        .weight(600)
-                        .color(colors.text)
-                        .wrap(width),
-                );
-            }
-            None => {
-                let text = if self.loading.is_some() {
-                    format!("Loading {} from Jira...", self.key)
-                } else {
-                    format!("{} could not be loaded", self.key)
-                };
-                column = column.child(label(text).size(13.0).color(colors.text_muted));
-            }
-        }
+        let mut column = div().col().gap(12.0).child(header);
         if let Some(error) = &self.error {
             column = column.child(Self::callout(error, width));
         }
@@ -248,34 +228,14 @@ impl TicketItem {
     }
 
     fn section(title: String) -> Node {
-        div().row().pt(6.0).child(field_label(&title)).into()
+        div().row().pt(6.0).child(section_header(&title)).into()
     }
 
     fn callout(text: &str, width: f32) -> Node {
-        let colors = theme();
-        let text = label(text.to_string())
-            .size(13.0)
-            .color(colors.text)
-            .wrap(width - 3.0 - 14.0 - 14.0 - 24.0);
-        let line_h = ui::measure(&text.clone().into()).1.max(20.0);
-        div()
-            .row()
+        components::banner(components::BannerTone::Info, text)
+            .wrap(width - 64.0)
+            .render()
             .w_px(width)
-            .rounded(6.0)
-            .bg(colors.panel_background)
-            .child(div().w_px(3.0).h_px(line_h + 24.0).bg(colors.info))
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .pl(11.0)
-                    .pr(14.0)
-                    .py(12.0)
-                    .gap(10.0)
-                    .items_center()
-                    .child(icon(IconKind::Info).size(14.0).color(colors.info))
-                    .child(text),
-            )
             .into()
     }
 

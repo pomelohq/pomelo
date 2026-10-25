@@ -2,20 +2,20 @@
 //! expressed as a list of rects each frame; text/icons come later. Platform-agnostic (Metal/Vulkan/DX12).
 
 mod app;
-mod components;
 mod element;
 mod key_binding;
 mod scroll_gesture;
 mod scroll_pane;
 mod theme;
 pub mod theme_file;
+mod typography;
 pub use app::*;
-pub use components::*;
 pub use element::*;
 pub use key_binding::{keystroke_as_typed, render_keystroke, render_keystroke_in};
 pub use scroll_gesture::ScrollGesture;
 pub use scroll_pane::ScrollPane;
 pub use theme::*;
+pub use typography::*;
 
 // Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).
 pub use reactor::{App, Context, Entity, Global, Subscription, WeakEntity};
@@ -1226,6 +1226,8 @@ fn icon_svg(kind: IconKind) -> &'static [u8] {
         IconKind::Filter => svg!("filter.svg"),
         IconKind::Sliders => svg!("sliders.svg"),
         IconKind::CursorIBeam => svg!("cursor_i_beam.svg"),
+        IconKind::Pointer => svg!("pointer.svg"),
+        IconKind::PointerEdge => svg!("pointer_edge.svg"),
         IconKind::Copy => svg!("copy.svg"),
         IconKind::Trash => svg!("trash.svg"),
         IconKind::Column => svg!("column.svg"),

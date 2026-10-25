@@ -1,8 +1,7 @@
+use components::{checkbox, field, status_line, ButtonKind};
+use components::{modal_footer, modal_frame, modal_header, modal_section};
 use ui::{div, label, theme, IconKind, LabelSize, Node};
-use workspace::{
-    checkbox, field, modal_footer, modal_frame, modal_header, modal_section, status_line,
-    ButtonKind, EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 /// Opens the system folder picker; returns the folders chosen.
 pub type FolderChooser = Box<dyn Fn() -> Vec<std::path::PathBuf>>;
@@ -159,7 +158,9 @@ impl WindowModal for AddRepoModal {
                 self.focus == Focus::Source,
                 source_error.is_some(),
             )))
-            .child(ui::button(CHOOSE_FOLDER, "Folder...").size(ui::ButtonSize::Medium));
+            .child(
+                components::button(CHOOSE_FOLDER, "Folder...").size(components::ButtonSize::Medium),
+            );
         let mut section = modal_section(16.0)
             .child(field(
                 self.source.label,
@@ -175,14 +176,17 @@ impl WindowModal for AddRepoModal {
         if self.ai_available {
             section = section.child(field(
                 "Afterwards",
-                ui::segmented(
+                components::segmented(
                     [
-                        ui::segment(USE_AI, "Let Claude wire its env and shared services"),
-                        ui::segment(REVIEW_LATER, "Review its entry in the config afterwards"),
+                        components::segment(USE_AI, "Let Claude wire its env and shared services"),
+                        components::segment(
+                            REVIEW_LATER,
+                            "Review its entry in the config afterwards",
+                        ),
                     ],
                     usize::from(!self.use_ai),
                 )
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .into(),
                 None,
                 None,
@@ -199,13 +203,13 @@ impl WindowModal for AddRepoModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Add")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Add")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(self.can_add()),
@@ -374,8 +378,8 @@ impl WindowModal for CloneReposModal {
                         None,
                     )))
                     .child(
-                        ui::button(CLONE_FOLDER_BASE + index as u64, "Folder...")
-                            .size(ui::ButtonSize::Medium)
+                        components::button(CLONE_FOLDER_BASE + index as u64, "Folder...")
+                            .size(components::ButtonSize::Medium)
                             .icon(Some(IconKind::FolderOpen)),
                     ),
             );
@@ -385,13 +389,13 @@ impl WindowModal for CloneReposModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Clone")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Clone")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(!self.sources().is_empty()),

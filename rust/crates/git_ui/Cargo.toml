@@ -9,6 +9,7 @@ description = "Git panel: what each repo of the active workspace changed on its 
 path = "src/git_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_forge = { path = "../pom_forge" }
 files_ui = { path = "../files_ui" }
 git = { path = "../git" }

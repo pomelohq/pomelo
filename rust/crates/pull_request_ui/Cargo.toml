@@ -9,6 +9,7 @@ description = "Pull requests in the app: each workspace's PR status refreshed in
 path = "src/pull_request_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 desktop = { path = "../desktop" }
 git = { path = "../git" }
 pom_forge = { path = "../pom_forge" }

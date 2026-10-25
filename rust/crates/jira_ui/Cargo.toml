@@ -9,6 +9,7 @@ description = "A workspace's Jira ticket as a tab: status, description, web link
 path = "src/jira_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 desktop = { path = "../desktop" }
 markdown = { path = "../markdown" }
 pom_jira = { path = "../pom_jira" }

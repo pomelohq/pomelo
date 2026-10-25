@@ -1,6 +1,7 @@
 //! Drawing pieces of the Services panel that carry no state of their own.
 
-use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
+use components::{ButtonKind, ButtonSize};
+use ui::{div, icon, measure, theme, IconKind, Node, Rgba};
 
 /// A row's standing, as its icon and trailing text show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,14 +22,10 @@ impl State {
     }
 }
 
-pub(crate) fn ai_tint() -> Rgba {
-    theme().terminal_ansi[5]
-}
-
 pub(crate) fn status_icon(state: &State) -> Node {
     let colors = theme();
     let inner: Node = match state {
-        State::Running => ui::dot(colors.success, 8.0).into(),
+        State::Running => components::dot(colors.success, 8.0).into(),
         State::Busy(_) => icon(IconKind::RotateCw)
             .size(11.0)
             .color(colors.text_accent)
@@ -41,7 +38,7 @@ pub(crate) fn status_icon(state: &State) -> Node {
             .size(12.0)
             .color(colors.warning)
             .into(),
-        State::Stopped => ui::ring(colors.icon_muted, 8.0).into(),
+        State::Stopped => components::ring(colors.icon_muted, 8.0).into(),
     };
     div()
         .row()
@@ -64,24 +61,6 @@ pub(crate) fn state_color(state: &State) -> Rgba {
     }
 }
 
-/// A mono tag with a thin border (a service's mode).
-pub(crate) fn tag(text: &str) -> Node {
-    div()
-        .row()
-        .h_px(16.0)
-        .px(4.0)
-        .items_center()
-        .rounded(3.0)
-        .border(1.0, theme().border_variant)
-        .child(
-            label(text.to_string())
-                .size(10.5)
-                .mono()
-                .color(theme().text_placeholder),
-        )
-        .into()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tone {
     Plain,
@@ -97,93 +76,21 @@ pub(crate) fn action_button(
     tone: Tone,
     hot: bool,
 ) -> Node {
-    let colors = theme();
-    let (bg, border, icon_color, hover, active) = match tone {
-        Tone::Plain => (
-            colors.element_background,
-            colors.border_variant,
-            colors.icon_muted,
-            colors.element_hover,
-            colors.element_active,
-        ),
-        Tone::Primary => (
-            colors.info_background,
-            colors.info_border,
-            colors.icon,
-            colors.info_border.alpha(0.22),
-            colors.info_border.alpha(0.32),
-        ),
-        Tone::Agent => (
-            ai_tint().alpha(0.12),
-            ai_tint().alpha(0.55),
-            ai_tint(),
-            ai_tint().alpha(0.2),
-            ai_tint().alpha(0.28),
-        ),
-    };
-    let mut button = div()
-        .row()
-        .h_px(22.0)
-        .px(if text.is_empty() { 5.0 } else { 7.0 })
-        .gap(4.0)
-        .items_center()
-        .rounded(4.0)
-        .bg(if hot { hover } else { bg })
-        .hover_bg(hover)
-        .active_bg(active)
-        .border(1.0, border)
-        .on_click(id);
-    if let Some(kind) = kind {
-        button = button.child(icon(kind).size(11.0).color(icon_color));
-    }
-    if !text.is_empty() {
-        button = button.child(label(text.to_string()).size(11.5).color(colors.text));
-    }
-    button.into()
-}
-
-/// A borderless clickable `child` that lights up under the pointer and while pressed.
-pub(crate) fn ghost(id: u64) -> ui::Div {
-    let colors = theme();
-    div()
-        .row()
-        .items_center()
-        .justify_center()
-        .rounded(3.0)
-        .hover_bg(colors.ghost_element_hover)
-        .active_bg(colors.ghost_element_active)
-        .on_click(id)
+    components::button(id, text)
+        .kind(match tone {
+            Tone::Plain => ButtonKind::Secondary,
+            Tone::Primary => ButtonKind::Primary,
+            Tone::Agent => ButtonKind::Agent,
+        })
+        .icon(kind)
+        .hovered(hot.then_some(id))
+        .into()
 }
 
 /// A small icon-only ghost button, such as a copy icon beside a value.
 pub(crate) fn icon_button(id: u64, kind: IconKind) -> Node {
-    ghost(id)
-        .w_px(18.0)
-        .h_px(18.0)
-        .child(icon(kind).size(11.0).color(theme().icon_muted))
-        .into()
-}
-
-/// A small button that cannot be pressed right now.
-pub(crate) fn disabled_button(kind: Option<IconKind>, text: &str) -> Node {
-    let colors = theme();
-    let mut button = div()
-        .row()
-        .h_px(22.0)
-        .px(7.0)
-        .gap(4.0)
-        .items_center()
-        .rounded(4.0)
-        .border(1.0, colors.border_variant);
-    if let Some(kind) = kind {
-        button = button.child(icon(kind).size(11.0).color(colors.icon_muted.alpha(0.4)));
-    }
-    button
-        .child(
-            label(text.to_string())
-                .size(11.5)
-                .color(colors.text_disabled),
-        )
+    components::icon_button(id, kind)
+        .size(ButtonSize::XSmall)
         .into()
 }
 
@@ -214,29 +121,17 @@ pub(crate) fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
 
 /// An uppercase section title with an optional count at the right.
 pub(crate) fn section(title: &str, count: Option<usize>) -> Node {
-    let colors = theme();
-    let mut row = div()
+    let mut header = components::section_header(title);
+    if let Some(count) = count {
+        header = header.count(count);
+    }
+    div()
         .row()
         .h_px(26.0)
-        .pl(10.0)
-        .pr(10.0)
+        .px(10.0)
         .items_center()
-        .child(
-            div().row().flex(1.0).items_center().child(
-                label(title.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(colors.text_placeholder),
-            ),
-        );
-    if let Some(count) = count {
-        row = row.child(
-            label(count.to_string())
-                .size(11.0)
-                .color(colors.text_placeholder),
-        );
-    }
-    row.into()
+        .child(header.render().flex(1.0))
+        .into()
 }
 
 /// How long the holder whose pidfile is `pidfile` has been running: "41m 58s", "2h 5m".

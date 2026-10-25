@@ -396,15 +396,13 @@ impl CompletionsMenu {
         let body = layout.height_of(first, count);
         let width = layout.width + ASIDE_PADDING_X * 2.0 + 2.0;
         let height = body + PADDING_Y + 2.0;
-        let colors = theme();
-        let node = div()
-            .col()
+        let node = components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(width)
             .py(PADDING_Y / 2.0)
             .px(ASIDE_PADDING_X)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(layout.render(first, count, layout.width))
             .into();
         Some((node, width, height))
@@ -575,13 +573,12 @@ impl CompletionsMenu {
             self.entries.len(),
             self.scrollbar.opacity(),
         );
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
             .py(PADDING_Y / 2.0)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .children(scrollbar)
             .children(rows)
             .into()

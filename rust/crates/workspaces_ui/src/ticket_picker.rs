@@ -2,12 +2,13 @@
 //! (ranked mine-first, best match), with the list they come from: a board's sprint or backlog, or every
 //! open ticket assigned to the user.
 
+use components::{section_header, status_line, text_line};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
-use workspace::{field_label, status_line, text_line, InputField, WINDOW_MODAL_BASE};
+use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Rgba};
+use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
 
@@ -24,7 +25,6 @@ const FIELD_HEIGHT: f32 = 30.0;
 const KEY_W: f32 = 86.0;
 const STATUS_W: f32 = 110.0;
 const MINE_W: f32 = 40.0;
-const PULSE_SECONDS: f32 = 1.2;
 
 enum Loaded {
     Boards(Result<Vec<Board>, String>),
@@ -340,11 +340,15 @@ impl TicketPicker {
             .items_center()
             .gap(6.0)
             .h_px(14.0)
-            .child(field_label(self.field.label));
+            .child(section_header(self.field.label));
         if let Some(name) = self.source_name() {
-            let mut anchor = div()
-                .col()
-                .child(self.source_button(&name, hovered == Some(SOURCE)));
+            let mut anchor = div().col().child(
+                components::select(SOURCE, name)
+                    .size(components::ButtonSize::XSmall)
+                    .quiet()
+                    .enabled(self.boards_known)
+                    .hovered((self.menu_open || hovered == Some(SOURCE)).then_some(SOURCE)),
+            );
             if self.menu_open {
                 anchor = anchor.child(self.source_menu(hovered));
             }
@@ -385,7 +389,7 @@ impl TicketPicker {
             column = column.child(status_line(
                 IconKind::Warning,
                 colors.warning,
-                &format!("Couldn't load {source} ({error}); type a ticket key instead"),
+                format!("Couldn't load {source} ({error}); type a ticket key instead"),
             ));
         }
         column.into()
@@ -399,13 +403,11 @@ impl TicketPicker {
         if suggestions.is_empty() && typed.is_empty() && !placeholders {
             return None;
         }
-        let mut list = div()
-            .col()
+        let mut list = components::card()
+            .padding(4.0)
+            .raised()
+            .render()
             .w_px(width)
-            .p(4.0)
-            .rounded(8.0)
-            .border(1.0, colors.border)
-            .bg(colors.elevated_surface_background)
             .on_click(SUGGESTIONS_SURFACE);
         if placeholders {
             let seconds = self.loading_since.elapsed().as_secs_f32();
@@ -440,90 +442,25 @@ impl TicketPicker {
         Some(list.into())
     }
 
-    fn source_button(&self, name: &str, hovered: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(14.0)
-            .px(4.0)
-            .gap(4.0)
-            .items_center()
-            .rounded(4.0)
-            .child(label(name.to_string()).size(11.0).color(if self.menu_open {
-                colors.text
-            } else {
-                colors.text_muted
-            }))
-            .child(
-                icon(IconKind::ChevronDown)
-                    .size(10.0)
-                    .color(colors.icon_muted),
-            );
-        if self.menu_open || (hovered && self.boards_known) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        if self.boards_known {
-            button = button.on_click(SOURCE);
-        }
-        button.into()
-    }
-
     /// Every board's sprint, then the backlog and the user's own tickets; the current one is accented.
     fn source_menu(&self, hovered: Option<u64>) -> Node {
-        let colors = theme();
-        let mut menu = div()
-            .col()
-            .w_px(MENU_WIDTH)
-            .p(4.0)
-            .rounded(8.0)
-            .border(1.0, colors.border)
-            .bg(colors.elevated_surface_background)
-            .on_click(SOURCE_MENU_SURFACE);
-        for (index, option) in self.options().into_iter().enumerate() {
-            if option.grouped_below {
-                menu = menu.child(
-                    div()
-                        .col()
-                        .px(2.0)
-                        .py(4.0)
-                        .child(div().h_px(1.0).bg(colors.border_variant)),
-                );
-            }
-            let current = Some(option.list) == self.list;
-            let id = SOURCE_OPTION_BASE + index as u64;
-            menu = menu.child(
-                div()
-                    .row()
-                    .h_px(26.0)
-                    .px(8.0)
-                    .gap(8.0)
-                    .items_center()
-                    .rounded(4.0)
-                    .bg(if hovered == Some(id) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .on_click(id)
-                    .child(
-                        div().row().flex(1.0).items_center().child(
-                            label(option.name)
-                                .label_size(LabelSize::Default)
-                                .color(if current {
-                                    colors.text_accent
-                                } else {
-                                    colors.text
-                                })
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        label(option.hint)
-                            .label_size(LabelSize::XSmall)
-                            .color(colors.text_placeholder),
-                    ),
-            );
-        }
+        let items: Vec<components::MenuItem> = self
+            .options()
+            .into_iter()
+            .enumerate()
+            .map(|(index, option)| components::MenuItem {
+                checked: Some(option.list) == self.list,
+                sep: option.grouped_below,
+                hint: Some(option.hint.into()),
+                ..components::MenuItem::new(SOURCE_OPTION_BASE + index as u64, option.name)
+            })
+            .collect();
+        let menu = div().on_click(SOURCE_MENU_SURFACE).child(
+            components::menu(&items)
+                .hovered(hovered)
+                .plain_hints()
+                .min_width(MENU_WIDTH),
+        );
         deferred(menu)
             .below_or_above(14.0, 4.0)
             .snap_to_window()
@@ -534,13 +471,7 @@ impl TicketPicker {
 
 /// A grey bar pulsing where a ticket row will be; rows pulse a beat apart so the wave runs down the list.
 fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
-    let colors = theme();
-    let seconds = if ui::reduce_motion() { 0.0 } else { seconds };
-    let phase = (seconds / PULSE_SECONDS - row as f32 * 0.12) * std::f32::consts::TAU;
-    let fill = colors
-        .text_muted
-        .alpha(0.10 + 0.08 * (0.5 + 0.5 * phase.sin()));
-    let bar = |width: f32| div().w_px(width).h_px(10.0).rounded(5.0).bg(fill);
+    let bar = |width: f32| components::skeleton(width, seconds, row as f32 * 0.12);
     div()
         .row()
         .items_center()
@@ -562,30 +493,16 @@ fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
 
 fn status_pill(issue: &SprintIssue) -> Node {
     let colors = theme();
-    let (text, border) = match issue.category.as_str() {
-        "indeterminate" => (colors.text_accent, colors.border_selected),
-        "done" => (colors.success, colors.border_variant),
-        _ => (colors.text_muted, colors.border_variant),
+    let color = match issue.category.as_str() {
+        "indeterminate" => colors.text_accent,
+        "done" => colors.success,
+        _ => colors.text_muted,
     };
     div()
         .row()
         .w_px(STATUS_W)
         .items_center()
-        .child(
-            div()
-                .row()
-                .h_px(18.0)
-                .px(7.0)
-                .items_center()
-                .rounded(9.0)
-                .border(1.0, border)
-                .child(
-                    label(issue.status.clone())
-                        .label_size(LabelSize::XSmall)
-                        .color(text)
-                        .truncate(),
-                ),
-        )
+        .child(components::pill(&issue.status).color(color))
         .into()
 }
 

@@ -1,3 +1,4 @@
+use components::key_chip;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -10,13 +11,12 @@ use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{key_chip, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const ITEM_ID: &str = "project-search";
 const INPUT_H: f32 = 28.0;
 const BUTTON: f32 = 26.0;
 /// The case, word and regex toggles inside the query box.
-const OPTION: f32 = 14.0;
 const PAD_X: f32 = 12.0;
 const PAD_Y: f32 = 8.0;
 const LINE_GAP: f32 = 6.0;
@@ -558,52 +558,19 @@ impl ProjectSearch {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, toggled: bool, enabled: bool) -> Node {
-        let colors = theme();
-        let color = if !enabled {
-            colors.text_disabled
-        } else if toggled {
-            colors.text_accent
-        } else {
-            colors.icon_muted
-        };
-        let mut button = div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .child(icon(kind).size(14.0).color(color));
-        if toggled {
-            button = button.bg(colors.element_selected);
-        } else if enabled && self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        if enabled {
-            button = button.on_click(id);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .toggled(toggled)
+            .enabled(enabled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn option_button(&self, id: u64, kind: IconKind, toggled: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .w_px(OPTION)
-            .h_px(OPTION)
-            .rounded(2.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .child(icon(kind).size(14.0).color(if toggled {
-                colors.text_accent
-            } else {
-                colors.text_placeholder
-            }));
-        if toggled {
-            button = button.bg(colors.element_selected);
-        } else if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .size(components::ButtonSize::XSmall)
+            .toggled(toggled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn input(&self, id: u64, which: Field, field: &TextField, placeholder: &str) -> ui::Div {
@@ -683,7 +650,7 @@ impl ProjectSearch {
                 div()
                     .row()
                     .px(2.0)
-                    .child(div().w_px(1.0).h_px(18.0).bg(colors.border_variant)),
+                    .child(components::vertical_divider(18.0)),
             )
             .child(self.icon_button(PREVIOUS, IconKind::ChevronLeft, false, has_match))
             .child(self.icon_button(NEXT, IconKind::ChevronRight, false, has_match))
@@ -796,15 +763,10 @@ impl ProjectSearch {
                     ),
             );
         }
-        div()
-            .col()
-            .child(bar)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .into()
+        div().col().child(bar).child(components::divider()).into()
     }
 
     fn landing(&self) -> Node {
-        let colors = theme();
         let (heading, detail) = match self.phase {
             Phase::Searching => ("Searching...", None),
             Phase::Done if self.error.is_none() => (
@@ -816,42 +778,21 @@ impl ProjectSearch {
                 Some("Include/exclude specific paths with the filter option. Matching exact word and/or casing is available too."),
             ),
         };
-        let mut column = div()
-            .col()
-            .gap(8.0)
-            .items_center()
-            .child(label(heading).size(15.0).weight(600).color(colors.text));
+        let mut state = components::empty_state(heading);
         if let Some(detail) = detail {
-            let mut lines = div().col().items_center();
-            for line in wrap_words(detail, 12.0, 380.0) {
-                lines = lines.child(
-                    div()
-                        .row()
-                        .h_px(16.0)
-                        .items_center()
-                        .child(label(line).size(12.0).color(colors.text_muted)),
-                );
-            }
-            column = column.child(lines);
+            state = state.body(detail, 380.0);
         }
         if self.phase == Phase::Idle {
-            column = column.child(
+            state = state.action(
                 div()
                     .row()
-                    .pt(8.0)
                     .gap(6.0)
                     .items_center()
                     .child(key_chip("enter", false))
-                    .child(label("Search").size(12.0).color(colors.text_placeholder)),
+                    .child(label("Search").size(12.0).color(theme().text_placeholder)),
             );
         }
-        div()
-            .row()
-            .flex(1.0)
-            .justify_center()
-            .pt(64.0)
-            .child(column)
-            .into()
+        state.into()
     }
 
     fn line_node(
@@ -1273,28 +1214,6 @@ impl Item for ProjectSearch {
 }
 
 /// `text` broken at spaces into lines no wider than `width`, so each can be centered on its own.
-fn wrap_words(text: &str, size: f32, width: f32) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if line.is_empty() {
-            word.to_string()
-        } else {
-            format!("{line} {word}")
-        };
-        if !line.is_empty() && ui::measure_text_width(&candidate, size, false, 400) > width {
-            lines.push(std::mem::take(&mut line));
-            line = word.to_string();
-        } else {
-            line = candidate;
-        }
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-
 /// What a replace over files no tab holds did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReplaceReport {

@@ -1,11 +1,10 @@
+use components::{checkbox, status_line, ButtonKind};
 use std::path::PathBuf;
 
+use components::{modal_footer, modal_frame, modal_header, modal_section};
 use pom_bundle::Contents;
 use ui::{div, label, theme, IconKind, LabelSize, Node};
-use workspace::{
-    checkbox, modal_footer, modal_frame, modal_header, modal_section, status_line, ButtonKind,
-    EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE,
-};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 480.0;
 const PREVIEW_WIDTH: f32 = 580.0;
@@ -92,13 +91,13 @@ impl WindowModal for ExportConfigModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Export...")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Export...")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(self.can_export()),
@@ -280,8 +279,8 @@ impl ImportConfigModal {
                 ),
             )
             .child(
-                ui::button(CHOOSE_FILE, button)
-                    .size(ui::ButtonSize::Medium)
+                components::button(CHOOSE_FILE, button)
+                    .size(components::ButtonSize::Medium)
                     .icon(Some(IconKind::FolderOpen)),
             )
             .into()
@@ -330,8 +329,8 @@ impl WindowModal for ImportConfigModal {
         let width = self.width();
         let mut section = modal_section(16.0).child(self.file_row());
         let mut buttons = div().row().items_center().gap(8.0).child(
-            ui::button(CANCEL, "Cancel")
-                .size(ui::ButtonSize::Medium)
+            components::button(CANCEL, "Cancel")
+                .size(components::ButtonSize::Medium)
                 .keystroke(Some("escape")),
         );
         let mut start = None;
@@ -351,8 +350,8 @@ impl WindowModal for ImportConfigModal {
                     None,
                 ));
                 buttons = buttons.child(
-                    ui::button(CONFIRM, "Unlock")
-                        .size(ui::ButtonSize::Medium)
+                    components::button(CONFIRM, "Unlock")
+                        .size(components::ButtonSize::Medium)
                         .kind(ButtonKind::Primary)
                         .keystroke(Some("enter"))
                         .enabled(!self.password.text().is_empty()),
@@ -381,15 +380,15 @@ impl WindowModal for ImportConfigModal {
                     "Replace my pom.yml (kept as pom.yml.bak)",
                 ));
                 start = Some(
-                    ui::button(ADAPT, "Adapt with Claude")
-                        .size(ui::ButtonSize::Medium)
+                    components::button(ADAPT, "Adapt with Claude")
+                        .size(components::ButtonSize::Medium)
                         .icon(Some(IconKind::Sparkle)),
                 );
                 let applies =
                     self.write_config || (self.store_secrets && !contents.secrets.is_empty());
                 buttons = buttons.child(
-                    ui::button(CONFIRM, "Apply")
-                        .size(ui::ButtonSize::Medium)
+                    components::button(CONFIRM, "Apply")
+                        .size(components::ButtonSize::Medium)
                         .kind(ButtonKind::Primary)
                         .keystroke(Some("enter"))
                         .enabled(applies),

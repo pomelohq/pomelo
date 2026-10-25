@@ -1,8 +1,8 @@
 //! Drawing pieces of the onboarding page that carry no state of their own.
 
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rgba};
+use components::text_line;
+use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::text_line;
 
 pub const COLUMN_W: f32 = 640.0;
 pub const WIDE_W: f32 = 760.0;
@@ -11,7 +11,6 @@ pub const PAGE_PAD_TOP: f32 = 36.0;
 pub const PAGE_PAD_BOTTOM: f32 = 20.0;
 pub const PAGE_GAP: f32 = 16.0;
 pub const FOOTER_H: f32 = 52.0;
-const INPUT_H: f32 = 30.0;
 
 /// The wizard's place along Repositories, Setup, Review; `done` marks every step finished.
 pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
@@ -98,42 +97,20 @@ pub fn panel_list(items: Vec<Node>, inset: f32) -> Node {
     column.into()
 }
 
-/// A card on the panel layer; `chosen` rings it in the accent.
+/// A card that rings in the accent when `chosen`; the caller sets its padding.
 pub fn card_frame(chosen: bool) -> ui::Div {
-    let colors = theme();
-    let frame = div().rounded(10.0).bg(colors.panel_background);
-    if chosen {
-        frame.border(1.0, colors.text_accent)
-    } else {
-        frame
-    }
+    components::card().padding(0.0).chosen(chosen).render()
 }
 
 pub fn chip(text: &str, on: bool) -> Node {
     let colors = theme();
-    ui::chip(text)
+    components::chip(text)
         .color(if on {
             colors.text_muted
         } else {
             colors.text_placeholder
         })
         .into()
-}
-
-/// A round status badge: a dot in the tone's color, then the word.
-/// A 14px radio mark: a hairline ring, or a thick accent ring when chosen.
-pub fn radio(on: bool) -> Node {
-    let colors = theme();
-    let mark = div().row().w_px(14.0).h_px(14.0).rounded(7.0);
-    if on {
-        mark.items_center()
-            .justify_center()
-            .bg(colors.accent_fill)
-            .child(ui::dot(colors.panel_background, 6.0))
-            .into()
-    } else {
-        mark.border(1.0, colors.border).into()
-    }
 }
 
 pub fn muted(text: &str) -> ui::Label {
@@ -144,7 +121,11 @@ pub fn muted(text: &str) -> ui::Label {
 
 /// Small muted copy broken into lines that fit `width`.
 pub fn note_paragraph(text: &str, width: f32) -> Node {
-    workspace::paragraph(text, 12.0, 16.0, width, theme().text_placeholder)
+    Node::from(
+        components::paragraph(text, width)
+            .size(12.0, 16.0)
+            .color(theme().text_placeholder),
+    )
 }
 
 /// A one-line input box around `field`, on the surface layer, ringed while focused.
@@ -157,23 +138,7 @@ pub fn input(
     font: FieldFont,
 ) -> ui::Div {
     let colors = theme();
-    let border = match (error, focused) {
-        (true, _) => colors.error,
-        (false, true) => colors.border_focused,
-        (false, false) => colors.border,
-    };
-    let mut frame = div()
-        .row()
-        .items_center()
-        .h_px(INPUT_H)
-        .px(10.0)
-        .rounded(6.0)
-        .bg(colors.editor_background)
-        .border(1.0, border)
-        .on_click(id);
-    if focused && !error {
-        frame = frame.ring(3.0, colors.overlay_selected);
-    }
+    let frame = components::input_box(id, focused, error);
     frame.child(div().row().flex(1.0).items_center().child(field.render(
         placeholder,
         focused,
@@ -208,21 +173,9 @@ pub fn footer(note: Option<&str>, leading: Vec<Node>, buttons: Vec<Node>) -> Nod
 
 /// A small icon-only button with no fill until hovered.
 pub fn icon_button(id: u64, kind: IconKind, hot: bool) -> Node {
-    let colors = theme();
-    div()
-        .row()
-        .w_px(28.0)
-        .h_px(24.0)
-        .rounded(6.0)
-        .items_center()
-        .justify_center()
-        .bg(if hot {
-            colors.ghost_element_hover
-        } else {
-            Rgba::TRANSPARENT
-        })
-        .on_click(id)
-        .child(icon(kind).size(14.0).color(colors.icon))
+    components::icon_button(id, kind)
+        .color(theme().icon)
+        .hovered(hot.then_some(id))
         .into()
 }
 

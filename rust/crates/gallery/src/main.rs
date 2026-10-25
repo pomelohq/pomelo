@@ -379,6 +379,13 @@ impl Gallery {
         );
         let mut board_title_floor = Vec::with_capacity(self.groups.len());
         for group in &self.groups {
+            if let Some(head) = group.section_head {
+                let (sx, sy) = self.camera.to_screen(group.left, head - scene::FRAME_PAD);
+                base.append(ui::render(
+                    &chrome::section_title(group.section),
+                    ui::Rect::new(canvas.x + sx, sy, 600.0, 36.0, ui::Rgba::TRANSPARENT),
+                ));
+            }
             let (x0, y0) = self
                 .camera
                 .to_screen(group.left - scene::FRAME_PAD, group.head - scene::FRAME_PAD);

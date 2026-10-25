@@ -1,11 +1,13 @@
 //! Modals the window owns (forms such as creating a workspace) and the pieces they are built from: the modal
 //! frame, header and footer, labeled inputs, checkboxes and a progress bar, sized after the reference's.
 
+use components::{button, ButtonKind};
 use std::any::Any;
 
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
-use ui::{button, div, icon, label, theme, ButtonKind, IconKind, LabelSize, Node, Rgba};
+use components::{field, modal_footer, modal_frame, modal_header, modal_section, MODAL_INSET};
+use ui::{div, icon, label, theme, IconKind, Node};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -65,177 +67,6 @@ pub trait WindowModal: 'static {
 /// Content height of a one-line input: 30px box minus 5px padding top and bottom.
 const INPUT_HEIGHT: f32 = 20.0;
 const INPUT_FONT: f32 = 13.0;
-const MODAL_RADIUS: f32 = 10.0;
-/// Horizontal inset of the header title and the body.
-const MODAL_INSET: f32 = 18.0;
-
-/// The hairline ring around a floating surface; on light layers it needs a dark tint to stand off the page.
-pub fn overlay_ring() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.08),
-        ui::Appearance::Light => Rgba::hex("#1d17301f"),
-    }
-}
-
-/// The modal surface: the overlay layer, large rounding and a hairline ring.
-pub fn modal_frame(width: f32) -> ui::Div {
-    div()
-        .col()
-        .w_px(width)
-        .rounded(MODAL_RADIUS)
-        .ring(1.0, overlay_ring())
-        .bg(theme().elevated_surface_background)
-}
-
-/// The title (heading weight) with an optional close button that emits `close_id`.
-pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .items_center()
-        .justify_between()
-        .pl(MODAL_INSET)
-        .pr(12.0)
-        .pt(14.0)
-        .pb(6.0)
-        .gap(8.0)
-        .child(
-            div().row().flex(1.0).items_center().child(
-                label(title.to_string())
-                    .size(15.0)
-                    .weight(600)
-                    .color(colors.text)
-                    .truncate(),
-            ),
-        );
-    if let Some(id) = close_id {
-        row = row.child(
-            div()
-                .row()
-                .items_center()
-                .justify_center()
-                .w_px(28.0)
-                .h_px(24.0)
-                .rounded(6.0)
-                .on_click(id)
-                .hover_bg(colors.ghost_element_hover)
-                .child(icon(IconKind::Close).size(14.0).color(colors.icon)),
-        );
-    }
-    row.into()
-}
-
-/// The form body: the modal's inset at the sides, groups `gap` apart.
-pub fn modal_section(gap: f32) -> ui::Div {
-    div().col().px(MODAL_INSET).pt(10.0).pb(18.0).gap(gap)
-}
-
-/// The footer bar on the panel layer: `start` (a note) on the left, `end` (the buttons) on the right.
-pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
-    let colors = theme();
-    let row = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .px(14.0)
-        .pt(2.0)
-        .pb(12.0)
-        .child(
-            div()
-                .row()
-                .flex(1.0)
-                .items_center()
-                .child(start.unwrap_or_else(|| div().into())),
-        )
-        .child(end);
-    // The rounded bar keeps the frame's bottom corners; the strip above squares its top ones.
-    div()
-        .col()
-        .rounded(MODAL_RADIUS)
-        .bg(colors.panel_background)
-        .child(div().h_px(10.0).bg(colors.panel_background))
-        .child(row)
-        .into()
-}
-
-/// A muted one-line note for the footer's start.
-pub fn modal_note(text: &str) -> Node {
-    label(text.to_string())
-        .size(12.0)
-        .color(theme().text_placeholder)
-        .truncate()
-        .into()
-}
-
-/// An inline link-like action in the accent color, with an optional leading icon.
-pub fn accent_action(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
-    let colors = theme();
-    let color = if enabled {
-        colors.text_accent
-    } else {
-        colors.text_disabled
-    };
-    let mut action = div().row().items_center().gap(6.0).h_px(16.0);
-    if enabled {
-        action = action.on_click(id);
-    }
-    if let Some(kind) = leading {
-        action = action.child(icon(kind).size(12.0).color(color));
-    }
-    action
-        .child(label(text.to_string()).size(12.0).color(color))
-        .into()
-}
-
-/// A field's label: small, uppercase and muted, as every form labels its inputs.
-pub fn field_label(text: &str) -> Node {
-    text_line(
-        14.0,
-        label(text.to_uppercase())
-            .size(11.0)
-            .weight(600)
-            .color(theme().text_placeholder),
-    )
-}
-
-/// `text` in a box of the design's line height, so stacked lines keep the rhythm the type scale sets.
-pub fn text_line(height: f32, text: ui::Label) -> Node {
-    div().row().h_px(height).items_center().child(text).into()
-}
-
-/// The line under a field: what it is for, or what is wrong with it.
-fn field_note(hint: Option<&str>, error: Option<&str>) -> Option<Node> {
-    let colors = theme();
-    match (error, hint) {
-        (Some(error), _) => Some(text_line(
-            16.0,
-            label(error.to_string()).size(12.0).color(colors.error),
-        )),
-        // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
-        (None, Some(hint)) if !hint.is_empty() => Some(text_line(
-            16.0,
-            label(hint.to_string())
-                .size(12.0)
-                .color(colors.text_placeholder)
-                .truncate_start(),
-        )),
-        _ => None,
-    }
-}
-
-/// A labeled group in a form: the label, the control, and the hint or error under it.
-pub fn field(title: &str, control: Node, hint: Option<&str>, error: Option<&str>) -> Node {
-    let mut column = div()
-        .col()
-        .gap(6.0)
-        .child(field_label(title))
-        .child(control);
-    if let Some(note) = field_note(hint, error) {
-        column = column.child(note);
-    }
-    column.into()
-}
-
 /// Width of a confirmation in design px.
 pub const PROMPT_WIDTH: f32 = 460.0;
 
@@ -310,7 +141,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
         };
         buttons = buttons.child(
             button(button_base + index as u64, text)
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .kind(kind)
                 .keystroke(keystroke),
         );
@@ -336,12 +167,10 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                         .items_center()
                         .child(icon(IconKind::Warning).size(14.0).color(colors.warning)),
                 )
-                .child(paragraph(
-                    warning,
-                    13.0,
-                    20.0,
-                    text_width - 46.0,
-                    colors.text,
+                .child(Node::from(
+                    components::paragraph(warning, text_width - 46.0)
+                        .size(13.0, 20.0)
+                        .color(colors.text),
                 )),
         );
     }
@@ -354,30 +183,6 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
     card.child(modal_footer(None, buttons.into())).into()
 }
 
-/// `text` broken at spaces into lines that fit `width`, each `line_height` tall, so wrapped copy keeps the
-/// type scale's leading.
-pub fn paragraph(text: &str, size: f32, line_height: f32, width: f32, color: Rgba) -> Node {
-    let fits = |candidate: &str| {
-        ui::measure_text_width(candidate, size, false, ui::ui_font_weight()) / ui::ui_text_scale()
-            <= width
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(line) if fits(&format!("{line} {word}")) => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(word.to_string()),
-        }
-    }
-    let mut column = div().col();
-    for line in lines {
-        column = column.child(text_line(line_height, label(line).size(size).color(color)));
-    }
-    column.into()
-}
-
 /// Muted body copy at the body line height, wrapping only when it does not fit `width`. A run between `**`
 /// marks is set strong, in the text color: the thing the sentence is about.
 fn body_text(text: &str, width: f32) -> Node {
@@ -387,7 +192,11 @@ fn body_text(text: &str, width: f32) -> Node {
         / ui::ui_text_scale()
         <= width;
     if !fits {
-        return paragraph(&plain, 13.0, 20.0, width, colors.text_muted);
+        return Node::from(
+            components::paragraph(plain, width)
+                .size(13.0, 20.0)
+                .color(colors.text_muted),
+        );
     }
     let mut row = div().row().h_px(20.0).items_center();
     for (index, run) in text.split("**").enumerate() {
@@ -481,24 +290,7 @@ impl InputField {
         suffix: Option<&str>,
     ) -> Node {
         let colors = theme();
-        let border = match (error, focused) {
-            (true, _) => colors.error,
-            (false, true) => colors.border_focused,
-            (false, false) => colors.border,
-        };
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .h_px(INPUT_HEIGHT + 10.0)
-            .px(10.0)
-            .rounded(6.0)
-            .bg(colors.editor_background)
-            .border(1.0, border)
-            .on_click(click_id);
-        if focused && !error {
-            row = row.ring(3.0, colors.overlay_selected);
-        }
+        let mut row = components::input_box(click_id, focused, error);
         if let Some(kind) = self.leading {
             row = row.child(icon(kind).size(14.0).color(colors.text_placeholder));
         }
@@ -545,67 +337,6 @@ impl InputField {
         dots.move_to_end();
         Some(dots)
     }
-}
-
-/// A checkbox (14px box, accent filled when on) and its label, the whole row clickable.
-pub fn checkbox(id: u64, checked: bool, text: &str) -> Node {
-    let colors = theme();
-    let mut square = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(14.0)
-        .h_px(14.0)
-        .rounded(4.0);
-    square = if checked {
-        square
-            .bg(colors.accent_fill)
-            .child(icon(IconKind::Check).size(10.0).color(colors.on_accent))
-    } else {
-        square.border(1.0, colors.border)
-    };
-    let mut row = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .h_px(16.0)
-        .on_click(id)
-        .child(square);
-    if !text.is_empty() {
-        row = row.child(label(text.to_string()).size(12.0).color(colors.text));
-    }
-    row.into()
-}
-
-/// A determinate bar: 8px track with 2px inset, filled in the info color (never below 2%).
-pub fn progress_bar(value: f32) -> Node {
-    let colors = theme();
-    let fraction = value.clamp(0.02, 1.0);
-    div()
-        .row()
-        .h_px(8.0)
-        .p(2.0)
-        .rounded(4.0)
-        .bg(colors.background)
-        .child(div().h_px(4.0).flex(fraction).rounded(2.0).bg(colors.info))
-        .child(div().h_px(4.0).flex(1.0 - fraction))
-        .into()
-}
-
-/// A small muted status line: a leading icon and truncated text.
-pub fn status_line(kind: IconKind, color: Rgba, text: &str) -> Node {
-    div()
-        .row()
-        .items_center()
-        .gap(4.0)
-        .child(icon(kind).size(12.0).color(color))
-        .child(
-            label(text.to_string())
-                .label_size(LabelSize::Small)
-                .color(theme().text_muted)
-                .truncate(),
-        )
-        .into()
 }
 
 #[cfg(test)]

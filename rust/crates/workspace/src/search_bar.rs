@@ -461,7 +461,7 @@ impl SearchBar {
                 }
                 button.into()
             };
-        let vertical_rule = || div().w_px(1.0).h_px(BUTTON).bg(colors.border_variant);
+        let vertical_rule = || components::vertical_divider(BUTTON);
         let input =
             |field: &TextField, which: SearchField, placeholder: &str, border: ui::Rgba, click| {
                 let focused = self.focus == Some(which);
@@ -661,10 +661,6 @@ impl SearchBar {
                     .child(div().w_px(mode_w).child(replace_actions)),
             );
         }
-        div()
-            .col()
-            .child(bar)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .into()
+        div().col().child(bar).child(components::divider()).into()
     }
 }

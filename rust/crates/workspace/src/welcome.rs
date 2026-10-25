@@ -71,18 +71,11 @@ fn logo() -> Option<u64> {
 /// A way to start: its icon, name and what it does, lit while the pointer is over it.
 fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot: bool) -> Node {
     let colors = theme();
-    let fill = if hot {
-        colors.element_hover
-    } else {
-        colors.element_background
-    };
-    div()
-        .col()
+    components::card()
+        .hovered(hot)
+        .render()
         .w_px(width)
-        .p(14.0)
         .gap(6.0)
-        .rounded(10.0)
-        .bg(fill)
         .on_click(id)
         .child(
             div()
@@ -106,36 +99,15 @@ fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot
 
 /// A check this computer fails, with its fix and a way to look again.
 fn banner(index: usize, check: &MachineCheck, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let mut line = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .pt(10.0)
-        .pb(10.0)
-        .pl(14.0)
-        .pr(10.0)
-        .rounded(10.0)
-        .bg(colors.element_background)
-        .child(icon(IconKind::Warning).size(16.0).color(colors.warning))
-        .child(
-            div().row().flex(1.0).child(
-                label(check.detail.clone())
-                    .size(12.0)
-                    .color(colors.text_muted)
-                    .truncate(),
-            ),
-        );
-    if let Some(fix) = &check.fix {
-        line = line.child(crate::button(WELCOME_FIX_BASE + index as u64, fix).hovered(hovered));
-    } else {
-        line = line.child(
-            crate::button(WELCOME_RECHECK, "Check again")
-                .kind(ui::ButtonKind::Ghost)
-                .hovered(hovered),
-        );
-    }
-    line.into()
+    let action = match &check.fix {
+        Some(fix) => crate::button(WELCOME_FIX_BASE + index as u64, fix).hovered(hovered),
+        None => crate::button(WELCOME_RECHECK, "Check again")
+            .kind(components::ButtonKind::Ghost)
+            .hovered(hovered),
+    };
+    components::banner(components::BannerTone::Warning, check.detail.clone())
+        .action(action)
+        .into()
 }
 
 /// The page shown in the editor area while no project is open: who it is, what this computer still needs,
@@ -360,8 +332,7 @@ pub struct CenterNotice {
     pub facts: Vec<NoticeFact>,
 }
 
-const NOTICE_CARD_RADIUS: f32 = 10.0;
-const FACT_LABEL_W: f32 = 88.0;
+const NOTICE_CARD_RADIUS: f32 = components::BANNER_RADIUS;
 
 fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> Option<Node> {
     let button = notice.actions.get(index)?;
@@ -378,74 +349,19 @@ fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> O
     )
 }
 
-fn notice_banner(
-    notice: &CenterNotice,
-    banner: &NoticeBanner,
-    width: f32,
-    hovered: Option<u64>,
-) -> Node {
-    let colors = theme();
-    let (kind, tint) = match (banner.tone, banner.busy) {
-        (_, true) => (IconKind::LoadCircle, colors.text_accent),
-        (NoticeTone::Error, false) => (IconKind::XCircle, colors.error),
-        (NoticeTone::Warning, false) => (IconKind::Warning, colors.warning),
-        (NoticeTone::Info | NoticeTone::Good, false) => (IconKind::Info, colors.text_accent),
+fn notice_banner(notice: &CenterNotice, banner: &NoticeBanner, hovered: Option<u64>) -> Node {
+    let tone = match (banner.tone, banner.busy) {
+        (_, true) => components::BannerTone::Busy,
+        (NoticeTone::Error, false) => components::BannerTone::Error,
+        (NoticeTone::Warning, false) => components::BannerTone::Warning,
+        (NoticeTone::Info | NoticeTone::Good, false) => components::BannerTone::Info,
     };
-    let mut line = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .h_px(24.0)
-        .child(icon(kind).size(16.0).color(tint))
-        .child(
-            div().row().flex(1.0).child(
-                label(banner.text.clone())
-                    .size(12.0)
-                    .color(colors.text_muted)
-                    .truncate(),
-            ),
-        );
+    let mut card = components::banner(tone, banner.text.clone()).commands(banner.commands.clone());
     if let Some(button) = banner
         .action
         .and_then(|index| notice_button(notice, index, hovered))
     {
-        line = line.child(button);
-    }
-    let mut card = div()
-        .col()
-        .gap(8.0)
-        .pt(10.0)
-        .pb(10.0)
-        .pl(14.0)
-        .pr(10.0)
-        .rounded(NOTICE_CARD_RADIUS)
-        .bg(colors.element_background)
-        .child(line);
-    if !banner.commands.is_empty() {
-        let mut block = div()
-            .col()
-            .gap(4.0)
-            .px(10.0)
-            .py(8.0)
-            .rounded(6.0)
-            .bg(colors.editor_background);
-        for command in &banner.commands {
-            block = block.child(
-                div().row().h_px(16.0).items_center().child(
-                    label(command.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text)
-                        .truncate(),
-                ),
-            );
-        }
-        card = card.child(
-            div()
-                .row()
-                .pl(26.0)
-                .child(div().col().w_px((width - 50.0).max(40.0)).child(block)),
-        );
+        card = card.action(button);
     }
     card.into()
 }
@@ -459,30 +375,15 @@ fn notice_facts(facts: &[NoticeFact]) -> Node {
         .rounded(NOTICE_CARD_RADIUS)
         .bg(colors.element_background);
     for fact in facts {
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
+        let row = div()
+            .col()
             .h_px(26.0)
-            .child(
-                div().row().w_px(FACT_LABEL_W).child(
-                    label(fact.label.to_uppercase())
-                        .size(11.0)
-                        .weight(600)
-                        .color(colors.text_placeholder),
-                ),
-            )
-            .child(label(fact.value.clone()).size(12.0).color(colors.text));
-        if !fact.detail.is_empty() {
-            row = row.child(
-                div().row().flex(1.0).child(
-                    label(fact.detail.clone())
-                        .size(12.0)
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            );
-        }
+            .justify_center()
+            .child(components::key_value(
+                components::key_label(fact.label.clone()),
+                label(fact.value.clone()).size(12.0).color(colors.text),
+                Some(&fact.detail),
+            ));
         card = card.child(row);
     }
     card.into()
@@ -537,7 +438,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
                 .h_px(16.0)
                 .items_center()
                 .gap(6.0)
-                .child(ui::dot(dot, 8.0))
+                .child(components::dot(dot, 8.0))
                 .child(
                     div().row().flex(1.0).child(
                         label(notice.status.clone())
@@ -562,7 +463,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
         .gap(16.0)
         .child(head);
     for banner in &notice.banners {
-        column = column.child(notice_banner(notice, banner, width, hovered));
+        column = column.child(notice_banner(notice, banner, hovered));
     }
     if !notice.facts.is_empty() {
         column = column.child(notice_facts(&notice.facts));

@@ -1,9 +1,10 @@
+use components::section_header;
 use std::collections::HashSet;
 
 use pom_services::{ServiceExplain, ServiceTarget};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
-use workspace::{field_label, Item, ItemTick};
+use workspace::{Item, ItemTick};
 
 use crate::{action_button, hit_at, EnvironmentContext};
 
@@ -204,9 +205,9 @@ impl EnvItem {
         div()
             .col()
             .gap(6.0)
-            .child(field_label(title))
+            .child(section_header(title))
             .child(
-                ui::select(id, value)
+                components::select(id, value)
                     .placeholder("-")
                     .width(PICKER_W)
                     .hovered(self.hovered),
@@ -219,7 +220,7 @@ impl EnvItem {
             .row()
             .w_px(BADGE_W)
             .child(
-                ui::chip(text)
+                components::chip(text)
                     .color(color)
                     .fill(color.alpha(0.14))
                     .border(color.alpha(0.3)),
@@ -297,7 +298,7 @@ impl EnvItem {
             .px(8.0)
             .pt(14.0)
             .pb(6.0)
-            .child(field_label(&title))
+            .child(section_header(&title))
             .into()
     }
 

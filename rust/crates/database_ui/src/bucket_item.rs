@@ -331,88 +331,35 @@ impl BucketItem {
     fn toolbar(&self, width: f32) -> Node {
         let colors = theme();
         let wide = width > 760.0;
-        let mut crumb = div().row().flex(1.0).gap(6.0).items_center().child(
-            icon(IconKind::EngineMinio)
-                .size(12.0)
-                .color(colors.icon_muted),
-        );
+        let mut crumb = components::breadcrumb()
+            .icon(IconKind::EngineMinio)
+            .hovered(self.hovered);
         if wide && !self.database.repo.is_empty() {
-            crumb = crumb
-                .child(
-                    label(self.database.repo.clone())
-                        .size(12.5)
-                        .color(colors.text_muted),
-                )
-                .child(label("/").size(12.5).color(colors.text_placeholder));
+            crumb = crumb.part(self.database.repo.clone());
         }
         if wide {
-            crumb = crumb
-                .child(
-                    label(self.database.label.clone())
-                        .size(12.5)
-                        .color(colors.text_muted),
-                )
-                .child(label("/").size(12.5).color(colors.text_placeholder));
+            crumb = crumb.part(self.database.label.clone());
         }
         let crumbs = self.crumbs();
         let last = crumbs.len() - 1;
         for (index, (name, _)) in crumbs.into_iter().enumerate() {
-            if index > 0 {
-                crumb = crumb.child(label("/").size(12.5).color(colors.text_placeholder));
-            }
-            let id = CRUMB_BASE + index as u64;
-            let text = label(name).size(12.5).truncate();
-            let text = if index == last {
-                text.medium().color(colors.text)
-            } else if self.hovered == Some(id) {
-                text.underline(colors.text).color(colors.text)
+            crumb = if index == last {
+                crumb.current(name)
             } else {
-                text.color(colors.text_muted)
+                crumb.link(CRUMB_BASE + index as u64, name)
             };
-            crumb = crumb.child(div().row().items_center().on_click(id).child(text));
         }
         if wide && !self.context.branch.is_empty() {
-            crumb = crumb
-                .child(div().w_px(2.0))
-                .child(label("on").size(12.0).color(colors.text_placeholder))
-                .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                .child(
-                    label(self.context.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_accent),
-                );
+            crumb = crumb.branch(self.context.branch.clone());
         }
         let find_w = (width * 0.3).clamp(120.0, 220.0);
         let finding = self.finding && self.focused;
-        div()
-            .row()
-            .h_px(TOOLBAR_H)
-            .pl(14.0)
-            .pr(10.0)
-            .gap(8.0)
-            .items_center()
-            .child(crumb)
+        components::toolbar()
+            .height(TOOLBAR_H)
+            .lead(crumb)
             .child(
-                div()
-                    .row()
+                components::search_box(FIND_FIELD, finding)
                     .w_px(find_w)
-                    .h_px(FIELD_H)
-                    .px(10.0)
-                    .gap(8.0)
-                    .items_center()
-                    .rounded(6.0)
-                    .bg(colors.background)
-                    .border(
-                        1.0,
-                        if finding {
-                            colors.border_focused
-                        } else {
-                            colors.border_variant
-                        },
-                    )
-                    .on_click(FIND_FIELD)
-                    .child(icon(IconKind::Search).size(11.0).color(colors.icon_muted))
                     .child(self.find.render(
                         "name in this folder",
                         finding,
@@ -422,26 +369,11 @@ impl BucketItem {
                     )),
             )
             .child(
-                ui::button(UPLOAD, "Upload here")
+                components::button(UPLOAD, "Upload here")
                     .icon(Some(IconKind::ArrowUp))
                     .hovered(self.hovered),
             )
-            .child(
-                div()
-                    .row()
-                    .w_px(24.0)
-                    .h_px(24.0)
-                    .rounded(6.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(REFRESH)
-                    .bg(if self.hovered == Some(REFRESH) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(icon(IconKind::RotateCw).size(12.0).color(colors.icon_muted)),
-            )
+            .child(components::icon_button(REFRESH, IconKind::RotateCw).hovered(self.hovered))
             .into()
     }
 
@@ -581,34 +513,13 @@ impl BucketItem {
     }
 
     fn status_bar(&self) -> Node {
-        let colors = theme();
         let count = self.folders.len() + self.objects.len();
         let plus = if self.next.is_some() { "+" } else { "" };
         let (status, error) = self.status.clone().unwrap_or_default();
-        div()
-            .row()
-            .h_px(STATUS_H)
-            .pl(14.0)
-            .pr(8.0)
-            .gap(10.0)
-            .items_center()
-            .child(
-                label(format!("{count}{plus} items"))
-                    .size(12.0)
-                    .color(colors.text_muted),
-            )
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(status)
-                        .size(12.0)
-                        .color(if error {
-                            colors.error
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
-            )
+        components::toolbar()
+            .height(STATUS_H)
+            .note(format!("{count}{plus} items"))
+            .status(status, error)
             .into()
     }
 
@@ -737,18 +648,23 @@ impl Item for BucketItem {
             .gap(10.0)
             .items_center()
             .child(div().w_px(16.0))
-            .child(div().row().flex(1.0).child(workspace::field_label("Name")))
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .child(components::section_header("Name")),
+            )
             .child(
                 div()
                     .row()
                     .w_px(110.0)
-                    .child(workspace::field_label("Size")),
+                    .child(components::section_header("Size")),
             )
             .child(
                 div()
                     .row()
                     .w_px(130.0)
-                    .child(workspace::field_label("Modified")),
+                    .child(components::section_header("Modified")),
             );
         let card = |w: f32| {
             div()
@@ -764,11 +680,7 @@ impl Item for BucketItem {
             .px(CARD_INSET)
             .pb(CARD_GAP)
             .gap(CARD_GAP)
-            .child(
-                card(main_w)
-                    .child(head)
-                    .child(div().h_px(1.0).bg(colors.border_variant)),
-            );
+            .child(card(main_w).child(head).child(components::divider()));
         if side_w > 0.0 {
             cards = cards.child(card(side_w));
         }

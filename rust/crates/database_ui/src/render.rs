@@ -15,7 +15,6 @@ use crate::panel::{
 use crate::tree::{format_count, prefix_name, Row, Section, Status, OTHER_SERVICES};
 
 pub(crate) const INDENT: f32 = 16.0;
-const BUTTON: f32 = 24.0;
 
 /// The engine's logo and a brand color that reads on a dark panel.
 pub fn engine_logo(engine: Engine) -> (IconKind, Rgba) {
@@ -56,37 +55,6 @@ fn object_icon(name: &str) -> MaterialIcon {
 
 /// A bubble under the hovered control, kept inside the window.
 /// One vertical guide per tree level above `depth`, 16px apart like the Files and Git panels.
-fn with_guides(mut row: Div, depth: usize) -> Div {
-    for level in 0..depth {
-        row = row.pin_left_edge(
-            15.0 + level as f32 * INDENT,
-            0.0,
-            1.0,
-            div().bg(theme().panel_indent_guide),
-        );
-    }
-    row
-}
-
-fn chevron(id: Option<u64>, open: bool) -> Node {
-    let glyph = icon(if open {
-        IconKind::ChevronDown
-    } else {
-        IconKind::ChevronRight
-    })
-    .size(12.0)
-    .color(theme().icon_muted);
-    let mut slot = div().w_px(12.0).h_px(ROW_H).items_center().justify_center();
-    if let Some(id) = id {
-        slot = slot.on_click(id);
-    }
-    slot.child(glyph).into()
-}
-
-fn spacer() -> Node {
-    div().w_px(12.0).into()
-}
-
 /// A name with the filter's hit marked; the part after the hit gives way when the row is narrow.
 fn name(text: &str, hit: Option<Range<usize>>, color: Rgba, medium: bool) -> Node {
     let styled = |part: &str| {
@@ -131,10 +99,10 @@ fn trailing(text: String) -> Node {
 fn dot(status: Status) -> Node {
     let colors = theme();
     let mark = match status {
-        Status::Connected => ui::dot(colors.success, 7.0),
-        Status::Failed { warning: true } => ui::dot(colors.warning, 7.0),
-        Status::Failed { warning: false } => ui::dot(colors.error, 7.0),
-        Status::NotConnected | Status::Loading => ui::ring(colors.text_placeholder, 8.0),
+        Status::Connected => components::dot(colors.success, 7.0),
+        Status::Failed { warning: true } => components::dot(colors.warning, 7.0),
+        Status::Failed { warning: false } => components::dot(colors.error, 7.0),
+        Status::NotConnected | Status::Loading => components::ring(colors.text_placeholder, 8.0),
     };
     div()
         .row()
@@ -164,30 +132,29 @@ pub(crate) fn row_name(panel: &DatabasePanel, row: &Row) -> Option<String> {
     })
 }
 
-fn row_base(panel: &DatabasePanel, index: usize, row: &Row) -> Div {
-    let colors = theme();
+fn row_base(
+    panel: &DatabasePanel,
+    index: usize,
+    row: &Row,
+    open: Option<bool>,
+    own_chevron: bool,
+) -> Div {
     let id = DatabasePanel::id(index);
-    let depth = row.depth();
-    let mut line = div()
-        .row()
-        .h_px(ROW_H)
-        .pl(8.0 + depth as f32 * INDENT)
-        .pr(8.0)
-        .gap(6.0)
-        .items_center()
-        .on_click(id);
-    if panel.selected.as_deref() == Some(row.key().as_str()) {
-        line = line.bg(colors.element_selected);
-        if panel.keyboard {
-            line = line.border(1.0, colors.panel_focused_border);
-        }
-    } else if panel
-        .hover
-        .is_some_and(|hover| hover == id || hover == id + CHEVRON)
-    {
-        line = line.bg(colors.ghost_element_hover);
+    let selected = panel.selected.as_deref() == Some(row.key().as_str());
+    let mut line = components::tree_row(id, row.depth())
+        .height(ROW_H)
+        .expander(open)
+        .selected(selected)
+        .focused(selected && panel.keyboard)
+        .hovered(
+            panel
+                .hover
+                .is_some_and(|hover| hover == id || hover == id + CHEVRON),
+        );
+    if own_chevron {
+        line = line.expander_id(id + CHEVRON);
     }
-    with_guides(line, depth)
+    line.render()
 }
 
 pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node {
@@ -200,36 +167,30 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             open,
         } => {
             let title = match section {
-                Section::Consoles => "CONSOLES",
-                Section::Databases => "DATABASES",
+                Section::Consoles => "Consoles",
+                Section::Databases => "Databases",
             };
+            let mut header = components::section_header(title);
+            if let Some(count) = count {
+                header = header.count(*count);
+            }
+            if *section == Section::Consoles {
+                header = header.expander(Some(*open));
+            }
             let mut line = div()
                 .row()
                 .h_px(ROW_H + 4.0)
                 .pt(4.0)
-                .pl(8.0)
-                .pr(8.0)
-                .gap(6.0)
-                .items_center();
+                .px(8.0)
+                .items_center()
+                .child(header.render().flex(1.0));
             if *section == Section::Consoles {
-                line = line.on_click(id).child(chevron(None, *open));
-            }
-            line = line.child(
-                div().row().flex(1.0).items_center().child(
-                    label(title)
-                        .size(11.0)
-                        .medium()
-                        .color(colors.text_placeholder),
-                ),
-            );
-            if let Some(count) = count {
-                line = line.child(trailing(count.to_string()));
+                line = line.on_click(id);
             }
             line.into()
         }
         Row::Console { console, place } => {
-            let line = row_base(panel, index, row)
-                .child(spacer())
+            let line = row_base(panel, index, row, None, false)
                 .child(icon(IconKind::File).size(14.0).color(colors.icon_muted));
             let renaming = panel
                 .rename
@@ -260,18 +221,16 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             engines,
             failed,
         } => {
-            let mut line = row_base(panel, index, row)
-                .child(chevron(None, *open))
-                .child(name(
-                    repo,
-                    None,
-                    if *other {
-                        colors.text_muted
-                    } else {
-                        colors.text
-                    },
-                    !*other,
-                ));
+            let mut line = row_base(panel, index, row, Some(*open), false).child(name(
+                repo,
+                None,
+                if *other {
+                    colors.text_muted
+                } else {
+                    colors.text
+                },
+                !*other,
+            ));
             if *failed {
                 line = line.child(dot(Status::Failed { warning: false }));
             }
@@ -305,8 +264,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 subtitle = "no repo refers to it".into();
             }
             let (kind, color) = engine_logo(found.engine);
-            let line = row_base(panel, index, row)
-                .child(chevron(None, *open))
+            let line = row_base(panel, index, row, Some(*open), false)
                 .child(icon(kind).size(14.0).color(color))
                 .child(label(found.label.clone()).size(13.0).color(colors.text))
                 .child(
@@ -319,15 +277,14 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 )
                 .child(dot(*status));
             if panel.hover == Some(id) && !detail.tooltip.is_empty() {
-                ui::with_tooltip(line, &detail.tooltip, false).into()
+                components::with_tooltip(line, &detail.tooltip, false).into()
             } else {
                 line.into()
             }
         }
         Row::Group {
             kind, count, open, ..
-        } => row_base(panel, index, row)
-            .child(chevron(None, *open))
+        } => row_base(panel, index, row, Some(*open), false)
             .child(name(
                 if *kind == TableKind::View {
                     "views"
@@ -347,20 +304,20 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             hit,
             ..
         } => {
-            let lead = if *has_columns {
-                chevron(Some(id + CHEVRON), *open)
-            } else {
-                spacer()
-            };
             let (glyph, tint) = if table.kind == TableKind::View {
                 (IconKind::Eye, colors.icon_muted)
             } else {
                 (IconKind::Table, colors.icon_muted)
             };
-            let mut line = row_base(panel, index, row)
-                .child(lead)
-                .child(icon(glyph).size(14.0).color(tint))
-                .child(name(&table.qualified(), hit.clone(), colors.text, false));
+            let mut line = row_base(
+                panel,
+                index,
+                row,
+                has_columns.then_some(*open),
+                *has_columns,
+            )
+            .child(icon(glyph).size(14.0).color(tint))
+            .child(name(&table.qualified(), hit.clone(), colors.text, false));
             if let Some(count) = table.count {
                 line = line.child(trailing(format_count(count)));
             }
@@ -378,8 +335,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             if let Some(target) = &column.references {
                 kind.push_str(&format!(" -> {target}"));
             }
-            row_base(panel, index, row)
-                .child(spacer())
+            row_base(panel, index, row, None, false)
                 .child(glyph)
                 .child(name(&column.name, hit.clone(), colors.text_muted, false))
                 .child(label(kind).size(11.0).mono().color(colors.text_placeholder))
@@ -387,8 +343,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
         }
         Row::Keyspace { table, hit, .. } => {
             let pattern = format!("{}:*", table.name);
-            let mut line = row_base(panel, index, row)
-                .child(spacer())
+            let mut line = row_base(panel, index, row, None, false)
                 .child(icon(IconKind::Key).size(13.0).color(colors.icon_muted))
                 .child(name(&pattern, hit.clone(), colors.text, false));
             if let Some(count) = table.count {
@@ -396,8 +351,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             }
             line.into()
         }
-        Row::Bucket { bucket, open, .. } => row_base(panel, index, row)
-            .child(chevron(Some(id + CHEVRON), *open))
+        Row::Bucket { bucket, open, .. } => row_base(panel, index, row, Some(*open), true)
             .child(
                 icon(if *open {
                     IconKind::FolderOpen
@@ -416,8 +370,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             hit,
             ..
         } => {
-            let mut line = row_base(panel, index, row)
-                .child(chevron(Some(id + CHEVRON), *open))
+            let mut line = row_base(panel, index, row, Some(*open), true)
                 .child(
                     icon(if *open {
                         IconKind::FolderOpen
@@ -438,14 +391,12 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             }
             line.into()
         }
-        Row::Object { object, hit, .. } => row_base(panel, index, row)
-            .child(spacer())
+        Row::Object { object, hit, .. } => row_base(panel, index, row, None, false)
             .child(material_icon(object_icon(object.name())).size(14.0))
             .child(name(object.name(), hit.clone(), colors.text, false))
             .child(trailing(format_size(object.size)))
             .into(),
-        Row::More { loading, .. } => row_base(panel, index, row)
-            .child(spacer())
+        Row::More { loading, .. } => row_base(panel, index, row, None, false)
             .child(
                 label(if *loading {
                     "Loading..."
@@ -456,7 +407,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 .color(colors.text_accent),
             )
             .into(),
-        Row::Note { depth, text, error } => with_guides(
+        Row::Note { depth, text, error } => components::indent_guides(
             div()
                 .row()
                 .h_px(ROW_H)
@@ -487,7 +438,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             };
             let block_width = panel.width - FAILURE_BLOCK_LEFT - FAILURE_BLOCK_RIGHT;
             let owner = *database;
-            with_guides(
+            components::indent_guides(
                 div()
                     .row()
                     .pl(FAILURE_BLOCK_LEFT)
@@ -507,28 +458,12 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
 }
 
 fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) -> Node {
-    let colors = theme();
     let id = DatabasePanel::base() + offset;
-    let hot = panel.hover == Some(id);
-    let button = div()
-        .w_px(BUTTON)
-        .h_px(BUTTON)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .bg(if hot {
-            colors.ghost_element_hover
-        } else {
-            Rgba::TRANSPARENT
-        })
-        .child(
-            icon(kind)
-                .size(14.0)
-                .color(if hot { colors.icon } else { colors.icon_muted }),
-        );
-    if hot {
-        ui::with_tooltip(button, tip, false).into()
+    let button = components::icon_button(id, kind)
+        .hovered(panel.hover)
+        .render();
+    if panel.hover == Some(id) {
+        components::with_tooltip(button, tip, false).into()
     } else {
         button.into()
     }
@@ -536,29 +471,8 @@ fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) 
 
 fn filter_box(panel: &DatabasePanel) -> Node {
     let colors = theme();
-    let mut field = div()
-        .row()
+    let mut field = components::search_box(DatabasePanel::base() + FILTER, panel.filter_focused)
         .flex(1.0)
-        .h_px(28.0)
-        .px(8.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(5.0)
-        .bg(colors.editor_background)
-        .border(
-            1.0,
-            if panel.filter_focused {
-                colors.border_focused
-            } else {
-                colors.border_variant
-            },
-        )
-        .on_click(DatabasePanel::base() + FILTER)
-        .child(
-            icon(IconKind::Search)
-                .size(13.0)
-                .color(colors.text_placeholder),
-        )
         .child(
             div()
                 .row()
@@ -626,13 +540,7 @@ pub(crate) fn render_panel(
         ));
     let mut list = div().col().pb(8.0);
     if panel.model.databases.is_empty() {
-        list = list.child(
-            div().row().h_px(ROW_H).px(12.0).items_center().child(
-                label("No databases in pom.yml")
-                    .size(12.0)
-                    .color(colors.text_muted),
-            ),
-        );
+        list = list.child(components::empty_state("No databases in pom.yml").compact());
     }
     for index in visible {
         if let Some(row) = panel.rows.get(*index) {

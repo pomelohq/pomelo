@@ -191,138 +191,90 @@ impl PrItem {
 
     fn state_pill(pr: &PullRequest) -> Node {
         let colors = theme();
-        let (text, color, fill) = match (pr.state.as_str(), pr.is_draft) {
-            ("MERGED", _) => ("Merged", colors.text_accent, colors.text_accent.alpha(0.18)),
-            ("CLOSED", _) => ("Closed", colors.error, colors.error.alpha(0.16)),
-            (_, true) => ("Draft", colors.text_muted, colors.element_hover),
-            _ => ("Open", colors.success, colors.success.alpha(0.16)),
+        let (text, color) = match (pr.state.as_str(), pr.is_draft) {
+            ("MERGED", _) => ("Merged", colors.text_accent),
+            ("CLOSED", _) => ("Closed", colors.error),
+            (_, true) => ("Draft", colors.text_muted),
+            _ => ("Open", colors.success),
         };
         let kind = match pr.state.as_str() {
             "MERGED" => IconKind::Merged,
             "CLOSED" => IconKind::XCircle,
             _ => IconKind::PullRequest,
         };
-        div()
-            .row()
-            .h_px(22.0)
-            .px(9.0)
-            .gap(5.0)
-            .items_center()
-            .rounded(12.0)
-            .bg(fill)
-            .child(icon(kind).size(13.0).color(color))
-            .child(label(text).size(12.0).weight(600).color(color))
-            .into()
+        components::pill(text).color(color).icon(kind).into()
     }
 
     fn header_button(id: u64, kind: IconKind, text: &str) -> Node {
-        let colors = theme();
-        div()
-            .row()
-            .h_px(26.0)
-            .px(8.0)
-            .gap(5.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id)
-            .child(icon(kind).size(13.0).color(colors.text_muted))
-            .child(label(text.to_string()).size(12.0).color(colors.text_muted))
+        components::button(id, text)
+            .kind(components::ButtonKind::Ghost)
+            .icon(Some(kind))
             .into()
     }
 
     fn header(&self, width: f32) -> Node {
         let colors = theme();
-        let mut top = div().row().gap(10.0).items_center();
-        if let Some(pr) = &self.pr {
-            top = top
-                .child(Self::state_pill(pr))
-                .child(
-                    label(format!("#{}", pr.number))
-                        .size(11.5)
-                        .mono()
-                        .color(colors.text_placeholder),
-                )
-                .child(
-                    label(self.target.repo.clone())
-                        .size(12.0)
-                        .color(colors.text_placeholder),
-                );
-        }
-        top = top.child(div().row().flex(1.0));
-        if self.pr.is_some() {
-            let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
-            top = top
-                .child(Self::header_button(
-                    COPY_LINK,
-                    IconKind::Copy,
-                    if copied { "Copied" } else { "Copy Link" },
-                ))
-                .child(Self::header_button(
-                    OPEN_ON_GITHUB,
-                    IconKind::ArrowUpRight,
-                    "Open on GitHub",
-                ))
-                .child(Self::header_button(
-                    REFRESH,
-                    IconKind::RotateCw,
-                    if self.loading.is_some() {
-                        "Loading..."
-                    } else {
-                        "Refresh"
-                    },
-                ));
-        }
-        let mut column = div().col().gap(10.0).child(top.pb(2.0));
-        if let Some(pr) = &self.pr {
+        let Some(pr) = &self.pr else {
+            return div().col().into();
+        };
+        let author = pr
+            .author
+            .as_ref()
+            .map_or("", |author| author.login.as_str());
+        let mono = |text: String, color: Rgba| label(text).size(11.5).mono().color(color);
+        let meta = div()
+            .row()
+            .h_px(14.0)
+            .gap(12.0)
+            .items_center()
+            .child(
+                label(author.to_string())
+                    .size(12.0)
+                    .color(colors.text_muted),
+            )
+            .child(mono(
+                format!("{} > {}", pr.head_ref_name, pr.base_ref_name),
+                colors.text_placeholder,
+            ))
+            .child(mono(format!("+{}", pr.additions), colors.success))
+            .child(mono(format!("-{}", pr.deletions), colors.error));
+        let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
+        let header = components::page_header(components::page_title(pr.title.clone(), width))
+            .lead(Self::state_pill(pr))
+            .lead(mono(format!("#{}", pr.number), colors.text_placeholder))
+            .lead(
+                label(self.target.repo.clone())
+                    .size(12.0)
+                    .color(colors.text_placeholder),
+            )
+            .action(Self::header_button(
+                COPY_LINK,
+                IconKind::Copy,
+                if copied { "Copied" } else { "Copy Link" },
+            ))
+            .action(Self::header_button(
+                OPEN_ON_GITHUB,
+                IconKind::ArrowUpRight,
+                "Open on GitHub",
+            ))
+            .action(Self::header_button(
+                REFRESH,
+                IconKind::RotateCw,
+                if self.loading.is_some() {
+                    "Loading..."
+                } else {
+                    "Refresh"
+                },
+            ))
+            .meta(meta);
+        let mut column = div().col().gap(10.0).child(header);
+        if let Some(error) = &self.error {
             column = column.child(
-                label(pr.title.clone())
-                    .size(20.0)
-                    .weight(600)
-                    .color(colors.text)
+                label(error.clone())
+                    .size(12.0)
+                    .color(colors.error)
                     .wrap(width),
             );
-            let author = pr
-                .author
-                .as_ref()
-                .map_or("", |author| author.login.as_str());
-            column = column.child(
-                div()
-                    .row()
-                    .h_px(14.0)
-                    .gap(12.0)
-                    .items_center()
-                    .child(
-                        label(author.to_string())
-                            .size(12.0)
-                            .color(colors.text_muted),
-                    )
-                    .child(
-                        label(format!("{} > {}", pr.head_ref_name, pr.base_ref_name))
-                            .size(11.5)
-                            .mono()
-                            .color(colors.text_placeholder),
-                    )
-                    .child(
-                        label(format!("+{}", pr.additions))
-                            .size(11.5)
-                            .mono()
-                            .color(colors.success),
-                    )
-                    .child(
-                        label(format!("-{}", pr.deletions))
-                            .size(11.5)
-                            .mono()
-                            .color(colors.error),
-                    ),
-            );
-            if let Some(error) = &self.error {
-                column = column.child(
-                    label(error.clone())
-                        .size(12.0)
-                        .color(colors.error)
-                        .wrap(width),
-                );
-            }
         }
         column.into()
     }
@@ -376,87 +328,26 @@ impl PrItem {
         }
         let mut row = div().row().gap(8.0);
         for (kind, color, text) in chips {
-            row = row.child(raised(
-                div()
-                    .row()
-                    .h_px(28.0)
-                    .px(10.0)
-                    .gap(6.0)
-                    .items_center()
-                    .child(icon(kind).size(14.0).color(color))
-                    .child(label(text).size(12.0).color(colors.text)),
-                6.0,
-            ));
+            row = row.child(components::pill(text).icon(kind).color(color));
         }
         Some(row.into())
     }
 
     fn tabs(&self, checks: usize) -> Node {
-        let colors = theme();
-        let tab = |id: u64, text: &str, count: Option<usize>, active: bool| {
-            let mut segment = div()
-                .row()
-                .h_px(23.0)
-                .px(12.0)
-                .gap(6.0)
-                .items_center()
-                .rounded(4.0)
-                .on_click(id)
-                .child(label(text.to_string()).size(12.0).color(if active {
-                    colors.text
-                } else {
-                    colors.text_muted
-                }));
-            if let Some(count) = count {
-                segment = segment.child(
-                    label(count.to_string())
-                        .size(12.0)
-                        .color(colors.text_placeholder),
-                );
-            }
-            if active {
-                raised(segment, 4.0)
-            } else {
-                segment.into()
-            }
-        };
         div()
             .row()
-            .child(
-                div()
-                    .row()
-                    .p(2.0)
-                    .gap(2.0)
-                    .rounded(6.0)
-                    .bg(colors.background)
-                    .child(tab(
-                        OVERVIEW_TAB,
-                        "Overview",
-                        None,
-                        self.tab == Tab::Overview,
-                    ))
-                    .child(tab(
-                        CHECKS_TAB,
-                        "Checks",
-                        Some(checks),
-                        self.tab == Tab::Checks,
-                    )),
-            )
+            .child(components::segmented(
+                [
+                    components::segment(OVERVIEW_TAB, "Overview"),
+                    components::segment(CHECKS_TAB, "Checks").count(checks),
+                ],
+                usize::from(self.tab == Tab::Checks),
+            ))
             .into()
     }
 
     fn section(title: &str) -> Node {
-        div()
-            .row()
-            .h_px(14.0)
-            .items_center()
-            .child(
-                label(title.to_uppercase())
-                    .size(11.0)
-                    .weight(600)
-                    .color(theme().text_placeholder),
-            )
-            .into()
+        components::section_header(title).into()
     }
 
     /// A centered message for a tab with no PR to show: still looking, none yet, or the lookup failed.
@@ -509,34 +400,21 @@ impl PrItem {
         let mut actions = div().row().gap(8.0).items_center();
         if self.error.is_none() {
             actions = actions.child(
-                div()
-                    .row()
-                    .h_px(30.0)
-                    .px(8.0)
-                    .gap(6.0)
-                    .items_center()
-                    .rounded(6.0)
-                    .border(1.0, colors.text_accent.alpha(0.4))
-                    .on_click(CREATE_PR)
-                    .child(icon(IconKind::Plus).size(12.0).color(colors.text_accent))
-                    .child(
-                        label("Create Pull Request")
-                            .size(13.0)
-                            .color(colors.text_accent),
-                    ),
+                components::button(CREATE_PR, "Create Pull Request")
+                    .kind(components::ButtonKind::Primary)
+                    .size(components::ButtonSize::Medium)
+                    .icon(Some(IconKind::Plus)),
             );
         }
         actions = actions.child(Self::header_button(REFRESH, IconKind::RotateCw, "Refresh"));
         div()
             .row()
             .child(
-                div()
-                    .col()
+                components::card()
+                    .padding(18.0)
+                    .render()
                     .w_px(card_width)
-                    .p(18.0)
                     .gap(8.0)
-                    .rounded(10.0)
-                    .bg(colors.panel_background)
                     .child(icon(kind).size(20.0).color(color))
                     .child(
                         label(title)
@@ -634,13 +512,11 @@ impl PrItem {
                 (TimelineKind::Inline, _) => ("commented on the code", colors.text_muted),
                 (TimelineKind::Comment, _) => ("commented", colors.text_muted),
             };
-            let mut card = div()
-                .col()
+            let mut card = components::card()
+                .padding(12.0)
+                .render()
                 .gap(6.0)
-                .px(12.0)
                 .py(10.0)
-                .rounded(10.0)
-                .bg(colors.panel_background)
                 .child(
                     div()
                         .row()
@@ -760,32 +636,12 @@ impl PrItem {
                     "pending" => ("review requested", colors.text_placeholder),
                     _ => ("commented", colors.text_placeholder),
                 };
-                let initial: String = reviewer
-                    .name
-                    .chars()
-                    .take(1)
-                    .flat_map(char::to_uppercase)
-                    .collect();
                 list = list.child(
                     div()
                         .row()
                         .gap(8.0)
                         .items_center()
-                        .child(
-                            div()
-                                .w_px(18.0)
-                                .h_px(18.0)
-                                .rounded(9.0)
-                                .items_center()
-                                .justify_center()
-                                .bg(colors.element_hover)
-                                .child(
-                                    label(initial)
-                                        .size(10.0)
-                                        .weight(600)
-                                        .color(colors.text_muted),
-                                ),
-                        )
+                        .child(components::avatar(&reviewer.name))
                         .child(label(reviewer.name.clone()).size(12.0).color(colors.text))
                         .child(label(text).size(12.0).color(color)),
                 );
@@ -798,14 +654,9 @@ impl PrItem {
             for tag in &pr.labels {
                 let color = hex_color(&tag.color).unwrap_or(colors.text_muted);
                 chips = chips.child(
-                    div()
-                        .row()
-                        .h_px(20.0)
-                        .px(8.0)
-                        .items_center()
-                        .rounded(10.0)
-                        .bg(color.alpha(0.2))
-                        .child(label(tag.name.clone()).size(12.0).weight(500).color(color)),
+                    components::chip(tag.name.clone())
+                        .color(color)
+                        .fill(color.alpha(0.2)),
                 );
             }
             column = column.child(section("Labels", chips.into()));
@@ -989,29 +840,6 @@ fn duration(started: &str, completed: &str) -> Option<String> {
     } else {
         format!("{seconds}s")
     })
-}
-
-/// A card lifted off its layer: a 1px ring and a darker edge under it stand in for a drop shadow.
-fn raised(content: ui::Div, radius: f32) -> Node {
-    let colors = theme();
-    let shadow = match colors.appearance {
-        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
-        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.1),
-    };
-    // A light card stands off the page by its shadow, so its edge is barely there.
-    let edge = match colors.appearance {
-        ui::Appearance::Dark => colors.border_variant,
-        ui::Appearance::Light => Rgba::new(0.11, 0.09, 0.19, 0.04).over(colors.element_background),
-    };
-    let card = div().col().pb(1.0).rounded(radius + 1.0).bg(shadow).child(
-        div()
-            .col()
-            .p(1.0)
-            .rounded(radius + 1.0)
-            .bg(edge)
-            .child(content.rounded(radius).bg(colors.element_background)),
-    );
-    card.into()
 }
 
 fn hex_color(hex: &str) -> Option<Rgba> {

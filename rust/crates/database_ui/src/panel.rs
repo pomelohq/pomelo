@@ -1,3 +1,4 @@
+use components::MenuItem;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -12,9 +13,7 @@ use workspace::keymap::Action as KeyAction;
 use workspace::list_nav::{ListNav, NavMove};
 use workspace::persistence::SerializedItem;
 use workspace::text_field::TextField;
-use workspace::{
-    side_panel_base, AgentFix, EditKey, Item, MenuItem, PaneKind, PanelRequest, SidePanelView,
-};
+use workspace::{side_panel_base, AgentFix, EditKey, Item, PaneKind, PanelRequest, SidePanelView};
 
 use crate::bucket_item::BucketItem;
 use crate::console::{console_item, console_item_id, new_console, restore_console};

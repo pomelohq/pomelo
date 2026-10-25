@@ -5,6 +5,7 @@
 //! in place and saved together in one transaction. Structure and DDL views show the table's shape.
 //! A Redis keyspace tab lists its keys instead (no filter, paging or editing).
 
+use components::{section_header, ButtonKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,9 +14,7 @@ use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
 use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
-use workspace::{
-    field_label, ButtonKind, EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome,
-};
+use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
 use crate::details::{
     self, CellView, FoldAction, FoldTarget, JsonFold, Pane, RowField, Target, CANCEL_VALUE,
@@ -39,7 +38,6 @@ const SIDE_NEEDS: f32 = 620.0;
 /// Narrower than this, WHERE and ORDER BY take a row each.
 const QUERY_STACK_BELOW: f32 = 520.0;
 const STATUS_H: f32 = 32.0;
-const PENDING_H: f32 = 38.0;
 const FIELD_H: f32 = 24.0;
 const FILTER_H: f32 = 26.0;
 const FIELD_FONT: f32 = 12.0;
@@ -1174,26 +1172,10 @@ impl TableItem {
     }
 
     fn icon_button(&self, id: u64, kind: IconKind, enabled: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .w_px(24.0)
-            .h_px(24.0)
-            .rounded(6.0)
-            .items_center()
-            .justify_center()
-            .child(icon(kind).size(12.0).color(if enabled {
-                colors.icon_muted
-            } else {
-                colors.text_disabled
-            }));
-        if enabled {
-            button = button.on_click(id);
-            if self.hovered == Some(id) {
-                button = button.bg(colors.ghost_element_hover);
-            }
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .enabled(enabled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn text_button(&self, id: u64, text: String, on: bool) -> Node {
@@ -1202,7 +1184,7 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, &text)
+        components::button(id, &text)
             .kind(kind)
             .hovered(self.hovered)
             .into()
@@ -1214,7 +1196,7 @@ impl TableItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, text)
+        components::button(id, text)
             .kind(kind)
             .keystroke(Some(keys))
             .hovered(self.hovered)
@@ -1230,25 +1212,10 @@ impl TableItem {
         focused: bool,
     ) -> Node {
         let colors = theme();
-        div()
-            .row()
+        components::input_box(id, focused && self.focused, false)
             .flex(1.0)
             .h_px(QUERY_FIELD_H)
-            .px(10.0)
-            .gap(10.0)
-            .items_center()
-            .rounded(6.0)
-            .bg(colors.background)
-            .border(
-                1.0,
-                if focused && self.focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .on_click(id)
-            .child(field_label(prefix))
+            .child(section_header(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,
@@ -1262,7 +1229,6 @@ impl TableItem {
     /// Where this is (repo / database / table, on the workspace's branch) and what the tab shows; in a
     /// narrow tab the branch goes first, then the repo, then the database, and the table always stays.
     fn toolbar(&self, width: f32) -> Node {
-        let colors = theme();
         let text_w =
             |text: &str, size: f32, mono: bool| ui::measure_text_width(text, size, mono, 400);
         let controls = if self.is_redis() { 0.0 } else { 196.0 }
@@ -1288,63 +1254,30 @@ impl TableItem {
             && take(text_w(&self.database.repo, 12.5, false) + slash_w);
         let show_branch = !self.context.branch.is_empty()
             && take(text_w("on", 12.0, false) + text_w(&self.context.branch, 12.0, true) + 34.0);
-        let muted = |text: String| label(text).size(12.5).color(colors.text_muted);
-        let slash = || label("/").size(12.5).color(colors.text_placeholder);
-        let mut crumb = div()
-            .row()
-            .flex(1.0)
-            .gap(6.0)
-            .items_center()
-            .child(icon(IconKind::Table).size(12.0).color(colors.icon_muted));
+        let mut crumb = components::breadcrumb().icon(IconKind::Table);
         if show_repo {
-            crumb = crumb
-                .child(muted(self.database.repo.clone()))
-                .child(slash());
+            crumb = crumb.part(self.database.repo.clone());
         }
         if show_label {
-            crumb = crumb
-                .child(muted(self.database.label.clone()))
-                .child(slash());
+            crumb = crumb.part(self.database.label.clone());
         }
-        crumb = crumb.child(
-            label(self.table.qualified())
-                .size(12.5)
-                .medium()
-                .color(colors.text)
-                .truncate(),
-        );
+        crumb = crumb.current(self.table.qualified());
         if show_branch {
-            crumb = crumb
-                .child(div().w_px(2.0))
-                .child(label("on").size(12.0).color(colors.text_placeholder))
-                .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                .child(
-                    label(self.context.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_accent),
-                );
+            crumb = crumb.branch(self.context.branch.clone());
         }
-        let mut bar = div()
-            .row()
-            .h_px(TOOLBAR_H)
-            .pl(14.0)
-            .pr(10.0)
-            .gap(8.0)
-            .items_center()
-            .child(crumb);
+        let mut bar = components::toolbar().height(TOOLBAR_H).lead(crumb);
         if !self.is_redis() {
             let views = [
-                ui::segment(VIEW_DATA, "Data"),
-                ui::segment(VIEW_STRUCTURE, "Structure"),
-                ui::segment(VIEW_DDL, "DDL"),
+                components::segment(VIEW_DATA, "Data"),
+                components::segment(VIEW_STRUCTURE, "Structure"),
+                components::segment(VIEW_DDL, "DDL"),
             ];
             let selected = match self.view {
                 View::Data => 0,
                 View::Structure => 1,
                 View::Ddl => 2,
             };
-            bar = bar.child(ui::segmented(views, selected).hovered(self.hovered));
+            bar = bar.child(components::segmented(views, selected).hovered(self.hovered));
         }
         if self.view == View::Data && self.side_fits {
             bar = bar.child(self.keyed_button(DETAILS, "Details", "shift-enter", self.details));
@@ -1457,7 +1390,7 @@ impl TableItem {
 
     fn status_bar(&self) -> Node {
         let colors = theme();
-        let mut bar = div().row().h_px(STATUS_H).px(8.0).gap(2.0).items_center();
+        let mut bar = components::toolbar().height(STATUS_H);
         let data = self.view == View::Data;
         if !self.is_redis() && data {
             bar = bar
@@ -1473,22 +1406,11 @@ impl TableItem {
         } else {
             self.status.clone().unwrap_or_default()
         };
-        bar = bar.child(
-            div().row().flex(1.0).pl(8.0).items_center().child(
-                label(status)
-                    .size(12.0)
-                    .color(if error {
-                        colors.error
-                    } else {
-                        colors.text_muted
-                    })
-                    .truncate(),
-            ),
-        );
+        bar = bar.status(status, error);
         if !self.is_redis() && data {
             bar = bar.child(
-                ui::button(EXPORT, "Export CSV")
-                    .kind(ui::ButtonKind::Ghost)
+                components::button(EXPORT, "Export CSV")
+                    .kind(components::ButtonKind::Ghost)
                     .icon(Some(IconKind::Download))
                     .hovered(self.hovered),
             );
@@ -1498,53 +1420,34 @@ impl TableItem {
 
     /// Staged edits waiting to be saved: how many, into which database, and the three ways out.
     fn pending_bar(&self) -> Node {
-        let colors = theme();
         let count = self.edits.len();
-        let (status, error) = if self.applying.busy() {
+        let (status, failed) = if self.applying.busy() {
             ("Saving...".to_string(), false)
         } else {
             self.status.clone().unwrap_or_default()
         };
-        div()
-            .row()
-            .h_px(PENDING_H)
-            .pl(12.0)
-            .pr(8.0)
-            .gap(8.0)
-            .items_center()
-            .rounded(CARD_RADIUS)
-            .bg(colors.warning.alpha(0.09).over(colors.panel_background))
-            .child(
-                label(format!(
-                    "{count} {}",
-                    if count == 1 { "change" } else { "changes" }
-                ))
-                .size(12.5)
-                .medium()
-                .color(colors.warning),
-            )
-            .child(
-                label(format!("not saved - into {}", self.database.name))
-                    .size(12.0)
-                    .color(colors.text_muted),
-            )
-            .child(
-                div().row().flex(1.0).pl(8.0).items_center().child(
-                    label(status)
-                        .size(12.0)
-                        .color(if error {
-                            colors.error
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
-            )
-            .child(self.text_button(REVIEW, "Review SQL".into(), false))
-            .child(self.text_button(DISCARD, "Discard".into(), false))
-            .child(
-                ui::button(APPLY, "Apply")
-                    .kind(ui::ButtonKind::Primary)
+        let tone = if failed {
+            components::BannerTone::Error
+        } else {
+            components::BannerTone::Warning
+        };
+        let mut banner = components::banner(
+            tone,
+            format!(
+                "{count} {} not saved - into {}",
+                if count == 1 { "change" } else { "changes" },
+                self.database.name
+            ),
+        );
+        if !status.is_empty() {
+            banner = banner.detail(status);
+        }
+        banner
+            .action(self.text_button(REVIEW, "Review SQL".into(), false))
+            .action(self.text_button(DISCARD, "Discard".into(), false))
+            .action(
+                components::button(APPLY, "Apply")
+                    .kind(components::ButtonKind::Primary)
                     .keystroke(Some("cmd-s"))
                     .hovered(self.hovered),
             )
@@ -1554,8 +1457,8 @@ impl TableItem {
     fn side_head(&self) -> Node {
         let colors = theme();
         let modes = [
-            ui::segment(SIDE_VALUE, "Value"),
-            ui::segment(SIDE_ROW, "Row"),
+            components::segment(SIDE_VALUE, "Value"),
+            components::segment(SIDE_ROW, "Row"),
         ];
         div()
             .row()
@@ -1564,7 +1467,10 @@ impl TableItem {
             .pr(8.0)
             .gap(8.0)
             .items_center()
-            .child(ui::segmented(modes, usize::from(self.side == Side::Row)).hovered(self.hovered))
+            .child(
+                components::segmented(modes, usize::from(self.side == Side::Row))
+                    .hovered(self.hovered),
+            )
             .child(div().row().flex(1.0))
             .child(
                 div()
@@ -2184,7 +2090,7 @@ impl Item for TableItem {
         let pending_h = if self.edits.is_empty() {
             0.0
         } else {
-            PENDING_H + CARD_GAP
+            ui::measure(&self.pending_bar()).1 + CARD_GAP
         };
         let querying = self.view == View::Data && !self.is_redis();
         let query_h = if querying {
@@ -2318,7 +2224,7 @@ impl Item for TableItem {
                 &div()
                     .col()
                     .child(self.side_head())
-                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .child(components::divider())
                     .into(),
                 Rect::new(side.x, side.y, side.w, head_h + scale, Rgba::TRANSPARENT),
             );

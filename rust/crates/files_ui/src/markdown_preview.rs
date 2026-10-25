@@ -172,7 +172,7 @@ impl Item for MarkdownPreview {
             .px(((full - width) / 2.0).max(PAD))
             .child(div().h_px(PAD + skipped));
         if self.markdown.is_empty() {
-            content = content.child(ui::label("Nothing to preview").color(colors.text_muted));
+            content = content.child(components::empty_state("Nothing to preview").compact());
         } else {
             content = content.child(layout.render_links(first, count, width, Some(LINK_BASE)));
         }

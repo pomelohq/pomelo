@@ -4,9 +4,8 @@
 
 use std::ops::Range;
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rgba};
 
-use crate::command_palette::footer_button;
 use crate::fuzzy::fuzzy_match;
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
@@ -404,12 +403,11 @@ impl OutlineView {
         let colors = theme();
         let size = self.size();
         let results = self.render_results(id_base, &size);
-        let mut root = div()
-            .col()
-            .w_px(size.width)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background);
+        let mut root = components::card()
+            .padding(0.0)
+            .raised()
+            .render()
+            .w_px(size.width);
         match (self.preview, size.height) {
             (PreviewLayout::Right, Some(height)) => {
                 root = root.h_px(height).child(
@@ -426,7 +424,7 @@ impl OutlineView {
                 root = root
                     .h_px(height)
                     .child(results)
-                    .child(div().h_px(1.0).bg(colors.border_variant))
+                    .child(components::divider())
                     .child(render_preview(preview));
             }
             _ => root = root.child(results),
@@ -449,15 +447,10 @@ impl OutlineView {
                 FieldFont::Ui,
             ));
         let mut list = if self.entries.is_empty() {
-            div().col().py(8.0).child(
-                div().row().px(4.0).child(
-                    div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
-                        label("No matches")
-                            .label_size(ui::LabelSize::Default)
-                            .color(colors.text_muted),
-                    ),
-                ),
-            )
+            div()
+                .col()
+                .py(4.0)
+                .child(components::empty_state("No matches").compact())
         } else {
             let visible = self.visible_rows();
             let end = (self.scroll_top + visible).min(self.entries.len());
@@ -487,9 +480,9 @@ impl OutlineView {
         let mut column = div()
             .col()
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(list)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(self.render_footer(id_base));
         // The preview fills what the results leave, so borders and dividers never push it past the edge.
         column = match self.preview {
@@ -501,41 +494,27 @@ impl OutlineView {
     }
 
     fn render_footer(&self, id_base: u64) -> Node {
-        let colors = theme();
         let visible = self.preview != PreviewLayout::Hidden;
-        let text_color = if visible {
-            colors.text_accent
-        } else {
-            colors.text
-        };
-        let mut controls = div().row().items_center().child(footer_button(
-            id_base + OutlineClick::TogglePreview.offset(),
-            "Preview",
-            PREVIEW_KEY,
-            text_color,
-            self.hovered == Some(id_base + OutlineClick::TogglePreview.offset()),
-        ));
+        let toggle = id_base + OutlineClick::TogglePreview.offset();
+        let mut controls = div().row().items_center().gap(4.0).child(
+            components::button(toggle, "Preview")
+                .kind(if visible {
+                    components::ButtonKind::Secondary
+                } else {
+                    components::ButtonKind::Ghost
+                })
+                .size(components::ButtonSize::XSmall)
+                .keystroke(Some(PREVIEW_KEY))
+                .hovered(self.hovered),
+        );
         if visible {
-            let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| -> Node {
-                let mut button = div()
-                    .row()
-                    .items_center()
-                    .justify_center()
-                    .w_px(22.0)
-                    .h_px(22.0)
-                    .rounded(4.0)
-                    .on_click(id_base + click.offset())
-                    .child(icon(kind).size(14.0).color(colors.icon));
-                if self.hovered == Some(id_base + click.offset()) {
-                    button = button.bg(colors.ghost_element_hover);
-                } else if selected {
-                    button = button.bg(colors.element_selected);
-                }
-                button.into()
+            let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| {
+                components::icon_button(id_base + click.offset(), kind)
+                    .toggled(selected)
+                    .hovered(self.hovered)
             };
             controls = controls
-                .child(div().w_px(1.0).h_px(16.0).bg(colors.border_variant))
-                .child(div().w_px(4.0))
+                .child(components::vertical_divider(16.0))
                 .child(layout_button(
                     OutlineClick::PreviewBelow,
                     IconKind::DiffUnified,
@@ -557,7 +536,6 @@ impl OutlineView {
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {
-        let colors = theme();
         let Some((entry, symbol)) = self
             .entries
             .get(row)
@@ -565,22 +543,15 @@ impl OutlineView {
         else {
             return div().into();
         };
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .rounded(4.0)
-            .on_click(id_base + OutlineClick::Row(row).offset());
-        if row == self.selected {
-            item = item.bg(colors.element_selected);
-        }
         let text = div()
             .row()
             .items_center()
             .pl(symbol.depth as f32 * DEPTH_INDENT)
             .children(label_segments(symbol, &entry.positions));
-        div().row().px(4.0).child(item.child(text)).into()
+        components::list_row(id_base + OutlineClick::Row(row).offset())
+            .selected(row == self.selected)
+            .child(text)
+            .into()
     }
 }
 
@@ -595,12 +566,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
         .bg(colors.editor_background);
     let Some(content) = content else {
         return pane
-            .p(8.0)
-            .child(
-                label("No results to preview")
-                    .label_size(ui::LabelSize::Default)
-                    .color(colors.text_muted),
-            )
+            .child(components::empty_state("No results to preview").compact())
             .into();
     };
     let rows = content.rows.into_iter().map(|row| {

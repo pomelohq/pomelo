@@ -2216,7 +2216,7 @@ impl WorkspaceView {
                         .flex(1.0)
                         .h_px(crate::pane::TAB_H)
                         .child(ui::div().flex(1.0))
-                        .child(ui::div().h_px(1.0).bg(ui::theme().border)),
+                        .child(components::edge_divider()),
                 );
             let p = ui::render(
                 &bar.into(),
@@ -8461,12 +8461,7 @@ const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
 /// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
 fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
     let colors = ui::theme();
-    let mut list = ui::div()
-        .col()
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border_variant);
+    let mut list = components::card().padding(4.0).raised().render();
     for (row, entry) in switcher.entries.iter().enumerate() {
         let id = crate::TAB_SWITCHER_BASE + row as u64;
         let glyph: ui::Node = match entry.icon {
@@ -8956,61 +8951,12 @@ fn update_ready_notification(title: String, message: String) -> Notification {
     }
 }
 
-const TOAST_HEIGHT: f32 = 36.0;
-
-/// A toast's pill: the message, its action and a close button; also its width and height.
 fn toast_row(message: &str, action: Option<&str>) -> (ui::Node, f32, f32) {
-    let colors = ui::theme();
-    let weight = ui::ui_font_weight();
-    let (pad_left, pad_right, gap, close_w) = (14.0, 6.0, 10.0, 24.0);
-    let message_w = ui::measure_text_width(message, 13.0, false, weight);
-    let action_w = action
-        .map(|text| ui::measure_text_width(text, 12.0, false, weight) + 16.0 + gap)
-        .unwrap_or(0.0);
-    let width = pad_left + message_w + action_w + gap + close_w + pad_right;
-    let mut row = ui::div()
-        .row()
-        .items_center()
-        .h_px(TOAST_HEIGHT)
-        .pl(pad_left)
-        .pr(pad_right)
-        .gap(gap)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
-        .child(ui::label(message.to_string()).size(13.0).color(colors.text));
-    if let Some(text) = action {
-        row = row.child(
-            ui::div()
-                .row()
-                .h_px(24.0)
-                .px(8.0)
-                .rounded(6.0)
-                .items_center()
-                .on_click(TOAST_ACTION)
-                .child(
-                    ui::label(text.to_string())
-                        .size(12.0)
-                        .medium()
-                        .color(colors.text),
-                ),
-        );
-    }
-    let row = row.child(
-        ui::div()
-            .w_px(close_w)
-            .h_px(close_w)
-            .rounded(6.0)
-            .items_center()
-            .justify_center()
-            .on_click(TOAST_CLOSE)
-            .child(
-                ui::icon(IconKind::Close)
-                    .size(12.0)
-                    .color(colors.icon_muted),
-            ),
-    );
-    (row.into(), width, TOAST_HEIGHT)
+    components::toast(
+        message,
+        action.map(|text| (text, TOAST_ACTION)),
+        TOAST_CLOSE,
+    )
 }
 
 /// A toast alone, as the window draws it above the status bar.
@@ -9087,7 +9033,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         has_actions = true;
         actions = actions.child(
             crate::button(crate::NOTIFICATION_PRIMARY, primary)
-                .kind(ui::ButtonKind::Primary)
+                .kind(components::ButtonKind::Primary)
                 .hovered(hovered),
         );
     }
@@ -9097,7 +9043,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
             has_actions = true;
             actions = actions.child(
                 crate::button(id, label)
-                    .kind(ui::ButtonKind::Ghost)
+                    .kind(components::ButtonKind::Ghost)
                     .hovered(hovered),
             );
         }
@@ -9124,17 +9070,17 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         controls = controls.child(control(crate::NOTIFICATION_COPY, IconKind::Copy));
     }
     controls = controls.child(control(crate::NOTIFICATION_CLOSE, IconKind::Close));
-    let mut card = ui::div()
+    let mut card = components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .row()
         .w_px(card_w)
         .pt(NOTIFICATION_PAD)
         .pb(NOTIFICATION_PAD)
         .pl(NOTIFICATION_PAD)
         .pr(8.0)
-        .gap(10.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border);
+        .gap(10.0);
     if let Some((kind, color)) = icon {
         card = card.child(
             ui::div()

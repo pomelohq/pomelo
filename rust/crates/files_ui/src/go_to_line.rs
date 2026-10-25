@@ -111,12 +111,11 @@ impl GoToLine {
 
     pub fn render(&self) -> Node {
         let colors = theme();
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(div().px(8.0).py(4.0).child(self.field.render(
                 &self.placeholder(),
                 true,
@@ -124,7 +123,7 @@ impl GoToLine {
                 INPUT_FONT * FieldFont::Ui.line_height(),
                 FieldFont::Ui,
             )))
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(
                 div()
                     .row()

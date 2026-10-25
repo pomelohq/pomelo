@@ -2,13 +2,14 @@
 //! selected key's value the way its type holds it (JSON as a tree, a hash as fields, a list with its indexes, a
 //! sorted set with scores, a set's members). The TTL can be changed, and a key or every match deleted.
 
+use components::{section_header, ButtonKind};
 use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{field_label, ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 use crate::details::{self, FoldAction, FoldTarget, JsonFold, Pane, FOLD_BASE, FOLD_END};
 use crate::json::{self, Json};
@@ -129,7 +130,7 @@ fn kind_color(kind: &str) -> Rgba {
 }
 
 fn badge(kind: &str) -> Node {
-    ui::chip(kind).color(kind_color(kind)).into()
+    components::chip(kind).color(kind_color(kind)).into()
 }
 
 impl KeyspaceItem {
@@ -395,7 +396,10 @@ impl KeyspaceItem {
         } else {
             ButtonKind::Ghost
         };
-        ui::button(id, text).kind(kind).hovered(self.hovered).into()
+        components::button(id, text)
+            .kind(kind)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn input(
@@ -407,25 +411,10 @@ impl KeyspaceItem {
         focused: bool,
     ) -> Node {
         let colors = theme();
-        div()
-            .row()
+        components::input_box(id, focused && self.focused, false)
             .flex(1.0)
             .h_px(FIELD_H)
-            .px(10.0)
-            .gap(10.0)
-            .items_center()
-            .rounded(6.0)
-            .bg(colors.background)
-            .border(
-                1.0,
-                if focused && self.focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .on_click(id)
-            .child(field_label(prefix))
+            .child(section_header(prefix))
             .child(field.render(
                 placeholder,
                 focused && self.focused,
@@ -445,57 +434,21 @@ impl KeyspaceItem {
         } else {
             format!("{} keys", self.keys.len())
         };
-        let mut crumb = div().row().flex(1.0).gap(6.0).items_center().child(
-            icon(IconKind::EngineRedis)
-                .size(12.0)
-                .color(colors.icon_muted),
-        );
         let wide = width > 700.0;
+        let mut crumb = components::breadcrumb().icon(IconKind::EngineRedis);
         if wide && !self.database.repo.is_empty() {
-            crumb = crumb
-                .child(
-                    label(self.database.repo.clone())
-                        .size(12.5)
-                        .color(colors.text_muted),
-                )
-                .child(label("/").size(12.5).color(colors.text_placeholder));
+            crumb = crumb.part(self.database.repo.clone());
         }
         crumb = crumb
-            .child(
-                label(self.database.label.clone())
-                    .size(12.5)
-                    .color(colors.text_muted)
-                    .truncate(),
-            )
-            .child(label("/").size(12.5).color(colors.text_placeholder))
-            .child(
-                label(format!("{}:*", self.table.name))
-                    .size(12.5)
-                    .medium()
-                    .color(colors.text)
-                    .truncate(),
-            );
+            .part(self.database.label.clone())
+            .current(format!("{}:*", self.table.name));
         if wide && !self.context.branch.is_empty() {
-            crumb = crumb
-                .child(div().w_px(2.0))
-                .child(label("on").size(12.0).color(colors.text_placeholder))
-                .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                .child(
-                    label(self.context.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_accent),
-                );
+            crumb = crumb.branch(self.context.branch.clone());
         }
         let pattern_w = (width * 0.35).clamp(140.0, 280.0);
-        div()
-            .row()
-            .h_px(TOOLBAR_H)
-            .pl(14.0)
-            .pr(10.0)
-            .gap(8.0)
-            .items_center()
-            .child(crumb)
+        components::toolbar()
+            .height(TOOLBAR_H)
+            .lead(crumb)
             .child(div().row().w_px(pattern_w).items_center().child(self.input(
                 PATTERN_FIELD,
                 "MATCH",
@@ -504,22 +457,7 @@ impl KeyspaceItem {
                 self.focus == Focus::Pattern,
             )))
             .child(label(count).size(11.5).color(colors.text_placeholder))
-            .child(
-                div()
-                    .row()
-                    .w_px(24.0)
-                    .h_px(24.0)
-                    .rounded(6.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(REFRESH)
-                    .bg(if self.hovered == Some(REFRESH) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(icon(IconKind::RotateCw).size(12.0).color(colors.icon_muted)),
-            )
+            .child(components::icon_button(REFRESH, IconKind::RotateCw).hovered(self.hovered))
             .into()
     }
 
@@ -557,15 +495,7 @@ impl KeyspaceItem {
                         .gap(6.0)
                         .items_center()
                         .on_click(id)
-                        .child(
-                            icon(if open {
-                                IconKind::ChevronDown
-                            } else {
-                                IconKind::ChevronRight
-                            })
-                            .size(10.0)
-                            .color(colors.icon_muted),
-                        )
+                        .child(components::disclosure(open).size(10.0))
                         .child(
                             div().row().flex(1.0).items_center().child(
                                 label(name.clone())
@@ -680,7 +610,7 @@ impl KeyspaceItem {
             .rounded(6.0)
             .border(1.0, colors.border_variant)
             .child(head_row(head))
-            .child(div().h_px(1.0).bg(colors.border_variant));
+            .child(components::divider());
         for (first, second) in rows {
             table = table.child(
                 div()
@@ -716,7 +646,7 @@ impl KeyspaceItem {
                         ),
                     ),
             );
-            table = table.child(div().h_px(1.0).bg(colors.border_variant));
+            table = table.child(components::divider());
         }
         table.into()
     }
@@ -758,7 +688,7 @@ impl KeyspaceItem {
                 self.focus == Focus::Ttl,
             )));
         head = head.child(
-            ui::button(COPY_VALUE, "Copy value")
+            components::button(COPY_VALUE, "Copy value")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::Copy))
                 .hovered(self.hovered),
@@ -914,33 +844,13 @@ impl KeyspaceItem {
         } else {
             self.status.clone().unwrap_or_default()
         };
-        let mut bar = div()
-            .row()
-            .h_px(STATUS_H)
-            .pl(14.0)
-            .pr(8.0)
-            .gap(8.0)
-            .items_center()
-            .child(
-                label(format!(
-                    "{groups} {}",
-                    if groups == 1 { "prefix" } else { "prefixes" }
-                ))
-                .size(12.0)
-                .color(colors.text_muted),
-            )
-            .child(
-                div().row().flex(1.0).pl(8.0).items_center().child(
-                    label(status)
-                        .size(12.0)
-                        .color(if error {
-                            colors.error
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
-            );
+        let mut bar = components::toolbar()
+            .height(STATUS_H)
+            .note(format!(
+                "{groups} {}",
+                if groups == 1 { "prefix" } else { "prefixes" }
+            ))
+            .status(status, error);
         bar = if self.confirm_matching {
             bar.child(
                 label(format!(

@@ -9,6 +9,7 @@ description = "The Dev Requests tab: the reverse proxy's and webhook relay's sta
 path = "src/dev_services_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_proxy = { path = "../pom_proxy" }
 serde_json.workspace = true
 terminal = { path = "../terminal" }

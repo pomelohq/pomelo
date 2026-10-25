@@ -93,19 +93,10 @@ fn state_of(forward: &PortForward) -> (&'static str, Rgba, Rgba) {
 }
 
 fn icon_button(id: u64, kind: IconKind, hovered: Option<u64>) -> Node {
-    let mut button = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(24.0)
-        .h_px(24.0)
-        .rounded(6.0)
-        .on_click(id)
-        .child(icon(kind).size(14.0).color(theme().text));
-    if hovered == Some(id) {
-        button = button.bg(theme().ghost_element_hover);
-    }
-    button.into()
+    components::icon_button(id, kind)
+        .color(theme().text)
+        .hovered(hovered)
+        .into()
 }
 
 fn fixed(width: f32, child: impl Into<Node>) -> ui::Div {
@@ -167,7 +158,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
         .h_px(ROW_H)
         .pl(12.0)
         .pr(6.0)
-        .child(ui::dot(dot, 8.0))
+        .child(components::dot(dot, 8.0))
         .child(fixed(
             64.0,
             small(forward.remote_port.to_string(), colors.text).mono(),
@@ -214,32 +205,14 @@ fn head() -> Node {
 }
 
 fn empty(branch: &str, host: &str) -> Node {
-    let colors = theme();
-    div()
-        .col()
-        .items_center()
-        .gap(8.0)
-        .pt(60.0)
-        .child(
-            icon(IconKind::ArrowUpRight)
-                .size(20.0)
-                .color(colors.text_placeholder),
-        )
-        .child(
-            label("No ports forwarded")
-                .size(13.0)
-                .medium()
-                .color(colors.text_placeholder),
-        )
-        .child(workspace::paragraph(
-            &format!(
+    components::empty_state("No ports forwarded")
+        .icon(IconKind::ArrowUpRight)
+        .body(
+            format!(
                 "Shared services of {branch} are forwarded once they run. Forward any other port of {host} above."
             ),
-            12.0,
-            16.0,
             360.0,
-            colors.text_muted,
-        ))
+        )
         .into()
 }
 
@@ -288,24 +261,8 @@ impl PortsPage {
     fn toolbar(&self) -> Node {
         let colors = theme();
         let host = self.ports.host();
-        let border = if self.invalid {
-            colors.error
-        } else if self.focused {
-            colors.border_focused
-        } else {
-            colors.border
-        };
-        let mut field = div()
-            .row()
-            .items_center()
-            .gap(8.0)
+        let field = components::input_box(FIELD, self.focused, self.invalid)
             .w_px(200.0)
-            .h_px(30.0)
-            .px(10.0)
-            .rounded(6.0)
-            .border(1.0, border)
-            .bg(colors.editor_background)
-            .on_click(FIELD)
             .child(
                 icon(IconKind::Plus)
                     .size(14.0)
@@ -324,9 +281,6 @@ impl PortsPage {
                         FieldFont::Mono,
                     )),
             );
-        if self.focused {
-            field = field.ring(3.0, colors.overlay_selected);
-        }
         let gateway = self
             .ports
             .forwards()
@@ -351,21 +305,17 @@ impl PortsPage {
                 format!("workspace addresses reach {host} once connected"),
             ),
         };
-        div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .px(CARD_INSET)
-            .h_px(TOOLBAR_H)
+        components::toolbar()
+            .height(TOOLBAR_H)
             .child(field)
-            .child(ui::button(FORWARD, "Forward").hovered(self.hovered))
-            .child(div().flex(1.0))
+            .child(components::button(FORWARD, "Forward").hovered(self.hovered))
+            .spacer()
             .child(
                 div()
                     .row()
                     .items_center()
                     .gap(6.0)
-                    .child(ui::dot(dot, 7.0))
+                    .child(components::dot(dot, 7.0))
                     .child(small(text, colors.text_muted)),
             )
             .into()

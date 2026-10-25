@@ -8,6 +8,8 @@ pub const GROUP_HEADER: f32 = 88.0;
 pub const FRAME_PAD: f32 = 32.0;
 pub const BOARD_TITLE: f32 = 22.0;
 const GROUP_GAP: f32 = 160.0;
+/// Room above a section's first shelf for its title.
+pub const SECTION_HEADER: f32 = 96.0;
 /// Groups of small boards share a shelf up to this width, so a page of atoms is not one tall column.
 const SHELF: f32 = 2400.0;
 
@@ -28,6 +30,9 @@ pub struct Raster {
 
 pub struct Group {
     pub title: &'static str,
+    pub section: &'static str,
+    /// Where the section's title sits, on the first group of a section.
+    pub section_head: Option<f32>,
     pub note: Option<&'static str>,
     pub left: f32,
     pub right: f32,
@@ -74,26 +79,44 @@ pub fn pages(defs: &[StoryDef]) -> Vec<&'static str> {
     pages
 }
 
-/// A page's stories by group, each group one row in registry order; narrow groups share a shelf.
+/// A page's stories by group, in the order of their sections; narrow groups share a shelf, and each section
+/// starts a shelf of its own under its title.
 pub fn lay_out(defs: &[StoryDef], page: &str) -> (Vec<Board>, Vec<Group>) {
     let mut boards = Vec::new();
     let mut groups: Vec<Group> = Vec::new();
-    let mut order: Vec<&'static str> = Vec::new();
+    let mut order: Vec<(&'static str, &'static str)> = stories::SECTIONS
+        .iter()
+        .filter(|(section_page, _, _)| *section_page == page)
+        .flat_map(|(_, section, groups)| groups.iter().map(move |group| (*section, *group)))
+        .collect();
     for def in defs.iter().filter(|def| def.page == page) {
-        if !order.contains(&def.group) {
-            order.push(def.group);
+        if !order.iter().any(|(_, group)| *group == def.group) {
+            order.push(("Other", def.group));
         }
     }
     let (mut shelf_x, mut shelf_y, mut shelf_bottom) = (0.0_f32, 0.0_f32, 0.0_f32);
-    for group in order {
+    let mut current_section = None;
+    for (section, group) in order {
         let members: Vec<&StoryDef> = defs
             .iter()
             .filter(|def| def.page == page && def.group == group)
             .collect();
+        if members.is_empty() {
+            continue;
+        }
         let width = members.iter().map(|def| def.size.0).sum::<f32>()
             + GAP * members.len().saturating_sub(1) as f32;
         let tallest = members.iter().map(|def| def.size.1).fold(0.0, f32::max);
-        if shelf_x > 0.0 && shelf_x + width > SHELF {
+        let mut section_head = None;
+        if current_section != Some(section) {
+            if current_section.is_some() {
+                shelf_y = shelf_bottom + ROW_GAP + FRAME_PAD * 2.0;
+            }
+            section_head = Some(shelf_y);
+            shelf_y += SECTION_HEADER;
+            shelf_x = 0.0;
+            current_section = Some(section);
+        } else if shelf_x > 0.0 && shelf_x + width > SHELF {
             shelf_x = 0.0;
             shelf_y = shelf_bottom + ROW_GAP + FRAME_PAD * 2.0;
         }
@@ -113,6 +136,8 @@ pub fn lay_out(defs: &[StoryDef], page: &str) -> (Vec<Board>, Vec<Group>) {
         }
         groups.push(Group {
             title: group,
+            section,
+            section_head,
             note: stories::group_note(group),
             left: shelf_x,
             right: shelf_x + width,

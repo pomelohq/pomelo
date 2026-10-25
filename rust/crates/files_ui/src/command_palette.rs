@@ -944,15 +944,7 @@ impl CommandPalette {
             div()
                 .col()
                 .py(8.0)
-                .child(
-                    div().row().px(4.0).child(
-                        div().row().flex(1.0).items_center().px(6.0).py(4.0).child(
-                            label(self.empty_text())
-                                .label_size(LabelSize::Default)
-                                .color(colors.text_muted),
-                        ),
-                    ),
-                )
+                .child(components::empty_state(self.empty_text()).compact())
                 .into()
         } else {
             let end = self.visible_end(self.scroll_top);
@@ -980,22 +972,20 @@ impl CommandPalette {
             Some(switcher) => self.switcher_footer(switcher, id_base),
             None => self.palette_footer(id_base),
         };
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(footer)
             .into()
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {
-        let colors = theme();
         let Some((found, command)) = self
             .matches
             .get(row)
@@ -1003,41 +993,28 @@ impl CommandPalette {
         else {
             return div().into();
         };
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .rounded(4.0)
-            .on_click(id_base + PaletteClick::Row(row).offset());
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        }
         let keys = div().row().items_center().gap(4.0).children(
             command
                 .binding
                 .iter()
                 .map(|keystroke| render_keystroke(keystroke, LabelSize::Default.px())),
         );
-        div()
-            .row()
-            .px(4.0)
+        components::list_row(id_base + PaletteClick::Row(row).offset())
+            .selected(row == self.selected)
             .child(
-                item.child(
-                    div()
-                        .row()
-                        .flex(1.0)
-                        .py(1.0)
-                        .items_center()
-                        .justify_between()
-                        .gap(8.0)
-                        .child(highlighted_label(
-                            &command.name,
-                            &found.positions,
-                            LabelSize::Default.px(),
-                        ))
-                        .child(keys),
-                ),
+                div()
+                    .row()
+                    .flex(1.0)
+                    .py(1.0)
+                    .items_center()
+                    .justify_between()
+                    .gap(8.0)
+                    .child(highlighted_label(
+                        &command.name,
+                        &found.positions,
+                        LabelSize::Default.px(),
+                    ))
+                    .child(keys),
             )
             .into()
     }
@@ -1068,25 +1045,13 @@ impl CommandPalette {
             .as_ref()
             .is_some_and(|switcher| switcher.current == entry.row.index);
         let current_pill = current.then(|| {
-            div()
-                .row()
-                .h_px(18.0)
-                .px(7.0)
-                .items_center()
-                .rounded(9.0)
-                .bg(with_alpha(colors.text_accent, 0.14))
-                .child(
-                    label("current")
-                        .size(10.5)
-                        .medium()
-                        .color(colors.text_accent),
-                )
+            components::pill("current")
+                .color(colors.text_accent)
+                .render()
         });
-        let pill_w = if current {
-            ui::measure_text_width("current", 10.5, false, 500) + 14.0 + 10.0
-        } else {
-            0.0
-        };
+        let pill_w = current_pill
+            .as_ref()
+            .map_or(0.0, |pill| ui::measure(&pill.clone().into()).0 + 10.0);
         let title = workspace::switcher_title(&entry.row);
         let title_w = WIDTH - SWITCHER_TEXT_LEFT - SWITCHER_TEXT_RIGHT - pill_w;
         let waiting = entry.row.agent == Some(workspace::AgentDot::AwaitingInput);
@@ -1150,79 +1115,33 @@ impl CommandPalette {
     }
 
     fn switcher_footer(&self, switcher: &workspace::WorkspaceSwitcher, id_base: u64) -> Node {
-        let click = |click: PaletteClick| {
-            let id = id_base + click.offset();
-            Some((id, self.hovered == Some(id)))
-        };
-        let mut actions = vec![picker_action(
-            click(PaletteClick::Run),
+        let mut hints = components::key_hints().hovered(self.hovered).hint(
+            Some(id_base + PaletteClick::Run.offset()),
             &["enter"],
             "Switch",
-        )];
+        );
         if let Some(keys) = switcher.new_workspace.keys.first() {
-            actions.push(picker_action(
-                click(PaletteClick::New),
+            hints = hints.hint(
+                Some(id_base + PaletteClick::New.offset()),
                 &[keys.as_str()],
                 "New workspace",
-            ));
+            );
         }
-        actions.push(picker_action(None, &["escape"], "Close"));
-        picker_footer(actions)
+        hints.hint(None, &["escape"], "Close").into()
     }
 
     fn palette_footer(&self, id_base: u64) -> Node {
-        let run = id_base + PaletteClick::Run.offset();
-        picker_footer(vec![
-            picker_action(Some((run, self.hovered == Some(run))), &["enter"], "Run"),
-            picker_action(None, &["up", "down"], "Move"),
-            picker_action(None, &["escape"], "Close"),
-        ])
+        components::key_hints()
+            .hovered(self.hovered)
+            .hint(
+                Some(id_base + PaletteClick::Run.offset()),
+                &["enter"],
+                "Run",
+            )
+            .hint(None, &["up", "down"], "Move")
+            .hint(None, &["escape"], "Close")
+            .into()
     }
-}
-
-/// A picker's footer bar: its actions on the right, each a key chip then what the key does.
-pub(crate) fn picker_footer(actions: Vec<Node>) -> Node {
-    div()
-        .row()
-        .justify_end()
-        .items_center()
-        .px(8.0)
-        .py(6.0)
-        .gap(6.0)
-        .bg(theme().panel_background)
-        .children(actions)
-        .into()
-}
-
-/// One footer action: a chip per key, then its name; `click` is its id and whether the pointer is over it.
-pub(crate) fn picker_action(click: Option<(u64, bool)>, keys: &[&str], text: &str) -> Node {
-    let colors = theme();
-    let mut button = div()
-        .row()
-        .h_px(22.0)
-        .px(4.0)
-        .gap(6.0)
-        .items_center()
-        .rounded(4.0)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .gap(3.0)
-                .children(keys.iter().map(|keys| ui::key_chip(keys, false))),
-        )
-        .child(label(text).size(12.0).color(colors.text_placeholder));
-    if let Some((id, hovered)) = click {
-        button = button.on_click(id);
-        if hovered {
-            button = button.bg(colors.ghost_element_hover);
-        }
-    }
-    button.into()
-}
-
-fn with_alpha(color: ui::Rgba, alpha: f32) -> ui::Rgba {
-    ui::Rgba::new(color.r, color.g, color.b, alpha)
 }
 
 /// [`highlighted_label`] cut with a trailing "..." to fit `width`, since the runs cannot shrink one by one.
@@ -1286,30 +1205,6 @@ fn highlighted_label(text: &str, positions: &[usize], size: f32) -> Node {
         row = row.child(label(run).size(size).color(color));
     }
     row.into()
-}
-
-/// A picker footer button: its label then the key binding that runs it, at 12px.
-pub(crate) fn footer_button(
-    id: u64,
-    text: &str,
-    keystroke: &str,
-    color: ui::Rgba,
-    hovered: bool,
-) -> Node {
-    let mut button = div()
-        .row()
-        .items_center()
-        .h_px(22.0)
-        .px(4.0)
-        .gap(4.0)
-        .rounded(4.0)
-        .on_click(id)
-        .child(label(text).label_size(LabelSize::Default).color(color))
-        .child(render_keystroke(keystroke, 12.0));
-    if hovered {
-        button = button.bg(theme().ghost_element_hover);
-    }
-    button.into()
 }
 
 #[cfg(test)]

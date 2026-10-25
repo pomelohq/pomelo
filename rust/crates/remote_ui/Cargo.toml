@@ -9,6 +9,7 @@ description = "Remote projects in the app: the connect-to-host dialog and what s
 path = "src/remote_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_remote = { path = "../pom_remote" }
 services_ui = { path = "../services_ui" }
 terminal = { path = "../terminal" }

@@ -115,12 +115,7 @@ pub(crate) fn section(title: &str) -> Node {
         .row()
         .pt(12.0)
         .pb(4.0)
-        .child(
-            label(title.to_uppercase())
-                .size(10.5)
-                .weight(600)
-                .color(theme().text_placeholder),
-        )
+        .child(components::section_header(title).render().flex(1.0))
         .into()
 }
 
@@ -327,17 +322,13 @@ pub(crate) fn json_tree(
             .items_center()
             .on_click(id)
             .child(
-                icon(if open {
-                    IconKind::ChevronDown
-                } else {
-                    IconKind::ChevronRight
-                })
-                .size(9.0)
-                .color(if hovered == Some(id) {
-                    colors.icon
-                } else {
-                    colors.icon_muted
-                }),
+                components::disclosure(open)
+                    .size(9.0)
+                    .color(if hovered == Some(id) {
+                        colors.icon
+                    } else {
+                        colors.icon_muted
+                    }),
             )
             .into()
     };
@@ -412,7 +403,7 @@ pub(crate) fn json_box(
         .border(1.0, colors.border_variant)
         .bg(colors.editor_background)
         .child(bar)
-        .child(div().h_px(1.0).bg(colors.border_variant))
+        .child(components::divider())
         .child(div().col().pl(8.0).pr(6.0).child(tree))
         .into()
 }
@@ -461,16 +452,7 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
                 .color(colors.text_placeholder),
         );
     if cell.primary_key {
-        head = head.child(
-            div()
-                .row()
-                .px(6.0)
-                .h_px(16.0)
-                .items_center()
-                .rounded(8.0)
-                .border(1.0, colors.border_variant)
-                .child(label("primary key").size(10.5).color(colors.warning)),
-        );
+        head = head.child(components::chip("primary key").color(colors.warning));
     }
     head.child(div().row().flex(1.0))
         .child(small(
@@ -789,16 +771,7 @@ pub(crate) fn row_view(
                             .truncate(),
                     ),
                 )
-                .child(
-                    div()
-                        .row()
-                        .px(7.0)
-                        .h_px(18.0)
-                        .items_center()
-                        .rounded(9.0)
-                        .border(1.0, colors.border_variant)
-                        .child(label(counted).size(10.5).color(colors.text_muted)),
-                )
+                .child(components::chip(counted).color(colors.text_muted))
                 .child(
                     icon(IconKind::ArrowUpRight)
                         .size(10.0)
@@ -834,11 +807,7 @@ fn table_head(columns: &[(&str, f32)]) -> Node {
             cell.flex(1.0)
         });
     }
-    div()
-        .col()
-        .child(row)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .into()
+    div().col().child(row).child(components::divider()).into()
 }
 
 fn table_line(cells: Vec<(Node, f32)>, id: Option<u64>, hovered: Option<u64>) -> Node {
@@ -858,11 +827,7 @@ fn table_line(cells: Vec<(Node, f32)>, id: Option<u64>, hovered: Option<u64>) ->
             row = row.bg(colors.ghost_element_hover);
         }
     }
-    div()
-        .col()
-        .child(row)
-        .child(div().h_px(1.0).bg(colors.border_variant))
-        .into()
+    div().col().child(row).child(components::divider()).into()
 }
 
 fn mono(text: impl Into<String>, color: Rgba) -> Node {

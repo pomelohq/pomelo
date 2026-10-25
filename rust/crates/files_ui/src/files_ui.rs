@@ -818,7 +818,7 @@ struct FileItem {
     line_numbers: bool,
     inline_blame: bool,
     toolbar_ids: u64,
-    menu_request: Option<Vec<workspace::MenuItem>>,
+    menu_request: Option<Vec<components::MenuItem>>,
     /// A key the toolbar ran, for the view to route like a keystroke (outline, go to line, ...).
     view_key: Option<EditKey>,
     find_requested: bool,
@@ -1338,16 +1338,17 @@ impl FileItem {
             message = format!("{}{}", first.to_uppercase(), &message[1..]);
         }
         let node = div()
-            .col()
-            .gap(12.0)
+            .row()
+            .w_px((content.w - 2.0 * MESSAGE_PAD).max(0.0))
             .child(
-                label(format!("{message}."))
-                    .size(13.0)
-                    .color(theme().text_muted),
+                components::banner(components::BannerTone::Warning, format!("{message}."))
+                    .action(
+                        components::button(OPEN_IN_TERMINAL, "Open in terminal")
+                            .icon(Some(IconKind::Terminal)),
+                    )
+                    .render()
+                    .flex(1.0),
             )
-            .child(div().row().child(
-                ui::button(OPEN_IN_TERMINAL, "Open in terminal").size(ui::ButtonSize::Medium),
-            ))
             .into();
         (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)
     }
@@ -1964,11 +1965,11 @@ impl FileItem {
         symbols
     }
 
-    fn selection_menu(&self) -> Vec<workspace::MenuItem> {
+    fn selection_menu(&self) -> Vec<components::MenuItem> {
         SELECTION_COMMANDS
             .iter()
             .enumerate()
-            .map(|(index, (text, key, sep))| workspace::MenuItem {
+            .map(|(index, (text, key, sep))| components::MenuItem {
                 id: self.toolbar_ids + TOOLBAR_SELECTION_BASE + index as u64,
                 label: (*text).into(),
                 checked: false,
@@ -1984,11 +1985,11 @@ impl FileItem {
             .collect()
     }
 
-    fn controls_menu(&self) -> Vec<workspace::MenuItem> {
+    fn controls_menu(&self) -> Vec<components::MenuItem> {
         EDITOR_CONTROLS
             .iter()
             .enumerate()
-            .map(|(index, (control, text, sep))| workspace::MenuItem {
+            .map(|(index, (control, text, sep))| components::MenuItem {
                 id: self.toolbar_ids + TOOLBAR_CONTROL_BASE + index as u64,
                 label: (*text).into(),
                 checked: match control {
@@ -6199,58 +6200,27 @@ impl Item for FileItem {
         self.buffer.as_ref()?;
         let colors = theme();
         let id = |offset: u64| self.toolbar_ids + offset;
-        let mut crumbs = div()
-            .row()
-            .h_px(22.0)
-            .px(4.0)
-            .gap(4.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id(TOOLBAR_CRUMBS));
-        let separator = || {
-            icon(IconKind::ChevronRight)
-                .size(12.0)
-                .color(colors.text_placeholder)
-        };
-        for (index, segment) in path_crumbs(&self.path).into_iter().enumerate() {
-            if index > 0 {
-                crumbs = crumbs.child(separator());
-            }
-            crumbs = crumbs.child(label(segment.text).size(12.0).color(if segment.last {
-                colors.text_muted
+        let mut crumbs = components::breadcrumb().on_click(id(TOOLBAR_CRUMBS));
+        for segment in path_crumbs(&self.path) {
+            crumbs = if segment.last {
+                crumbs.current(segment.text)
             } else {
-                colors.text_placeholder
-            }));
+                crumbs.part(segment.text)
+            };
         }
         for symbol in self.symbols_at_cursor() {
-            crumbs = crumbs.child(separator()).child(colored_label(
+            crumbs = crumbs.node(colored_label(
                 &symbol.text,
                 &symbol.colors,
                 12.0,
                 colors.text_muted,
             ));
         }
-        let button = |offset: u64, kind: IconKind| {
-            div()
-                .row()
-                .w_px(22.0)
-                .h_px(22.0)
-                .rounded(4.0)
-                .items_center()
-                .justify_center()
-                .on_click(id(offset))
-                .child(icon(kind).size(14.0).color(colors.icon_muted))
-        };
+        let button = |offset: u64, kind: IconKind| components::icon_button(id(offset), kind);
         Some(
-            div()
-                .row()
-                .h_px(workspace::pane::TOOLBAR_H)
-                .pl(10.0)
-                .pr(8.0)
-                .gap(2.0)
-                .items_center()
-                .bg(colors.toolbar_background)
-                .child(div().row().flex(1.0).items_center().child(crumbs))
+            components::toolbar()
+                .height(workspace::pane::TOOLBAR_H)
+                .lead(crumbs)
                 .child(button(TOOLBAR_SEARCH, IconKind::Search))
                 .child(button(TOOLBAR_SELECTIONS, IconKind::CursorIBeam))
                 .child(button(TOOLBAR_CONTROLS, IconKind::Sliders))
@@ -6279,7 +6249,7 @@ impl Item for FileItem {
         std::mem::take(&mut self.find_requested)
     }
 
-    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+    fn take_menu_request(&mut self) -> Option<Vec<components::MenuItem>> {
         self.menu_request.take()
     }
 
@@ -7356,8 +7326,6 @@ pub struct FilesView {
     replacing: Vec<std::sync::mpsc::Receiver<project_search::ReplaceReport>>,
 }
 
-const OFFLINE_NOTICE_H: f32 = 48.0;
-
 /// Prompt tokens for a save's conflict, apart from the tree's and the workspace's own.
 const SAVE_PROMPT_TOKENS: u64 = 1 << 40;
 
@@ -7583,34 +7551,13 @@ impl FilesView {
     /// wait for it to come back.
     fn offline_notice(&self) -> Node {
         let host = self.fs.host().unwrap_or("the host");
-        let line = div()
-            .row()
-            .h_px(OFFLINE_NOTICE_H - 1.0)
-            .px(12.0)
-            .gap(8.0)
-            .items_center()
-            .child(ui::dot(theme().warning, 8.0))
-            .child(
-                div()
-                    .col()
-                    .gap(2.0)
-                    .child(
-                        label(format!("Reconnecting to {host}..."))
-                            .size(13.0)
-                            .color(theme().text),
-                    )
-                    .child(
-                        label("Edits stay here; saves wait for it.")
-                            .size(12.0)
-                            .color(theme().text_muted),
-                    ),
-            );
-        div()
-            .col()
-            .bg(theme().panel_background)
-            .child(line)
-            .child(div().h_px(1.0).bg(theme().border))
-            .into()
+        components::banner(
+            components::BannerTone::Warning,
+            format!("Reconnecting to {host}..."),
+        )
+        .detail("Edits stay here; saves wait for it.")
+        .flush()
+        .into()
     }
 
     /// Tells open files whether their machine answers, and asks about the first save that found its file
@@ -9735,7 +9682,7 @@ impl FunctionView for FilesView {
             self.flat_dirty = false;
         }
         let notice_h = if self.offline_notice_shown() {
-            OFFLINE_NOTICE_H
+            ui::measure(&self.offline_notice()).1
         } else {
             0.0
         };
@@ -9764,41 +9711,6 @@ impl FunctionView for FilesView {
         for (i, row) in flat.iter().enumerate().take(last).skip(first) {
             let id = FUNC_VIEW_BASE + i as u64;
             let selected = active_path.as_deref() == Some(row.path.as_str());
-            // One column (INDENT wide) per depth. Each ancestor column holds a centered 1px indent guide; the
-            // last column holds this row's disclosure chevron — so guides line up exactly under the chevrons.
-            let mut lead_row = div().row().items_center();
-            for _ in 0..row.depth {
-                // The guide runs one pixel past the row so it bridges the gap to the next one.
-                lead_row = lead_row.child(
-                    div()
-                        .row()
-                        .w_px(INDENT)
-                        .h_px(ROW_BOX_H)
-                        .justify_center()
-                        .child(div().w_px(1.0).h_px(ROW_H).bg(theme().panel_indent_guide)),
-                );
-            }
-            let chevron: Node = if row.is_dir {
-                icon(if row.open {
-                    IconKind::ChevronDown
-                } else {
-                    IconKind::ChevronRight
-                })
-                .size(12.0)
-                .color(theme().icon_muted)
-                .into()
-            } else {
-                div().into()
-            };
-            lead_row = lead_row.child(
-                div()
-                    .row()
-                    .w_px(INDENT)
-                    .h_px(ROW_BOX_H)
-                    .items_center()
-                    .justify_center()
-                    .child(chevron),
-            );
             // Folders use the monochrome folder glyph (open/closed); files use the full-color Material icon.
             let glyph: Node = if row.is_dir {
                 let g = if row.open {
@@ -9833,33 +9745,23 @@ impl FunctionView for FilesView {
                 ),
                 None => label(row.name.clone()).color(theme().text).into(),
             };
-            let content = div()
-                .row()
-                .gap(6.0)
-                .pr(6.0)
-                .items_center()
-                .flex(if edit.is_some() { 1.0 } else { 0.0 })
-                .child(lead_row)
-                .child(glyph)
-                .child(name);
-            let mut r = div()
-                .row()
-                .h_px(ROW_BOX_H)
-                .pl(4.0)
-                .items_center()
-                .rounded(6.0)
-                .on_click(id)
-                .child(content);
             let keyboard_row =
                 self.tree_focused && self.tree_selected.as_deref() == Some(row.path.as_str());
+            let mut r = components::tree_row(id, row.depth)
+                .height(ROW_BOX_H)
+                .expander(row.is_dir.then_some(row.open))
+                .rounded()
+                .selected(selected && !row.edit)
+                .focused(keyboard_row && !row.edit)
+                .child(glyph)
+                .child(if edit.is_some() {
+                    div().row().flex(1.0).items_center().child(name).into()
+                } else {
+                    name
+                })
+                .render();
             if row.edit {
                 r = r.border(1.0, theme().panel_focused_border);
-            } else if keyboard_row {
-                r = r
-                    .bg(theme().element_selected)
-                    .border(1.0, theme().panel_focused_border);
-            } else if selected {
-                r = r.bg(theme().element_selected);
             }
             tree_col = tree_col.child(r);
         }
@@ -9879,55 +9781,25 @@ impl FunctionView for FilesView {
                     let path = comps[..=k].join("/");
                     let click_id = STICKY_BASE + self.sticky_paths.len() as u64;
                     self.sticky_paths.push(path);
-                    let mut lead = div().row().items_center();
-                    for _ in 0..k {
-                        lead =
-                            lead.child(
-                                div().row().w_px(INDENT).h_px(ROW_H).justify_center().child(
-                                    div().w_px(1.0).h_px(ROW_H).bg(theme().panel_indent_guide),
-                                ),
-                            );
-                    }
-                    lead = lead.child(
-                        div()
-                            .row()
-                            .w_px(INDENT)
-                            .h_px(ROW_H)
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                icon(IconKind::ChevronDown)
-                                    .size(12.0)
-                                    .color(theme().icon_muted),
-                            ),
-                    );
                     sticky = sticky.child(
-                        div()
-                            .row()
-                            .h_px(ROW_H)
-                            .pl(8.0)
-                            .items_center()
-                            .bg(theme().panel_background)
-                            .on_click(click_id)
-                            .child(
-                                div()
-                                    .row()
-                                    .gap(5.0)
-                                    .pr(6.0)
-                                    .items_center()
-                                    .child(lead)
-                                    .child(
-                                        icon(IconKind::FolderOpen)
-                                            .size(14.0)
-                                            .color(theme().icon_accent),
-                                    )
-                                    .child(label(name).color(theme().text)),
-                            ),
+                        div().row().px(6.0).bg(theme().panel_background).child(
+                            components::tree_row(click_id, k)
+                                .height(ROW_H)
+                                .expander(Some(true))
+                                .child(
+                                    icon(IconKind::FolderOpen)
+                                        .size(14.0)
+                                        .color(theme().icon_accent),
+                                )
+                                .child(label(name).color(theme().text))
+                                .render()
+                                .flex(1.0),
+                        ),
                     );
                 }
                 // Separator under the pinned stack: a 1px border then a soft shadow fading into the content.
                 sticky = sticky
-                    .child(div().h_px(1.0).bg(theme().border))
+                    .child(components::edge_divider())
                     .child(div().h_px(4.0).bg(Rgba::new(0.0, 0.0, 0.0, 0.10)));
             }
         }
@@ -10361,7 +10233,7 @@ impl FunctionView for FilesView {
         self.take_tree_toast().or_else(|| self.lsp_toast.take())
     }
 
-    fn take_menu_request(&mut self) -> Option<Vec<workspace::MenuItem>> {
+    fn take_menu_request(&mut self) -> Option<Vec<components::MenuItem>> {
         self.panes.take_menu_request()
     }
 

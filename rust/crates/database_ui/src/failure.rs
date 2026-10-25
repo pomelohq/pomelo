@@ -1,6 +1,6 @@
+use components::ButtonKind;
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
 use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
-use workspace::ButtonKind;
 
 const PAD: f32 = 10.0;
 const GAP: f32 = 6.0;
@@ -355,14 +355,14 @@ impl Failure {
                         } else {
                             ButtonKind::Secondary
                         };
-                        ui::button(id(action), action.label())
+                        components::button(id(action), action.label())
                             .kind(kind)
                             .hovered(hover)
                             .into()
                     })
                     .collect();
                 buttons.push(
-                    ui::button(id(FailureAction::FixWithAgent), "Fix with Claude")
+                    components::button(id(FailureAction::FixWithAgent), "Fix with Claude")
                         .kind(ButtonKind::Ghost)
                         .icon(Some(IconKind::Sparkle))
                         .hovered(hover)

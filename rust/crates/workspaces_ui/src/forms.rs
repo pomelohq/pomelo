@@ -1,19 +1,17 @@
 //! The create and rename forms. Both float over the window, take the keyboard (Tab between fields, Enter to
 //! confirm, Escape to cancel) and can ask Claude for a name in the background.
 
+use components::{checkbox, field, link, status_line, ButtonKind};
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 
+use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use indexmap::IndexMap;
 use module_store::Outlook;
 use pom_agent::NameSuggestion;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
-use workspace::{
-    accent_action, checkbox, field, modal_footer, modal_frame, modal_header, modal_note,
-    modal_section, status_line, ButtonKind, EditKey, InputField, ModalResult, WindowModal,
-    WINDOW_MODAL_BASE,
-};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node};
+use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 use crate::repo_branch_picker::{
     BranchPicker, BranchSource, Entry, RepoBranches, ENTRY_BASE, ENTRY_END, PICKER_QUERY,
@@ -120,13 +118,16 @@ fn verb(count: usize, one: &'static str, many: &'static str) -> &'static str {
 
 fn refine_status(refining: bool, error: Option<&str>) -> Option<Node> {
     if refining {
-        return Some(status_line(
-            IconKind::RotateCw,
-            theme().icon_muted,
-            "Refining with Claude...",
-        ));
+        return Some(
+            status_line(
+                IconKind::RotateCw,
+                theme().icon_muted,
+                "Refining with Claude...",
+            )
+            .into(),
+        );
     }
-    error.map(|error| status_line(IconKind::Warning, theme().warning, error))
+    error.map(|error| status_line(IconKind::Warning, theme().warning, error).into())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -576,14 +577,13 @@ impl CreateWorkspaceModal {
                 content
             };
             let control = if names.len() <= ENVIRONMENT_CHOICES {
-                ui::segmented(
-                    names
-                        .iter()
-                        .enumerate()
-                        .map(|(index, name)| ui::segment(ENVIRONMENT_BASE + index as u64, *name)),
+                components::segmented(
+                    names.iter().enumerate().map(|(index, name)| {
+                        components::segment(ENVIRONMENT_BASE + index as u64, *name)
+                    }),
                     self.environment,
                 )
-                .size(ui::ButtonSize::Medium)
+                .size(components::ButtonSize::Medium)
                 .into()
             } else {
                 self.environment_select(&names, available)
@@ -600,14 +600,14 @@ impl CreateWorkspaceModal {
             row = row.child(
                 div().col().flex(1.0).child(field(
                     "Data",
-                    ui::segmented(
+                    components::segmented(
                         [
-                            ui::segment(DATA_FROM_MAIN, "Copy from main"),
-                            ui::segment(DATA_FRESH, "Empty, run seeds"),
+                            components::segment(DATA_FROM_MAIN, "Copy from main"),
+                            components::segment(DATA_FRESH, "Empty, run seeds"),
                         ],
                         usize::from(self.fresh_databases),
                     )
-                    .size(ui::ButtonSize::Medium)
+                    .size(components::ButtonSize::Medium)
                     .into(),
                     Some("the workspace's databases"),
                     None,
@@ -620,71 +620,29 @@ impl CreateWorkspaceModal {
 
     /// The profiles as a dropdown, so any number of them fits.
     fn environment_select(&self, names: &[&str], width: f32) -> Node {
-        let colors = theme();
-        let hairline = colors.border.alpha(0.6);
         let current = names.get(self.environment).copied().unwrap_or("local");
-        let mut trigger = div()
-            .row()
-            .h_px(SELECT_HEIGHT)
-            .px(10.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(6.0)
-            .border(1.0, hairline)
-            .on_click(ENVIRONMENT_SELECT)
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(current.to_string())
-                        .label_size(LabelSize::Small)
-                        .color(colors.text)
-                        .truncate(),
-                ),
-            )
-            .child(
-                icon(IconKind::ChevronDown)
-                    .size(10.0)
-                    .color(colors.icon_muted),
+        let trigger = components::select(ENVIRONMENT_SELECT, current)
+            .width(width)
+            .hovered(
+                self.environment_menu_open
+                    .then_some(ENVIRONMENT_SELECT)
+                    .or(self.hovered),
             );
-        if self.environment_menu_open || self.hovered == Some(ENVIRONMENT_SELECT) {
-            trigger = trigger.bg(colors.ghost_element_hover);
-        }
         let mut column = div().col().child(trigger);
         if self.environment_menu_open {
-            let mut menu = div()
-                .col()
-                .w_px(width)
-                .p(4.0)
-                .rounded(8.0)
-                .border(1.0, colors.border)
-                .bg(colors.elevated_surface_background)
-                .on_click(ENVIRONMENT_MENU_SURFACE);
-            for (index, name) in names.iter().enumerate() {
-                let id = ENVIRONMENT_BASE + index as u64;
-                menu = menu.child(
-                    div()
-                        .row()
-                        .h_px(26.0)
-                        .px(8.0)
-                        .items_center()
-                        .rounded(4.0)
-                        .bg(if self.hovered == Some(id) {
-                            colors.ghost_element_hover
-                        } else {
-                            Rgba::TRANSPARENT
-                        })
-                        .on_click(id)
-                        .child(
-                            label(name.to_string())
-                                .label_size(LabelSize::Default)
-                                .color(if index == self.environment {
-                                    colors.text_accent
-                                } else {
-                                    colors.text
-                                })
-                                .truncate(),
-                        ),
-                );
-            }
+            let items: Vec<components::MenuItem> = names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| components::MenuItem {
+                    checked: index == self.environment,
+                    ..components::MenuItem::new(ENVIRONMENT_BASE + index as u64, name.to_string())
+                })
+                .collect();
+            let menu = div().on_click(ENVIRONMENT_MENU_SURFACE).child(
+                components::menu(&items)
+                    .hovered(self.hovered)
+                    .min_width(width),
+            );
             column = column.child(
                 deferred(menu)
                     .below_or_above(SELECT_HEIGHT, 4.0)
@@ -905,7 +863,7 @@ impl WindowModal for CreateWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let branch_error = self.branch_error();
-        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
+        let mut refine_row = div().row().items_center().gap(12.0).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine name & branch with Claude",
@@ -964,13 +922,13 @@ impl WindowModal for CreateWorkspaceModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Create")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Create")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter"))
                     .enabled(self.can_create()),
@@ -1255,7 +1213,7 @@ impl WindowModal for RenameWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let mut refine_row = div().row().items_center().gap(12.0).child(accent_action(
+        let mut refine_row = div().row().items_center().gap(12.0).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine with Claude",
@@ -1281,13 +1239,13 @@ impl WindowModal for RenameWorkspaceModal {
             .items_center()
             .gap(8.0)
             .child(
-                ui::button(CANCEL, "Cancel")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CANCEL, "Cancel")
+                    .size(components::ButtonSize::Medium)
                     .keystroke(Some("escape")),
             )
             .child(
-                ui::button(CONFIRM, "Save")
-                    .size(ui::ButtonSize::Medium)
+                components::button(CONFIRM, "Save")
+                    .size(components::ButtonSize::Medium)
                     .kind(ButtonKind::Primary)
                     .keystroke(Some("enter")),
             );

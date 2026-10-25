@@ -62,26 +62,14 @@ pub fn tone(used: f32) -> Rgba {
 }
 
 fn meter(used: f32, width: Option<f32>, height: f32) -> Node {
-    let fill = (used / 100.0).clamp(0.0, 1.0);
-    let track = div()
-        .row()
-        .h_px(height)
-        .rounded(height / 2.0)
-        .bg(Rgba::new(1.0, 1.0, 1.0, 0.1));
-    let track = match width {
-        Some(width) => track.w_px(width),
-        None => track.flex(1.0),
-    };
-    track
-        .child(
-            div()
-                .flex(fill.max(0.0001))
-                .h_px(height)
-                .rounded(height / 2.0)
-                .bg(tone(used)),
-        )
-        .child(div().flex((1.0 - fill).max(0.0001)))
-        .into()
+    let bar = components::progress_bar(used / 100.0)
+        .height(height)
+        .color(tone(used));
+    match width {
+        Some(width) => bar.width(width),
+        None => bar,
+    }
+    .into()
 }
 
 fn percent(used: f32) -> String {
@@ -92,20 +80,10 @@ fn percent(used: f32) -> String {
 pub fn chip(info: &UsageInfo, hot: bool) -> Node {
     let colors = theme();
     let mono = |text: String, color: Rgba| label(text).size(12.0).mono().color(color);
-    let mut row = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(24.0)
-        .px(8.0)
-        .rounded(12.0)
-        .on_click(USAGE_CHIP)
-        .bg(if hot {
-            colors.element_hover
-        } else {
-            Rgba::new(1.0, 1.0, 1.0, 0.05)
-        })
-        .child(icon(IconKind::Sparkle).size(12.0).color(colors.icon_muted));
+    let mut row = components::status_item(Some(USAGE_CHIP))
+        .height(24.0)
+        .hovered(hot)
+        .icon(IconKind::Sparkle, colors.icon_muted);
     match (&info.account, &info.session, &info.weekly) {
         (Some(account), Some(session), Some(weekly)) => {
             row = row
@@ -125,15 +103,12 @@ pub fn chip(info: &UsageInfo, hot: bool) -> Node {
 }
 
 fn card(width: f32) -> ui::Div {
-    let colors = theme();
-    div()
-        .col()
+    components::card()
+        .padding(6.0)
+        .raised()
+        .render()
         .w_px(width)
-        .p(6.0)
         .gap(2.0)
-        .rounded(9.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
 }
 
 fn plan_chip(plan: &str) -> Node {
@@ -142,35 +117,23 @@ fn plan_chip(plan: &str) -> Node {
     if let Some(first) = text.get(0..1) {
         text = first.to_uppercase() + &text[1..];
     }
-    ui::chip(text)
+    components::chip(text)
         .color(colors.text_accent)
         .fill(colors.text_accent.alpha(0.14))
         .border(colors.text_accent.alpha(0.3))
         .into()
 }
 
-fn menu_row(id: u64, text: &str, keys: Option<&str>, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .items_center()
-        .h_px(28.0)
-        .px(8.0)
-        .rounded(5.0)
-        .on_click(id)
-        .child(label(text.to_string()).size(13.0).color(colors.text))
-        .child(div().flex(1.0));
-    if let Some(keys) = keys {
-        row = row.child(ui::render_keystroke(keys, 12.0));
-    }
-    if hovered == Some(id) {
-        row = row.bg(colors.ghost_element_hover);
-    }
-    row.into()
+fn menu_row(id: u64, text: &'static str, keys: Option<&'static str>, hovered: Option<u64>) -> Node {
+    let item = components::MenuItem {
+        hint: keys.map(Into::into),
+        ..components::MenuItem::new(id, text)
+    };
+    components::menu_row(&item, hovered)
 }
 
 fn separator() -> Node {
-    div().h_px(1.0).bg(theme().border_variant).into()
+    components::divider().into()
 }
 
 /// The card under the chip: the account, each window with its reset, and what to do next.
@@ -275,24 +238,11 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
 /// The status bar's usage: today's total.
 pub fn status_item(today: &UsageToday, hot: bool) -> Node {
     let colors = theme();
-    let mut item = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(20.0)
-        .px(6.0)
-        .rounded(4.0)
-        .on_click(USAGE_STATUS)
-        .child(icon(IconKind::Sparkle).size(12.0).color(colors.icon_muted))
-        .child(
-            label(format!("{} today", today.total))
-                .size(12.0)
-                .color(colors.text_muted),
-        );
-    if hot {
-        item = item.bg(colors.ghost_element_hover);
-    }
-    item.into()
+    components::status_item(Some(USAGE_STATUS))
+        .icon(IconKind::Sparkle, colors.icon_muted)
+        .text(format!("{} today", today.total), colors.text_muted)
+        .hovered(hot)
+        .into()
 }
 
 /// The card over the status item: the windows, and today by workspace.
@@ -354,7 +304,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
     let mut rows = div().col().rounded(6.0).border(1.0, colors.border_variant);
     for (index, (workspace, value)) in today.by_workspace.iter().enumerate() {
         if index > 0 {
-            rows = rows.child(div().h_px(1.0).bg(colors.border_variant));
+            rows = rows.child(components::divider());
         }
         rows = rows.child(
             div()

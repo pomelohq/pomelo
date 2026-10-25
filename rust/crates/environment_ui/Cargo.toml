@@ -9,6 +9,7 @@ description = "The project's secrets (names, reveal, copy, add, delete) and each
 path = "src/environment_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_config = { path = "../pom_config" }
 pom_paths = { path = "../pom_paths" }
 pom_secrets = { path = "../pom_secrets" }

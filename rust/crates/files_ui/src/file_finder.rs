@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
-use crate::command_palette::{picker_action, picker_footer, scroll_rows};
+use crate::command_palette::scroll_rows;
 use crate::fuzzy::{match_paths, CharBag};
 
 pub const WIDTH: f32 = 544.0;
@@ -303,21 +303,21 @@ impl FileFinder {
                 ))
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)));
         }
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(picker_footer(vec![
-                picker_action(None, &["enter"], "Open"),
-                picker_action(None, &["up", "down"], "Move"),
-                picker_action(None, &["escape"], "Close"),
-            ]))
+            .child(components::divider())
+            .child(
+                components::key_hints()
+                    .hint(None, &["enter"], "Open")
+                    .hint(None, &["up", "down"], "Move")
+                    .hint(None, &["escape"], "Close"),
+            )
             .into()
     }
 
@@ -343,20 +343,6 @@ impl FileFinder {
             .copied()
             .filter(|position| *position < folder.chars().count())
             .collect();
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id_base + row as u64);
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        } else if self.hovered == Some(id_base + row as u64) {
-            item = item.bg(colors.ghost_element_hover);
-        }
         let name_label = highlighted(name, &name_positions, colors.text, LabelSize::Default);
         let folder_budget = WIDTH - ROW_CHROME - ui::measure(&name_label).0;
         let (folder, folder_positions) = elide_folder(folder, &folder_positions, |text| {
@@ -384,14 +370,12 @@ impl FileFinder {
         } else {
             div().w_px(12.0).into()
         };
-        div()
-            .row()
-            .px(4.0)
-            .child(
-                item.child(material_icon(crate::file_icon(name)).size(14.0))
-                    .child(path_labels)
-                    .child(end),
-            )
+        components::list_row(id_base + row as u64)
+            .selected(row == self.selected)
+            .hovered(self.hovered)
+            .child(material_icon(crate::file_icon(name)).size(14.0))
+            .child(path_labels)
+            .child(end)
             .into()
     }
 }

@@ -9,6 +9,7 @@ description = "The Database tool window: a workspace's databases and shared serv
 path = "src/database_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 files_ui = { path = "../files_ui" }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 pom_config = { path = "../pom_config" }

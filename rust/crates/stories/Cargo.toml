@@ -9,6 +9,7 @@ description = "Real UI built from fixture data, shared by the gallery, snapshot 
 path = "src/stories.rs"
 
 [dependencies]
+components = { path = "../components" }
 anyhow.workspace = true
 png = "0.17"
 serde_json.workspace = true

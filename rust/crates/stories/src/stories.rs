@@ -60,29 +60,112 @@ pub fn still(render: fn(f32, f32) -> ui::Node) -> anyhow::Result<Box<dyn Story>>
     Ok(Box::new(Static(render)))
 }
 
+/// Each page's groups by what they are for, in the order the gallery lays them out: a section per job, so
+/// controls that answer the same need sit together.
+pub const SECTIONS: &[(&str, &str, &[&str])] = &[
+    ("Foundations", "Tokens", &["Color", "Type", "Icons"]),
+    (
+        "Atoms",
+        "Actions",
+        &["Button", "Split button", "Icon button", "Link"],
+    ),
+    (
+        "Atoms",
+        "Inputs",
+        &["Input", "Checkbox", "Radio", "Switch", "Stepper", "Select"],
+    ),
+    ("Atoms", "Navigation", &["Tab", "Segmented"]),
+    (
+        "Atoms",
+        "Status",
+        &[
+            "Dot",
+            "Pill",
+            "Chip",
+            "Progress",
+            "Skeleton",
+            "Status line",
+            "Status item",
+        ],
+    ),
+    (
+        "Atoms",
+        "Content",
+        &[
+            "Paragraph",
+            "Key value",
+            "Avatar",
+            "Key chip",
+            "Key hints",
+            "Tooltip",
+            "Divider",
+        ],
+    ),
+    ("Molecules", "Forms", &["Field", "Search field"]),
+    ("Molecules", "Menus", &["Menu", "Select menu"]),
+    (
+        "Molecules",
+        "Lists",
+        &["Section header", "List row", "Tree row", "Empty state"],
+    ),
+    (
+        "Molecules",
+        "Headers and bars",
+        &["Page header", "Dock header", "Toolbar", "Breadcrumb"],
+    ),
+    ("Molecules", "Surfaces", &["Card", "Modal"]),
+    ("Molecules", "Messages", &["Banner", "Toast"]),
+    ("Organisms", "Services", &["Services panel", "Service tab"]),
+];
+
 /// What a group is for, so someone picking a control knows which one fits.
 pub fn group_note(group: &str) -> Option<&'static str> {
     Some(match group {
         "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors.",
         "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
         "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
-        "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions. Small in panels and toolbars, Medium in dialogs and forms.",
+        "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions, Agent where the work goes to an agent. Small in panels and toolbars, Medium in dialogs and forms.",
+        "Icon button" => "A square button showing only an icon: XSmall beside a value, Small in toolbars, Medium in headers. Toggled when it switches something on; name it with a tooltip.",
         "Link" => "A text-only action that reads like a link, beside the value it acts on: Open in browser, Change.",
         "Select" => "Pick one of a few known values: a theme, a profile, a database. Opens a Menu of the choices; a placeholder shows while nothing is chosen.",
-        "Checkbox" => "An on or off choice in a form.",
+        "Checkbox" => "An on or off choice in a form; partial when only some of what it stands for is on.",
+        "Switch" => "Turns a setting on or off right away, with nothing to save.",
+        "Stepper" => "A number changed a step at a time, or typed after a click on it: minutes, ports, limits.",
+        "Radio" => "One of a few choices shown all at once, each with a line about it.",
         "Segmented" => "One of a few mutually exclusive choices: Small for toolbar filters (All, Running, Failed), Medium in forms; a choice can carry an icon or be unavailable.",
-        "Progress" => "How far a job of known length has got.",
-        "Status pill" => "The state of a service or job in one word.",
-        "Attention pill" => "Something is waiting on the person: an agent asking, a workspace to look at.",
+        "Progress" => "How far a job of known length has got; as a meter, how close something is to its limit, in the color of that closeness.",
+        "Pill" => "The one pill: a state in a word or two with its dot, tinted by its color. Warning when something waits on the person.",
         "Status line" => "The result of a check, under the control that ran it.",
         "Key chip" => "A shortcut next to what it runs; the accent one sits on primary buttons.",
-        "Divider" => "Separates sections; Faded inside a list.",
+        "Divider" => "A 1px line between sections or groups of rows; upright between groups in a row.",
+        "Status item" => "One thing on the window's status bar: a dock toggle with its news dot, the cursor position, the language. Lit on hover, clicked to act on it.",
+        "Split button" => "One action and a chevron for its other ways: Stage All and what to stage, Commit and how, Merge and the method.",
+        "Tab" => "One open thing in a pane: its icon and title, a close button where a pin or an unsaved dot can stand, italic while it is only a preview. The dragged copy floats.",
+        "Avatar" => "A person as the first letter of their name in a circle: a commit's author, a reviewer.",
+        "Skeleton" => "A gray bar that pulses where text will be once it loads; it stays still with reduced motion.",
+        "Key value" => "One fact: a muted key in a fixed column, its value, and a quieter note after it.",
+        "Key hints" => "The keys a picker answers to, along its footer; a hint with an id is also a button.",
+        "Paragraph" => "Body copy broken at word boundaries to fit a width; centered under an empty state's title.",
         "Chip" => "A short read-only tag: a branch, a key kind, a plan, a detected stack. One shape; only the ink, fill and edge change.",
         "Tooltip" => "Names what an icon does, with the keys that run it when there are any.",
-        "Status dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
-        "Input" => "A labeled text field with its hint or its error below.",
-        "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. A long list gets a search line that filters as you type. A check marks the current choice; keys sit on the right; Danger for actions that lose data.",
-        "Select menu" => "A select with its menu open: the menu is as wide as the select, wider only when a choice needs it, the current value checked. Near the right edge it lines up with the select's right side; near the bottom it opens above, with its search line at the bottom.",
+        "Dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
+        "Input" => "The box a line of text is typed in: ringed while focused, red on an error, mono for code, masked for secrets. A Field puts its label and hint around it.",
+        "Field" => "A labeled input: the label above, the hint or the error below. Every form field is one.",
+        "Search field" => "The box a panel filters its list with: a search icon, the query, and a clear button once something is typed.",
+        "Section header" => "The title over a group of rows or fields: uppercase and muted, with a count or one quiet action at the right; a chevron when the group folds away.",
+        "List row" => "One row of a picker or list: icon, text and anything at the end; tinted while selected, lit while hovered.",
+        "Banner" => "A card across a page for one thing that needs doing or knowing: what is wrong, the fix as a button, and the commands it runs. A second line says what happens meanwhile; flush runs edge to edge over a panel; a pill can stand for the icon when a decision waits.",
+        "Card" => "The one card: a rounded box on the element fill. Hovered when it opens something, chosen when picked, tinted for a problem, raised for a popover over the screen.",
+        "Page header" => "The head of a page in a tab: the key and state with the actions on top, then the title and a meta line. Compact puts all of it on one line.",
+        "Dock header" => "A docked panel's title strip: the name in small caps and one icon action.",
+        "Tree row" => "One row of a tree: files, databases, changes, services. A guide for each level, a chevron when it opens; selected, hovered, ringed where the keyboard is, or marked by what is picked elsewhere.",
+        "Breadcrumb" => "Where the thing on screen sits: its parents, each a step back, then itself, and the branch it is on.",
+        "Toolbar" => "The strip over a tab with what acts on its content: where it is, filters and buttons. Under a tab it counts what is shown and says what the last action did.",
+        "Empty state" => "What a pane says when it has nothing to show: the reason, how it fills, and the action that fills it. Compact is the one line a list shows instead of rows.",
+        "Modal" => "A form over the whole window: the title with a close button, the fields, and the footer with a note at the left and the buttons at the right.",
+        "Toast" => "A short message over the bottom of the window that goes away by itself, with at most one action.",
+        "Menu" => "Every list of choices on a raised card: context menus, a select's choices, settings submenus. Groups under a muted header, icons at the left, keys at the right, Danger last; a long list gets a search line; a check marks the current choice.",
+        "Select menu" => "A select with its menu open, as wide as the select. It opens below; near the right edge it lines up with the select's right side; near the bottom it opens above with its search line at the bottom.",
         "Services panel" => "The Services panel in the side dock: every service of the workspace, what needs attention, and the shared services.",
         "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
         _ => return None,
@@ -149,6 +232,56 @@ mod tests {
                 "{} has no note",
                 def.group
             );
+        }
+    }
+
+    /// Each file of the components crate is one component, so each has its group in the gallery, and every
+    /// Atoms group is a component file: the gallery and the crate list the same things.
+    #[test]
+    fn the_gallery_shows_every_component_once() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../components/src");
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .expect("components sources")
+            .filter_map(|entry| entry.ok())
+            .filter_map(|entry| entry.path().file_stem()?.to_str().map(str::to_string))
+            .filter(|stem| stem != "components")
+            .collect();
+        files.sort();
+        let file_of = |group: &str| group.to_lowercase().replace(' ', "_");
+        let groups: Vec<String> = super::all().iter().map(|def| file_of(def.group)).collect();
+        for file in &files {
+            assert!(
+                groups.contains(file),
+                "components/src/{file}.rs has no group in the gallery"
+            );
+        }
+        for def in super::all().iter().filter(|def| def.page == "Atoms") {
+            assert!(
+                files.contains(&file_of(def.group)),
+                "the {} group shows no component file",
+                def.group
+            );
+        }
+    }
+
+    #[test]
+    fn every_group_sits_in_one_section_of_its_page() {
+        let all = super::all();
+        for def in &all {
+            let homes = super::SECTIONS
+                .iter()
+                .filter(|(page, _, groups)| *page == def.page && groups.contains(&def.group))
+                .count();
+            assert_eq!(homes, 1, "{} > {} needs one section", def.page, def.group);
+        }
+        for (page, section, groups) in super::SECTIONS {
+            for group in *groups {
+                assert!(
+                    all.iter()
+                        .any(|def| def.page == *page && def.group == *group),
+                    "{section} lists {group}, which {page} does not show"
+                );
+            }
         }
     }
 

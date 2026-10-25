@@ -1,11 +1,12 @@
+use components::ButtonKind;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{ButtonKind, EditKey, Item, ItemTick, TerminalKeyOutcome};
+use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
 pub const TAB_ID: &str = "dev-requests";
 
@@ -370,7 +371,7 @@ fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node
         .row()
         .items_center()
         .gap(6.0)
-        .child(ui::dot(color, 7.0))
+        .child(components::dot(color, 7.0))
         .child(small(format!("{name} :{}", server.port), colors.text_muted))
         .into()
 }
@@ -382,27 +383,8 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         KindFilter::Proxy => 1,
         KindFilter::Webhook => 2,
     };
-    let border = if state.filter_focused {
-        colors.border_focused
-    } else {
-        colors.border
-    };
-    let mut field = div()
-        .row()
-        .items_center()
-        .gap(8.0)
+    let field = components::search_box(FILTER, state.filter_focused)
         .w_px(240.0)
-        .h_px(30.0)
-        .px(10.0)
-        .rounded(6.0)
-        .border(1.0, border)
-        .bg(colors.editor_background)
-        .on_click(FILTER)
-        .child(
-            icon(IconKind::Filter)
-                .size(14.0)
-                .color(colors.text_placeholder),
-        )
         .child(
             div()
                 .row()
@@ -416,38 +398,31 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                     FieldFont::Ui,
                 )),
         );
-    if state.filter_focused {
-        field = field.ring(3.0, colors.overlay_selected);
-    }
-    let mut bar = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .px(CARD_INSET)
-        .h_px(TOOLBAR_H)
+    let mut bar = components::toolbar()
+        .height(TOOLBAR_H)
         .child(
-            ui::segmented(
+            components::segmented(
                 [
-                    ui::segment(KIND_BASE, "All"),
-                    ui::segment(KIND_BASE + 1, "Proxy"),
-                    ui::segment(KIND_BASE + 2, "Webhooks"),
+                    components::segment(KIND_BASE, "All"),
+                    components::segment(KIND_BASE + 1, "Proxy"),
+                    components::segment(KIND_BASE + 2, "Webhooks"),
                 ],
                 kind,
             )
             .hovered(hovered),
         )
         .child(
-            ui::segmented(
+            components::segmented(
                 [
-                    ui::segment(STATUS_BASE, "Any Status"),
-                    ui::segment(STATUS_BASE + 1, "Errors"),
+                    components::segment(STATUS_BASE, "Any Status"),
+                    components::segment(STATUS_BASE + 1, "Errors"),
                 ],
                 usize::from(state.errors_only),
             )
             .hovered(hovered),
         )
         .child(field)
-        .child(div().flex(1.0))
+        .spacer()
         .child(
             div()
                 .row()
@@ -462,7 +437,7 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         );
     if !state.served_elsewhere {
         bar = bar.child(
-            ui::button(RESTART, "Restart")
+            components::button(RESTART, "Restart")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::RotateCw))
                 .hovered(hovered),
@@ -521,7 +496,6 @@ fn row(entry: &ProxyLogEntry, hovered: bool, selected: bool) -> Node {
 }
 
 fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
-    let colors = theme();
     let mut column = div().col();
     let mut any = false;
     for entry in state.visible() {
@@ -539,78 +513,16 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             "Nothing matches these filters."
         };
         column = column.child(
-            div()
-                .col()
-                .items_center()
-                .gap(8.0)
-                .pt(60.0)
-                .child(
-                    icon(IconKind::ArrowUpRight)
-                        .size(20.0)
-                        .color(colors.text_placeholder),
-                )
-                .child(
-                    label("No requests")
-                        .size(13.0)
-                        .medium()
-                        .color(colors.text_placeholder),
-                )
-                .child(centered_lines(hint, 360.0)),
+            components::empty_state("No requests")
+                .icon(IconKind::ArrowUpRight)
+                .body(hint, 360.0),
         );
     }
     column.into()
-}
-
-fn section_title(text: &str) -> ui::Label {
-    label(text.to_uppercase())
-        .size(11.0)
-        .weight(600)
-        .color(theme().text_placeholder)
-}
-
-fn key_value(name: ui::Label, value: ui::Label) -> Node {
-    div()
-        .row()
-        .items_center()
-        .h_px(16.0)
-        .gap(12.0)
-        .child(div().row().w_px(96.0).child(name.truncate()))
-        .child(div().row().flex(1.0).child(value.truncate()))
-        .into()
 }
 
 fn fact(name: &str, value: impl Into<String>, color: Rgba) -> Node {
-    key_value(small(name, theme().text_muted), small(value, color))
-}
-
-fn centered_lines(text: &str, width: f32) -> Node {
-    let colors = theme();
-    let fits = |candidate: &str| {
-        ui::measure_text_width(candidate, 12.0, false, ui::ui_font_weight()) / ui::ui_text_scale()
-            <= width
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        match lines.last_mut() {
-            Some(line) if fits(&format!("{line} {word}")) => {
-                line.push(' ');
-                line.push_str(word);
-            }
-            _ => lines.push(word.to_string()),
-        }
-    }
-    let mut column = div().col().w_px(width);
-    for line in lines {
-        column = column.child(
-            div()
-                .row()
-                .h_px(16.0)
-                .items_center()
-                .justify_center()
-                .child(small(line, colors.text_muted)),
-        );
-    }
-    column.into()
+    components::key_value(small(name, theme().text_muted), small(value, color), None)
 }
 
 fn key_values(rows: Vec<Node>) -> Node {
@@ -649,7 +561,11 @@ fn headers_block(headers: &[(String, String)]) -> Node {
             } else {
                 small(value.clone(), colors.text)
             };
-            key_value(small(name.clone(), colors.text_muted).mono(), shown.mono())
+            components::key_value(
+                small(name.clone(), colors.text_muted).mono(),
+                shown.mono(),
+                None,
+            )
         })
         .collect();
     key_values(rows)
@@ -680,7 +596,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .as_ref()
         .is_some_and(|(text, _)| !text.is_empty())
         .then(|| {
-            ui::button(COPY_BODY, "Copy")
+            components::button(COPY_BODY, "Copy")
                 .kind(ButtonKind::Ghost)
                 .icon(Some(IconKind::Copy))
                 .hovered(hovered)
@@ -689,7 +605,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         .row()
         .items_center()
         .gap(8.0)
-        .child(section_title("Body"))
+        .child(components::section_header("Body"))
         .child(small(meta, colors.text_placeholder))
         .into();
     let mut column = div().col().child(section_head(title, copy.map(Node::from)));
@@ -749,7 +665,10 @@ fn delivery_row(delivery: &Delivery) -> Node {
         .items_center()
         .gap(10.0)
         .h_px(26.0)
-        .child(ui::dot(if ok { colors.success } else { colors.error }, 8.0))
+        .child(components::dot(
+            if ok { colors.success } else { colors.error },
+            8.0,
+        ))
         .child(
             div()
                 .row()
@@ -889,7 +808,7 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             .px(DETAIL_PAD)
             .pt(4.0)
             .child(strip)
-            .child(div().h_px(1.0).bg(colors.border_variant)),
+            .child(components::divider()),
     );
     if tab == DetailTab::FanOut {
         let mut deliveries = div().col().px(DETAIL_PAD).py(6.0);
@@ -910,7 +829,10 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             &entry.request_headers
         };
         column = column
-            .child(section_head(section_title("Headers").into(), None))
+            .child(section_head(
+                components::section_header("Headers").into(),
+                None,
+            ))
             .child(headers_block(headers));
         if tab == DetailTab::Response && webhook {
             column = column.child(div().row().px(DETAIL_PAD).child(small(

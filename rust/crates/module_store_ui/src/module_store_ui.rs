@@ -1,6 +1,7 @@
 mod access;
 mod remote;
 
+use components::{pill, text_line, ButtonKind};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -12,7 +13,7 @@ pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
 use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
-use workspace::{paragraph, status_pill, text_line, ButtonKind, Item, ItemTick};
+use workspace::{Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
 
@@ -280,15 +281,12 @@ const OPTIMIZE_POPOVER_W: f32 = 404.0;
 
 /// The floating card a confirmation sits in, styled like the app's other popovers.
 fn popover_frame(width: f32) -> ui::Div {
-    let colors = theme();
-    div()
-        .col()
+    components::card()
+        .padding(12.0)
+        .raised()
+        .render()
         .w_px(width)
         .gap(8.0)
-        .p(12.0)
-        .rounded(10.0)
-        .border(1.0, colors.border)
-        .bg(colors.element_background)
 }
 
 fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>) -> Node {
@@ -298,12 +296,12 @@ fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>
         .pt(4.0)
         .child(div().flex(1.0))
         .child(
-            ui::button(cancel, "Cancel")
+            components::button(cancel, "Cancel")
                 .keystroke(Some("escape"))
                 .hovered(hovered),
         )
         .child(
-            ui::button(confirm, action)
+            components::button(confirm, action)
                 .kind(ButtonKind::Primary)
                 .keystroke(Some("enter"))
                 .hovered(hovered),
@@ -388,33 +386,36 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
         })
         .collect();
     let mut column = popover_frame(OPTIMIZE_POPOVER_W)
-        .child(paragraph(
-            &format!("Optimize: {}", parts.join(", ")),
-            13.0,
-            20.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.text,
+        .child(Node::from(
+            components::paragraph(
+                format!("Optimize: {}", parts.join(", ")),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(13.0, 20.0)
+            .color(colors.text),
         ))
-        .child(paragraph(
-            &format!(
-                "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
-                format_size(plan_frees(overview, &steps))
-            ),
-            12.0,
-            16.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.text_muted,
+        .child(Node::from(
+            components::paragraph(
+                format!(
+                    "Frees up to {}. Each workspace keeps a working node_modules the whole time.",
+                    format_size(plan_frees(overview, &steps))
+                ),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.text_muted),
         ));
     if !restarted.is_empty() {
-        column = column.child(paragraph(
-            &format!(
-                "Services are stopped and started again in {}.",
-                restarted.join(", ")
-            ),
-            12.0,
-            16.0,
-            OPTIMIZE_POPOVER_W - 24.0,
-            colors.warning,
+        column = column.child(Node::from(
+            components::paragraph(
+                format!(
+                    "Services are stopped and started again in {}.",
+                    restarted.join(", ")
+                ),
+                OPTIMIZE_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.warning),
         ));
     }
     column
@@ -453,16 +454,6 @@ fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).label_size(LabelSize::Small).color(color)
 }
 
-fn section_label(text: &str) -> Node {
-    text_line(
-        14.0,
-        label(text.to_uppercase())
-            .size(11.0)
-            .weight(600)
-            .color(theme().text_placeholder),
-    )
-}
-
 /// 0..1, repeating every `period` seconds.
 fn wave(clock: f32, period: f32) -> f32 {
     if ui::reduce_motion() {
@@ -475,19 +466,12 @@ fn wave(clock: f32, period: f32) -> f32 {
 fn pulse(clock: f32) -> Node {
     let mut color = theme().text_accent;
     color.a *= 0.35 + 0.65 * wave(clock, 0.9);
-    ui::dot(color, 7.0).into()
-}
-
-/// A size still being measured.
-fn shimmer(clock: f32, width: f32) -> Node {
-    let mut color = theme().ghost_element_hover;
-    color.a *= 0.6 + 0.4 * wave(clock, 1.2);
-    div().w_px(width).h_px(10.0).rounded(5.0).bg(color).into()
+    components::dot(color, 7.0).into()
 }
 
 fn chip(text: &str, highlight: bool) -> Node {
     let colors = theme();
-    let chip = ui::chip(text).color(if text == "main" {
+    let chip = components::chip(text).color(if text == "main" {
         colors.text
     } else {
         colors.text_muted
@@ -606,7 +590,7 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
         Look::Primary => ButtonKind::Secondary,
         Look::Ghost => ButtonKind::Ghost,
     };
-    ui::button(spec.id, spec.text)
+    components::button(spec.id, spec.text)
         .kind(kind)
         .enabled(state.busy.is_none())
         .hovered(hovered)
@@ -709,7 +693,7 @@ impl Ids {
 
 fn size_or_shimmer(state: &StoreState, size: Option<u64>) -> Node {
     match size {
-        Some(0) | None if state.measuring > 0 => shimmer(state.clock, 60.0),
+        Some(0) | None if state.measuring > 0 => components::skeleton(60.0, state.clock, 0.0),
         Some(size) => small(format_size(size), theme().text).mono().into(),
         None => small("-", theme().text).mono().into(),
     }
@@ -737,18 +721,19 @@ fn confirm_strip(
     });
     let mut column = popover_frame(SWAP_POPOVER_W)
         .child(
-            paragraph(&format!("Use the shared copy in {workspace}?"), 13.0, 20.0, SWAP_POPOVER_W - 24.0, colors.text),
+            Node::from(components::paragraph(format!("Use the shared copy in {workspace}?"), SWAP_POPOVER_W - 24.0).size(13.0, 20.0).color(colors.text)),
         )
-        .child(paragraph(&format!(
+        .child(Node::from(components::paragraph(format!(
                 "Its node_modules is replaced by a clone of the stored copy; the old folder is kept until the new one is in place.{freed}"
-            ), 12.0, 16.0, SWAP_POPOVER_W - 24.0, colors.text_muted));
+            ), SWAP_POPOVER_W - 24.0).size(12.0, 16.0).color(colors.text_muted)));
     if running {
-        column = column.child(paragraph(
-            "Its services are running: they are stopped first and started again after.",
-            12.0,
-            16.0,
-            SWAP_POPOVER_W - 24.0,
-            colors.warning,
+        column = column.child(Node::from(
+            components::paragraph(
+                "Its services are running: they are stopped first and started again after.",
+                SWAP_POPOVER_W - 24.0,
+            )
+            .size(12.0, 16.0)
+            .color(colors.warning),
         ));
     }
     column
@@ -818,9 +803,9 @@ fn version_rows(
             )
         }
         None if version.stored.is_some() && version.on_main => {
-            status_pill("New workspaces", colors.success)
+            pill("New workspaces").color(colors.success).into()
         }
-        None if version.stored.is_none() => status_pill("Installs once", colors.text_muted),
+        None if version.stored.is_none() => pill("Installs once").color(colors.text_muted).into(),
         None => div().into(),
     };
     let size = match &version.stored {
@@ -904,25 +889,17 @@ fn version_rows(
 }
 
 fn group(head: Node, rows: Vec<Node>) -> Node {
-    let colors = theme();
-    let mut column = div()
-        .col()
-        .rounded(10.0)
-        .border(1.0, colors.border_variant)
-        .bg(colors.panel_background)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .gap(8.0)
-                .px(ROW_PAD_X)
-                .h_px(36.0)
-                .child(head),
-        );
+    let mut column = components::card().padding(0.0).render().child(
+        div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .px(ROW_PAD_X)
+            .h_px(36.0)
+            .child(head),
+    );
     for row in rows {
-        column = column
-            .child(div().h_px(1.0).bg(colors.border_variant))
-            .child(row);
+        column = column.child(components::divider()).child(row);
     }
     column.into()
 }
@@ -1024,19 +1001,16 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         ),
         Some(_) => format!("{} saved - {}", format_size(total), state.method),
     };
-    let mut head = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .child(
-            label("node_modules Store")
-                .size(15.0)
-                .weight(600)
-                .color(colors.text),
-        )
-        .child(small(summary, colors.text_muted));
+    let mut head = components::page_header(
+        label("node_modules Store")
+            .size(15.0)
+            .weight(600)
+            .color(colors.text),
+    )
+    .compact()
+    .lead(small(summary, colors.text_muted));
     if let Some(request) = &state.busy {
-        head = head.child(
+        head = head.lead(
             div()
                 .row()
                 .items_center()
@@ -1063,20 +1037,20 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             if !failed {
                 color.a *= fade;
             }
-            head = head.child(small(text.clone(), color));
+            head = head.lead(small(text.clone(), color));
         }
     }
     let idle = state.busy.is_none() && state.overview.is_some();
-    head = head.child(div().flex(1.0)).child(
-        ui::button(REFRESH, "Refresh")
+    head = head.action(
+        components::button(REFRESH, "Refresh")
             .kind(ButtonKind::Ghost)
             .icon(Some(IconKind::RotateCw))
             .enabled(state.busy.is_none() && !state.loading())
             .hovered(hovered),
     );
     if unused > 0 && state.measuring == 0 {
-        head = head.child(
-            ui::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
+        head = head.action(
+            components::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
                 .kind(ButtonKind::Ghost)
                 .enabled(idle)
                 .hovered(hovered),
@@ -1088,8 +1062,8 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .as_ref()
             .is_some_and(|overview| !plan(overview).is_empty());
     if can_optimize {
-        head = head.child(
-            ui::button(OPTIMIZE, "Optimize")
+        head = head.action(
+            components::button(OPTIMIZE, "Optimize")
                 .kind(ButtonKind::Primary)
                 .enabled(idle)
                 .hovered(hovered),
@@ -1121,16 +1095,21 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
                 div()
                     .row()
                     .w_px(LABEL_W)
-                    .child(section_label("Lockfile version")),
+                    .child(components::section_header("Lockfile version")),
             )
             .child(
                 div()
                     .row()
                     .w_px(SIZE_W)
                     .justify_end()
-                    .child(section_label("Size")),
+                    .child(components::section_header("Size")),
             )
-            .child(div().row().flex(1.0).child(section_label("Used by"))),
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .child(components::section_header("Used by")),
+            ),
     );
     let mut ids = Ids::default();
     let measured = state.measuring == 0;

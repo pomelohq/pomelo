@@ -9,6 +9,7 @@ description = "Terminal view: draws a terminal's grid snapshot (cells, theme ANS
 path = "src/terminal_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 pom_shell = { path = "../pom_shell" }
 pom_agent = { path = "../pom_agent" }
 pom_paths = { path = "../pom_paths" }

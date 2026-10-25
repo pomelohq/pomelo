@@ -3,7 +3,7 @@
 //! file to the chosen language.
 
 use editor::highlight::Lang;
-use ui::{div, label, material_icon, theme, LabelSize, MaterialIcon, Node};
+use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
 use crate::command_palette::scroll_rows;
@@ -235,13 +235,7 @@ impl LanguageSelector {
         let end = (self.scroll_top + visible).min(self.matches.len());
         let mut results = div().col().py(4.0);
         if self.matches.is_empty() {
-            results = results.child(
-                div().row().px(10.0).py(4.0).child(
-                    label("No matches")
-                        .label_size(LabelSize::Default)
-                        .color(colors.text_muted),
-                ),
-            );
+            results = results.child(components::empty_state("No matches").compact());
         } else {
             results = results
                 .children(crate::list_scrollbar::render(
@@ -254,14 +248,13 @@ impl LanguageSelector {
                 ))
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)));
         }
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(head)
-            .child(div().h_px(1.0).bg(colors.border_variant))
+            .child(components::divider())
             .child(results)
             .into()
     }
@@ -275,30 +268,15 @@ impl LanguageSelector {
             return div().into();
         };
         let id = id_base + row as u64;
-        let mut item = div()
-            .row()
-            .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(id);
-        if row == self.selected {
-            item = item.bg(colors.overlay_selected);
-        } else if self.hovered == Some(id) {
-            item = item.bg(colors.ghost_element_hover);
-        }
-        div()
-            .row()
-            .px(4.0)
-            .child(item.child(material_icon(candidate.icon).size(14.0)).child(
-                crate::file_finder::highlighted(
-                    &text,
-                    &found.positions,
-                    colors.text,
-                    LabelSize::Default,
-                ),
+        components::list_row(id)
+            .selected(row == self.selected)
+            .hovered(self.hovered)
+            .child(material_icon(candidate.icon).size(14.0))
+            .child(crate::file_finder::highlighted(
+                &text,
+                &found.positions,
+                colors.text,
+                LabelSize::Default,
             ))
             .into()
     }

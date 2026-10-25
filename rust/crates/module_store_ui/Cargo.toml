@@ -9,6 +9,7 @@ description = "The node_modules Store tab: every stored copy, its size and works
 path = "src/module_store_ui.rs"
 
 [dependencies]
+components = { path = "../components" }
 module_store = { path = "../module_store" }
 pom_config = { path = "../pom_config" }
 pom_paths = { path = "../pom_paths" }

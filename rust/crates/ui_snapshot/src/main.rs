@@ -1165,7 +1165,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     if std::env::var("MENUKEYS").is_ok() {
-        let item = |id: u64, text: &'static str, sep: bool, disabled: bool| workspace::MenuItem {
+        let item = |id: u64, text: &'static str, sep: bool, disabled: bool| components::MenuItem {
             id,
             label: text.into(),
             checked: false,

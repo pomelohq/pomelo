@@ -3,6 +3,7 @@
 //! stays in `workspace`. This is the first slice of the structure-first workspace migration: the left dock's
 //! interior (the workspace list) now renders through `ProjectPanel` instead of hand-placed rects.
 
+use components::status_line;
 use ui::{div, icon, label, theme, Corner, Div, IconKind, Node, Rgba};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -216,36 +217,8 @@ pub fn panel_header(title: &str) -> Node {
         .into()
 }
 
-/// A docked panel's title strip: the name in small caps on the left, one icon action on the right.
 pub fn dock_title_bar(title: &str, action: Option<(IconKind, u64)>) -> Node {
-    let mut bar = div()
-        .row()
-        .h_px(crate::PANEL_HEADER_H)
-        .pl(12.0)
-        .pr(8.0)
-        .gap(8.0)
-        .items_center()
-        .child(
-            label(title.to_uppercase())
-                .size(11.0)
-                .weight(600)
-                .color(theme().text_muted),
-        )
-        .child(div().flex(1.0));
-    if let Some((kind, id)) = action {
-        bar = bar.child(
-            div()
-                .row()
-                .items_center()
-                .justify_center()
-                .w_px(24.0)
-                .h_px(24.0)
-                .rounded(6.0)
-                .on_click(id)
-                .child(icon(kind).size(14.0).color(theme().icon_muted)),
-        );
-    }
-    bar.into()
+    components::dock_header(title, action)
 }
 
 pub const SIDE_PANEL_BASE: u64 = 800_000_000;
@@ -637,32 +610,14 @@ fn group_header(
 ) -> Node {
     let colors = theme();
     let id = crate::WORKSPACE_GROUP_BASE + group.index() as u64;
-    let mut header = div()
-        .row()
+    let mut header = components::section_header(group.label())
+        .count(count)
+        .expander(folded.then_some(false))
+        .render()
         .h_px(20.0)
         .px(8.0)
-        .gap(6.0)
-        .items_center()
         .rounded(4.0)
-        .on_click(id)
-        .child(
-            label(group.label().to_uppercase())
-                .size(10.5)
-                .weight(600)
-                .color(colors.text_placeholder),
-        )
-        .child(
-            label(count.to_string())
-                .size(10.5)
-                .color(with_alpha(colors.text_placeholder, 0.8)),
-        );
-    if folded {
-        header = header.child(
-            icon(IconKind::ChevronRight)
-                .size(10.0)
-                .color(colors.text_placeholder),
-        );
-    }
+        .on_click(id);
     if hovered == Some(id) {
         header = header.bg(colors.element_hover);
     }
@@ -1213,19 +1168,19 @@ pub fn failure_popover(op: &crate::WorkspaceOp, position: usize, manual_open: bo
     } else {
         op.title.clone()
     };
-    div()
-        .col()
+    components::card()
+        .padding(10.0)
+        .raised()
+        .render()
         .w_px(WIDTH)
-        .p(10.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(label(title).medium().color(colors.text).truncate())
-        .child(div().row().h_px(16.0).items_center().child(status_line(
-            IconKind::Warning,
-            colors.error,
-            op.error.clone(),
-        )))
+        .child(
+            div()
+                .row()
+                .h_px(16.0)
+                .items_center()
+                .child(status_line(IconKind::Warning, colors.error, op.error.clone()).tinted()),
+        )
         .child(op_details(
             op,
             position,
@@ -1263,16 +1218,20 @@ fn workspace_row(
     }
     // Main's update and its missing clones come first; then the one thing that matters most about the work.
     let line: Option<Node> = match upkeep {
-        Upkeep::Running(op) => Some(status_line(
-            IconKind::RotateCw,
-            colors.text_accent,
-            format!("Updating - {}", op_step(op)),
-        )),
-        Upkeep::Done => Some(status_line(
-            IconKind::Check,
-            colors.success,
-            "Up to date".into(),
-        )),
+        Upkeep::Running(op) => Some(
+            status_line(
+                IconKind::RotateCw,
+                colors.text_accent,
+                format!("Updating - {}", op_step(op)),
+            )
+            .tinted()
+            .into(),
+        ),
+        Upkeep::Done => Some(
+            status_line(IconKind::Check, colors.success, "Up to date")
+                .tinted()
+                .into(),
+        ),
         Upkeep::Failed {
             op,
             position,
@@ -1289,7 +1248,7 @@ fn workspace_row(
         Upkeep::None if waiting => Some(
             div()
                 .row()
-                .child(ui::attention_pill("Waiting for you"))
+                .child(components::pill("Waiting for you").attention())
                 .into(),
         ),
         Upkeep::None => match trouble {
@@ -1330,11 +1289,12 @@ fn workspace_row(
         .child(text);
     if let Some((pr, _)) = trouble {
         main_line = main_line.child(
-            div()
-                .col()
-                .h_px(content_h)
-                .pt(6.0)
-                .child(pr_pill(row.index, pr)),
+            div().col().h_px(content_h).pt(6.0).child(
+                components::pill(pr.count.to_string())
+                    .color(theme().error)
+                    .icon(IconKind::PullRequest)
+                    .on_click(crate::WORKSPACE_PR_BASE + row.index as u64),
+            ),
         );
     }
     let open_failure = match upkeep {
@@ -1437,7 +1397,7 @@ pub fn switcher_status(row: &WorkspaceRow) -> Option<Node> {
         return Some(
             div()
                 .row()
-                .child(ui::attention_pill("Waiting for you"))
+                .child(components::pill("Waiting for you").attention())
                 .into(),
         );
     }
@@ -1464,11 +1424,10 @@ fn headline(text: String, color: Rgba) -> Node {
 /// The one thing that needs you, as a filled pill so it is found at a glance.
 /// The row lifted off the list while it is dragged: the same row on an elevated card.
 pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
-    div()
-        .col()
-        .rounded(6.0)
-        .bg(theme().elevated_surface_background)
-        .border(1.0, theme().border)
+    components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .child(workspace_row(row, true, false, Upkeep::None, 240.0, None))
         .into()
 }
@@ -1476,42 +1435,20 @@ pub fn workspace_row_ghost(row: &WorkspaceRow) -> Node {
 /// A group header lifted off the list while it is dragged, with its colour so it reads as the whole group.
 pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
     let colors = theme();
-    div()
+    components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .row()
         .h_px(30.0)
         .px(10.0)
         .gap(6.0)
         .items_center()
-        .rounded(6.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(div().w_px(6.0).h_px(6.0).rounded(2.0).bg(group.color()))
         .child(label(group.label()).size(12.0).color(colors.text))
         .child(div().row().flex(1.0))
         .child(label(count.to_string()).size(11.0).color(colors.text_muted))
         .into()
-}
-
-/// The PR count, shown only while a PR is in trouble: on a red tint so it reads as the problem it is.
-fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
-    let colors = theme();
-    let pill = div()
-        .row()
-        .h_px(20.0)
-        .px(6.0)
-        .gap(3.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(with_alpha(colors.error, 0.14))
-        .on_click(crate::WORKSPACE_PR_BASE + index as u64)
-        .child(icon(IconKind::PullRequest).size(12.0).color(colors.error))
-        .child(
-            label(pr.count.to_string())
-                .size(11.0)
-                .medium()
-                .color(colors.error),
-        );
-    pill.into()
 }
 
 /// Main's background update as its row shows it.
@@ -1567,34 +1504,9 @@ fn op_progress(op: &crate::WorkspaceOp) -> f32 {
     finished / total
 }
 
-/// An icon and a line of coloured text, the text truncating: the second line of an operation's row.
-fn status_line(glyph: IconKind, color: Rgba, text: String) -> Node {
-    div()
-        .row()
-        .flex(1.0)
-        .gap(5.0)
-        .items_center()
-        .child(icon(glyph).size(11.0).color(color))
-        .child(
-            div()
-                .row()
-                .flex(1.0)
-                .items_center()
-                .child(label(text).size(11.0).color(color).truncate()),
-        )
-        .into()
-}
-
 fn icon_button(kind: IconKind, id: u64) -> Node {
-    div()
-        .row()
-        .items_center()
-        .justify_center()
-        .w_px(22.0)
-        .h_px(22.0)
-        .rounded(4.0)
-        .on_click(id)
-        .child(icon(kind).size(13.0).color(theme().text_muted))
+    components::icon_button(id, kind)
+        .color(theme().text_muted)
         .into()
 }
 
@@ -1607,7 +1519,7 @@ fn failure_line(text: String, base: u64, expanded: bool) -> Node {
         .gap(8.0)
         .items_center()
         .on_click(base + crate::WORKSPACE_OP_TOGGLE)
-        .child(status_line(IconKind::Warning, colors.error, text))
+        .child(status_line(IconKind::Warning, colors.error, text).tinted())
         .child(
             label(if expanded { "Hide" } else { "Details" })
                 .size(10.5)
@@ -1686,34 +1598,27 @@ fn op_details(
     let mut fixes = div().row().gap(6.0).items_center();
     let mut fixes_w = 0.0;
     if op.retryable {
-        fixes = fixes.child(crate::button(base + crate::WORKSPACE_OP_RETRY, "Retry"));
+        fixes = fixes.child(
+            components::button(base + crate::WORKSPACE_OP_RETRY, "Retry")
+                .size(components::ButtonSize::XSmall),
+        );
         fixes_w += button_width("Retry", 0.0) + 6.0;
     }
     if !op.remote {
-        fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
-        fixes_w += button_width(AGENT_LABEL, 15.0);
+        fixes = fixes.child(
+            components::button(base + crate::WORKSPACE_OP_AGENT, AGENT_LABEL)
+                .size(components::ButtonSize::XSmall)
+                .kind(components::ButtonKind::Agent)
+                .icon(Some(IconKind::Sparkle)),
+        );
+        fixes_w += button_width(AGENT_LABEL, 11.0 + 6.0);
     }
     // Its menu floats over the list: the view drops it from this button.
-    let mut manual = div()
-        .row()
-        .items_center()
-        .gap(3.0)
-        .h_px(18.0)
-        .px(7.0)
-        .rounded(4.0)
-        .border(1.0, colors.border)
-        .on_click(base + crate::WORKSPACE_OP_MANUAL)
-        .child(label("Fix manually").size(10.5).color(colors.text_muted))
-        .child(
-            icon(IconKind::ChevronDown)
-                .size(8.0)
-                .color(colors.text_placeholder),
-        );
-    if manual_open {
-        manual = manual.bg(colors.element_selected);
-    }
-    let manual: Node = manual.into();
-    let manual_w = button_width("Fix manually", 11.0);
+    let manual: Node = components::select(base + crate::WORKSPACE_OP_MANUAL, "Fix manually")
+        .size(components::ButtonSize::XSmall)
+        .hovered(manual_open.then_some(base + crate::WORKSPACE_OP_MANUAL))
+        .into();
+    let manual_w = button_width("Fix manually", 8.0 + 9.0);
     let mut icons = div()
         .row()
         .gap(2.0)
@@ -1763,26 +1668,9 @@ fn op_details(
 
 const AGENT_LABEL: &str = "Fix with Claude";
 
-/// A small button's width: its label, padding and border, plus `extra` for an icon beside the label.
+/// An XSmall button's width: its label, padding and border, plus `extra` for an icon beside the label.
 fn button_width(text: &str, extra: f32) -> f32 {
-    ui::measure_text_width(text, 10.5, false, 400) + 14.0 + 2.0 + extra
-}
-
-fn agent_button(id: u64) -> Node {
-    let tint = theme().terminal_ansi[5];
-    div()
-        .row()
-        .items_center()
-        .gap(4.0)
-        .h_px(18.0)
-        .px(7.0)
-        .rounded(4.0)
-        .bg(with_alpha(tint, 0.12))
-        .border(1.0, with_alpha(tint, 0.55))
-        .on_click(id)
-        .child(icon(IconKind::Sparkle).size(11.0).color(tint))
-        .child(label(AGENT_LABEL).size(10.5).color(theme().text))
-        .into()
+    ui::measure_text_width(text, 11.0, false, 500) + 2.0 * 4.0 + 2.0 + extra
 }
 
 /// The routes to fix a failure by hand: a terminal in the checkout it names, the config, or doing without the step.
@@ -1807,13 +1695,11 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
             )
             .into()
     };
-    let mut menu = div()
-        .col()
-        .w_px(width)
-        .p(4.0)
-        .rounded(7.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border);
+    let mut menu = components::card()
+        .padding(4.0)
+        .raised()
+        .render()
+        .w_px(width);
     if !op.fix_dir.is_empty() {
         let path = std::path::Path::new(&op.fix_dir);
         let repo = path
@@ -1875,14 +1761,9 @@ fn op_row(
     let mut second = div().row().h_px(14.0).gap(8.0).items_center().child(line);
     if op.status == OpStatus::Queued || (op.remote && op.status == OpStatus::Running) {
         second = second.child(
-            div()
-                .row()
-                .items_center()
-                .h_px(16.0)
-                .px(6.0)
-                .rounded(4.0)
-                .on_click(base + crate::WORKSPACE_OP_CANCEL)
-                .child(label("Cancel").size(10.5).color(colors.text_muted)),
+            components::button(base + crate::WORKSPACE_OP_CANCEL, "Cancel")
+                .kind(components::ButtonKind::Ghost)
+                .size(components::ButtonSize::XSmall),
         );
     }
     let name = match &key {
@@ -1962,7 +1843,7 @@ impl Panel for AgentEmptyPanel {
             .child(
                 div().row().child(
                     crate::button(crate::AGENT_TOGGLE, "Start Agent")
-                        .size(ui::ButtonSize::Medium)
+                        .size(components::ButtonSize::Medium)
                         .icon(Some(IconKind::Sparkle)),
                 ),
             )

@@ -2,17 +2,19 @@
 //! origin branches, narrowed as you type, and a row that creates the typed branch when nothing matches. Opening
 //! it fetches origin in the background, so branches pushed since show up, tagged new.
 
+use components::{section_header, text_line};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Instant;
 
+use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
 use ui::{deferred, div, icon, label, theme, IconKind, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
-use workspace::{field_label, overlay_ring, text_line, WINDOW_MODAL_BASE};
+use workspace::WINDOW_MODAL_BASE;
 
 pub(crate) const PICKER_QUERY: u64 = WINDOW_MODAL_BASE + 9;
 pub(crate) const PICKER_REFRESH: u64 = WINDOW_MODAL_BASE + 10;
@@ -227,12 +229,12 @@ impl BranchPicker {
             format!("the other repos stay on {workspace_branch}")
         };
         let note = format!("Use another branch in {}; {others}", self.repo);
-        let panel = div()
-            .col()
+        let panel = components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(10.0)
             .ring(1.0, overlay_ring())
-            .bg(colors.elevated_surface_background)
             .on_click(PICKER_SURFACE)
             .child(self.head(&format!("Branch for {}", self.repo)))
             .child(self.query_row())
@@ -329,7 +331,7 @@ impl BranchPicker {
                     .row()
                     .flex(1.0)
                     .items_center()
-                    .child(field_label(title)),
+                    .child(section_header(title)),
             )
             .child(self.status_label())
             .into()
@@ -338,17 +340,7 @@ impl BranchPicker {
     /// The focused query box, with a branch icon when it stands alone in a modal.
     fn query_box(&self, leading: bool) -> Node {
         let colors = theme();
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .h_px(30.0)
-            .px(10.0)
-            .rounded(6.0)
-            .bg(colors.editor_background)
-            .border(1.0, colors.border_focused)
-            .ring(3.0, colors.overlay_selected)
-            .on_click(PICKER_QUERY);
+        let mut row = components::input_box(PICKER_QUERY, true, false);
         if leading {
             row = row.child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted));
         }
@@ -505,10 +497,10 @@ impl BranchPicker {
                 }
             }));
         if fresh {
-            title_row = title_row.child(tag("new", colors.text_accent));
+            title_row = title_row.child(components::pill("new").color(colors.text_accent));
         }
         if remote {
-            title_row = title_row.child(tag("origin", colors.info));
+            title_row = title_row.child(components::pill("origin").color(colors.info));
         }
         let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
         if !subtitle.is_empty() {
@@ -535,25 +527,6 @@ impl BranchPicker {
             .child(text)
             .into()
     }
-}
-
-/// A small pill after a branch name: a dot and the word in `color` on a faint wash.
-fn tag(text: &str, color: Rgba) -> Node {
-    let wash = match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-        ui::Appearance::Light => theme().element_active,
-    };
-    div()
-        .row()
-        .h_px(20.0)
-        .px(7.0)
-        .gap(5.0)
-        .items_center()
-        .rounded(10.0)
-        .bg(wash)
-        .child(ui::dot(color, 6.0))
-        .child(label(text.to_string()).size(11.0).medium().color(color))
-        .into()
 }
 
 fn display_name(info: &BranchInfo) -> String {

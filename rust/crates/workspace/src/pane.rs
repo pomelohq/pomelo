@@ -2,7 +2,7 @@
 //! plus the tab bar every pane draws. Owners (the editor center, the terminal panel, later other features)
 //! configure which controls the tab bar shows and hand in the click ids for this pane.
 
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rgba};
+use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
 
 use crate::pane_group::{PaneId, SplitDirection};
 use crate::search_bar::{SearchBar, Searchable};
@@ -10,7 +10,6 @@ use crate::Item;
 
 pub const TAB_H: f32 = 34.0;
 /// A tab is a pill this tall, centered in the bar; the active one is lifted off the bar.
-const TAB_PILL_H: f32 = 26.0;
 /// Space between the bar's ends and its clusters, and between neighbours inside a cluster.
 const BAR_PAD: f32 = 6.0;
 const BAR_GAP: f32 = 2.0;
@@ -453,7 +452,7 @@ pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width:
                 pane.can_forward(),
             ))
             .child(div().w_px(BAR_PAD))
-            .child(div().w_px(1.0).h_px(TAB_H).bg(theme().border_variant))
+            .child(components::vertical_divider(TAB_H))
             .child(div().w_px(4.0));
     }
     tab_bar = tab_bar.child(div().flex(1.0));
@@ -503,34 +502,6 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
         let activate_id = ids.tab_activate + index as u64;
         let close_id = ids.tab_close + index as u64;
         let hovered = hover == Some(activate_id) || hover == Some(close_id);
-        let dirty_dot = item.is_dirty() && !hovered && !pane.is_pinned(index);
-        let mut close_slot = div()
-            .w_px(if dirty_dot { 7.0 } else { 12.0 })
-            .h_px(16.0)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(close_id);
-        // A pinned tab trades its close button for a pin that unpins it; unsaved changes show as a dot there,
-        // which hovering turns back into the close button.
-        let end_color = if hovered {
-            theme().icon_muted
-        } else {
-            theme().text_placeholder
-        };
-        if pane.is_pinned(index) {
-            close_slot = close_slot.child(icon(IconKind::Pin).size(12.0).color(end_color));
-        } else if !dirty_dot {
-            close_slot = close_slot.child(icon(IconKind::Close).size(12.0).color(end_color));
-        }
-        if dirty_dot {
-            let color = if item.has_conflict() {
-                theme().warning
-            } else {
-                theme().text_muted
-            };
-            close_slot = close_slot.child(ui::dot(color, 7.0));
-        }
         let glyph: Node = match (item.tab_dot(), item.tab_icon()) {
             (Some(color), _) => div()
                 .row()
@@ -538,7 +509,7 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .h_px(14.0)
                 .items_center()
                 .justify_center()
-                .child(ui::dot(color, 8.0))
+                .child(components::dot(color, 8.0))
                 .into(),
             (None, Some(kind)) => icon(kind)
                 .size(14.0)
@@ -552,75 +523,26 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 .size(14.0)
                 .into(),
         };
-        let content = match item.tab_content(is_active) {
-            Some(custom) => div()
-                .row()
-                .flex(1.0)
-                .px(10.0)
-                .gap(6.0)
-                .items_center()
-                .child(custom)
-                .child(close_slot),
-            None => div()
-                .row()
-                .flex(1.0)
-                .px(10.0)
-                .gap(6.0)
-                .items_center()
-                .child(glyph)
-                .child({
-                    let title = label(trail_off(&item.title(), MAX_TAB_TITLE_CHARS)).size(13.0);
-                    let title = if is_active {
-                        title.medium().color(theme().text)
-                    } else {
-                        title.color(theme().text_muted)
-                    };
-                    if pane.is_preview(index) {
-                        title.italic()
-                    } else {
-                        title
-                    }
-                })
-                .children(item.tab_detail().map(|detail| {
-                    Node::from(
-                        label(trail_off(&detail, MAX_TAB_TITLE_CHARS))
-                            .size(13.0)
-                            .color(theme().text_placeholder),
-                    )
-                }))
-                .child(close_slot),
-        };
-        let mut pill = div()
-            .row()
-            .h_px(TAB_PILL_H)
-            .rounded(6.0)
-            .on_click(activate_id)
-            .child(content);
-        // Every tab bar draws the same raised surface for its active tab, whatever the body under it.
-        if is_active {
-            pill = pill.bg(theme().editor_background);
-        } else if hovered {
-            pill = pill.bg(theme().element_hover);
-        }
-        // The active pill sits on a one-pixel shadow edge below it, the way a raised card casts its shadow; the
-        // pill itself stays centered in the bar.
-        let cell = if is_active {
-            let shadow = match theme().appearance {
-                ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
-                ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.1),
-            };
-            div().col().h_px(TAB_PILL_H + 2.0).pt(1.0).child(
-                div()
-                    .col()
-                    .h_px(TAB_PILL_H + 1.0)
-                    .pb(1.0)
-                    .rounded(7.0)
-                    .bg(shadow)
-                    .child(pill),
+        let unsaved = item.is_dirty().then(|| {
+            if item.has_conflict() {
+                theme().warning
+            } else {
+                theme().text_muted
+            }
+        });
+        let cell = components::tab(activate_id, trail_off(&item.title(), MAX_TAB_TITLE_CHARS))
+            .glyph(glyph)
+            .detail(
+                item.tab_detail()
+                    .map(|detail| trail_off(&detail, MAX_TAB_TITLE_CHARS)),
             )
-        } else {
-            div().col().h_px(TAB_PILL_H + 2.0).pt(1.0).child(pill)
-        };
+            .content(item.tab_content(is_active))
+            .close(close_id)
+            .active(is_active)
+            .hovered(hovered)
+            .preview(pane.is_preview(index))
+            .pinned(pane.is_pinned(index))
+            .unsaved(unsaved);
         if index > 0 {
             strip = strip.child(div().w_px(BAR_GAP));
         }
@@ -657,47 +579,36 @@ pub fn scroll_into_view(scroll: f32, (x, w): (f32, f32), view: f32) -> f32 {
 }
 
 fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
-    let color = if enabled {
-        theme().icon_muted
-    } else {
-        theme().icon_muted.alpha(0.35)
-    };
-    let mut face = div()
+    bar_slot(components::icon_button(id, kind).enabled(enabled).into())
+}
+
+// The tab bar sizes its end from BAR_BUTTON_W, so each square button sits in a slot that wide.
+fn bar_slot(button: Node) -> Node {
+    div()
         .row()
         .w_px(BAR_BUTTON_W)
         .h_px(24.0)
-        .rounded(4.0)
         .items_center()
         .justify_center()
-        .child(icon(kind).size(13.0).color(color));
-    if enabled {
-        face = face.on_click(id);
-    }
-    face.into()
+        .child(button)
+        .into()
 }
 
 fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node {
     let colors = theme();
-    let mut row = div()
-        .row()
-        .h_px(TOOLBAR_H - 1.0)
-        .px(8.0)
-        .gap(2.0)
-        .items_center()
-        .bg(colors.toolbar_background);
+    let mut bar = components::toolbar().height(TOOLBAR_H - 1.0);
     for button in buttons {
-        row = row.child(toolbar_button(button));
+        bar = bar.child(toolbar_button(button));
     }
-    row = row.child(div().flex(1.0));
+    bar = bar.spacer();
     if let Some((added, removed)) = stat {
-        row = row
+        bar = bar
             .child(
                 label(format!("+{added}"))
                     .size(12.0)
                     .mono()
                     .color(colors.version_control_added),
             )
-            .child(div().w_px(6.0))
             .child(
                 label(format!("-{removed}"))
                     .size(12.0)
@@ -705,60 +616,27 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
                     .color(colors.version_control_deleted),
             );
     }
-    div()
-        .col()
-        .child(row)
-        .child(div().h_px(1.0).bg(colors.border))
-        .into()
+    bar.edge().into()
 }
 
 fn toolbar_button(button: &TabBarButton) -> Node {
-    let colors = theme();
-    let color = if button.disabled {
-        colors.icon_muted.alpha(0.3)
-    } else if button.selected {
-        colors.icon_accent
-    } else {
-        colors.icon_muted
-    };
-    let mut face = div()
-        .row()
-        .w_px(22.0)
-        .h_px(22.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .child(icon(button.icon).size(14.0).color(color));
-    if !button.disabled {
-        face = face.on_click(button.id);
-    }
-    if button.selected {
-        face = face.bg(colors.element_selected);
-    }
-    face.into()
+    components::icon_button(button.id, button.icon)
+        .toggled(button.selected)
+        .enabled(!button.disabled)
+        .into()
 }
 
 fn tab_bar_button(button: &TabBarButton) -> Node {
-    let colors = theme();
-    let color = if button.disabled {
-        colors.icon_muted.alpha(0.3)
-    } else if button.selected {
-        colors.icon_accent
-    } else {
-        colors.icon_muted
-    };
-    let mut face = div()
-        .row()
-        .w_px(BAR_BUTTON_W)
-        .h_px(24.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .child(icon(button.icon).size(14.0).color(color));
-    if !button.disabled {
-        face = face.on_click(button.id);
-    }
-    face.into()
+    bar_slot(
+        components::icon_button(button.id, button.icon)
+            .enabled(!button.disabled)
+            .color(if button.selected {
+                theme().icon_accent
+            } else {
+                theme().icon_muted
+            })
+            .into(),
+    )
 }
 
 #[cfg(test)]

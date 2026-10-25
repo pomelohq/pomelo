@@ -83,6 +83,7 @@ dependencies = [
 name = "agent_usage_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "desktop",
  "terminal",
  "ui",
@@ -649,6 +650,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "components"
+version = "0.9.10"
+dependencies = [
+ "ui",
+ "workspace_hack",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1089,6 +1098,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 name = "database_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "files_ui",
  "image",
  "pom_config",
@@ -1131,6 +1141,7 @@ dependencies = [
 name = "dev_services_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "pom_proxy",
  "pomelo-editor",
  "serde_json",
@@ -1283,6 +1294,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 name = "environment_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "pom_config",
  "pom_paths",
  "pom_ptyhost",
@@ -1399,6 +1411,7 @@ dependencies = [
 name = "files_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "desktop",
  "files",
  "git",
@@ -1641,6 +1654,7 @@ name = "gallery"
 version = "0.9.10"
 dependencies = [
  "anyhow",
+ "components",
  "objc2 0.5.2",
  "serde",
  "serde_json",
@@ -1754,6 +1768,7 @@ dependencies = [
 name = "git_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "files_ui",
  "git",
  "pom_forge",
@@ -2363,6 +2378,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jira_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "desktop",
  "markdown",
  "pom_jira",
@@ -2728,6 +2744,7 @@ dependencies = [
 name = "module_store_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "module_store",
  "pom_agent",
  "pom_config",
@@ -3296,6 +3313,7 @@ dependencies = [
 name = "onboarding_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "onboarding",
  "pom_agent",
  "pom_core",
@@ -4284,6 +4302,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 name = "pull_request_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "desktop",
  "git",
  "markdown",
@@ -4550,6 +4569,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "remote_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "pom_remote",
  "services_ui",
  "terminal",
@@ -4859,6 +4879,7 @@ dependencies = [
 name = "services_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "database_ui",
  "libc",
  "pom_agent",
@@ -4894,6 +4915,7 @@ dependencies = [
 name = "settings_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "pom_config",
  "pom_jira",
  "pom_paths",
@@ -5142,6 +5164,7 @@ name = "stories"
 version = "0.9.10"
 dependencies = [
  "anyhow",
+ "components",
  "files",
  "files_ui",
  "png 0.17.16",
@@ -5340,6 +5363,7 @@ name = "terminal_ui"
 version = "0.9.10"
 dependencies = [
  "anyhow",
+ "components",
  "image",
  "pom_agent",
  "pom_paths",
@@ -5999,6 +6023,7 @@ dependencies = [
  "anyhow",
  "auto_update",
  "auto_update_ui",
+ "components",
  "database_ui",
  "dev_services_ui",
  "environment_ui",
@@ -7229,6 +7254,7 @@ name = "workspace"
 version = "0.9.10"
 dependencies = [
  "arboard",
+ "components",
  "desktop",
  "image",
  "pom_paths",
@@ -7307,6 +7333,7 @@ dependencies = [
 name = "workspaces_ui"
 version = "0.9.10"
 dependencies = [
+ "components",
  "indexmap",
  "module_store",
  "nucleo-matcher",
