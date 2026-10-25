@@ -4,8 +4,9 @@
 
 use std::time::{Duration, Instant};
 
+use components::ButtonKind;
 use pom_db::{Console, ConsoleKind, Database, Engine, QueryResult};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::persistence::SerializedItem;
 use workspace::{EditKey, Item, ItemFooter, RunRequest};
 
@@ -162,45 +163,29 @@ impl ConsoleFooter {
         .icon(Some(IconKind::Cylinder))
         .size(components::ButtonSize::Small);
         let running = self.running.busy();
-        let run = div()
-            .row()
-            .h_px(22.0)
-            .px(6.0)
-            .gap(4.0)
-            .items_center()
-            .rounded(4.0)
-            .on_click(RUN)
-            .child(icon(IconKind::Play).size(12.0).color(if running {
-                colors.text_disabled
-            } else {
-                colors.success
-            }))
-            .child(label("Run").size(12.0).color(colors.text))
-            .child(components::key_chip("cmd-enter", false));
+        let run = components::button(RUN, "Run")
+            .kind(ButtonKind::Ghost)
+            .icon(Some(IconKind::Play))
+            .keystroke(Some("cmd-enter"))
+            .enabled(!running);
         let (status, error) = if running {
             ("Running...".to_string(), false)
         } else {
             self.note.clone().unwrap_or_default()
         };
-        div()
-            .row()
-            .h_px(TOOLBAR_H)
-            .px(8.0)
-            .gap(8.0)
-            .items_center()
+        components::toolbar()
+            .height(TOOLBAR_H)
             .child(picker)
             .child(run)
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(status)
-                        .size(12.0)
-                        .color(if error {
-                            colors.error
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
+            .lead(
+                label(status)
+                    .size(12.0)
+                    .color(if error {
+                        colors.error
+                    } else {
+                        colors.text_muted
+                    })
+                    .truncate(),
             )
             .into()
     }

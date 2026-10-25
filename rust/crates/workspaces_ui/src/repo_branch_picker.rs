@@ -340,17 +340,7 @@ impl BranchPicker {
     /// The focused query box, with a branch icon when it stands alone in a modal.
     fn query_box(&self, leading: bool) -> Node {
         let colors = theme();
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .h_px(30.0)
-            .px(10.0)
-            .rounded(6.0)
-            .bg(colors.editor_background)
-            .border(1.0, colors.border_focused)
-            .ring(3.0, colors.overlay_selected)
-            .on_click(PICKER_QUERY);
+        let mut row = components::input_box(PICKER_QUERY, true, false);
         if leading {
             row = row.child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted));
         }

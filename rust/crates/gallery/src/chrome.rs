@@ -191,15 +191,7 @@ pub fn left(
                     .rounded(6.0)
                     .on_click(GROUP + group_index as u64)
                     .hover_bg(theme().ghost_element_hover)
-                    .child(
-                        icon(if open {
-                            IconKind::ChevronDown
-                        } else {
-                            IconKind::ChevronRight
-                        })
-                        .size(12.0)
-                        .color(theme().icon_muted),
-                    )
+                    .child(components::disclosure(open))
                     .child(icon(IconKind::Grid).size(14.0).color(theme().icon_muted))
                     .child(
                         div()

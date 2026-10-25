@@ -322,17 +322,13 @@ pub(crate) fn json_tree(
             .items_center()
             .on_click(id)
             .child(
-                icon(if open {
-                    IconKind::ChevronDown
-                } else {
-                    IconKind::ChevronRight
-                })
-                .size(9.0)
-                .color(if hovered == Some(id) {
-                    colors.icon
-                } else {
-                    colors.icon_muted
-                }),
+                components::disclosure(open)
+                    .size(9.0)
+                    .color(if hovered == Some(id) {
+                        colors.icon
+                    } else {
+                        colors.icon_muted
+                    }),
             )
             .into()
     };

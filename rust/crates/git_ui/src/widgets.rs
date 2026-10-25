@@ -60,29 +60,6 @@ pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: f32) -> 
 }
 
 /// One vertical guide per tree level above `depth`, 16px apart like the Files panel.
-pub(crate) fn with_guides(mut row: Div, depth: usize) -> Div {
-    for level in 0..depth {
-        row = row.pin_left_edge(
-            15.0 + level as f32 * INDENT,
-            0.0,
-            1.0,
-            div().bg(theme().panel_indent_guide),
-        );
-    }
-    row
-}
-
-pub(crate) fn chevron(open: bool) -> Node {
-    icon(if open {
-        IconKind::ChevronDown
-    } else {
-        IconKind::ChevronRight
-    })
-    .size(12.0)
-    .color(theme().icon_muted)
-    .into()
-}
-
 /// A bubble under (or over) the hovered control, kept inside the panel.
 pub(crate) fn icon_button(id: u64, kind: IconKind, hot: bool, enabled: bool) -> Div {
     let colors = theme();

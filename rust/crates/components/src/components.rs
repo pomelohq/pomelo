@@ -1,6 +1,7 @@
 //! Pomelo's design system: every control a screen is built from, each in one file, each shown in the gallery.
 
 mod banner;
+mod breadcrumb;
 mod button;
 mod card;
 mod checkbox;
@@ -31,9 +32,12 @@ mod stepper;
 mod switch;
 mod tab;
 mod toast;
+mod toolbar;
 mod tooltip;
+mod tree_row;
 
 pub use banner::*;
+pub use breadcrumb::*;
 pub use button::*;
 pub use card::*;
 pub use checkbox::*;
@@ -64,4 +68,6 @@ pub use stepper::*;
 pub use switch::*;
 pub use tab::*;
 pub use toast::*;
+pub use toolbar::*;
 pub use tooltip::*;
+pub use tree_row::*;

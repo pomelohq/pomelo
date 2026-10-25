@@ -6,6 +6,7 @@ pub struct SectionHeader {
     title: String,
     count: Option<usize>,
     trailing: Option<Node>,
+    expander: Option<bool>,
 }
 
 pub fn section_header(title: impl Into<String>) -> SectionHeader {
@@ -13,6 +14,7 @@ pub fn section_header(title: impl Into<String>) -> SectionHeader {
         title: title.into(),
         count: None,
         trailing: None,
+        expander: None,
     }
 }
 
@@ -27,21 +29,31 @@ impl SectionHeader {
         self
     }
 
+    /// A chevron before the title, down while the group is open, for a group that folds away.
+    pub fn expander(mut self, open: Option<bool>) -> Self {
+        self.expander = open;
+        self
+    }
+
     pub fn render(self) -> Div {
         let colors = theme();
         let mut row = div()
             .row()
             .h_px(SECTION_HEADER_HEIGHT)
-            .items_center()
-            .child(
-                div().row().flex(1.0).items_center().child(
-                    label(self.title.to_uppercase())
-                        .size(11.0)
-                        .weight(600)
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            );
+            .gap(6.0)
+            .items_center();
+        if let Some(open) = self.expander {
+            row = row.child(crate::disclosure(open));
+        }
+        row = row.child(
+            div().row().flex(1.0).items_center().child(
+                label(self.title.to_uppercase())
+                    .size(11.0)
+                    .weight(600)
+                    .color(colors.text_placeholder)
+                    .truncate(),
+            ),
+        );
         if let Some(count) = self.count {
             row = row.child(
                 label(count.to_string())

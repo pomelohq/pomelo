@@ -6,9 +6,8 @@ use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
-    arrow_count, avatar, checkbox, chevron, chip, chip_count, chip_icon, chip_text, diff_stat,
-    ghost_button, icon_button, status_icon, text_width, with_guides, ChipTone, INDENT, ROW_H,
-    TAB_BAR_H, TOOLBAR_H,
+    arrow_count, avatar, checkbox, chip, chip_count, chip_icon, chip_text, diff_stat, ghost_button,
+    icon_button, status_icon, text_width, ChipTone, INDENT, ROW_H, TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -48,24 +47,27 @@ impl GitPanel {
     }
 
     fn row_base(&self, index: usize, height: f32) -> Div {
-        let mut row = div()
-            .row()
-            .h_px(height)
-            .px(8.0)
-            .gap(8.0)
-            .rounded(6.0)
-            .items_center()
-            .on_click(self.id(index, Control::Main));
-        if self.hovered_row() == Some(index) {
-            row = row.bg(theme().ghost_element_hover);
+        self.tree_base(index, height, 0, None).gap(8.0)
+    }
+
+    /// A row of the changes tree, `depth` levels in, with a chevron when it is a folder.
+    fn tree_base(&self, index: usize, height: f32, depth: usize, open: Option<bool>) -> Div {
+        let mut row = components::tree_row(self.id(index, Control::Main), depth)
+            .height(height)
+            .expander(open)
+            .rounded()
+            .hovered(self.hovered_row() == Some(index))
+            .focused(self.keyboard_row() == Some(index));
+        if open.is_none() {
+            row = row.flush_leaf();
         }
-        self.mark_keyboard_row(index, row)
+        row.render()
     }
 
     fn mark_keyboard_row(&self, index: usize, row: Div) -> Div {
         if self.keyboard_row() == Some(index) {
             row.bg(theme().element_selected)
-                .border(1.0, theme().text_accent)
+                .border(1.0, theme().panel_focused_border)
         } else {
             row
         }
@@ -482,10 +484,7 @@ impl GitPanel {
                 let name = self.source_name_of(*repo);
                 let open = !self.is_folded(&format!("d:{}:{name}:{path}", scope.key()));
                 let mut row =
-                    with_guides(self.row_base(index, row.height()), depth.saturating_sub(1))
-                        .gap(6.0)
-                        .pl(8.0 + depth.saturating_sub(1) as f32 * INDENT)
-                        .child(chevron(open));
+                    self.tree_base(index, row.height(), depth.saturating_sub(1), Some(open));
                 if let Some(staging) = staging {
                     let tip = match (scope, staging) {
                         (Scope::Staged, _) | (_, Staging::Staged) => "Unstage folder",
@@ -797,7 +796,7 @@ impl GitPanel {
         let name = self.source_name_of(repo);
         let open = !self.is_folded(&format!("{}:{name}", if history { "h" } else { "c" }));
         let state = scan.repos.get(repo);
-        let mut leading: Vec<Node> = vec![chevron(open)];
+        let mut leading: Vec<Node> = vec![Node::from(components::disclosure(open))];
         if !history {
             if let Some(state) = state {
                 let staging = rows::repo_staging(state);
@@ -899,11 +898,14 @@ impl GitPanel {
         let reviewed = scope == Scope::Branch && self.is_reviewed(scan, repo, &entry.path);
         let deleted = entry.status == ChangeStatus::Deleted;
         let working = matches!(scope, Scope::Staged | Scope::Unstaged | Scope::Working);
-        let mut row = self.row_base(index, ROW_H);
-        if !flat {
-            row = with_guides(row, depth.saturating_sub(1))
-                .pl(10.0 + depth.saturating_sub(1) as f32 * INDENT);
-        } else if scope == Scope::Branch {
+        let mut row = if flat {
+            self.row_base(index, ROW_H)
+        } else {
+            self.tree_base(index, ROW_H, depth.saturating_sub(1), None)
+                .gap(8.0)
+                .pl(10.0 + depth.saturating_sub(1) as f32 * INDENT)
+        };
+        if flat && scope == Scope::Branch {
             // Lines up with the commit rows above, under their group's title.
             row = row.pl(22.0).pr(4.0);
         }
@@ -1056,7 +1058,7 @@ impl GitPanel {
             .pl(6.0)
             .pr(4.0)
             .gap(7.0)
-            .child(chevron(open))
+            .child(Node::from(components::disclosure(open)))
             .child(
                 label(name)
                     .size(12.0)

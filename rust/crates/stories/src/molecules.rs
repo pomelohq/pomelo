@@ -758,6 +758,139 @@ pub fn stories() -> Vec<StoryDef> {
                     .into()
             })
         }),
+        story(
+            "tree-row",
+            "Tree row",
+            "A folder and its files",
+            (320.0, 150.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    let file = |id: u64, name: &str| {
+                        components::tree_row(id, 1)
+                            .child(ui::material_icon(ui::MaterialIcon::Document).size(16.0))
+                            .child(label(name.to_string()).color(colors.text))
+                    };
+                    div()
+                        .col()
+                        .w_px(320.0)
+                        .p(INSET)
+                        .child(
+                            components::tree_row(ID, 0)
+                                .expander(Some(true))
+                                .child(
+                                    ui::icon(IconKind::FolderOpen)
+                                        .size(14.0)
+                                        .color(colors.icon_muted),
+                                )
+                                .child(label("src").color(colors.text)),
+                        )
+                        .child(file(ID + 1, "main.rs").selected(true))
+                        .child(file(ID + 2, "lib.rs").hovered(true))
+                        .child(file(ID + 3, "config.rs").focused(true))
+                        .into()
+                })
+            },
+        ),
+        story(
+            "tree-row-marked",
+            "Tree row",
+            "Marked by what is picked elsewhere",
+            (320.0, 80.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    div()
+                        .col()
+                        .w_px(320.0)
+                        .p(INSET)
+                        .child(
+                            components::tree_row(ID, 0)
+                                .flush_leaf()
+                                .marked(Some(colors.text_accent))
+                                .child(label("postgres").color(colors.text)),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "section-header-fold",
+            "Section header",
+            "Folds away",
+            (320.0, 60.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(320.0)
+                        .p(INSET)
+                        .child(
+                            components::section_header("Consoles")
+                                .count(2)
+                                .expander(Some(true)),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "breadcrumb",
+            "Breadcrumb",
+            "Where a table sits",
+            (520.0, 60.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(520.0)
+                        .p(INSET)
+                        .child(
+                            components::breadcrumb()
+                                .icon(IconKind::Table)
+                                .part("api")
+                                .link(ID, "main")
+                                .current("public.users")
+                                .branch("feat-login"),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story("toolbar", "Toolbar", "Over a tab", (560.0, 64.0), || {
+            still(|_, _| {
+                div()
+                    .col()
+                    .w_px(560.0)
+                    .child(
+                        components::toolbar()
+                            .lead(components::breadcrumb().part("src").current("main.rs"))
+                            .child(components::icon_button(ID, IconKind::Search))
+                            .child(components::icon_button(ID + 1, IconKind::Sliders))
+                            .edge(),
+                    )
+                    .into()
+            })
+        }),
+        story(
+            "toolbar-status",
+            "Toolbar",
+            "Under a tab, with the last result",
+            (560.0, 64.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(560.0)
+                        .child(
+                            components::toolbar()
+                                .note("24 items")
+                                .status("Could not list the folder: access denied", true),
+                        )
+                        .into()
+                })
+            },
+        ),
     ]
 }
 

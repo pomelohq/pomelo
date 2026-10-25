@@ -261,24 +261,8 @@ impl PortsPage {
     fn toolbar(&self) -> Node {
         let colors = theme();
         let host = self.ports.host();
-        let border = if self.invalid {
-            colors.error
-        } else if self.focused {
-            colors.border_focused
-        } else {
-            colors.border
-        };
-        let mut field = div()
-            .row()
-            .items_center()
-            .gap(8.0)
+        let field = components::input_box(FIELD, self.focused, self.invalid)
             .w_px(200.0)
-            .h_px(30.0)
-            .px(10.0)
-            .rounded(6.0)
-            .border(1.0, border)
-            .bg(colors.editor_background)
-            .on_click(FIELD)
             .child(
                 icon(IconKind::Plus)
                     .size(14.0)
@@ -297,9 +281,6 @@ impl PortsPage {
                         FieldFont::Mono,
                     )),
             );
-        if self.focused {
-            field = field.ring(3.0, colors.overlay_selected);
-        }
         let gateway = self
             .ports
             .forwards()
@@ -324,15 +305,11 @@ impl PortsPage {
                 format!("workspace addresses reach {host} once connected"),
             ),
         };
-        div()
-            .row()
-            .items_center()
-            .gap(8.0)
-            .px(CARD_INSET)
-            .h_px(TOOLBAR_H)
+        components::toolbar()
+            .height(TOOLBAR_H)
             .child(field)
             .child(components::button(FORWARD, "Forward").hovered(self.hovered))
-            .child(div().flex(1.0))
+            .spacer()
             .child(
                 div()
                     .row()

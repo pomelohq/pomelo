@@ -398,12 +398,8 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                     FieldFont::Ui,
                 )),
         );
-    let mut bar = div()
-        .row()
-        .items_center()
-        .gap(8.0)
-        .px(CARD_INSET)
-        .h_px(TOOLBAR_H)
+    let mut bar = components::toolbar()
+        .height(TOOLBAR_H)
         .child(
             components::segmented(
                 [
@@ -426,7 +422,7 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             .hovered(hovered),
         )
         .child(field)
-        .child(div().flex(1.0))
+        .spacer()
         .child(
             div()
                 .row()

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -434,57 +434,21 @@ impl KeyspaceItem {
         } else {
             format!("{} keys", self.keys.len())
         };
-        let mut crumb = div().row().flex(1.0).gap(6.0).items_center().child(
-            icon(IconKind::EngineRedis)
-                .size(12.0)
-                .color(colors.icon_muted),
-        );
         let wide = width > 700.0;
+        let mut crumb = components::breadcrumb().icon(IconKind::EngineRedis);
         if wide && !self.database.repo.is_empty() {
-            crumb = crumb
-                .child(
-                    label(self.database.repo.clone())
-                        .size(12.5)
-                        .color(colors.text_muted),
-                )
-                .child(label("/").size(12.5).color(colors.text_placeholder));
+            crumb = crumb.part(self.database.repo.clone());
         }
         crumb = crumb
-            .child(
-                label(self.database.label.clone())
-                    .size(12.5)
-                    .color(colors.text_muted)
-                    .truncate(),
-            )
-            .child(label("/").size(12.5).color(colors.text_placeholder))
-            .child(
-                label(format!("{}:*", self.table.name))
-                    .size(12.5)
-                    .medium()
-                    .color(colors.text)
-                    .truncate(),
-            );
+            .part(self.database.label.clone())
+            .current(format!("{}:*", self.table.name));
         if wide && !self.context.branch.is_empty() {
-            crumb = crumb
-                .child(div().w_px(2.0))
-                .child(label("on").size(12.0).color(colors.text_placeholder))
-                .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                .child(
-                    label(self.context.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_accent),
-                );
+            crumb = crumb.branch(self.context.branch.clone());
         }
         let pattern_w = (width * 0.35).clamp(140.0, 280.0);
-        div()
-            .row()
-            .h_px(TOOLBAR_H)
-            .pl(14.0)
-            .pr(10.0)
-            .gap(8.0)
-            .items_center()
-            .child(crumb)
+        components::toolbar()
+            .height(TOOLBAR_H)
+            .lead(crumb)
             .child(div().row().w_px(pattern_w).items_center().child(self.input(
                 PATTERN_FIELD,
                 "MATCH",
@@ -493,22 +457,7 @@ impl KeyspaceItem {
                 self.focus == Focus::Pattern,
             )))
             .child(label(count).size(11.5).color(colors.text_placeholder))
-            .child(
-                div()
-                    .row()
-                    .w_px(24.0)
-                    .h_px(24.0)
-                    .rounded(6.0)
-                    .items_center()
-                    .justify_center()
-                    .on_click(REFRESH)
-                    .bg(if self.hovered == Some(REFRESH) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .child(icon(IconKind::RotateCw).size(12.0).color(colors.icon_muted)),
-            )
+            .child(components::icon_button(REFRESH, IconKind::RotateCw).hovered(self.hovered))
             .into()
     }
 
@@ -546,15 +495,7 @@ impl KeyspaceItem {
                         .gap(6.0)
                         .items_center()
                         .on_click(id)
-                        .child(
-                            icon(if open {
-                                IconKind::ChevronDown
-                            } else {
-                                IconKind::ChevronRight
-                            })
-                            .size(10.0)
-                            .color(colors.icon_muted),
-                        )
+                        .child(components::disclosure(open).size(10.0))
                         .child(
                             div().row().flex(1.0).items_center().child(
                                 label(name.clone())
@@ -903,33 +844,13 @@ impl KeyspaceItem {
         } else {
             self.status.clone().unwrap_or_default()
         };
-        let mut bar = div()
-            .row()
-            .h_px(STATUS_H)
-            .pl(14.0)
-            .pr(8.0)
-            .gap(8.0)
-            .items_center()
-            .child(
-                label(format!(
-                    "{groups} {}",
-                    if groups == 1 { "prefix" } else { "prefixes" }
-                ))
-                .size(12.0)
-                .color(colors.text_muted),
-            )
-            .child(
-                div().row().flex(1.0).pl(8.0).items_center().child(
-                    label(status)
-                        .size(12.0)
-                        .color(if error {
-                            colors.error
-                        } else {
-                            colors.text_muted
-                        })
-                        .truncate(),
-                ),
-            );
+        let mut bar = components::toolbar()
+            .height(STATUS_H)
+            .note(format!(
+                "{groups} {}",
+                if groups == 1 { "prefix" } else { "prefixes" }
+            ))
+            .status(status, error);
         bar = if self.confirm_matching {
             bar.child(
                 label(format!(

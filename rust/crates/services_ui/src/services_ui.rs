@@ -36,7 +36,6 @@ use view::{action_button, State, Tone};
 const SHARED_GROUP: &str = "_shared";
 
 const ROW_H: f32 = 26.0;
-const INDENT: f32 = 16.0;
 const HEADER_H: f32 = 34.0;
 const FILTER_H: f32 = 64.0;
 /// Hit ids per row: the row itself plus its controls.
@@ -771,57 +770,34 @@ impl ServicesPanel {
         related
     }
 
-    fn guide_column(&self) -> Node {
-        div()
-            .row()
-            .w_px(INDENT)
-            .h_px(ROW_H)
-            .justify_center()
-            .child(div().w_px(1.0).h_px(ROW_H).bg(theme().panel_indent_guide))
-            .into()
-    }
-
     fn render_row(&self, index: usize, row: &Row) -> Node {
         let colors = theme();
         let hovered = self.hovered_row() == Some(index);
         let related = self.related_rows().contains(&index);
-        let mut body = div()
-            .row()
-            .h_px(ROW_H)
-            .pl(8.0)
-            .pr(6.0)
-            .gap(6.0)
-            .items_center()
-            .on_click(self.id(index, Control::Row));
-        if self.keyboard_row() == Some(index) {
-            body = body
-                .bg(colors.element_selected)
-                .border(1.0, colors.panel_focused_border);
-        } else if hovered {
-            body = body.bg(colors.ghost_element_hover);
-        } else if related {
-            body = body.bg(colors.text_accent.alpha(0.08)).pin_left_edge(
-                0.0,
-                0.0,
-                2.0,
-                div().bg(colors.text_accent),
-            );
-        }
+        let (depth, open) = match row {
+            Row::Group { collapsed, .. } => (0, Some(!*collapsed)),
+            Row::Service { .. } => (1, None),
+            Row::Shared { .. } => (0, None),
+        };
+        let body = components::tree_row(self.id(index, Control::Row), depth)
+            .height(ROW_H)
+            .expander(open)
+            .flush_leaf()
+            .focused(self.keyboard_row() == Some(index))
+            .hovered(hovered)
+            .marked(related.then_some(colors.text_accent))
+            .render()
+            .pr(6.0);
         match row {
             Row::Group {
                 key,
                 label: text,
                 running,
                 total,
-                collapsed,
+                collapsed: _,
                 states,
                 engines,
             } => {
-                let chevron = if *collapsed {
-                    IconKind::ChevronRight
-                } else {
-                    IconKind::ChevronDown
-                };
                 let mut name = div().row().flex(1.0).gap(6.0).items_center();
                 if key == SHARED_GROUP {
                     name = name.child(
@@ -869,18 +845,7 @@ impl ServicesPanel {
                             ))
                             .into()
                     };
-                body.child(
-                    div()
-                        .row()
-                        .w_px(12.0)
-                        .h_px(ROW_H)
-                        .items_center()
-                        .justify_center()
-                        .child(icon(chevron).size(12.0).color(colors.icon_muted)),
-                )
-                .child(name)
-                .child(trailing)
-                .into()
+                body.child(name).child(trailing).into()
             }
             Row::Service { target, holder } => {
                 let state = self.state(holder);
@@ -950,8 +915,7 @@ impl ServicesPanel {
                 if let Some(mode) = self.mode(target).filter(|mode| !mode.is_empty()) {
                     name = name.child(components::chip(mode).color(theme().text_muted));
                 }
-                body.child(self.guide_column())
-                    .child(view::status_icon(&state))
+                body.child(view::status_icon(&state))
                     .child(name)
                     .child(trailing)
                     .into()

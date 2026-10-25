@@ -596,26 +596,19 @@ fn bar_slot(button: Node) -> Node {
 
 fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node {
     let colors = theme();
-    let mut row = div()
-        .row()
-        .h_px(TOOLBAR_H - 1.0)
-        .px(8.0)
-        .gap(2.0)
-        .items_center()
-        .bg(colors.toolbar_background);
+    let mut bar = components::toolbar().height(TOOLBAR_H - 1.0);
     for button in buttons {
-        row = row.child(toolbar_button(button));
+        bar = bar.child(toolbar_button(button));
     }
-    row = row.child(div().flex(1.0));
+    bar = bar.spacer();
     if let Some((added, removed)) = stat {
-        row = row
+        bar = bar
             .child(
                 label(format!("+{added}"))
                     .size(12.0)
                     .mono()
                     .color(colors.version_control_added),
             )
-            .child(div().w_px(6.0))
             .child(
                 label(format!("-{removed}"))
                     .size(12.0)
@@ -623,11 +616,7 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
                     .color(colors.version_control_deleted),
             );
     }
-    div()
-        .col()
-        .child(row)
-        .child(components::edge_divider())
-        .into()
+    bar.edge().into()
 }
 
 fn toolbar_button(button: &TabBarButton) -> Node {

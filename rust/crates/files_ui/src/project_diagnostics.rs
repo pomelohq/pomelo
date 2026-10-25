@@ -415,14 +415,11 @@ impl ProjectDiagnostics {
         } else {
             colors.text_disabled
         };
-        div()
-            .row()
+        components::toolbar()
+            .height(TOOLBAR_H)
+            .spacer()
+            .render()
             .w_px(width)
-            .h_px(TOOLBAR_H)
-            .px(8.0)
-            .gap(4.0)
-            .items_center()
-            .justify_end()
             .child(self.icon_button(REFRESH, IconKind::RotateCw, colors.icon))
             .child(self.icon_button(WARNINGS, IconKind::Warning, warnings_color))
             .into()
