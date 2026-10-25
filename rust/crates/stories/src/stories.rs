@@ -60,6 +60,64 @@ pub fn still(render: fn(f32, f32) -> ui::Node) -> anyhow::Result<Box<dyn Story>>
     Ok(Box::new(Static(render)))
 }
 
+/// Each page's groups by what they are for, in the order the gallery lays them out: a section per job, so
+/// controls that answer the same need sit together.
+pub const SECTIONS: &[(&str, &str, &[&str])] = &[
+    ("Foundations", "Tokens", &["Color", "Type", "Icons"]),
+    (
+        "Atoms",
+        "Actions",
+        &["Button", "Split button", "Icon button", "Link"],
+    ),
+    (
+        "Atoms",
+        "Inputs",
+        &["Input", "Checkbox", "Radio", "Switch", "Stepper", "Select"],
+    ),
+    ("Atoms", "Navigation", &["Tab", "Segmented"]),
+    (
+        "Atoms",
+        "Status",
+        &[
+            "Dot",
+            "Pill",
+            "Chip",
+            "Progress",
+            "Skeleton",
+            "Status line",
+            "Status item",
+        ],
+    ),
+    (
+        "Atoms",
+        "Content",
+        &[
+            "Paragraph",
+            "Key value",
+            "Avatar",
+            "Key chip",
+            "Key hints",
+            "Tooltip",
+            "Divider",
+        ],
+    ),
+    ("Molecules", "Forms", &["Field", "Search field"]),
+    ("Molecules", "Menus", &["Menu", "Select menu"]),
+    (
+        "Molecules",
+        "Lists",
+        &["Section header", "List row", "Tree row", "Empty state"],
+    ),
+    (
+        "Molecules",
+        "Headers and bars",
+        &["Page header", "Dock header", "Toolbar", "Breadcrumb"],
+    ),
+    ("Molecules", "Surfaces", &["Card", "Modal"]),
+    ("Molecules", "Messages", &["Banner", "Toast"]),
+    ("Organisms", "Services", &["Services panel", "Service tab"]),
+];
+
 /// What a group is for, so someone picking a control knows which one fits.
 pub fn group_note(group: &str) -> Option<&'static str> {
     Some(match group {
@@ -203,6 +261,27 @@ mod tests {
                 "the {} group shows no component file",
                 def.group
             );
+        }
+    }
+
+    #[test]
+    fn every_group_sits_in_one_section_of_its_page() {
+        let all = super::all();
+        for def in &all {
+            let homes = super::SECTIONS
+                .iter()
+                .filter(|(page, _, groups)| *page == def.page && groups.contains(&def.group))
+                .count();
+            assert_eq!(homes, 1, "{} > {} needs one section", def.page, def.group);
+        }
+        for (page, section, groups) in super::SECTIONS {
+            for group in *groups {
+                assert!(
+                    all.iter()
+                        .any(|def| def.page == *page && def.group == *group),
+                    "{section} lists {group}, which {page} does not show"
+                );
+            }
         }
     }
 

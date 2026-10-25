@@ -173,6 +173,9 @@ pub fn left(
 ) -> (Node, Node) {
     let mut layers = div().col().pb(INSET);
     for (group_index, group) in groups.iter().enumerate() {
+        if group.section_head.is_some() {
+            layers = layers.child(section(group.section, None));
+        }
         let open = !collapsed.contains(&group.title);
         let members: Vec<(usize, &Board)> = boards
             .iter()
@@ -376,6 +379,10 @@ pub fn board_title(title: &str, note: Option<&str>, width: f32) -> Node {
         line = line.child(label(note).size(12.0).color(theme().text_muted).wrap(width));
     }
     line.into()
+}
+
+pub fn section_title(title: &str) -> Node {
+    label(title).size(26.0).weight(600).into()
 }
 
 pub fn group_title(title: &str) -> Node {
