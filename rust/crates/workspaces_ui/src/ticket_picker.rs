@@ -25,7 +25,6 @@ const FIELD_HEIGHT: f32 = 30.0;
 const KEY_W: f32 = 86.0;
 const STATUS_W: f32 = 110.0;
 const MINE_W: f32 = 40.0;
-const PULSE_SECONDS: f32 = 1.2;
 
 enum Loaded {
     Boards(Result<Vec<Board>, String>),
@@ -343,9 +342,13 @@ impl TicketPicker {
             .h_px(14.0)
             .child(section_header(self.field.label));
         if let Some(name) = self.source_name() {
-            let mut anchor = div()
-                .col()
-                .child(self.source_button(&name, hovered == Some(SOURCE)));
+            let mut anchor = div().col().child(
+                components::select(SOURCE, name)
+                    .size(components::ButtonSize::XSmall)
+                    .quiet()
+                    .enabled(self.boards_known)
+                    .hovered((self.menu_open || hovered == Some(SOURCE)).then_some(SOURCE)),
+            );
             if self.menu_open {
                 anchor = anchor.child(self.source_menu(hovered));
             }
@@ -439,15 +442,6 @@ impl TicketPicker {
         Some(list.into())
     }
 
-    fn source_button(&self, name: &str, hovered: bool) -> Node {
-        components::select(SOURCE, name)
-            .size(components::ButtonSize::XSmall)
-            .quiet()
-            .enabled(self.boards_known)
-            .hovered((self.menu_open || hovered).then_some(SOURCE))
-            .into()
-    }
-
     /// Every board's sprint, then the backlog and the user's own tickets; the current one is accented.
     fn source_menu(&self, hovered: Option<u64>) -> Node {
         let items: Vec<components::MenuItem> = self
@@ -477,13 +471,7 @@ impl TicketPicker {
 
 /// A grey bar pulsing where a ticket row will be; rows pulse a beat apart so the wave runs down the list.
 fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
-    let colors = theme();
-    let seconds = if ui::reduce_motion() { 0.0 } else { seconds };
-    let phase = (seconds / PULSE_SECONDS - row as f32 * 0.12) * std::f32::consts::TAU;
-    let fill = colors
-        .text_muted
-        .alpha(0.10 + 0.08 * (0.5 + 0.5 * phase.sin()));
-    let bar = |width: f32| div().w_px(width).h_px(10.0).rounded(5.0).bg(fill);
+    let bar = |width: f32| components::skeleton(width, seconds, row as f32 * 0.12);
     div()
         .row()
         .items_center()

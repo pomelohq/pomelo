@@ -43,7 +43,6 @@ pub fn banner(tone: BannerTone, text: impl Into<String>) -> Banner {
 }
 
 impl Banner {
-    /// Another action after the ones already added.
     pub fn action(mut self, action: impl Into<Node>) -> Self {
         self.actions.push(action.into());
         self
@@ -55,43 +54,36 @@ impl Banner {
         self
     }
 
-    /// An icon that says more than the tone's own (an eye for "someone else drives this").
     pub fn icon(mut self, kind: IconKind) -> Self {
         self.icon = Some(kind);
         self
     }
 
-    /// What stands in front of the text instead of the icon: a pill naming the state.
     pub fn lead(mut self, lead: impl Into<Node>) -> Self {
         self.lead = Some(lead.into());
         self
     }
 
-    /// A second, quieter line: what happens meanwhile.
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
         self
     }
 
-    /// The whole text over as many lines as it needs within `width`, for a message that cannot be cut.
     pub fn wrap(mut self, width: f32) -> Self {
         self.wrap = Some(width);
         self
     }
 
-    /// The text in the code font, for a command or a tool call.
     pub fn mono(mut self) -> Self {
         self.mono = true;
         self
     }
 
-    /// The actions on their own line under the text, for a narrow panel.
     pub fn stack_actions(mut self, stack: bool) -> Self {
         self.stack_actions = stack;
         self
     }
 
-    /// Edge to edge across the top of a panel, square, with a line under it.
     pub fn flush(mut self) -> Self {
         self.flush = true;
         self

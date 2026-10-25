@@ -742,6 +742,76 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story("avatar", "Avatar", "A person", (200.0, 60.0), || {
+            still(|_, _| {
+                alone(
+                    div()
+                        .row()
+                        .gap(8.0)
+                        .items_center()
+                        .child(components::avatar("Ada Lovelace"))
+                        .child(components::avatar("grace"))
+                        .child(components::avatar("Linus")),
+                )
+            })
+        }),
+        story(
+            "skeleton",
+            "Skeleton",
+            "Loading rows",
+            (320.0, 100.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        div()
+                            .col()
+                            .gap(8.0)
+                            .child(components::skeleton(240.0, 1.4, 0.0))
+                            .child(components::skeleton(180.0, 1.4, 0.15))
+                            .child(components::skeleton(210.0, 1.4, 0.3)),
+                    )
+                })
+            },
+        ),
+        story("key-value", "Key value", "Facts", (360.0, 110.0), || {
+            still(|_, _| {
+                alone(
+                    div()
+                        .col()
+                        .gap(4.0)
+                        .w_px(320.0)
+                        .child(components::key_value(
+                            components::key_label("Branch"),
+                            ui::label("feat-login")
+                                .size(12.0)
+                                .mono()
+                                .color(theme().text),
+                            None,
+                        ))
+                        .child(components::key_value(
+                            components::key_label("Port"),
+                            ui::label("3000").size(12.0).mono().color(theme().text),
+                            Some("forwarded"),
+                        )),
+                )
+            })
+        }),
+        story(
+            "key-hints",
+            "Key hints",
+            "Picker footer",
+            (420.0, 60.0),
+            || {
+                still(|_, _| {
+                    alone(
+                        components::key_hints()
+                            .hint(None, &["enter"], "Open")
+                            .hint(Some(ID), &["cmd", "enter"], "Open in split")
+                            .hint(None, &["esc"], "Close"),
+                    )
+                })
+            },
+        ),
     ]
 }
 

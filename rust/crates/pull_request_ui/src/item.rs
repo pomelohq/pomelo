@@ -636,32 +636,12 @@ impl PrItem {
                     "pending" => ("review requested", colors.text_placeholder),
                     _ => ("commented", colors.text_placeholder),
                 };
-                let initial: String = reviewer
-                    .name
-                    .chars()
-                    .take(1)
-                    .flat_map(char::to_uppercase)
-                    .collect();
                 list = list.child(
                     div()
                         .row()
                         .gap(8.0)
                         .items_center()
-                        .child(
-                            div()
-                                .w_px(18.0)
-                                .h_px(18.0)
-                                .rounded(9.0)
-                                .items_center()
-                                .justify_center()
-                                .bg(colors.element_hover)
-                                .child(
-                                    label(initial)
-                                        .size(10.0)
-                                        .weight(600)
-                                        .color(colors.text_muted),
-                                ),
-                        )
+                        .child(components::avatar(&reviewer.name))
                         .child(label(reviewer.name.clone()).size(12.0).color(colors.text))
                         .child(label(text).size(12.0).color(color)),
                 );
@@ -860,15 +840,6 @@ fn duration(started: &str, completed: &str) -> Option<String> {
     } else {
         format!("{seconds}s")
     })
-}
-
-fn raised(content: ui::Div) -> Node {
-    components::card()
-        .padding(0.0)
-        .raised()
-        .render()
-        .child(content)
-        .into()
 }
 
 fn hex_color(hex: &str) -> Option<Rgba> {

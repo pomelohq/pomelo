@@ -333,7 +333,6 @@ pub struct CenterNotice {
 }
 
 const NOTICE_CARD_RADIUS: f32 = components::BANNER_RADIUS;
-const FACT_LABEL_W: f32 = 88.0;
 
 fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> Option<Node> {
     let button = notice.actions.get(index)?;
@@ -376,30 +375,15 @@ fn notice_facts(facts: &[NoticeFact]) -> Node {
         .rounded(NOTICE_CARD_RADIUS)
         .bg(colors.element_background);
     for fact in facts {
-        let mut row = div()
-            .row()
-            .items_center()
-            .gap(8.0)
+        let row = div()
+            .col()
             .h_px(26.0)
-            .child(
-                div().row().w_px(FACT_LABEL_W).child(
-                    label(fact.label.to_uppercase())
-                        .size(11.0)
-                        .weight(600)
-                        .color(colors.text_placeholder),
-                ),
-            )
-            .child(label(fact.value.clone()).size(12.0).color(colors.text));
-        if !fact.detail.is_empty() {
-            row = row.child(
-                div().row().flex(1.0).child(
-                    label(fact.detail.clone())
-                        .size(12.0)
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
-            );
-        }
+            .justify_center()
+            .child(components::key_value(
+                components::key_label(fact.label.clone()),
+                label(fact.value.clone()).size(12.0).color(colors.text),
+                Some(&fact.detail),
+            ));
         card = card.child(row);
     }
     card.into()

@@ -452,16 +452,7 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
                 .color(colors.text_placeholder),
         );
     if cell.primary_key {
-        head = head.child(
-            div()
-                .row()
-                .px(6.0)
-                .h_px(16.0)
-                .items_center()
-                .rounded(8.0)
-                .border(1.0, colors.border_variant)
-                .child(label("primary key").size(10.5).color(colors.warning)),
-        );
+        head = head.child(components::chip("primary key").color(colors.warning));
     }
     head.child(div().row().flex(1.0))
         .child(small(
@@ -780,16 +771,7 @@ pub(crate) fn row_view(
                             .truncate(),
                     ),
                 )
-                .child(
-                    div()
-                        .row()
-                        .px(7.0)
-                        .h_px(18.0)
-                        .items_center()
-                        .rounded(9.0)
-                        .border(1.0, colors.border_variant)
-                        .child(label(counted).size(10.5).color(colors.text_muted)),
-                )
+                .child(components::chip(counted).color(colors.text_muted))
                 .child(
                     icon(IconKind::ArrowUpRight)
                         .size(10.0)

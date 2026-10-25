@@ -26,7 +26,6 @@ impl EmptyState {
         self
     }
 
-    /// The explanation under the title, wrapped and centered within `width`.
     pub fn body(mut self, body: impl Into<String>, width: f32) -> Self {
         self.body = Some((body.into(), width));
         self

@@ -30,7 +30,6 @@ pub fn split_button(main: u64, menu: u64, text: impl Into<String>) -> SplitButto
 }
 
 impl SplitButton {
-    /// Quieter text after the label: the options the main action carries.
     pub fn note(mut self, note: Option<&str>) -> Self {
         self.note = note.map(str::to_string);
         self
@@ -46,7 +45,6 @@ impl SplitButton {
         self
     }
 
-    /// The screen's main action: filled with the accent.
     pub fn primary(mut self) -> Self {
         self.primary = true;
         self

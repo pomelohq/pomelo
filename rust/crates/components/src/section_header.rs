@@ -29,7 +29,6 @@ impl SectionHeader {
         self
     }
 
-    /// A chevron before the title, down while the group is open, for a group that folds away.
     pub fn expander(mut self, open: Option<bool>) -> Self {
         self.expander = open;
         self

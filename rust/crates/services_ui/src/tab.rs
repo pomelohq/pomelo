@@ -668,7 +668,12 @@ impl ServiceItem {
         let mut buttons = Vec::new();
         let controls = self.container.is_none() || self.offers(ServiceControl::Shared);
         if controls && (running || busy) {
-            buttons.push(view::disabled_button(Some(IconKind::Play), "Start"));
+            buttons.push(
+                components::button(0, "Start")
+                    .icon(Some(IconKind::Play))
+                    .enabled(false)
+                    .into(),
+            );
         } else if controls {
             buttons.push(self.button(START, IconKind::Play, "Start", Tone::Primary));
         }
@@ -685,10 +690,12 @@ impl ServiceItem {
                     Tone::Plain,
                 ));
             } else {
-                buttons.push(view::disabled_button(
-                    Some(IconKind::ArrowUpRight),
-                    "Open in browser",
-                ));
+                buttons.push(
+                    components::button(0, "Open in browser")
+                        .icon(Some(IconKind::ArrowUpRight))
+                        .enabled(false)
+                        .into(),
+                );
             }
         }
         let mut header = components::page_header(title).compact();

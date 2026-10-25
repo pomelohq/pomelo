@@ -29,7 +29,6 @@ impl Card {
         self
     }
 
-    /// Washed in `color` with an edge of it: a card about something wrong (a crash, a conflict).
     pub fn tint(mut self, color: Rgba) -> Self {
         self.tint = Some(color);
         self
@@ -45,7 +44,6 @@ impl Card {
         self
     }
 
-    /// On the raised surface with a shadowless edge, for a card that opens over the screen.
     pub fn raised(mut self) -> Self {
         self.raised = true;
         self

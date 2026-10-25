@@ -35,7 +35,6 @@ pub fn select(id: u64, value: impl Into<String>) -> Select {
 }
 
 impl Select {
-    /// What shows, dimmed, while nothing is chosen.
     pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
         self.placeholder = placeholder.into();
         self
@@ -51,7 +50,6 @@ impl Select {
         self
     }
 
-    /// A fixed width; a longer value is cut short.
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
         self

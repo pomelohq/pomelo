@@ -102,7 +102,6 @@ impl Button {
         self
     }
 
-    /// The key that runs it, shown in a chip after the label.
     pub fn keystroke(mut self, keystroke: Option<&str>) -> Self {
         self.keystroke = keystroke.map(str::to_string);
         self

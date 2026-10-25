@@ -35,7 +35,6 @@ impl Paragraph {
         self
     }
 
-    /// Each line centered in the width, for an empty state's explanation.
     pub fn centered(mut self) -> Self {
         self.centered = true;
         self

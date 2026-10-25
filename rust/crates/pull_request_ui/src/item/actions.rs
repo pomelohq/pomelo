@@ -9,7 +9,7 @@ use terminal::Keystroke;
 use ui::{div, icon, label, theme, IconKind, Node};
 use workspace::{EditKey, PanelRequest, TerminalKeyOutcome};
 
-use super::{raised, PrItem};
+use super::PrItem;
 
 pub(super) const MERGE: u64 = 10;
 pub(super) const MERGE_METHODS: u64 = 11;
@@ -249,7 +249,10 @@ impl PrItem {
                     }),
             )
             .child(actions);
-        let mut column = div().col().gap(6.0).child(raised(row));
+        let mut column = div()
+            .col()
+            .gap(6.0)
+            .child(components::card().padding(0.0).raised().render().child(row));
         if self.merge_menu && enabled {
             let items: Vec<components::MenuItem> = MergeMethod::ALL
                 .iter()

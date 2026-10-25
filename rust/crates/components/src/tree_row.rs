@@ -56,7 +56,6 @@ impl TreeRow {
         self
     }
 
-    /// No room kept for a chevron on a leaf, for a tree whose leaves sit flush.
     pub fn flush_leaf(mut self) -> Self {
         self.leaf_gap = false;
         self
@@ -67,7 +66,6 @@ impl TreeRow {
         self
     }
 
-    /// Where the keyboard is: ringed in the focus color.
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
@@ -84,7 +82,6 @@ impl TreeRow {
         self
     }
 
-    /// Rounded corners, for a tree whose rows float inside a padded list.
     pub fn rounded(mut self) -> Self {
         self.rounded = true;
         self

@@ -80,20 +80,10 @@ fn percent(used: f32) -> String {
 pub fn chip(info: &UsageInfo, hot: bool) -> Node {
     let colors = theme();
     let mono = |text: String, color: Rgba| label(text).size(12.0).mono().color(color);
-    let mut row = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(24.0)
-        .px(8.0)
-        .rounded(12.0)
-        .on_click(USAGE_CHIP)
-        .bg(if hot {
-            colors.element_hover
-        } else {
-            Rgba::new(1.0, 1.0, 1.0, 0.05)
-        })
-        .child(icon(IconKind::Sparkle).size(12.0).color(colors.icon_muted));
+    let mut row = components::status_item(Some(USAGE_CHIP))
+        .height(24.0)
+        .hovered(hot)
+        .icon(IconKind::Sparkle, colors.icon_muted);
     match (&info.account, &info.session, &info.weekly) {
         (Some(account), Some(session), Some(weekly)) => {
             row = row

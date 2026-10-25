@@ -610,32 +610,14 @@ fn group_header(
 ) -> Node {
     let colors = theme();
     let id = crate::WORKSPACE_GROUP_BASE + group.index() as u64;
-    let mut header = div()
-        .row()
+    let mut header = components::section_header(group.label())
+        .count(count)
+        .expander(folded.then_some(false))
+        .render()
         .h_px(20.0)
         .px(8.0)
-        .gap(6.0)
-        .items_center()
         .rounded(4.0)
-        .on_click(id)
-        .child(
-            label(group.label().to_uppercase())
-                .size(10.5)
-                .weight(600)
-                .color(colors.text_placeholder),
-        )
-        .child(
-            label(count.to_string())
-                .size(10.5)
-                .color(with_alpha(colors.text_placeholder, 0.8)),
-        );
-    if folded {
-        header = header.child(
-            icon(IconKind::ChevronRight)
-                .size(10.0)
-                .color(colors.text_placeholder),
-        );
-    }
+        .on_click(id);
     if hovered == Some(id) {
         header = header.bg(colors.element_hover);
     }
@@ -1307,11 +1289,12 @@ fn workspace_row(
         .child(text);
     if let Some((pr, _)) = trouble {
         main_line = main_line.child(
-            div()
-                .col()
-                .h_px(content_h)
-                .pt(6.0)
-                .child(pr_pill(row.index, pr)),
+            div().col().h_px(content_h).pt(6.0).child(
+                components::pill(pr.count.to_string())
+                    .color(theme().error)
+                    .icon(IconKind::PullRequest)
+                    .on_click(crate::WORKSPACE_PR_BASE + row.index as u64),
+            ),
         );
     }
     let open_failure = match upkeep {
@@ -1465,15 +1448,6 @@ pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
         .child(label(group.label()).size(12.0).color(colors.text))
         .child(div().row().flex(1.0))
         .child(label(count.to_string()).size(11.0).color(colors.text_muted))
-        .into()
-}
-
-/// The PR count, shown only while a PR is in trouble: on a red tint so it reads as the problem it is.
-fn pr_pill(index: usize, pr: crate::PrSummary) -> Node {
-    components::pill(pr.count.to_string())
-        .color(theme().error)
-        .icon(IconKind::PullRequest)
-        .on_click(crate::WORKSPACE_PR_BASE + index as u64)
         .into()
 }
 
@@ -1631,7 +1605,12 @@ fn op_details(
         fixes_w += button_width("Retry", 0.0) + 6.0;
     }
     if !op.remote {
-        fixes = fixes.child(agent_button(base + crate::WORKSPACE_OP_AGENT));
+        fixes = fixes.child(
+            components::button(base + crate::WORKSPACE_OP_AGENT, AGENT_LABEL)
+                .size(components::ButtonSize::XSmall)
+                .kind(components::ButtonKind::Agent)
+                .icon(Some(IconKind::Sparkle)),
+        );
         fixes_w += button_width(AGENT_LABEL, 11.0 + 6.0);
     }
     // Its menu floats over the list: the view drops it from this button.
@@ -1692,14 +1671,6 @@ const AGENT_LABEL: &str = "Fix with Claude";
 /// An XSmall button's width: its label, padding and border, plus `extra` for an icon beside the label.
 fn button_width(text: &str, extra: f32) -> f32 {
     ui::measure_text_width(text, 11.0, false, 500) + 2.0 * 4.0 + 2.0 + extra
-}
-
-fn agent_button(id: u64) -> Node {
-    components::button(id, AGENT_LABEL)
-        .size(components::ButtonSize::XSmall)
-        .kind(components::ButtonKind::Agent)
-        .icon(Some(IconKind::Sparkle))
-        .into()
 }
 
 /// The routes to fix a failure by hand: a terminal in the checkout it names, the config, or doing without the step.
@@ -1790,14 +1761,9 @@ fn op_row(
     let mut second = div().row().h_px(14.0).gap(8.0).items_center().child(line);
     if op.status == OpStatus::Queued || (op.remote && op.status == OpStatus::Running) {
         second = second.child(
-            div()
-                .row()
-                .items_center()
-                .h_px(16.0)
-                .px(6.0)
-                .rounded(4.0)
-                .on_click(base + crate::WORKSPACE_OP_CANCEL)
-                .child(label("Cancel").size(10.5).color(colors.text_muted)),
+            components::button(base + crate::WORKSPACE_OP_CANCEL, "Cancel")
+                .kind(components::ButtonKind::Ghost)
+                .size(components::ButtonSize::XSmall),
         );
     }
     let name = match &key {

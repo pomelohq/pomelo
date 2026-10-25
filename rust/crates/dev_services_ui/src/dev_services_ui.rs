@@ -521,19 +521,8 @@ fn list(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     column.into()
 }
 
-fn key_value(name: ui::Label, value: ui::Label) -> Node {
-    div()
-        .row()
-        .items_center()
-        .h_px(16.0)
-        .gap(12.0)
-        .child(div().row().w_px(96.0).child(name.truncate()))
-        .child(div().row().flex(1.0).child(value.truncate()))
-        .into()
-}
-
 fn fact(name: &str, value: impl Into<String>, color: Rgba) -> Node {
-    key_value(small(name, theme().text_muted), small(value, color))
+    components::key_value(small(name, theme().text_muted), small(value, color), None)
 }
 
 fn key_values(rows: Vec<Node>) -> Node {
@@ -572,7 +561,11 @@ fn headers_block(headers: &[(String, String)]) -> Node {
             } else {
                 small(value.clone(), colors.text)
             };
-            key_value(small(name.clone(), colors.text_muted).mono(), shown.mono())
+            components::key_value(
+                small(name.clone(), colors.text_muted).mono(),
+                shown.mono(),
+                None,
+            )
         })
         .collect();
     key_values(rows)

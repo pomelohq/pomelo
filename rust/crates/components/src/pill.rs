@@ -30,7 +30,6 @@ impl Pill {
         self
     }
 
-    /// An icon in place of the dot, for a state with its own mark (merged, closed).
     pub fn icon(mut self, icon: IconKind) -> Self {
         self.icon = Some(icon);
         self
@@ -41,7 +40,6 @@ impl Pill {
         self
     }
 
-    /// A pill that opens what it counts (the workspaces waiting, the PRs in trouble).
     pub fn on_click(mut self, id: u64) -> Self {
         self.click = Some(id);
         self

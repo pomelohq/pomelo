@@ -19,7 +19,6 @@ pub fn toolbar() -> Toolbar {
 }
 
 impl Toolbar {
-    /// Taller, for a toolbar that holds an input.
     pub fn height(mut self, height: f32) -> Self {
         self.height = height;
         self
@@ -63,13 +62,11 @@ impl Toolbar {
         self.child(label(text.into()).size(12.0).color(theme().text_muted))
     }
 
-    /// Pushes what follows to the right end.
     pub fn spacer(mut self) -> Self {
         self.children.push(div().flex(1.0).into());
         self
     }
 
-    /// A line under it, where the content under it does not draw its own edge.
     pub fn edge(mut self) -> Self {
         self.edge = true;
         self

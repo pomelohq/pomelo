@@ -94,11 +94,6 @@ pub(crate) fn icon_button(id: u64, kind: IconKind) -> Node {
         .into()
 }
 
-/// A small button that cannot be pressed right now.
-pub(crate) fn disabled_button(kind: Option<IconKind>, text: &str) -> Node {
-    components::button(0, text).icon(kind).enabled(false).into()
-}
-
 /// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
 pub(crate) fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
     let mut column = div().col().gap(gap);

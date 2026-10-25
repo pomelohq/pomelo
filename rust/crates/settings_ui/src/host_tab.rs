@@ -617,7 +617,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                 .child(label(text).size(12.0).color(dim_c()).truncate())
                 .child(div().flex(1.0));
             if let Some((id, text)) = button {
-                row = row.child(super::action_button(id, text, true));
+                row = row.child(components::button(id, text));
             }
             row.into()
         };
@@ -670,11 +670,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                     .truncate(),
                 )
                 .child(div().flex(1.0))
-                .child(super::action_button(
-                    CTRL_HOST_UPDATE_POM,
-                    &format!("Update pom on {name}"),
-                    true,
-                ));
+                .child(components::button(CTRL_HOST_UPDATE_POM, format!("Update pom on {name}")));
             Some(
                 div()
                     .col()
@@ -693,16 +689,6 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
             )
         }
     }
-}
-
-/// A value still on its way from the host.
-pub fn placeholder() -> Node {
-    div()
-        .w_px(170.0)
-        .h_px(8.0)
-        .rounded(4.0)
-        .bg(theme().ghost_element_hover)
-        .into()
 }
 
 /// A section's note under its header: where it applies.

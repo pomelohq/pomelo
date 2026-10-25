@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
-use crate::command_palette::{picker_action, picker_footer, scroll_rows};
+use crate::command_palette::scroll_rows;
 use crate::fuzzy::{match_paths, CharBag};
 
 pub const WIDTH: f32 = 544.0;
@@ -312,11 +312,12 @@ impl FileFinder {
             .child(components::divider())
             .child(results)
             .child(components::divider())
-            .child(picker_footer(vec![
-                picker_action(None, &["enter"], "Open"),
-                picker_action(None, &["up", "down"], "Move"),
-                picker_action(None, &["escape"], "Close"),
-            ]))
+            .child(
+                components::key_hints()
+                    .hint(None, &["enter"], "Open")
+                    .hint(None, &["up", "down"], "Move")
+                    .hint(None, &["escape"], "Close"),
+            )
             .into()
     }
 

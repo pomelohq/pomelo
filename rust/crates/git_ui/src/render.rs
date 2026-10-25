@@ -6,8 +6,8 @@ use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
-    arrow_count, avatar, checkbox, chip, chip_count, chip_icon, chip_text, diff_stat, ghost_button,
-    icon_button, status_icon, text_width, ChipTone, INDENT, ROW_H, TAB_BAR_H, TOOLBAR_H,
+    arrow_count, checkbox, diff_stat, ghost_button, icon_button, status_icon, text_width, INDENT,
+    ROW_H, TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -680,7 +680,7 @@ impl GitPanel {
                     return self
                         .row_base(index, ROW_H)
                         .pl(*indent)
-                        .child(avatar(&commit.author))
+                        .child(components::avatar(&commit.author))
                         .child(grow(
                             label(commit.subject.clone())
                                 .size(12.0)
@@ -748,19 +748,7 @@ impl GitPanel {
                     .child(text);
                 if *with_repo {
                     row = row.child(
-                        div()
-                            .row()
-                            .h_px(16.0)
-                            .px(6.0)
-                            .rounded(8.0)
-                            .items_center()
-                            .bg(colors.element_hover)
-                            .child(
-                                label(self.source_name_of(*repo))
-                                    .size(10.5)
-                                    .mono()
-                                    .color(colors.text_muted),
-                            ),
+                        components::chip(self.source_name_of(*repo)).color(colors.text_muted),
                     );
                 }
                 if unpushed {
@@ -1021,25 +1009,29 @@ impl GitPanel {
         {
             let (text, request, ahead, behind) = action;
             let chip_id = self.id(index, Control::Action);
-            let (tone, tip) = match (text, &request) {
-                ("Publish", _) => (ChipTone::Pull, "git push --set-upstream"),
-                ("Push", _) => (ChipTone::Push, "git push"),
-                ("Pull", _) => (ChipTone::Pull, "git pull"),
-                ("Sync", _) => (ChipTone::Pull, "git pull, then git push"),
-                _ => (ChipTone::Quiet, "git fetch"),
+            let (primary, tip) = match (text, &request) {
+                ("Publish", _) => (true, "git push --set-upstream"),
+                ("Push", _) => (true, "git push"),
+                ("Pull", _) => (true, "git pull"),
+                ("Sync", _) => (true, "git pull, then git push"),
+                _ => (false, "git fetch"),
             };
-            let mut parts = Vec::new();
-            if text == "Publish" {
-                parts.push(chip_icon(IconKind::ExpandUp, tone));
-            }
-            if behind > 0 {
-                parts.push(chip_count(IconKind::ArrowDown, behind, tone));
-            }
-            if ahead > 0 {
-                parts.push(chip_count(IconKind::ArrowUp, ahead, tone));
-            }
-            parts.push(chip_text(text.to_string(), tone));
-            let button = div().child(chip(chip_id, tone, parts, self.hot(chip_id)));
+            let (glyph, caption) = match (text, behind, ahead) {
+                ("Publish", _, _) => (IconKind::ExpandUp, text.to_string()),
+                (_, 0, 0) => (IconKind::RotateCw, text.to_string()),
+                (_, 0, ahead) => (IconKind::ArrowUp, format!("{text} {ahead}")),
+                (_, behind, 0) => (IconKind::ArrowDown, format!("{text} {behind}")),
+                (_, behind, ahead) => (IconKind::ArrowDown, format!("{text} {behind}/{ahead}")),
+            };
+            let button = components::button(chip_id, caption)
+                .kind(if primary {
+                    components::ButtonKind::Primary
+                } else {
+                    components::ButtonKind::Secondary
+                })
+                .icon(Some(glyph))
+                .hovered(self.hot(chip_id).then_some(chip_id))
+                .render();
             trailing.push(
                 if self.hot(chip_id) {
                     components::with_tooltip(button, tip, false)

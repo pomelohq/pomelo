@@ -79,7 +79,6 @@ impl<'a> Menu<'a> {
         self
     }
 
-    /// A search line above the items showing `query`, or a placeholder while it is empty.
     pub fn search(mut self, query: &'a str) -> Self {
         self.search = Some(query);
         self
@@ -96,7 +95,6 @@ impl<'a> Menu<'a> {
         self
     }
 
-    /// The card and its width and height in points.
     /// Hints are muted text (a count, a date) rather than keys.
     pub fn plain_hints(mut self) -> Self {
         self.plain_hints = true;

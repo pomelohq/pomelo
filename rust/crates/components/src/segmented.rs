@@ -29,13 +29,11 @@ impl Segment {
         self
     }
 
-    /// How many things the choice shows, muted after its text: a filter's matches.
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
         self
     }
 
-    /// A status dot after the text: the choice needs a look, or how its connection stands.
     pub fn dot(mut self, color: Rgba) -> Self {
         self.dot = Some(color);
         self

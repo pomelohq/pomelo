@@ -8,6 +8,7 @@ pub struct StatusItem {
     id: Option<u64>,
     parts: Vec<Node>,
     width: Option<f32>,
+    height: f32,
     hovered: bool,
 }
 
@@ -16,6 +17,7 @@ pub fn status_item(id: Option<u64>) -> StatusItem {
         id,
         parts: Vec::new(),
         width: None,
+        height: STATUS_ITEM_HEIGHT,
         hovered: false,
     }
 }
@@ -26,7 +28,6 @@ impl StatusItem {
         self
     }
 
-    /// The icon with a dot at its foot, saying the thing it opens has news (services running).
     pub fn badged_icon(mut self, kind: IconKind, color: Rgba, badge: Option<Rgba>) -> Self {
         let mut glyph = div()
             .row()
@@ -62,9 +63,13 @@ impl StatusItem {
         self
     }
 
-    /// A fixed width, so a row of icon toggles lines up.
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = height;
         self
     }
 
@@ -76,10 +81,22 @@ impl StatusItem {
     pub fn render(self) -> Div {
         let mut item = div()
             .row()
-            .h_px(STATUS_ITEM_HEIGHT)
-            .px(4.0)
-            .gap(4.0)
-            .rounded(4.0)
+            .h_px(self.height)
+            .px(if self.height > STATUS_ITEM_HEIGHT {
+                6.0
+            } else {
+                4.0
+            })
+            .gap(if self.height > STATUS_ITEM_HEIGHT {
+                6.0
+            } else {
+                4.0
+            })
+            .rounded(if self.height > STATUS_ITEM_HEIGHT {
+                6.0
+            } else {
+                4.0
+            })
             .items_center();
         if let Some(width) = self.width {
             item = item.w_px(width).justify_center();

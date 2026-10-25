@@ -4,9 +4,8 @@
 
 use std::ops::Range;
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rgba};
 
-use crate::command_palette::footer_button;
 use crate::fuzzy::fuzzy_match;
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
@@ -495,41 +494,27 @@ impl OutlineView {
     }
 
     fn render_footer(&self, id_base: u64) -> Node {
-        let colors = theme();
         let visible = self.preview != PreviewLayout::Hidden;
-        let text_color = if visible {
-            colors.text_accent
-        } else {
-            colors.text
-        };
-        let mut controls = div().row().items_center().child(footer_button(
-            id_base + OutlineClick::TogglePreview.offset(),
-            "Preview",
-            PREVIEW_KEY,
-            text_color,
-            self.hovered == Some(id_base + OutlineClick::TogglePreview.offset()),
-        ));
+        let toggle = id_base + OutlineClick::TogglePreview.offset();
+        let mut controls = div().row().items_center().gap(4.0).child(
+            components::button(toggle, "Preview")
+                .kind(if visible {
+                    components::ButtonKind::Secondary
+                } else {
+                    components::ButtonKind::Ghost
+                })
+                .size(components::ButtonSize::XSmall)
+                .keystroke(Some(PREVIEW_KEY))
+                .hovered(self.hovered),
+        );
         if visible {
-            let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| -> Node {
-                let mut button = div()
-                    .row()
-                    .items_center()
-                    .justify_center()
-                    .w_px(22.0)
-                    .h_px(22.0)
-                    .rounded(4.0)
-                    .on_click(id_base + click.offset())
-                    .child(icon(kind).size(14.0).color(colors.icon));
-                if self.hovered == Some(id_base + click.offset()) {
-                    button = button.bg(colors.ghost_element_hover);
-                } else if selected {
-                    button = button.bg(colors.element_selected);
-                }
-                button.into()
+            let layout_button = |click: OutlineClick, kind: IconKind, selected: bool| {
+                components::icon_button(id_base + click.offset(), kind)
+                    .toggled(selected)
+                    .hovered(self.hovered)
             };
             controls = controls
                 .child(components::vertical_divider(16.0))
-                .child(div().w_px(4.0))
                 .child(layout_button(
                     OutlineClick::PreviewBelow,
                     IconKind::DiffUnified,

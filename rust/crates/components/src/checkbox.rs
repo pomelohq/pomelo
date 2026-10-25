@@ -21,7 +21,6 @@ pub fn checkbox(id: u64, checked: bool, text: &str) -> Checkbox {
 }
 
 impl Checkbox {
-    /// Some of what it stands for is on: a dash instead of the check.
     pub fn partial(mut self, partial: bool) -> Self {
         self.partial = partial;
         self

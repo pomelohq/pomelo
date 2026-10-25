@@ -42,7 +42,6 @@ impl Tab {
         self
     }
 
-    /// Quieter text after the title that tells two same-named tabs apart.
     pub fn detail(mut self, detail: Option<String>) -> Self {
         self.detail = detail;
         self
@@ -86,7 +85,6 @@ impl Tab {
         self
     }
 
-    /// The copy the pointer carries while the tab is dragged.
     pub fn floating(mut self) -> Self {
         self.floating = true;
         self

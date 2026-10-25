@@ -37,7 +37,6 @@ impl IconButton {
         self
     }
 
-    /// On, for a button that switches something: match case, whole word.
     pub fn toggled(mut self, toggled: bool) -> Self {
         self.toggled = toggled;
         self

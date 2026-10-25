@@ -32,7 +32,6 @@ pub fn breadcrumb() -> Breadcrumb {
 }
 
 impl Breadcrumb {
-    /// What kind of thing it is: a table, a bucket, a key space.
     pub fn icon(mut self, kind: IconKind) -> Self {
         self.icon = Some(kind);
         self
@@ -47,7 +46,6 @@ impl Breadcrumb {
         self
     }
 
-    /// A parent that opens when clicked.
     pub fn link(mut self, id: u64, text: impl Into<String>) -> Self {
         self.parts.push(Part::Text {
             text: text.into(),
@@ -57,7 +55,6 @@ impl Breadcrumb {
         self
     }
 
-    /// The thing itself, last and strongest.
     pub fn current(mut self, text: impl Into<String>) -> Self {
         self.parts.push(Part::Text {
             text: text.into(),
@@ -67,7 +64,6 @@ impl Breadcrumb {
         self
     }
 
-    /// A part drawn by the screen (a symbol in its syntax color).
     pub fn node(mut self, node: impl Into<Node>) -> Self {
         self.parts.push(Part::Node(Box::new(node.into())));
         self

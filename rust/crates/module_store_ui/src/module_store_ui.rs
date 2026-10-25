@@ -469,13 +469,6 @@ fn pulse(clock: f32) -> Node {
     components::dot(color, 7.0).into()
 }
 
-/// A size still being measured.
-fn shimmer(clock: f32, width: f32) -> Node {
-    let mut color = theme().ghost_element_hover;
-    color.a *= 0.6 + 0.4 * wave(clock, 1.2);
-    div().w_px(width).h_px(10.0).rounded(5.0).bg(color).into()
-}
-
 fn chip(text: &str, highlight: bool) -> Node {
     let colors = theme();
     let chip = components::chip(text).color(if text == "main" {
@@ -700,7 +693,7 @@ impl Ids {
 
 fn size_or_shimmer(state: &StoreState, size: Option<u64>) -> Node {
     match size {
-        Some(0) | None if state.measuring > 0 => shimmer(state.clock, 60.0),
+        Some(0) | None if state.measuring > 0 => components::skeleton(60.0, state.clock, 0.0),
         Some(size) => small(format_size(size), theme().text).mono().into(),
         None => small("-", theme().text).mono().into(),
     }

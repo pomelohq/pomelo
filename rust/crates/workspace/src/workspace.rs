@@ -1151,19 +1151,11 @@ pub fn host_indicator(host: &str, link: HostLink, hot: bool, ring: Rgba) -> Node
         .h_px(14.0)
         .child(ui::icon(ui::IconKind::Server).size(14.0).color(glyph))
         .pin(ui::Corner::BottomRight, 1.0, 1.0, 6.0, 6.0, marker);
-    let mut button = div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .h_px(24.0)
-        .px(6.0)
-        .rounded(6.0)
-        .on_click(HOST_INDICATOR)
+    let button = components::status_item(Some(HOST_INDICATOR))
+        .height(24.0)
+        .hovered(hot)
         .child(glyph)
-        .child(label(host.to_string()).size(12.0).color(text_c()));
-    if hot {
-        button = button.bg(theme().ghost_element_hover);
-    }
+        .text(host, text_c());
     button.into()
 }
 

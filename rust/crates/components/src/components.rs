@@ -1,5 +1,6 @@
 //! Pomelo's design system: every control a screen is built from, each in one file, each shown in the gallery.
 
+mod avatar;
 mod banner;
 mod breadcrumb;
 mod button;
@@ -13,6 +14,8 @@ mod empty_state;
 mod icon_button;
 mod input;
 mod key_chip;
+mod key_hints;
+mod key_value;
 mod link;
 mod list_row;
 mod menu;
@@ -25,6 +28,7 @@ mod radio;
 mod section_header;
 mod segmented;
 mod select;
+mod skeleton;
 mod split_button;
 mod status_item;
 mod status_line;
@@ -36,6 +40,7 @@ mod toolbar;
 mod tooltip;
 mod tree_row;
 
+pub use avatar::*;
 pub use banner::*;
 pub use breadcrumb::*;
 pub use button::*;
@@ -49,6 +54,8 @@ pub use empty_state::*;
 pub use icon_button::*;
 pub use input::*;
 pub use key_chip::*;
+pub use key_hints::*;
+pub use key_value::*;
 pub use link::*;
 pub use list_row::*;
 pub use menu::*;
@@ -61,6 +68,7 @@ pub use radio::*;
 pub use section_header::*;
 pub use segmented::*;
 pub use select::*;
+pub use skeleton::*;
 pub use split_button::*;
 pub use status_item::*;
 pub use status_line::*;
