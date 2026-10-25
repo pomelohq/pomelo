@@ -55,12 +55,11 @@ wasmtime-internal-core = { version = "48", default-features = false, features = 
 
 [build-dependencies]
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
-indexmap = { version = "2" }
 memchr = { version = "2", default-features = false, features = ["std"] }
 proc-macro2 = { version = "1" }
 quote = { version = "1" }
 semver = { version = "1" }
-serde_core = { version = "1", default-features = false, features = ["std"] }
+serde_core = { version = "1", default-features = false, features = ["alloc", "std"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 syn = { version = "3", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 
@@ -69,6 +68,7 @@ bitflags = { version = "2", default-features = false, features = ["std"] }
 block2 = { version = "0.5" }
 core-foundation-sys = { version = "0.8" }
 errno = { version = "0.3" }
+getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 half = { version = "2", features = ["num-traits"] }
 libc = { version = "0.2" }
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }
