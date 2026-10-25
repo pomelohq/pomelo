@@ -197,6 +197,8 @@ pub struct TransportInfo {
     pub paste: bool,
     /// The server reads and changes the workspace's repos for the Git panel, and runs their fetch, pull and push.
     pub git: bool,
+    /// The server also runs the git of files open in the editor: gutter, staging lines and blame.
+    pub git_editor: bool,
     /// The server reads and changes the host-scoped settings of its settings.json.
     pub host_settings: bool,
 }

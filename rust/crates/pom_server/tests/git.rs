@@ -227,6 +227,57 @@ fn requests_that_leave_the_repo_or_pass_options_are_refused_before_git_runs() ->
 }
 
 #[test]
+fn the_editor_reads_bases_and_blame_and_stages_lines_through_the_server() -> Result<(), String> {
+    let remote = Remote::start(&["/bin/sh"]);
+    let root = real_repo(&remote);
+    let (source, access) = remote_git(&remote);
+    assert!(source.transport().ok_or("no transport")?.git_editor);
+    let repo = api(&source);
+    std::fs::write(root.join("a.txt"), "one\ntwo\n").map_err(|error| error.to_string())?;
+    let local = git::LocalFile(root.join("a.txt"));
+    let files = git::access::RepoFiles::new(access.clone(), vec![repo.clone()]);
+    let file = files.file(&repo.root.join("a.txt")).ok_or("no file")?;
+    use git::FileGit;
+    assert_eq!(file.bases(), local.bases());
+    assert_eq!(
+        file.bases().and_then(|bases| bases.head).as_deref(),
+        Some("one\n")
+    );
+    let blamed = file.blame("one\ntwo\n").ok_or("no blame")?;
+    assert_eq!(Some(blamed), local.blame("one\ntwo\n"));
+
+    file.write_index(Some("one\ntwo\n"))?;
+    assert_eq!(
+        file.bases().and_then(|bases| bases.index).as_deref(),
+        Some("one\ntwo\n")
+    );
+    assert_eq!(access.scan(&repo).staged_count(), 1);
+    file.write_index(Some("one\n"))?;
+    assert_eq!(access.scan(&repo).staged_count(), 0);
+
+    assert!(files
+        .file(&remote.temp.path().join("outside.txt"))
+        .is_none());
+    for read in [
+        GitRead::Bases {
+            path: "../../outside.txt".into(),
+        },
+        GitRead::Blame {
+            path: "a.txt".into(),
+            contents: "x".repeat(git::access::MAX_EDITOR_TEXT + 1),
+        },
+    ] {
+        assert!(access.read(&repo, read.clone()).is_err(), "{read:?} ran");
+    }
+    let write = GitOp::WriteIndex {
+        path: ".git/config".into(),
+        text: Some("[core]\n".into()),
+    };
+    assert!(access.act(&repo, write).is_err());
+    Ok(())
+}
+
+#[test]
 fn a_watch_pushes_the_scan_when_the_repo_changes() -> Result<(), String> {
     let remote = Remote::start(&["/bin/sh"]);
     let root = real_repo(&remote);

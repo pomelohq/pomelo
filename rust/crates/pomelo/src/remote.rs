@@ -53,6 +53,8 @@ pub(crate) struct RemoteWindow {
     git_repos: Arc<std::sync::Mutex<Option<GitRepos>>>,
     /// The workspace whose repos were asked for.
     git_asked: Option<String>,
+    /// The repos whose git runs the editor's gutter, staging and blame, and the workspace they are of.
+    repo_files: Option<(String, git::access::RepoFiles)>,
 }
 
 type GitRepos = (String, Result<Vec<git::access::RepoSource>, String>);
@@ -449,6 +451,7 @@ impl App {
                 git_for: None,
                 git_repos: Arc::new(std::sync::Mutex::new(None)),
                 git_asked: None,
+                repo_files: None,
             });
         }
         self.install_remote_views(id);
@@ -957,13 +960,20 @@ impl App {
         let main = shown.is_none_or(|workspace| workspace.is_main);
         remote.files_for = Some(remote.active.clone());
         remote.files_unserved = unserved;
-        let files = files_ui::FilesView::new(fs, root)
+        let mut files = files_ui::FilesView::new(fs, root)
             .read_only(main || !saves)
             .writable(if saves {
                 vec![std::path::PathBuf::from(&remote.config)]
             } else {
                 Vec::new()
             });
+        files.set_repo_files(
+            remote
+                .repo_files
+                .as_ref()
+                .filter(|(branch, _)| *branch == remote.active)
+                .map(|(_, repo_files)| repo_files.clone()),
+        );
         self.with_workspace_view(id, |view, _| {
             view.set_files_view(Some(Box::new(files)));
         });
@@ -1055,12 +1065,22 @@ impl App {
             ),
             Err(reason) => (Vec::new(), Arc::new(git::access::UnservedGit::new(reason))),
         };
+        remote.repo_files = (transport.git_editor && access.refusal().is_none()).then(|| {
+            (
+                active.clone(),
+                git::access::RepoFiles::new(access.clone(), repos.clone()),
+            )
+        });
+        let repo_files = remote.repo_files.as_ref().map(|(_, files)| files.clone());
         let mut panel = git_ui::GitPanel::new(repos, Some(reviews), Arc::new(ui::wake));
         if access.refusal().is_none() {
             panel = panel.with_pull_requests(remote.pull_requests.clone());
         }
         let panel = panel.with_access(access);
-        self.with_workspace_view(id, |view, _| view.set_side_panel(Box::new(panel)));
+        self.with_workspace_view(id, |view, _| {
+            view.set_side_panel(Box::new(panel));
+            set_repo_files(view, repo_files);
+        });
         if let Some(main) = self.mains.get_mut(&id) {
             main.dirty = true;
         }
@@ -1639,6 +1659,16 @@ fn remote_services_panel(
 }
 
 /// Why the host's repos cannot show in the Git panel here, when they cannot.
+fn set_repo_files(view: &mut workspace::WorkspaceView, repo_files: Option<git::access::RepoFiles>) {
+    if let Some(files) = view
+        .files_view_mut()
+        .and_then(|files| files.as_any_mut())
+        .and_then(|any| any.downcast_mut::<files_ui::FilesView>())
+    {
+        files.set_repo_files(repo_files);
+    }
+}
+
 fn git_refusal(transport: &pom_remote::TransportInfo, host: &str) -> Option<String> {
     if transport.via != pom_remote::Via::Server {
         return Some(format!(

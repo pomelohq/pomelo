@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 use crate::history;
 use crate::scan::RepoScan;
 use crate::working_copy::{self, CommandError, CommandOutput, CommitOptions, HeadState, PushMode};
-use crate::FileChange;
+use crate::{BlameEntry, DiffBases, FileChange, FileGit};
 
 const MAX_PATH: usize = 4096;
 const MAX_REF: usize = 255;
 const MAX_PATHS: usize = 10_000;
 const MAX_MESSAGE: usize = 64 * 1024;
+/// The largest file whose git the editor reads from another machine: its text and both bases fit one frame.
+pub const MAX_EDITOR_TEXT: usize = 256 * 1024;
 
 /// A repo of the workspace to read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,20 +70,47 @@ pub enum GitOp {
         #[serde(default)]
         options: CommitOptions,
     },
+    /// Puts `text` in the index as the file's staged version; `None` drops it from the index.
+    WriteIndex {
+        path: String,
+        text: Option<String>,
+    },
 }
 
 /// Something the panel reads of a repo besides its scan.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "read", rename_all = "snake_case")]
 pub enum GitRead {
-    FileAt { revision: String, path: String },
-    CommitFiles { sha: String },
-    ParentOf { sha: String },
-    Patch { against: String },
+    FileAt {
+        revision: String,
+        path: String,
+    },
+    CommitFiles {
+        sha: String,
+    },
+    ParentOf {
+        sha: String,
+    },
+    Patch {
+        against: String,
+    },
     HeadMessage,
     HeadState,
-    PushRemotes { branch: String },
-    RemoteUrl { remote: String },
+    PushRemotes {
+        branch: String,
+    },
+    RemoteUrl {
+        remote: String,
+    },
+    /// The file's text at HEAD and in the index.
+    Bases {
+        path: String,
+    },
+    /// Who last changed each line of the file as `contents` reads.
+    Blame {
+        path: String,
+        contents: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +120,8 @@ pub enum GitAnswer {
     Files(Vec<FileChange>),
     Head(HeadState),
     Names(Vec<String>),
+    Bases(Option<DiffBases>),
+    Blame(Option<Vec<BlameEntry>>),
 }
 
 /// A git command that reaches a remote, with the credentials of the machine it runs on.
@@ -180,6 +211,10 @@ impl GitOp {
                     Ok(())
                 }
             }
+            GitOp::WriteIndex { path, text } => {
+                check_path(path)?;
+                check_editor_text(text.as_deref().unwrap_or_default())
+            }
             GitOp::StageAll
             | GitOp::UnstageAll
             | GitOp::StashAll
@@ -202,7 +237,20 @@ impl GitRead {
             GitRead::PushRemotes { branch } => check_ref("branch", branch),
             GitRead::RemoteUrl { remote } => check_ref("remote", remote),
             GitRead::HeadMessage | GitRead::HeadState => Ok(()),
+            GitRead::Bases { path } => check_path(path),
+            GitRead::Blame { path, contents } => {
+                check_path(path)?;
+                check_editor_text(contents)
+            }
         }
+    }
+}
+
+fn check_editor_text(text: &str) -> Result<(), String> {
+    if text.len() > MAX_EDITOR_TEXT {
+        Err("the file is too large for git over the connection".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -304,6 +352,10 @@ pub fn apply(root: &Path, op: &GitOp) -> Result<(), CommandError> {
         }
         GitOp::SoftReset => working_copy::soft_reset(root),
         GitOp::Commit { message, options } => working_copy::commit(root, message, *options),
+        GitOp::WriteIndex { path, text } => {
+            let full = inside(root, path).map_err(refused)?;
+            crate::write_index(&full, text.as_deref()).map_err(refused)
+        }
     }
 }
 
@@ -321,6 +373,10 @@ pub fn answer(root: &Path, query: &GitRead) -> Result<GitAnswer, String> {
             GitAnswer::Names(working_copy::push_remotes(root, branch))
         }
         GitRead::RemoteUrl { remote } => GitAnswer::Text(working_copy::remote_url(root, remote)),
+        GitRead::Bases { path } => GitAnswer::Bases(crate::load_bases(&inside(root, path)?)),
+        GitRead::Blame { path, contents } => {
+            GitAnswer::Blame(crate::blame(&inside(root, path)?, contents))
+        }
     })
 }
 
@@ -471,6 +527,80 @@ pub trait GitAccess: Send + Sync {
             Ok(GitAnswer::Text(text)) => text,
             _ => None,
         }
+    }
+}
+
+/// The repos of a workspace whose git runs elsewhere, for the git of the files open in its editor.
+#[derive(Clone)]
+pub struct RepoFiles {
+    access: Arc<dyn GitAccess>,
+    repos: Vec<RepoSource>,
+}
+
+impl RepoFiles {
+    pub fn new(access: Arc<dyn GitAccess>, repos: Vec<RepoSource>) -> RepoFiles {
+        RepoFiles { access, repos }
+    }
+
+    /// The git of the file at `full`, in the deepest repo holding it.
+    pub fn file(&self, full: &Path) -> Option<Arc<dyn FileGit>> {
+        let (repo, relative) = self
+            .repos
+            .iter()
+            .filter_map(|repo| Some((repo, full.strip_prefix(&repo.root).ok()?)))
+            .max_by_key(|(repo, _)| repo.root.components().count())?;
+        let path = relative
+            .components()
+            .map(|part| part.as_os_str().to_str())
+            .collect::<Option<Vec<_>>>()?
+            .join("/");
+        check_path(&path).ok()?;
+        Some(Arc::new(RepoFile {
+            access: self.access.clone(),
+            repo: repo.clone(),
+            path,
+        }))
+    }
+}
+
+struct RepoFile {
+    access: Arc<dyn GitAccess>,
+    repo: RepoSource,
+    path: String,
+}
+
+impl FileGit for RepoFile {
+    fn bases(&self) -> Option<DiffBases> {
+        match self.access.read(
+            &self.repo,
+            GitRead::Bases {
+                path: self.path.clone(),
+            },
+        ) {
+            Ok(GitAnswer::Bases(bases)) => bases,
+            _ => None,
+        }
+    }
+
+    fn blame(&self, contents: &str) -> Option<Vec<BlameEntry>> {
+        let query = GitRead::Blame {
+            path: self.path.clone(),
+            contents: contents.to_string(),
+        };
+        match self.access.read(&self.repo, query) {
+            Ok(GitAnswer::Blame(entries)) => entries,
+            _ => None,
+        }
+    }
+
+    fn write_index(&self, text: Option<&str>) -> Result<(), String> {
+        let op = GitOp::WriteIndex {
+            path: self.path.clone(),
+            text: text.map(str::to_string),
+        };
+        self.access
+            .act(&self.repo, op)
+            .map_err(|error| error.message)
     }
 }
 
