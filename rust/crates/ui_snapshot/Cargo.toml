@@ -16,7 +16,6 @@ path = "src/term_player.rs"
 
 [dependencies]
 components = { path = "../components" }
-serde.workspace = true
 serde_json.workspace = true
 pom_secrets = { path = "../pom_secrets" }
 environment_ui = { path = "../environment_ui" }
