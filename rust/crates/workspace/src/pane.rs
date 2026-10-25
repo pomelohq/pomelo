@@ -657,23 +657,19 @@ pub fn scroll_into_view(scroll: f32, (x, w): (f32, f32), view: f32) -> f32 {
 }
 
 fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
-    let color = if enabled {
-        theme().icon_muted
-    } else {
-        theme().icon_muted.alpha(0.35)
-    };
-    let mut face = div()
+    bar_slot(components::icon_button(id, kind).enabled(enabled).into())
+}
+
+// The tab bar sizes its end from BAR_BUTTON_W, so each square button sits in a slot that wide.
+fn bar_slot(button: Node) -> Node {
+    div()
         .row()
         .w_px(BAR_BUTTON_W)
         .h_px(24.0)
-        .rounded(4.0)
         .items_center()
         .justify_center()
-        .child(icon(kind).size(13.0).color(color));
-    if enabled {
-        face = face.on_click(id);
-    }
-    face.into()
+        .child(button)
+        .into()
 }
 
 fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node {
@@ -713,52 +709,23 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
 }
 
 fn toolbar_button(button: &TabBarButton) -> Node {
-    let colors = theme();
-    let color = if button.disabled {
-        colors.icon_muted.alpha(0.3)
-    } else if button.selected {
-        colors.icon_accent
-    } else {
-        colors.icon_muted
-    };
-    let mut face = div()
-        .row()
-        .w_px(22.0)
-        .h_px(22.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .child(icon(button.icon).size(14.0).color(color));
-    if !button.disabled {
-        face = face.on_click(button.id);
-    }
-    if button.selected {
-        face = face.bg(colors.element_selected);
-    }
-    face.into()
+    components::icon_button(button.id, button.icon)
+        .toggled(button.selected)
+        .enabled(!button.disabled)
+        .into()
 }
 
 fn tab_bar_button(button: &TabBarButton) -> Node {
-    let colors = theme();
-    let color = if button.disabled {
-        colors.icon_muted.alpha(0.3)
-    } else if button.selected {
-        colors.icon_accent
-    } else {
-        colors.icon_muted
-    };
-    let mut face = div()
-        .row()
-        .w_px(BAR_BUTTON_W)
-        .h_px(24.0)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .child(icon(button.icon).size(14.0).color(color));
-    if !button.disabled {
-        face = face.on_click(button.id);
-    }
-    face.into()
+    bar_slot(
+        components::icon_button(button.id, button.icon)
+            .enabled(!button.disabled)
+            .color(if button.selected {
+                theme().icon_accent
+            } else {
+                theme().icon_muted
+            })
+            .into(),
+    )
 }
 
 #[cfg(test)]

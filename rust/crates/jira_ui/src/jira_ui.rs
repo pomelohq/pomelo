@@ -172,7 +172,18 @@ impl TicketItem {
         let colors = theme();
         let button =
             |id: u64, kind: IconKind, text: &str| components::button(id, text).icon(Some(kind));
-        let mut top = div().row().gap(8.0).items_center().child(
+        let title: Node = match &self.detail {
+            Some(detail) => components::page_title(detail.summary.clone(), width).into(),
+            None => {
+                let text = if self.loading.is_some() {
+                    format!("Loading {} from Jira...", self.key)
+                } else {
+                    format!("{} could not be loaded", self.key)
+                };
+                label(text).size(13.0).color(colors.text_muted).into()
+            }
+        };
+        let mut header = components::page_header(title).lead(
             label(self.key.clone())
                 .size(13.0)
                 .mono()
@@ -183,38 +194,24 @@ impl TicketItem {
             .as_ref()
             .filter(|detail| !detail.status.is_empty())
         {
-            let color = self.status_color();
-            top = top.child(
-                div()
-                    .row()
-                    .h_px(20.0)
-                    .px(9.0)
-                    .items_center()
-                    .rounded(10.0)
-                    .bg(color.alpha(0.16))
-                    .child(
-                        label(detail.status.clone())
-                            .size(12.0)
-                            .medium()
-                            .color(color),
-                    ),
-            );
+            header =
+                header.lead(components::pill(detail.status.clone()).color(self.status_color()));
         }
-        top = top.child(div().row().flex(1.0));
         if self
             .detail
             .as_ref()
             .is_some_and(|detail| !detail.url.is_empty())
         {
             let copied = self.copied_at.is_some_and(|at| at.elapsed() < COPIED_FOR);
-            top = top.child(button(
-                COPY_LINK,
-                IconKind::Copy,
-                if copied { "Copied" } else { "Copy Link" },
-            ));
-            top = top.child(button(OPEN_IN_JIRA, IconKind::ArrowUpRight, "Open in Jira"));
+            header = header
+                .action(button(
+                    COPY_LINK,
+                    IconKind::Copy,
+                    if copied { "Copied" } else { "Copy Link" },
+                ))
+                .action(button(OPEN_IN_JIRA, IconKind::ArrowUpRight, "Open in Jira"));
         }
-        top = top.child(button(
+        header = header.action(button(
             RELOAD,
             IconKind::RotateCw,
             if self.loading.is_some() {
@@ -223,26 +220,7 @@ impl TicketItem {
                 "Reload"
             },
         ));
-        let mut column = div().col().gap(12.0).child(top);
-        match &self.detail {
-            Some(detail) => {
-                column = column.child(
-                    label(detail.summary.clone())
-                        .size(20.0)
-                        .weight(600)
-                        .color(colors.text)
-                        .wrap(width),
-                );
-            }
-            None => {
-                let text = if self.loading.is_some() {
-                    format!("Loading {} from Jira...", self.key)
-                } else {
-                    format!("{} could not be loaded", self.key)
-                };
-                column = column.child(label(text).size(13.0).color(colors.text_muted));
-            }
-        }
+        let mut column = div().col().gap(12.0).child(header);
         if let Some(error) = &self.error {
             column = column.child(Self::callout(error, width));
         }

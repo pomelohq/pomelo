@@ -54,26 +54,6 @@ pub struct UpdateInfo {
     pub menu: Option<UpdateMenuItem>,
 }
 
-fn progress_bar(progress: f32) -> Node {
-    let colors = theme();
-    let fill = progress.clamp(0.0, 1.0);
-    div()
-        .row()
-        .w_px(46.0)
-        .h_px(3.0)
-        .rounded(2.0)
-        .bg(colors.element_active)
-        .child(
-            div()
-                .flex(fill.max(0.0001))
-                .h_px(3.0)
-                .rounded(2.0)
-                .bg(colors.text_accent),
-        )
-        .child(div().flex((1.0 - fill).max(0.0001)))
-        .into()
-}
-
 /// The title bar button; `hovered` is the hit id under the pointer.
 pub fn button(update: &UpdateButton, hovered: Option<u64>) -> Node {
     let colors = theme();
@@ -95,27 +75,17 @@ pub fn button(update: &UpdateButton, hovered: Option<u64>) -> Node {
         .child(icon(update.icon).size(13.0).color(icon_color))
         .child(label(update.label.clone()).size(12.0).color(text));
     if let Some(progress) = update.progress {
-        chip = chip.child(progress_bar(progress));
+        chip = chip.child(
+            div()
+                .row()
+                .w_px(46.0)
+                .child(components::progress_bar(progress).thin()),
+        );
     }
     if update.dismissable {
-        let mut dismiss =
-            div()
-                .w_px(16.0)
-                .h_px(16.0)
-                .rounded(3.0)
-                .items_center()
-                .justify_center()
-                .on_click(UPDATE_DISMISS)
-                .child(icon(IconKind::Close).size(10.0).color(
-                    if hovered == Some(UPDATE_DISMISS) {
-                        colors.text
-                    } else {
-                        colors.text_placeholder
-                    },
-                ));
-        if hovered == Some(UPDATE_DISMISS) {
-            dismiss = dismiss.bg(colors.element_selected);
-        }
+        let dismiss = components::icon_button(UPDATE_DISMISS, IconKind::Close)
+            .size(components::ButtonSize::XSmall)
+            .hovered(hovered);
         chip = chip.child(dismiss);
     }
     match update.tone {

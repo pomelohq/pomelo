@@ -1213,24 +1213,9 @@ impl TableItem {
         focused: bool,
     ) -> Node {
         let colors = theme();
-        div()
-            .row()
+        components::input_box(id, focused && self.focused, false)
             .flex(1.0)
             .h_px(QUERY_FIELD_H)
-            .px(10.0)
-            .gap(10.0)
-            .items_center()
-            .rounded(6.0)
-            .bg(colors.background)
-            .border(
-                1.0,
-                if focused && self.focused {
-                    colors.border_focused
-                } else {
-                    colors.border_variant
-                },
-            )
-            .on_click(id)
             .child(section_header(prefix))
             .child(field.render(
                 placeholder,

@@ -2,7 +2,7 @@
 //! next or previous change. It sits at the change's top-right and sticks to the top while the change scrolls past.
 
 use git::DiffHunk;
-use ui::{div, icon, label, theme, IconKind, Node, Rect};
+use ui::{div, theme, IconKind, Node, Rect};
 
 use crate::{edit_line_h, FileItem, HUNK_CONTROL_BASE};
 
@@ -15,10 +15,10 @@ pub(crate) const CONTROL_COUNT: u64 = 5;
 
 /// Keeps the strip clear of the editor's right edge and its scrollbar.
 const RIGHT_MARGIN: f32 = 18.0;
-const BUTTON_PAD_X: f32 = 8.0;
+const BUTTON_PAD_X: f32 = 4.0;
 const BUTTON_GAP: f32 = 4.0;
-const ARROW_W: f32 = 22.0;
-const TEXT_SIZE: f32 = 12.0;
+const ARROW_W: f32 = 18.0;
+const TEXT_SIZE: f32 = 11.0;
 
 impl FileItem {
     /// The expanded change holding the newest caret, when its staging can change.
@@ -111,51 +111,23 @@ impl FileItem {
     }
 
     fn hunk_button(&self, control: u64, text: &str, primary: bool, enabled: bool) -> Node {
-        let colors = theme();
-        let id = HUNK_CONTROL_BASE + control;
-        let hot = enabled && self.hunk_control_hover == Some(id);
-        let (fill, ink) = match (enabled, primary) {
-            (false, _) => (colors.element_background, colors.text_disabled),
-            (true, true) if hot => (colors.accent_fill.alpha(0.88), colors.on_accent),
-            (true, true) => (colors.accent_fill, colors.on_accent),
-            (true, false) if hot => (colors.element_hover, colors.text),
-            (true, false) => (colors.element_background, colors.text),
-        };
-        let mut button = div()
-            .row()
-            .h_px((edit_line_h() / ui::ui_text_scale() - 6.0).max(18.0))
-            .px(BUTTON_PAD_X)
-            .items_center()
-            .rounded(4.0)
-            .bg(fill)
-            .child(
-                label(text.to_string())
-                    .size(TEXT_SIZE)
-                    .weight(500)
-                    .color(ink),
-            );
-        if enabled {
-            button = button.on_click(id);
-        }
-        button.into()
+        components::button(HUNK_CONTROL_BASE + control, text)
+            .size(components::ButtonSize::XSmall)
+            .kind(if primary {
+                components::ButtonKind::Primary
+            } else {
+                components::ButtonKind::Secondary
+            })
+            .enabled(enabled)
+            .hovered(self.hunk_control_hover)
+            .into()
     }
 
     fn hunk_arrow(&self, control: u64, kind: IconKind) -> Node {
-        let colors = theme();
-        let id = HUNK_CONTROL_BASE + control;
-        let mut arrow = div()
-            .row()
-            .w_px(ARROW_W)
-            .h_px((edit_line_h() / ui::ui_text_scale() - 6.0).max(18.0))
-            .items_center()
-            .justify_center()
-            .rounded(4.0)
-            .on_click(id)
-            .child(icon(kind).size(12.0).color(colors.icon_muted));
-        if self.hunk_control_hover == Some(id) {
-            arrow = arrow.bg(colors.ghost_element_hover);
-        }
-        arrow.into()
+        components::icon_button(HUNK_CONTROL_BASE + control, kind)
+            .size(components::ButtonSize::XSmall)
+            .hovered(self.hunk_control_hover)
+            .into()
     }
 
     /// A click on the strip; returns whether `id` was one of its controls.

@@ -125,15 +125,12 @@ pub fn chip(info: &UsageInfo, hot: bool) -> Node {
 }
 
 fn card(width: f32) -> ui::Div {
-    let colors = theme();
-    div()
-        .col()
+    components::card()
+        .padding(6.0)
+        .raised()
+        .render()
         .w_px(width)
-        .p(6.0)
         .gap(2.0)
-        .rounded(9.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
 }
 
 fn plan_chip(plan: &str) -> Node {
@@ -149,28 +146,16 @@ fn plan_chip(plan: &str) -> Node {
         .into()
 }
 
-fn menu_row(id: u64, text: &str, keys: Option<&str>, hovered: Option<u64>) -> Node {
-    let colors = theme();
-    let mut row = div()
-        .row()
-        .items_center()
-        .h_px(28.0)
-        .px(8.0)
-        .rounded(5.0)
-        .on_click(id)
-        .child(label(text.to_string()).size(13.0).color(colors.text))
-        .child(div().flex(1.0));
-    if let Some(keys) = keys {
-        row = row.child(ui::render_keystroke(keys, 12.0));
-    }
-    if hovered == Some(id) {
-        row = row.bg(colors.ghost_element_hover);
-    }
-    row.into()
+fn menu_row(id: u64, text: &'static str, keys: Option<&'static str>, hovered: Option<u64>) -> Node {
+    let item = components::MenuItem {
+        hint: keys.map(Into::into),
+        ..components::MenuItem::new(id, text)
+    };
+    components::menu_row(&item, hovered)
 }
 
 fn separator() -> Node {
-    div().h_px(1.0).bg(theme().border_variant).into()
+    components::divider().into()
 }
 
 /// The card under the chip: the account, each window with its reset, and what to do next.

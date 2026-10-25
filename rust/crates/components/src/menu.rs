@@ -52,6 +52,7 @@ pub struct Menu<'a> {
     search: Option<&'a str>,
     search_at_bottom: bool,
     min_width: f32,
+    plain_hints: bool,
 }
 
 pub fn menu(items: &[MenuItem]) -> Menu<'_> {
@@ -62,6 +63,7 @@ pub fn menu(items: &[MenuItem]) -> Menu<'_> {
         search: None,
         search_at_bottom: false,
         min_width: MENU_MIN_WIDTH,
+        plain_hints: false,
     }
 }
 
@@ -95,6 +97,12 @@ impl<'a> Menu<'a> {
     }
 
     /// The card and its width and height in points.
+    /// Hints are muted text (a count, a date) rather than keys.
+    pub fn plain_hints(mut self) -> Self {
+        self.plain_hints = true;
+        self
+    }
+
     pub fn render(self) -> (Node, f32, f32) {
         let colors = theme();
         let weight = ui::ui_font_weight();
@@ -109,6 +117,9 @@ impl<'a> Menu<'a> {
             let right = match (&item.hint, (self.opens_submenu)(item.id)) {
                 (Some(hint), true) => {
                     14.0 + ui::measure_text_width(hint, 12.0, false, weight) + 12.0
+                }
+                (Some(hint), false) if self.plain_hints => {
+                    ui::measure_text_width(hint, 12.0, false, weight) + 24.0
                 }
                 (None, true) => 14.0,
                 (Some(key), false) if !key.is_empty() => {
@@ -253,6 +264,11 @@ impl<'a> Menu<'a> {
             )
         } else {
             match item.hint.as_deref() {
+                Some(hint) if self.plain_hints => row.child(div().flex(1.0)).child(
+                    ui::label(hint.to_string())
+                        .size(12.0)
+                        .color(colors.text_placeholder),
+                ),
                 Some(key) if !key.is_empty() => row
                     .child(div().flex(1.0))
                     .child(ui::render_keystroke(key, 12.0)),
@@ -260,6 +276,13 @@ impl<'a> Menu<'a> {
             }
         }
     }
+}
+
+/// One menu row on its own, for a card that mixes other content with a few commands (a popover).
+pub fn menu_row(item: &MenuItem, hovered: Option<u64>) -> Node {
+    let items = std::slice::from_ref(item);
+    let marks = item.checked || item.icon.is_some();
+    menu(items).hovered(hovered).row(item, marks).into()
 }
 
 impl From<Menu<'_>> for Node {

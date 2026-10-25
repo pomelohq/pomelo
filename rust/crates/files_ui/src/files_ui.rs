@@ -1338,18 +1338,16 @@ impl FileItem {
             message = format!("{}{}", first.to_uppercase(), &message[1..]);
         }
         let node = div()
-            .col()
-            .gap(12.0)
+            .row()
+            .w_px((content.w - 2.0 * MESSAGE_PAD).max(0.0))
             .child(
-                label(format!("{message}."))
-                    .size(13.0)
-                    .color(theme().text_muted),
-            )
-            .child(
-                div().row().child(
-                    components::button(OPEN_IN_TERMINAL, "Open in terminal")
-                        .size(components::ButtonSize::Medium),
-                ),
+                components::banner(components::BannerTone::Warning, format!("{message}."))
+                    .action(
+                        components::button(OPEN_IN_TERMINAL, "Open in terminal")
+                            .icon(Some(IconKind::Terminal)),
+                    )
+                    .render()
+                    .flex(1.0),
             )
             .into();
         (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)

@@ -322,12 +322,9 @@ fn problem_card(
                 .truncate(),
         ));
     }
-    let mut column = div()
-        .col()
+    let mut column = components::card()
+        .render()
         .gap(10.0)
-        .p(14.0)
-        .rounded(10.0)
-        .bg(colors.element_background)
         .child(
             div()
                 .row()
@@ -377,7 +374,8 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
             buttons.push(
                 components::button(FIX_AGENT, format!("Fix with {}", run.agent.title()))
                     .size(components::ButtonSize::Medium)
-                    .kind(ButtonKind::Primary)
+                    .kind(ButtonKind::Agent)
+                    .icon(Some(IconKind::Sparkle))
                     .into(),
             );
         }

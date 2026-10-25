@@ -555,17 +555,6 @@ impl ServiceItem {
         action_button(self.base + offset, Some(kind), text, tone, false)
     }
 
-    fn link(id: u64, text: &str) -> Node {
-        view::ghost(id)
-            .px(3.0)
-            .child(
-                label(text.to_string())
-                    .size(12.5)
-                    .color(theme().text_accent),
-            )
-            .into()
-    }
-
     /// One fact of the card: an uppercase title over its value, with the columns it spans.
     fn fact(title: &str, value: Node) -> (FactSpan, Node) {
         let span = match title {
@@ -635,7 +624,6 @@ impl ServiceItem {
         let busy = matches!(state, State::Busy(_));
         let mut title = div()
             .row()
-            .flex(1.0)
             .gap(8.0)
             .items_center()
             .child(view::status_icon(state));
@@ -703,28 +691,18 @@ impl ServiceItem {
                 ));
             }
         }
-        let mut row = div()
-            .row()
-            .h_px(44.0)
-            .px(14.0)
-            .gap(6.0)
-            .items_center()
-            .child(title);
+        let mut header = components::page_header(title).compact();
         for button in buttons {
-            row = row.child(button);
+            header = header.action(button);
         }
-        row.child(
-            view::ghost(self.base + MORE)
-                .w_px(24.0)
-                .h_px(24.0)
-                .rounded(4.0)
-                .child(
-                    icon(IconKind::Ellipsis)
-                        .size(14.0)
-                        .color(theme().icon_muted),
-                ),
-        )
-        .into()
+        div()
+            .col()
+            .px(14.0)
+            .child(header.action(components::icon_button(
+                self.base + MORE,
+                IconKind::Ellipsis,
+            )))
+            .into()
     }
 
     fn trouble(
@@ -877,8 +855,9 @@ impl ServiceItem {
                                 .color(colors.text),
                         )
                         .children(
-                            self.offers(ServiceControl::Relocate)
-                                .then(|| Self::link(self.base + NEW_PORT, "Change")),
+                            self.offers(ServiceControl::Relocate).then(|| {
+                                components::link(self.base + NEW_PORT, None, "Change", true)
+                            }),
                         )
                         .into(),
                 ));
@@ -919,7 +898,7 @@ impl ServiceItem {
                             .gap(8.0)
                             .items_center()
                             .child(label(shown).size(12.0).color(colors.text).truncate())
-                            .child(Self::link(self.base + OPEN_ENV, "Open"))
+                            .child(components::link(self.base + OPEN_ENV, None, "Open", true))
                             .into(),
                     ));
                 }
@@ -957,14 +936,6 @@ impl ServiceItem {
     }
 }
 
-/// White over a dark theme, the ink color over a light one, at the given strengths.
-fn translucent(dark: f32, light: f32) -> ui::Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => ui::Rgba::new(1.0, 1.0, 1.0, dark),
-        ui::Appearance::Light => ui::Rgba::new(0.114, 0.09, 0.188, light),
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FactSpan {
     One,
@@ -976,7 +947,6 @@ enum FactSpan {
 /// at the end.
 fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
     const COL_GAP: f32 = 20.0;
-    let colors = theme();
     let inner = (width - 2.0 * 16.0 - 2.0 * 16.0).max(120.0);
     let column = (inner - 2.0 * COL_GAP) / 3.0;
     let (mut command, mut cells): (Vec<_>, Vec<_>) = facts
@@ -1010,14 +980,10 @@ fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
         .pt(4.0)
         .pb(14.0)
         .child(
-            div()
-                .col()
+            components::card()
+                .render()
                 .debug("fact-card")
                 .px(16.0)
-                .py(14.0)
-                .rounded(10.0)
-                .bg(colors.element_background)
-                .border(1.0, translucent(0.06, 0.08))
                 .child(grid),
         )
         .into()

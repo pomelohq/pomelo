@@ -394,13 +394,11 @@ impl PrItem {
             );
         }
         Some(
-            div()
-                .col()
+            components::card()
+                .padding(12.0)
+                .render()
                 .w_px(width)
-                .p(12.0)
                 .gap(8.0)
-                .rounded(10.0)
-                .bg(colors.panel_background)
                 .child(
                     div()
                         .col()

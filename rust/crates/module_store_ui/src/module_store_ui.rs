@@ -281,15 +281,12 @@ const OPTIMIZE_POPOVER_W: f32 = 404.0;
 
 /// The floating card a confirmation sits in, styled like the app's other popovers.
 fn popover_frame(width: f32) -> ui::Div {
-    let colors = theme();
-    div()
-        .col()
+    components::card()
+        .padding(12.0)
+        .raised()
+        .render()
         .w_px(width)
         .gap(8.0)
-        .p(12.0)
-        .rounded(10.0)
-        .border(1.0, colors.border)
-        .bg(colors.element_background)
 }
 
 fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>) -> Node {
@@ -452,16 +449,6 @@ fn more_key(state: &StoreState, index: usize) -> Option<String> {
 
 fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).label_size(LabelSize::Small).color(color)
-}
-
-fn section_label(text: &str) -> Node {
-    text_line(
-        14.0,
-        label(text.to_uppercase())
-            .size(11.0)
-            .weight(600)
-            .color(theme().text_placeholder),
-    )
 }
 
 /// 0..1, repeating every `period` seconds.
@@ -906,20 +893,15 @@ fn version_rows(
 
 fn group(head: Node, rows: Vec<Node>) -> Node {
     let colors = theme();
-    let mut column = div()
-        .col()
-        .rounded(10.0)
-        .border(1.0, colors.border_variant)
-        .bg(colors.panel_background)
-        .child(
-            div()
-                .row()
-                .items_center()
-                .gap(8.0)
-                .px(ROW_PAD_X)
-                .h_px(36.0)
-                .child(head),
-        );
+    let mut column = components::card().padding(0.0).render().child(
+        div()
+            .row()
+            .items_center()
+            .gap(8.0)
+            .px(ROW_PAD_X)
+            .h_px(36.0)
+            .child(head),
+    );
     for row in rows {
         column = column
             .child(div().h_px(1.0).bg(colors.border_variant))
@@ -1025,19 +1007,16 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
         ),
         Some(_) => format!("{} saved - {}", format_size(total), state.method),
     };
-    let mut head = div()
-        .row()
-        .items_center()
-        .gap(10.0)
-        .child(
-            label("node_modules Store")
-                .size(15.0)
-                .weight(600)
-                .color(colors.text),
-        )
-        .child(small(summary, colors.text_muted));
+    let mut head = components::page_header(
+        label("node_modules Store")
+            .size(15.0)
+            .weight(600)
+            .color(colors.text),
+    )
+    .compact()
+    .lead(small(summary, colors.text_muted));
     if let Some(request) = &state.busy {
-        head = head.child(
+        head = head.lead(
             div()
                 .row()
                 .items_center()
@@ -1064,11 +1043,11 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             if !failed {
                 color.a *= fade;
             }
-            head = head.child(small(text.clone(), color));
+            head = head.lead(small(text.clone(), color));
         }
     }
     let idle = state.busy.is_none() && state.overview.is_some();
-    head = head.child(div().flex(1.0)).child(
+    head = head.action(
         components::button(REFRESH, "Refresh")
             .kind(ButtonKind::Ghost)
             .icon(Some(IconKind::RotateCw))
@@ -1076,7 +1055,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .hovered(hovered),
     );
     if unused > 0 && state.measuring == 0 {
-        head = head.child(
+        head = head.action(
             components::button(FREE_UNUSED, format!("Free {} unused", format_size(unused)))
                 .kind(ButtonKind::Ghost)
                 .enabled(idle)
@@ -1089,7 +1068,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             .as_ref()
             .is_some_and(|overview| !plan(overview).is_empty());
     if can_optimize {
-        head = head.child(
+        head = head.action(
             components::button(OPTIMIZE, "Optimize")
                 .kind(ButtonKind::Primary)
                 .enabled(idle)
@@ -1122,16 +1101,21 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
                 div()
                     .row()
                     .w_px(LABEL_W)
-                    .child(section_label("Lockfile version")),
+                    .child(components::section_header("Lockfile version")),
             )
             .child(
                 div()
                     .row()
                     .w_px(SIZE_W)
                     .justify_end()
-                    .child(section_label("Size")),
+                    .child(components::section_header("Size")),
             )
-            .child(div().row().flex(1.0).child(section_label("Used by"))),
+            .child(
+                div()
+                    .row()
+                    .flex(1.0)
+                    .child(components::section_header("Used by")),
+            ),
     );
     let mut ids = Ids::default();
     let measured = state.measuring == 0;

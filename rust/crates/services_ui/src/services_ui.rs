@@ -39,7 +39,6 @@ const ROW_H: f32 = 26.0;
 const INDENT: f32 = 16.0;
 const HEADER_H: f32 = 34.0;
 const FILTER_H: f32 = 64.0;
-const BUTTON: f32 = 20.0;
 /// Hit ids per row: the row itself plus its controls.
 const ROW_STRIDE: u64 = 16;
 /// Controls above the tree: the filter, the status filter, and the summary card's buttons.
@@ -700,24 +699,9 @@ impl ServicesPanel {
     }
 
     fn button(&self, id: u64, kind: IconKind) -> Node {
-        let hot = self.hot(id);
-        div()
-            .w_px(BUTTON)
-            .h_px(BUTTON)
-            .rounded(4.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .bg(if hot {
-                theme().element_hover
-            } else {
-                Rgba::TRANSPARENT
-            })
-            .child(icon(kind).size(12.0).color(if hot {
-                theme().icon
-            } else {
-                theme().icon_muted
-            }))
+        components::icon_button(id, kind)
+            .size(components::ButtonSize::XSmall)
+            .hovered(self.hover)
             .into()
     }
 
@@ -1175,14 +1159,11 @@ impl ServicesPanel {
                 self.hot(self.base + RESTART_FAILED),
             ));
         }
-        div()
-            .col()
+        components::card()
+            .padding(10.0)
+            .render()
             .w_px(width - 16.0)
-            .p(10.0)
             .gap(8.0)
-            .rounded(7.0)
-            .border(1.0, colors.border_variant)
-            .bg(Rgba::new(0.0, 0.0, 0.0, 0.08))
             .child(title)
             .child(bar)
             .child(view::pack(legend, inner, 10.0))
@@ -1289,14 +1270,13 @@ impl ServicesPanel {
             ));
         }
         let hovered = self.hover == Some(self.card_id(index, CardAction::Open));
-        div()
-            .col()
+        components::card()
+            .padding(9.0)
+            .tint(tint)
+            .hovered(hovered)
+            .render()
             .w_px(width - 16.0)
-            .p(9.0)
             .gap(6.0)
-            .rounded(7.0)
-            .border(1.0, tint.alpha(0.3))
-            .bg(tint.alpha(if hovered { 0.1 } else { 0.06 }))
             .on_click(self.card_id(index, CardAction::Open))
             .child(body)
             .child(view::pack(buttons, inner, 6.0))

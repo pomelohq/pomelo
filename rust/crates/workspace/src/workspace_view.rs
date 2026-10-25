@@ -8461,12 +8461,7 @@ const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
 /// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
 fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
     let colors = ui::theme();
-    let mut list = ui::div()
-        .col()
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border_variant);
+    let mut list = components::card().padding(4.0).raised().render();
     for (row, entry) in switcher.entries.iter().enumerate() {
         let id = crate::TAB_SWITCHER_BASE + row as u64;
         let glyph: ui::Node = match entry.icon {
@@ -9075,17 +9070,17 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         controls = controls.child(control(crate::NOTIFICATION_COPY, IconKind::Copy));
     }
     controls = controls.child(control(crate::NOTIFICATION_CLOSE, IconKind::Close));
-    let mut card = ui::div()
+    let mut card = components::card()
+        .padding(0.0)
+        .raised()
+        .render()
         .row()
         .w_px(card_w)
         .pt(NOTIFICATION_PAD)
         .pb(NOTIFICATION_PAD)
         .pl(NOTIFICATION_PAD)
         .pr(8.0)
-        .gap(10.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border);
+        .gap(10.0);
     if let Some((kind, color)) = icon {
         card = card.child(
             ui::div()

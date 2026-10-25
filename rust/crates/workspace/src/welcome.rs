@@ -71,18 +71,11 @@ fn logo() -> Option<u64> {
 /// A way to start: its icon, name and what it does, lit while the pointer is over it.
 fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot: bool) -> Node {
     let colors = theme();
-    let fill = if hot {
-        colors.element_hover
-    } else {
-        colors.element_background
-    };
-    div()
-        .col()
+    components::card()
+        .hovered(hot)
+        .render()
         .w_px(width)
-        .p(14.0)
         .gap(6.0)
-        .rounded(10.0)
-        .bg(fill)
         .on_click(id)
         .child(
             div()

@@ -97,15 +97,9 @@ pub fn panel_list(items: Vec<Node>, inset: f32) -> Node {
     column.into()
 }
 
-/// A card on the panel layer; `chosen` rings it in the accent.
+/// A card that rings in the accent when `chosen`; the caller sets its padding.
 pub fn card_frame(chosen: bool) -> ui::Div {
-    let colors = theme();
-    let frame = div().rounded(10.0).bg(colors.panel_background);
-    if chosen {
-        frame.border(1.0, colors.text_accent)
-    } else {
-        frame
-    }
+    components::card().padding(0.0).chosen(chosen).render()
 }
 
 pub fn chip(text: &str, on: bool) -> Node {
@@ -117,22 +111,6 @@ pub fn chip(text: &str, on: bool) -> Node {
             colors.text_placeholder
         })
         .into()
-}
-
-/// A round status badge: a dot in the tone's color, then the word.
-/// A 14px radio mark: a hairline ring, or a thick accent ring when chosen.
-pub fn radio(on: bool) -> Node {
-    let colors = theme();
-    let mark = div().row().w_px(14.0).h_px(14.0).rounded(7.0);
-    if on {
-        mark.items_center()
-            .justify_center()
-            .bg(colors.accent_fill)
-            .child(components::dot(colors.panel_background, 6.0))
-            .into()
-    } else {
-        mark.border(1.0, colors.border).into()
-    }
 }
 
 pub fn muted(text: &str) -> ui::Label {

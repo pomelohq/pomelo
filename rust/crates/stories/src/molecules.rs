@@ -472,5 +472,127 @@ pub fn stories() -> Vec<StoryDef> {
             EDGE_BOARD,
             || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT), true)),
         ),
+        story("card-plain", "Card", "Plain", (320.0, 120.0), || {
+            still(|_, _| card_board(components::card()))
+        }),
+        story("card-hovered", "Card", "Hovered", (320.0, 120.0), || {
+            still(|_, _| card_board(components::card().hovered(true)))
+        }),
+        story("card-chosen", "Card", "Chosen", (320.0, 120.0), || {
+            still(|_, _| card_board(components::card().chosen(true)))
+        }),
+        story(
+            "card-tint",
+            "Card",
+            "About a problem",
+            (320.0, 120.0),
+            || still(|_, _| card_board(components::card().tint(theme().error))),
+        ),
+        story(
+            "card-raised",
+            "Card",
+            "Raised, over the screen",
+            (320.0, 120.0),
+            || still(|_, _| card_board(components::card().raised())),
+        ),
+        story(
+            "page-header-full",
+            "Page header",
+            "A ticket",
+            (560.0, 150.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    div()
+                        .col()
+                        .w_px(560.0)
+                        .p(INSET)
+                        .child(
+                            components::page_header(components::page_title(
+                                "Let people sign in with a magic link",
+                                528.0,
+                            ))
+                            .lead(label("PROJ-101").size(13.0).mono().color(colors.text_muted))
+                            .lead(components::pill("In progress").color(colors.text_accent))
+                            .action(components::button(ID, "Copy Link").icon(Some(IconKind::Copy)))
+                            .action(
+                                components::button(ID + 1, "Reload").icon(Some(IconKind::RotateCw)),
+                            )
+                            .meta(label("Assigned to you").size(12.0).color(colors.text_muted)),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "page-header-compact",
+            "Page header",
+            "Compact, one line",
+            (560.0, 76.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    div()
+                        .col()
+                        .w_px(560.0)
+                        .px(INSET)
+                        .child(
+                            components::page_header(
+                                div()
+                                    .row()
+                                    .gap(8.0)
+                                    .items_center()
+                                    .child(components::dot(colors.success, 7.0))
+                                    .child(label("api").size(14.0).color(colors.text_muted))
+                                    .child(label(">").size(14.0).color(colors.text_placeholder))
+                                    .child(label("web").size(14.0).medium().color(colors.text)),
+                            )
+                            .compact()
+                            .action(components::button(ID, "Stop").icon(Some(IconKind::Stop)))
+                            .action(components::icon_button(ID + 1, IconKind::Ellipsis)),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "dock-header",
+            "Dock header",
+            "A docked panel",
+            (280.0, 68.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .w_px(280.0)
+                        .child(components::dock_header(
+                            "Files",
+                            Some((IconKind::Search, ID)),
+                        ))
+                        .into()
+                })
+            },
+        ),
     ]
+}
+
+/// A card at a typical size with a title and a line, so its fill and edge read against the page.
+fn card_board(card: components::Card) -> Node {
+    let colors = theme();
+    div()
+        .col()
+        .w_px(320.0)
+        .w_px(320.0)
+        .p(INSET)
+        .child(
+            card.render()
+                .gap(4.0)
+                .child(label("web crashed").medium().color(colors.text))
+                .child(
+                    label("Stopped with exit code 1.")
+                        .size(12.0)
+                        .color(colors.text_muted),
+                ),
+        )
+        .into()
 }

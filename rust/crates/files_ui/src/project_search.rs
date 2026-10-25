@@ -17,7 +17,6 @@ pub const ITEM_ID: &str = "project-search";
 const INPUT_H: f32 = 28.0;
 const BUTTON: f32 = 26.0;
 /// The case, word and regex toggles inside the query box.
-const OPTION: f32 = 14.0;
 const PAD_X: f32 = 12.0;
 const PAD_Y: f32 = 8.0;
 const LINE_GAP: f32 = 6.0;
@@ -567,25 +566,11 @@ impl ProjectSearch {
     }
 
     fn option_button(&self, id: u64, kind: IconKind, toggled: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .w_px(OPTION)
-            .h_px(OPTION)
-            .rounded(2.0)
-            .items_center()
-            .justify_center()
-            .on_click(id)
-            .child(icon(kind).size(14.0).color(if toggled {
-                colors.text_accent
-            } else {
-                colors.text_placeholder
-            }));
-        if toggled {
-            button = button.bg(colors.element_selected);
-        } else if self.hovered == Some(id) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        button.into()
+        components::icon_button(id, kind)
+            .size(components::ButtonSize::XSmall)
+            .toggled(toggled)
+            .hovered(self.hovered)
+            .into()
     }
 
     fn input(&self, id: u64, which: Field, field: &TextField, placeholder: &str) -> ui::Div {

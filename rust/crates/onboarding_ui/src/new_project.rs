@@ -330,7 +330,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
             .gap(12.0)
             .p(14.0)
             .on_click(id)
-            .child(div().col().pt(3.0).child(view::radio(on)))
+            .child(div().col().pt(3.0).child(components::radio(on)))
             .child(body)
             .into()
     };

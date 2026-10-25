@@ -15,7 +15,6 @@ use crate::panel::{
 use crate::tree::{format_count, prefix_name, Row, Section, Status, OTHER_SERVICES};
 
 pub(crate) const INDENT: f32 = 16.0;
-const BUTTON: f32 = 24.0;
 
 /// The engine's logo and a brand color that reads on a dark panel.
 pub fn engine_logo(engine: Engine) -> (IconKind, Rgba) {
@@ -507,27 +506,11 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
 }
 
 fn header_button(panel: &DatabasePanel, offset: u64, kind: IconKind, tip: &str) -> Node {
-    let colors = theme();
     let id = DatabasePanel::base() + offset;
-    let hot = panel.hover == Some(id);
-    let button = div()
-        .w_px(BUTTON)
-        .h_px(BUTTON)
-        .rounded(4.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .bg(if hot {
-            colors.ghost_element_hover
-        } else {
-            Rgba::TRANSPARENT
-        })
-        .child(
-            icon(kind)
-                .size(14.0)
-                .color(if hot { colors.icon } else { colors.icon_muted }),
-        );
-    if hot {
+    let button = components::icon_button(id, kind)
+        .hovered(panel.hover)
+        .render();
+    if panel.hover == Some(id) {
         components::with_tooltip(button, tip, false).into()
     } else {
         button.into()

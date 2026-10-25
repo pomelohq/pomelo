@@ -1188,12 +1188,10 @@ impl GitPanel {
         } else {
             ("pushed", colors.text_placeholder)
         };
-        let card = div()
-            .col()
-            .p(8.0)
+        let card = components::card()
+            .padding(8.0)
+            .render()
             .gap(4.0)
-            .rounded(10.0)
-            .bg(colors.editor_background)
             .child(
                 div().row().child(
                     label(opened.commit.subject.clone())
@@ -1325,23 +1323,14 @@ impl GitPanel {
         }
         let text = drifted.join(", ");
         let chip_id = self.fixed(DRIFT_CHIP);
-        let natural = 7.0 + 11.0 + 4.0 + text_width(&text, 13.0, false) + 7.0;
-        let mut chip = div()
-            .row()
-            .w_px(natural.min(width))
-            .h_px(20.0)
-            .px(7.0)
-            .gap(4.0)
-            .rounded(10.0)
-            .items_center()
+        let natural = 7.0 + 11.0 + 5.0 + text_width(&text, 11.0, false) + 7.0;
+        let mut chip = components::pill(text)
+            .color(colors.warning)
+            .icon(IconKind::Warning)
             .on_click(chip_id)
-            .bg(colors
-                .warning
-                .alpha(if self.hot(chip_id) { 0.22 } else { 0.14 }))
-            .child(icon(IconKind::Warning).size(11.0).color(colors.warning))
-            .child(grow(
-                label(text).size(13.0).color(colors.warning).truncate(),
-            ));
+            .hovered(self.hot(chip_id))
+            .render()
+            .w_px(natural.min(width));
         if self.hot(chip_id) {
             chip = components::with_tooltip(chip, "Some repos are on another branch", true);
         }

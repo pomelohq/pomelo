@@ -4384,10 +4384,12 @@ fn render_page_under(
                         value,
                     } => {
                         let buf = editing.and_then(|(id, b)| (id == *edit).then_some(b));
-                        stepper(value, *dec, *inc, *edit, buf)
+                        components::stepper(value.as_str(), *dec, *inc, *edit)
+                            .editing(buf)
+                            .into()
                     }
                     Control::EditInJson { id } => edit_in_json_button(*id),
-                    Control::Toggle { id, on } => toggle_switch(*on, *id),
+                    Control::Toggle { id, on } => components::switch(*id, *on),
                     Control::TextInput {
                         id,
                         value,
@@ -4663,68 +4665,6 @@ fn dropdown(value: &str, id: u64) -> Node {
         .into()
 }
 
-fn toggle_switch(on: bool, id: u64) -> Node {
-    let knob_color = if on { theme().on_accent } else { dim_c() };
-    let knob = div().w_px(14.0).h_px(14.0).rounded(7.0).bg(knob_color);
-    let mut row = div()
-        .row()
-        .w_px(34.0)
-        .h_px(20.0)
-        .px(3.0)
-        .items_center()
-        .rounded(10.0)
-        .on_click(id);
-    if on {
-        row = row
-            .bg(theme().accent_fill)
-            .child(div().flex(1.0))
-            .child(knob);
-    } else {
-        row = row
-            .bg(theme().element_active)
-            .border(1.0, border_c())
-            .child(knob)
-            .child(div().flex(1.0));
-    }
-    row.into()
-}
-
-fn stepper(value: &str, dec: u64, inc: u64, edit_id: u64, edit: Option<&str>) -> Node {
-    let editing = edit.is_some();
-    let shown = edit.unwrap_or(value);
-    let mut value_box = div()
-        .row()
-        .h_px(28.0)
-        .w_px(42.0)
-        .gap(1.0)
-        .items_center()
-        .justify_center()
-        .on_click(edit_id)
-        .child(label(shown).size(13.0).mono().color(title_c()));
-    if editing {
-        // Reserve the caret slot while editing so the number doesn't shift as the caret blinks.
-        value_box = value_box.child(caret(ui::caret_phase()));
-    }
-    div()
-        .row()
-        .h_px(28.0)
-        .items_center()
-        .rounded(ROUND)
-        .bg(chip_c())
-        .border(
-            1.0,
-            if editing {
-                theme().border_focused
-            } else {
-                border_c()
-            },
-        )
-        .child(step_seg(ui::IconKind::Dash, dec))
-        .child(value_box)
-        .child(step_seg(ui::IconKind::Plus, inc))
-        .into()
-}
-
 /// The reference's settings input field: a 32px box at least 256px wide on the editor background, its border
 /// focused while editing. Clicking it starts editing; Enter saves and Escape cancels.
 fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Option<&str>) -> Node {
@@ -4749,44 +4689,18 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
     if editing {
         row = row.child(caret(ui::caret_phase()));
     }
-    div()
-        .row()
+    components::input_box(id, editing, false)
         .w_px(220.0)
         .h_px(28.0)
-        .px(10.0)
-        .items_center()
-        .rounded(ROUND)
-        .bg(chip_c())
-        .border(
-            1.0,
-            if editing {
-                theme().border_focused
-            } else {
-                border_c()
-            },
-        )
-        .on_click(id)
         .child(row)
         .into()
 }
 
 /// A stored secret: a check, what is set, and the button that clears it (the reference's configured-key card).
 fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -> Node {
-    let mut clear = div()
-        .row()
-        .h_px(22.0)
-        .px(6.0)
-        .items_center()
-        .rounded(4.0)
-        .border(1.0, theme().border_variant)
-        .child(label(button_label).size(12.0).color(if enabled {
-            title_c()
-        } else {
-            theme().text_disabled
-        }));
-    if enabled {
-        clear = clear.on_click(button);
-    }
+    let clear = components::button(button, button_label)
+        .size(components::ButtonSize::XSmall)
+        .enabled(enabled);
     div()
         .row()
         .h_px(32.0)
@@ -4811,18 +4725,11 @@ fn action_button(id: u64, text: &str, enabled: bool) -> Node {
 }
 
 fn status_chip(running: bool) -> Node {
-    let (color, text) = if running {
-        (theme().success, "Running")
+    if running {
+        components::pill("Running").color(theme().success).into()
     } else {
-        (theme().error, "Stopped")
-    };
-    div()
-        .row()
-        .items_center()
-        .gap(6.0)
-        .child(components::dot(color, 7.0))
-        .child(label(text).size(12.0).color(color))
-        .into()
+        components::pill("Stopped").color(theme().error).into()
+    }
 }
 
 fn value_text(text: &str) -> Node {
@@ -4863,17 +4770,6 @@ fn caret(visible: bool) -> Node {
         } else {
             Rgba::TRANSPARENT
         })
-        .into()
-}
-
-fn step_seg(kind: ui::IconKind, id: u64) -> Node {
-    div()
-        .w_px(28.0)
-        .h_px(28.0)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(ui::icon(kind).size(12.0).color(dim_c()))
         .into()
 }
 

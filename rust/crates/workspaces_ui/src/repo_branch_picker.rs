@@ -228,12 +228,12 @@ impl BranchPicker {
             format!("the other repos stay on {workspace_branch}")
         };
         let note = format!("Use another branch in {}; {others}", self.repo);
-        let panel = div()
-            .col()
+        let panel = components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(10.0)
             .ring(1.0, overlay_ring())
-            .bg(colors.elevated_surface_background)
             .on_click(PICKER_SURFACE)
             .child(self.head(&format!("Branch for {}", self.repo)))
             .child(self.query_row())

@@ -87,19 +87,6 @@ pub(crate) fn action_button(
         .into()
 }
 
-/// A borderless clickable `child` that lights up under the pointer and while pressed.
-pub(crate) fn ghost(id: u64) -> ui::Div {
-    let colors = theme();
-    div()
-        .row()
-        .items_center()
-        .justify_center()
-        .rounded(3.0)
-        .hover_bg(colors.ghost_element_hover)
-        .active_bg(colors.ghost_element_active)
-        .on_click(id)
-}
-
 /// A small icon-only ghost button, such as a copy icon beside a value.
 pub(crate) fn icon_button(id: u64, kind: IconKind) -> Node {
     components::icon_button(id, kind)

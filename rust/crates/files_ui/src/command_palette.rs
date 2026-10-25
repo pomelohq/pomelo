@@ -980,12 +980,11 @@ impl CommandPalette {
             Some(switcher) => self.switcher_footer(switcher, id_base),
             None => self.palette_footer(id_base),
         };
-        div()
-            .col()
+        components::card()
+            .padding(0.0)
+            .raised()
+            .render()
             .w_px(WIDTH)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background)
             .child(head)
             .child(div().h_px(1.0).bg(colors.border_variant))
             .child(results)

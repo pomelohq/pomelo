@@ -664,7 +664,7 @@ pub const ACTIVE_LANGUAGE: u64 = 26;
 pub const DIAGNOSTIC_MESSAGE: u64 = 12;
 /// The files panel title's search button, which opens the file finder.
 pub const FILES_SEARCH: u64 = 27;
-pub const PANEL_HEADER_H: f32 = 36.0;
+pub const PANEL_HEADER_H: f32 = components::DOCK_HEADER_HEIGHT;
 /// The status bar's language-server button and the line of server activity beside it.
 pub const LANGUAGE_SERVERS_BUTTON: u64 = 23;
 pub const LANGUAGE_ACTIVITY: u64 = 24;
@@ -3061,24 +3061,12 @@ impl Layout {
         }
         let mut right = div().row().items_center().gap(8.0).h_px(TOP_BAR_H);
         if let Some(waiting) = self.waiting_workspace() {
-            let mut pill = div()
-                .row()
-                .items_center()
-                .h_px(20.0)
-                .px(8.0)
-                .rounded(10.0)
-                .bg(theme().search_active_match_background.alpha(1.0))
-                .on_click(ATTENTION_PILL)
-                .child(
-                    label(format!("{waiting} needs you"))
-                        .size(11.0)
-                        .weight(600)
-                        .color(Rgba::new(0.169, 0.137, 0.0, 1.0)),
-                );
-            if hovered == Some(ATTENTION_PILL) {
-                pill = pill.border(1.0, theme().text);
-            }
-            right = right.child(pill);
+            right = right.child(
+                components::pill(format!("{waiting} needs you"))
+                    .attention()
+                    .on_click(ATTENTION_PILL)
+                    .hovered(hovered == Some(ATTENTION_PILL)),
+            );
             if let Some(keys) = &self.attention_keys {
                 right = right.child(
                     div()

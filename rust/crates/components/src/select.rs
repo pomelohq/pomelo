@@ -16,6 +16,7 @@ pub struct Select {
     min_width: f32,
     enabled: bool,
     hovered: bool,
+    quiet: bool,
 }
 
 pub fn select(id: u64, value: impl Into<String>) -> Select {
@@ -29,6 +30,7 @@ pub fn select(id: u64, value: impl Into<String>) -> Select {
         min_width: 0.0,
         enabled: true,
         hovered: false,
+        quiet: false,
     }
 }
 
@@ -66,6 +68,12 @@ impl Select {
         self
     }
 
+    /// No fill or edge until hovered, for a select inside a line of text (a header, a toolbar).
+    pub fn quiet(mut self) -> Self {
+        self.quiet = true;
+        self
+    }
+
     /// For views drawn without pointer tracking, which pass the hovered id themselves.
     pub fn hovered(mut self, hovered: Option<u64>) -> Self {
         self.hovered = hovered == Some(self.id);
@@ -98,17 +106,25 @@ impl From<Select> for Node {
             .gap(gap)
             .h_px(size.height())
             .px(size.pad_x())
-            .rounded(6.0)
-            .bg(dim(colors.element_background))
-            .border(1.0, dim(colors.border));
+            .rounded(6.0);
+        if !select.quiet {
+            node = node
+                .bg(dim(colors.element_background))
+                .border(1.0, dim(colors.border));
+        }
+        let hover = if select.quiet {
+            colors.ghost_element_hover
+        } else {
+            raised_hover()
+        };
         node = match select.width {
             Some(width) => node.w_px(width),
             None => node.w_px(natural.max(select.min_width)),
         };
         if enabled {
-            node = node.on_click(select.id).hover_bg(raised_hover());
+            node = node.on_click(select.id).hover_bg(hover);
             if select.hovered {
-                node = node.bg(raised_hover());
+                node = node.bg(hover);
             }
         }
         if let Some(kind) = select.leading {

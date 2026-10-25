@@ -2,7 +2,7 @@
 //! other, or both, or to hand the file to a side agent to merge.
 
 use git::conflict::{self, Conflict, Side};
-use ui::{div, icon, label, theme, IconKind, Node, Rect};
+use ui::{div, theme, IconKind, Node, Rect};
 use workspace::{AgentFix, PanelRequest};
 
 use crate::{edit_line_h, FileItem, CONFLICT_CONTROL_BASE};
@@ -16,9 +16,9 @@ const PER_CONFLICT: u64 = 4;
 pub(crate) const MAX_CONFLICTS: u64 = 20_000;
 
 const RIGHT_MARGIN: f32 = 18.0;
-const BUTTON_PAD_X: f32 = 8.0;
+const BUTTON_PAD_X: f32 = 4.0;
 const BUTTON_GAP: f32 = 4.0;
-const TEXT_SIZE: f32 = 12.0;
+const TEXT_SIZE: f32 = 11.0;
 const ASK_LABEL: &str = "Ask Claude to merge";
 
 impl FileItem {
@@ -114,7 +114,7 @@ impl FileItem {
                 .map(|(_, text)| ui::measure_text_width(text, TEXT_SIZE, false, 500))
                 .sum::<f32>()
                 + ui::measure_text_width(ASK_LABEL, TEXT_SIZE, false, 500)
-                + 12.0
+                + 11.0
                 + 6.0
                 + 4.0 * 2.0 * BUTTON_PAD_X
                 + 5.0 * BUTTON_GAP
@@ -144,35 +144,18 @@ impl FileItem {
         strips
     }
 
-    fn conflict_button(&self, id: u64, text: &str, primary: bool) -> Node {
-        let colors = theme();
-        let hot = self.hunk_control_hover == Some(id);
-        let (fill, ink) = match (primary, hot) {
-            (true, true) => (colors.accent_fill.alpha(0.88), colors.on_accent),
-            (true, false) => (colors.accent_fill, colors.on_accent),
-            (false, true) => (colors.element_hover, colors.text),
-            (false, false) => (colors.element_background, colors.text),
-        };
-        let mut button = div()
-            .row()
-            .h_px((edit_line_h() / ui::ui_text_scale() - 6.0).max(18.0))
-            .px(BUTTON_PAD_X)
-            .gap(6.0)
-            .items_center()
-            .rounded(4.0)
-            .bg(fill)
-            .on_click(id);
-        if primary {
-            button = button.child(icon(IconKind::Sparkle).size(12.0).color(ink));
+    fn conflict_button(&self, id: u64, text: &str, agent: bool) -> Node {
+        let button = components::button(id, text)
+            .size(components::ButtonSize::XSmall)
+            .hovered(self.hunk_control_hover);
+        if agent {
+            button
+                .kind(components::ButtonKind::Agent)
+                .icon(Some(IconKind::Sparkle))
+                .into()
+        } else {
+            button.into()
         }
-        button
-            .child(
-                label(text.to_string())
-                    .size(TEXT_SIZE)
-                    .weight(500)
-                    .color(ink),
-            )
-            .into()
     }
 
     pub(crate) fn is_conflict_control(id: u64) -> bool {

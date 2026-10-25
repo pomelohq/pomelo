@@ -404,12 +404,11 @@ impl OutlineView {
         let colors = theme();
         let size = self.size();
         let results = self.render_results(id_base, &size);
-        let mut root = div()
-            .col()
-            .w_px(size.width)
-            .rounded(8.0)
-            .border(1.0, colors.border_variant)
-            .bg(colors.elevated_surface_background);
+        let mut root = components::card()
+            .padding(0.0)
+            .raised()
+            .render()
+            .w_px(size.width);
         match (self.preview, size.height) {
             (PreviewLayout::Right, Some(height)) => {
                 root = root.h_px(height).child(

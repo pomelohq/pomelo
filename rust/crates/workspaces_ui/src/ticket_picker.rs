@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
@@ -386,7 +386,7 @@ impl TicketPicker {
             column = column.child(status_line(
                 IconKind::Warning,
                 colors.warning,
-                &format!("Couldn't load {source} ({error}); type a ticket key instead"),
+                format!("Couldn't load {source} ({error}); type a ticket key instead"),
             ));
         }
         column.into()
@@ -400,13 +400,11 @@ impl TicketPicker {
         if suggestions.is_empty() && typed.is_empty() && !placeholders {
             return None;
         }
-        let mut list = div()
-            .col()
+        let mut list = components::card()
+            .padding(4.0)
+            .raised()
+            .render()
             .w_px(width)
-            .p(4.0)
-            .rounded(8.0)
-            .border(1.0, colors.border)
-            .bg(colors.elevated_surface_background)
             .on_click(SUGGESTIONS_SURFACE);
         if placeholders {
             let seconds = self.loading_since.elapsed().as_secs_f32();
@@ -442,89 +440,33 @@ impl TicketPicker {
     }
 
     fn source_button(&self, name: &str, hovered: bool) -> Node {
-        let colors = theme();
-        let mut button = div()
-            .row()
-            .h_px(14.0)
-            .px(4.0)
-            .gap(4.0)
-            .items_center()
-            .rounded(4.0)
-            .child(label(name.to_string()).size(11.0).color(if self.menu_open {
-                colors.text
-            } else {
-                colors.text_muted
-            }))
-            .child(
-                icon(IconKind::ChevronDown)
-                    .size(10.0)
-                    .color(colors.icon_muted),
-            );
-        if self.menu_open || (hovered && self.boards_known) {
-            button = button.bg(colors.ghost_element_hover);
-        }
-        if self.boards_known {
-            button = button.on_click(SOURCE);
-        }
-        button.into()
+        components::select(SOURCE, name)
+            .size(components::ButtonSize::XSmall)
+            .quiet()
+            .enabled(self.boards_known)
+            .hovered((self.menu_open || hovered).then_some(SOURCE))
+            .into()
     }
 
     /// Every board's sprint, then the backlog and the user's own tickets; the current one is accented.
     fn source_menu(&self, hovered: Option<u64>) -> Node {
-        let colors = theme();
-        let mut menu = div()
-            .col()
-            .w_px(MENU_WIDTH)
-            .p(4.0)
-            .rounded(8.0)
-            .border(1.0, colors.border)
-            .bg(colors.elevated_surface_background)
-            .on_click(SOURCE_MENU_SURFACE);
-        for (index, option) in self.options().into_iter().enumerate() {
-            if option.grouped_below {
-                menu = menu.child(
-                    div()
-                        .col()
-                        .px(2.0)
-                        .py(4.0)
-                        .child(div().h_px(1.0).bg(colors.border_variant)),
-                );
-            }
-            let current = Some(option.list) == self.list;
-            let id = SOURCE_OPTION_BASE + index as u64;
-            menu = menu.child(
-                div()
-                    .row()
-                    .h_px(26.0)
-                    .px(8.0)
-                    .gap(8.0)
-                    .items_center()
-                    .rounded(4.0)
-                    .bg(if hovered == Some(id) {
-                        colors.ghost_element_hover
-                    } else {
-                        Rgba::TRANSPARENT
-                    })
-                    .on_click(id)
-                    .child(
-                        div().row().flex(1.0).items_center().child(
-                            label(option.name)
-                                .label_size(LabelSize::Default)
-                                .color(if current {
-                                    colors.text_accent
-                                } else {
-                                    colors.text
-                                })
-                                .truncate(),
-                        ),
-                    )
-                    .child(
-                        label(option.hint)
-                            .label_size(LabelSize::XSmall)
-                            .color(colors.text_placeholder),
-                    ),
-            );
-        }
+        let items: Vec<components::MenuItem> = self
+            .options()
+            .into_iter()
+            .enumerate()
+            .map(|(index, option)| components::MenuItem {
+                checked: Some(option.list) == self.list,
+                sep: option.grouped_below,
+                hint: Some(option.hint.into()),
+                ..components::MenuItem::new(SOURCE_OPTION_BASE + index as u64, option.name)
+            })
+            .collect();
+        let menu = div().on_click(SOURCE_MENU_SURFACE).child(
+            components::menu(&items)
+                .hovered(hovered)
+                .plain_hints()
+                .min_width(MENU_WIDTH),
+        );
         deferred(menu)
             .below_or_above(14.0, 4.0)
             .snap_to_window()

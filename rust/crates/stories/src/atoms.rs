@@ -471,6 +471,98 @@ pub fn stories() -> Vec<StoryDef> {
                 )
             })
         }),
+        story("switch-on", "Switch", "On", BUTTON, || {
+            still(|_, _| alone(components::switch(ID, true)))
+        }),
+        story("switch-off", "Switch", "Off", BUTTON, || {
+            still(|_, _| alone(components::switch(ID, false)))
+        }),
+        story("stepper-value", "Stepper", "A value", CONTROL, || {
+            still(|_, _| alone(components::stepper("15", ID, ID + 1, ID + 2)))
+        }),
+        story(
+            "stepper-editing",
+            "Stepper",
+            "Typing a value",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(components::stepper("15", ID, ID + 1, ID + 2).editing(Some("30")))
+                })
+            },
+        ),
+        story("radio-choices", "Radio", "Chosen and not", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    div()
+                        .row()
+                        .gap(16.0)
+                        .items_center()
+                        .child(components::radio(true))
+                        .child(components::radio(false)),
+                )
+            })
+        }),
+        story(
+            "progress-thin",
+            "Progress",
+            "Thin, inside a button",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        div()
+                            .row()
+                            .w_px(46.0)
+                            .child(components::progress_bar(0.4).thin()),
+                    )
+                })
+            },
+        ),
+        story(
+            "status-line-tinted",
+            "Status line",
+            "Tinted, the line is the news",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        div().row().w_px(220.0).child(
+                            components::status_line(
+                                IconKind::Warning,
+                                theme().error,
+                                "Install failed",
+                            )
+                            .tinted(),
+                        ),
+                    )
+                })
+            },
+        ),
+        story("pill-icon", "Pill", "With its own mark", BUTTON, || {
+            still(|_, _| {
+                alone(
+                    components::pill("Merged")
+                        .color(theme().text_accent)
+                        .icon(IconKind::Merged),
+                )
+            })
+        }),
+        story(
+            "select-quiet",
+            "Select",
+            "Quiet, inside a line",
+            CONTROL,
+            || {
+                still(|_, _| {
+                    alone(
+                        components::select(ID, "Current sprint")
+                            .size(ButtonSize::XSmall)
+                            .quiet(),
+                    )
+                })
+            },
+        ),
     ]
 }
 

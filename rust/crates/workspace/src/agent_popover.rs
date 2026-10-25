@@ -78,13 +78,11 @@ pub fn new_agent(
 ) -> Node {
     let colors = theme();
     let inner = WIDTH - 24.0;
-    let mut card = div()
-        .col()
+    let mut card = components::card()
+        .padding(4.0)
+        .raised()
+        .render()
         .w_px(WIDTH)
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(
             div().row().h_px(30.0).px(10.0).items_center().child(
                 label(format!("New side agent in {branch}"))
@@ -196,26 +194,7 @@ pub fn new_agent(
             note
         };
         let chosen = each == start && !disabled;
-        let radio = div()
-            .row()
-            .w_px(16.0)
-            .h_px(16.0)
-            .items_center()
-            .justify_center()
-            .rounded(8.0)
-            .border(
-                1.5,
-                if chosen {
-                    colors.text_accent
-                } else {
-                    colors.border
-                },
-            )
-            .child(if chosen {
-                Node::from(components::dot(colors.text_accent, 8.0))
-            } else {
-                Node::from(div())
-            });
+        let radio = components::radio(chosen);
         let text_color = if disabled {
             colors.text_disabled
         } else {
@@ -353,13 +332,11 @@ pub fn new_agent(
 /// The history popover: side agents that were closed, newest first, to reopen with their transcript.
 pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
     let colors = theme();
-    let mut card = div()
-        .col()
+    let mut card = components::card()
+        .padding(4.0)
+        .raised()
+        .render()
         .w_px(WIDTH - 40.0)
-        .p(4.0)
-        .rounded(8.0)
-        .bg(colors.elevated_surface_background)
-        .border(1.0, colors.border)
         .child(
             div()
                 .row()
@@ -426,6 +403,6 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
 fn separator() -> Node {
     div()
         .py(4.0)
-        .child(div().w_px(WIDTH - 8.0).h_px(1.0).bg(theme().border_variant))
+        .child(components::divider().w_px(WIDTH - 8.0))
         .into()
 }

@@ -1,4 +1,4 @@
-use ui::{div, theme, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, Node, Rgba};
 
 use crate::ButtonSize;
 
@@ -57,6 +57,14 @@ impl IconButton {
 
 impl From<IconButton> for Node {
     fn from(button: IconButton) -> Node {
+        button.render().into()
+    }
+}
+
+impl IconButton {
+    /// The button as a box, for a caller that wraps it (a tooltip).
+    pub fn render(self) -> Div {
+        let button = self;
         let colors = theme();
         let side = button.size.height();
         let glyph = match button.size {
@@ -97,6 +105,6 @@ impl From<IconButton> for Node {
                 }
             }
         }
-        node.into()
+        node
     }
 }
