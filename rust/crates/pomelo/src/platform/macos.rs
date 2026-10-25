@@ -46,8 +46,7 @@ pub(crate) fn set_dock_icon() {
 }
 
 pub(crate) fn hide_pointer_until_mouse_moves() {
-    // SAFETY: a class method taking a plain bool; AppKit shows the pointer again on the next move.
-    unsafe { objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(true) };
+    objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(true);
 }
 
 /// Do what the system's "double-click a window's title bar" setting says: fill, zoom, minimize or nothing.
@@ -129,25 +128,23 @@ pub(crate) fn choose_folders(multiple: bool) -> Vec<std::path::PathBuf> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Vec::new();
     };
-    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
+    let panel = NSOpenPanel::openPanel(mtm);
     let (prompt, message) = if multiple {
         ("Add", "Choose the git repositories of the project")
     } else {
         ("Open", "Choose a project folder with a pom.yml")
     };
-    unsafe {
-        panel.setCanChooseFiles(false);
-        panel.setCanChooseDirectories(true);
-        panel.setAllowsMultipleSelection(multiple);
-        panel.setPrompt(Some(&NSString::from_str(prompt)));
-        panel.setMessage(Some(&NSString::from_str(message)));
-    }
-    if unsafe { panel.runModal() } != NSModalResponseOK {
+    panel.setCanChooseFiles(false);
+    panel.setCanChooseDirectories(true);
+    panel.setAllowsMultipleSelection(multiple);
+    panel.setPrompt(Some(&NSString::from_str(prompt)));
+    panel.setMessage(Some(&NSString::from_str(message)));
+    if panel.runModal() != NSModalResponseOK {
         return Vec::new();
     }
-    let urls = unsafe { panel.URLs() };
+    let urls = panel.URLs();
     urls.iter()
-        .filter_map(|url| unsafe { url.path() })
+        .filter_map(|url| url.path())
         .map(|path| std::path::PathBuf::from(path.to_string()))
         .collect()
 }
@@ -196,16 +193,14 @@ pub(crate) fn center_traffic_lights(window: &Window) {
             return;
         };
         // Re-fetch the buttons every time — AppKit can recreate the standard buttons on layout passes.
-        let Some(close) = ns_window.standardWindowButton(NSWindowButton::NSWindowCloseButton)
+        let Some(close) = ns_window.standardWindowButton(NSWindowButton::CloseButton) else {
+            return;
+        };
+        let Some(minimize) = ns_window.standardWindowButton(NSWindowButton::MiniaturizeButton)
         else {
             return;
         };
-        let Some(minimize) =
-            ns_window.standardWindowButton(NSWindowButton::NSWindowMiniaturizeButton)
-        else {
-            return;
-        };
-        let Some(zoom) = ns_window.standardWindowButton(NSWindowButton::NSWindowZoomButton) else {
+        let Some(zoom) = ns_window.standardWindowButton(NSWindowButton::ZoomButton) else {
             return;
         };
         // The titlebar container is TWO levels up (button -> widget container -> titlebar view). Resizing the wrong
@@ -217,7 +212,7 @@ pub(crate) fn center_traffic_lights(window: &Window) {
             return;
         };
 
-        let catx = AnyClass::get("CATransaction");
+        let catx = AnyClass::get(c"CATransaction");
         if let Some(catx) = catx {
             let _: () = msg_send![catx, begin];
             let _: () = msg_send![catx, setDisableActions: true];

@@ -43,10 +43,8 @@ pub fn install() {
 }
 
 fn take(event: &NSEvent) -> bool {
-    // SAFETY: plain property reads on a live key event.
-    let (flags, characters) =
-        unsafe { (event.modifierFlags(), event.charactersIgnoringModifiers()) };
-    if !flags.contains(NSEventModifierFlags::NSEventModifierFlagCommand) {
+    let (flags, characters) = (event.modifierFlags(), event.charactersIgnoringModifiers());
+    if !flags.contains(NSEventModifierFlags::Command) {
         return false;
     }
     let Some(characters) = characters.map(|text| text.to_string()) else {
@@ -57,9 +55,9 @@ fn take(event: &NSEvent) -> bool {
     }
     let stroke = Keystroke {
         cmd: true,
-        ctrl: flags.contains(NSEventModifierFlags::NSEventModifierFlagControl),
-        alt: flags.contains(NSEventModifierFlags::NSEventModifierFlagOption),
-        shift: flags.contains(NSEventModifierFlags::NSEventModifierFlagShift),
+        ctrl: flags.contains(NSEventModifierFlags::Control),
+        alt: flags.contains(NSEventModifierFlags::Option),
+        shift: flags.contains(NSEventModifierFlags::Shift),
         key: characters.to_lowercase(),
     };
     let Ok(mut shared) = SHARED.lock() else {
