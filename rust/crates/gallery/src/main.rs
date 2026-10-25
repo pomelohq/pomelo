@@ -294,9 +294,10 @@ impl Gallery {
         let needed = self.raster_scale();
         let wanted = self.raster_target();
         let settled = self.settled();
+        let mut filling = false;
         let mut waiting: Vec<(f32, usize)> = self
             .boards
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter(|(index, _)| Some(*index) != self.focused)
             .filter_map(|(index, board)| {
@@ -305,6 +306,13 @@ impl Gallery {
                 let visible = sx + w >= 0.0 && sy + h >= 0.0 && sx <= canvas.w && sy <= canvas.h;
                 if !visible || board.error.is_some() {
                     return None;
+                }
+                if board.story.as_mut().is_some_and(|story| story.pending()) {
+                    filling = true;
+                    board.stale = true;
+                    if board.image.is_some() {
+                        return None;
+                    }
                 }
                 let off_scale = board.image.as_ref().is_none_or(|raster| {
                     raster.scale < needed * 0.95 || raster.scale > wanted * 2.0
@@ -330,7 +338,7 @@ impl Gallery {
             }
             drawn += 1;
         }
-        waiting.len() > drawn
+        filling || waiting.len() > drawn
     }
 
     fn draw(&mut self) {

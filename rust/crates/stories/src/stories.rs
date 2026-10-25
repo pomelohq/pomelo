@@ -29,6 +29,17 @@ pub trait Story {
     fn key(&mut self, _key: workspace::EditKey, _shift: bool) -> bool {
         false
     }
+    /// True while the story still fills in off the main thread; the gallery keeps redrawing it until then.
+    fn pending(&mut self) -> bool {
+        false
+    }
+}
+
+/// Waits for a story to fill in, for a still that must show it whole.
+pub fn settle(story: &mut dyn Story) {
+    while story.pending() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -203,6 +214,7 @@ pub fn paint(story: &mut dyn Story, width: f32, height: f32) -> ui::Painted {
 pub fn write_png(def: &StoryDef, scale: f32, out: &Path) -> anyhow::Result<(u32, u32)> {
     let (width, height) = def.size;
     let mut story = (def.build)()?;
+    settle(story.as_mut());
     let painted = paint(story.as_mut(), width, height);
     let mut renderer =
         ui::UiRenderer::new_headless((width * scale) as u32, (height * scale) as u32, scale)?;
@@ -301,6 +313,7 @@ mod tests {
     fn every_story_paints() {
         for def in super::all() {
             let mut story = (def.build)().unwrap_or_else(|error| panic!("{}: {error}", def.id));
+            super::settle(story.as_mut());
             let painted = super::paint(story.as_mut(), def.size.0, def.size.1);
             // The first rect is the background every story sits on.
             let drew =

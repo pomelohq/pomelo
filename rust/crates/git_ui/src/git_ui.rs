@@ -401,6 +401,10 @@ impl GitPanel {
         self.commit.busy()
     }
 
+    pub fn scanning(&self) -> bool {
+        self.scanning.load(Ordering::Acquire)
+    }
+
     /// Blocks until the running re-read finishes (tests).
     pub fn wait_for_scan(&self) {
         while self.scanning.load(Ordering::Acquire) {
