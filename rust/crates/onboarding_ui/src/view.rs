@@ -1,7 +1,7 @@
 //! Drawing pieces of the onboarding page that carry no state of their own.
 
 use components::text_line;
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Radius};
 use workspace::text_field::{FieldFont, TextField};
 
 pub const COLUMN_W: f32 = 640.0;
@@ -23,7 +23,7 @@ pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
             .row()
             .w_px(20.0)
             .h_px(20.0)
-            .rounded(10.0)
+            .rounded(Radius::XLarge)
             .items_center()
             .justify_center()
             .bg(if active {
@@ -93,7 +93,7 @@ pub fn panel_list(items: Vec<Node>, inset: f32) -> Node {
         .col()
         .gap(2.0)
         .p(inset)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .bg(theme().panel_background);
     for item in items {
         column = column.child(item);
@@ -240,7 +240,7 @@ pub fn repo_row(lead: Node, name: Node, second: &str, trailing: Vec<Node>) -> No
         .pl(10.0)
         .pr(6.0)
         .py(8.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .child(lead)
         .child(
             div().col().flex(1.0).child(name).child(text_line(

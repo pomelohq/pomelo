@@ -2,7 +2,7 @@
 //! next or previous change. It sits at the change's top-right and sticks to the top while the change scrolls past.
 
 use git::DiffHunk;
-use ui::{div, theme, IconKind, Node, Rect};
+use ui::{div, theme, IconKind, Node, Radius, Rect};
 
 use crate::{edit_line_h, FileItem, HUNK_CONTROL_BASE};
 
@@ -101,7 +101,7 @@ impl FileItem {
             .px(BUTTON_GAP)
             .gap(BUTTON_GAP)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.editor_background)
             .border(1.0, colors.border_variant);
         for button in buttons {

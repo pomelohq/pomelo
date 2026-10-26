@@ -2,7 +2,7 @@
 
 use components::{text_line, ButtonKind};
 use onboarding::{CheckKind, CheckStatus};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 use crate::ids::*;
 use crate::model::{Onboarding, Phase, Request, Run};
@@ -279,7 +279,7 @@ fn phase_row(title: &str, state: PhaseState, note: Option<&str>) -> Node {
         .px(8.0)
         .gap(10.0)
         .items_center()
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .child(icon(kind).size(14.0).color(tint))
         .child(
             div().row().flex(1.0).items_center().child(
@@ -311,7 +311,7 @@ fn problem_card(
         .col()
         .px(12.0)
         .py(10.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .bg(colors.editor_background);
     for line in output.lines() {
         log = log.child(text_line(

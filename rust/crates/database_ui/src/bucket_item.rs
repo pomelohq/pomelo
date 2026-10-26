@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use pom_db::object_storage::{format_size, Listing, ObjectEntry, PrefixStats};
 use pom_db::Database;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -22,7 +22,7 @@ const ROW_H: f32 = 30.0;
 const FIELD_H: f32 = 28.0;
 const CARD_INSET: f32 = 8.0;
 const CARD_GAP: f32 = 6.0;
-const CARD_RADIUS: f32 = 6.0;
+const CARD_RADIUS: Radius = Radius::Medium;
 const SIDE_W: f32 = 340.0;
 const SIDE_NEEDS: f32 = 640.0;
 const PAGE: usize = 500;

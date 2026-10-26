@@ -58,7 +58,7 @@ impl From<ProgressBar> for Node {
             .row()
             .h_px(track)
             .p(inset)
-            .rounded(track / 2.0)
+            .rounded_px(track / 2.0)
             .bg(if bar.thin {
                 colors.element_active
             } else {
@@ -72,7 +72,7 @@ impl From<ProgressBar> for Node {
             div()
                 .h_px(fill)
                 .flex(fraction)
-                .rounded(fill / 2.0)
+                .rounded_px(fill / 2.0)
                 .bg(bar.color.unwrap_or(colors.info)),
         )
         .child(div().h_px(fill).flex(1.0 - fraction))

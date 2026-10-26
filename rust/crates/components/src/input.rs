@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Label, LabelSize, Node};
+use ui::{div, label, theme, Div, Label, LabelSize, Node, Radius};
 
 pub const INPUT_HEIGHT: f32 = 30.0;
 
@@ -17,7 +17,7 @@ pub fn input_box(click_id: u64, focused: bool, error: bool) -> Div {
         .gap(8.0)
         .h_px(INPUT_HEIGHT)
         .px(10.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(1.0, border)
         .on_click(click_id);
@@ -79,7 +79,7 @@ pub fn search_box(click_id: u64, focused: bool) -> Div {
         .gap(6.0)
         .h_px(SEARCH_HEIGHT)
         .px(8.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(
             1.0,

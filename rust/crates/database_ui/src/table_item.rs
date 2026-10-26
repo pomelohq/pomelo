@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -32,7 +32,7 @@ const QUERY_H: f32 = 36.0;
 const QUERY_FIELD_H: f32 = 28.0;
 const CARD_INSET: f32 = 8.0;
 const CARD_GAP: f32 = 6.0;
-const CARD_RADIUS: f32 = 6.0;
+const CARD_RADIUS: Radius = Radius::Medium;
 /// Narrower than this (design px), the tab gives the whole width to the grid and hides the Details side.
 const SIDE_NEEDS: f32 = 620.0;
 /// Narrower than this, WHERE and ORDER BY take a row each.
@@ -1371,7 +1371,7 @@ impl TableItem {
                             .h_px(FIELD_H - 4.0)
                             .px(6.0)
                             .items_center()
-                            .rounded(3.0)
+                            .rounded(Radius::Small)
                             .border(
                                 1.0,
                                 if focused {
@@ -1485,7 +1485,7 @@ impl TableItem {
                     .row()
                     .w_px(22.0)
                     .h_px(22.0)
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .items_center()
                     .justify_center()
                     .on_click(SIDE_CLOSE)

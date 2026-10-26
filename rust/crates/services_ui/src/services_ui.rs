@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -991,7 +991,7 @@ impl ServicesPanel {
             .py(6.0)
             .gap(8.0)
             .on_click(open)
-            .child(div().w_px(2.0).rounded(1.0).bg(tint))
+            .child(div().w_px(2.0).rounded(Radius::XSmall).bg(tint))
             .child(body);
         if self.hover == Some(open) {
             strip = strip.bg(colors.ghost_element_hover);

@@ -14,7 +14,7 @@ pub enum LabelSize {
 }
 
 impl LabelSize {
-    pub fn px(self) -> f32 {
+    pub const fn px(self) -> f32 {
         match self {
             LabelSize::XSmall => 10.0,
             LabelSize::Mini => 11.0,

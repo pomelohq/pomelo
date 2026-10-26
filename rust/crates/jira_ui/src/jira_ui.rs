@@ -9,7 +9,7 @@ use markdown::{MarkdownBody as Body, DOCUMENT_STYLE};
 use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 const PAD_X: f32 = 28.0;
@@ -314,7 +314,7 @@ impl TicketItem {
                     .gap(4.0)
                     .px(12.0)
                     .py(10.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .bg(colors.panel_background)
                     .child(
                         div()

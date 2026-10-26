@@ -1,6 +1,6 @@
 //! What every screen is built from: the active theme's color tokens, the text styles and the icons.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba, TextColor};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, TextColor};
 
 use crate::{still, Story, StoryDef};
 
@@ -130,7 +130,7 @@ fn swatches(tokens: &[&str]) -> Node {
                     div()
                         .w_px(40.0)
                         .h_px(24.0)
-                        .rounded(4.0)
+                        .rounded(Radius::Small)
                         .bg(color)
                         .border(1.0, colors.border),
                 )
@@ -277,6 +277,101 @@ fn icons() -> Node {
     grid.into()
 }
 
+fn radii() -> Node {
+    let colors = theme();
+    let mut row = div().row().gap(20.0).p(16.0);
+    for radius in Radius::ALL {
+        row = row.child(
+            div()
+                .col()
+                .gap(8.0)
+                .items_center()
+                .child(
+                    div()
+                        .w_px(64.0)
+                        .h_px(48.0)
+                        .rounded(radius)
+                        .bg(colors.element_background)
+                        .border(1.0, colors.border),
+                )
+                .child(label(format!("{radius:?} {}", radius.px())).size(LabelSize::Small)),
+        );
+    }
+    row.into()
+}
+
+/// Cards on the editor background, each floating at its elevation.
+struct Elevations;
+
+const ELEVATION_CARD: (f32, f32) = (150.0, 84.0);
+
+impl Story for Elevations {
+    fn render(&mut self, width: f32, height: f32) -> Node {
+        div()
+            .w_px(width)
+            .h_px(height)
+            .bg(theme().editor_background)
+            .into()
+    }
+
+    fn overlay(&mut self, area: ui::Rect) -> Option<ui::Painted> {
+        let colors = theme();
+        let mut painted = ui::Painted::default();
+        for (index, elevation) in ui::Elevation::ALL.into_iter().enumerate() {
+            let rect = ui::Rect::new(
+                area.x + 24.0 + index as f32 * (ELEVATION_CARD.0 + 32.0),
+                area.y + 28.0,
+                ELEVATION_CARD.0,
+                ELEVATION_CARD.1,
+                Rgba::TRANSPARENT,
+            );
+            painted
+                .rects
+                .extend(ui::elevation_shadow(rect, elevation, 1.0));
+            let card: Node = div()
+                .w_px(rect.w)
+                .h_px(rect.h)
+                .p(12.0)
+                .rounded(Radius::Large)
+                .bg(colors.elevated_surface_background)
+                .border(1.0, colors.border)
+                .child(label(format!("{elevation:?}")).size(LabelSize::Small))
+                .into();
+            let card = ui::render(&card, rect);
+            painted.rects.extend(card.rects);
+            painted.texts.extend(card.texts);
+        }
+        Some(painted)
+    }
+}
+
+fn motions() -> Node {
+    let colors = theme();
+    let mut column = div().col().gap(12.0).p(16.0);
+    for motion in ui::Motion::ALL {
+        let millis = motion.duration().as_millis() as f32;
+        column = column.child(
+            div()
+                .row()
+                .gap(12.0)
+                .items_center()
+                .child(
+                    div()
+                        .w_px(110.0)
+                        .child(label(format!("{motion:?} {millis} ms")).size(LabelSize::Small)),
+                )
+                .child(
+                    div()
+                        .w_px(millis * 0.6)
+                        .h_px(8.0)
+                        .rounded(Radius::XSmall)
+                        .bg(colors.text_accent),
+                ),
+        );
+    }
+    column.into()
+}
+
 fn icons_size() -> (f32, f32) {
     let rows = IconKind::ALL.len().div_ceil(ICON_COLUMNS);
     (
@@ -318,6 +413,15 @@ pub fn stories() -> Vec<StoryDef> {
         }),
         story("type-colors", "Type", "Colors", (240.0, 176.0), || {
             still(|_, _| text_colors())
+        }),
+        story("radius", "Radius", "Steps", (480.0, 112.0), || {
+            still(|_, _| radii())
+        }),
+        story("elevation", "Elevation", "Levels", (594.0, 160.0), || {
+            Ok(Box::new(Elevations))
+        }),
+        story("motion", "Motion", "Durations", (420.0, 120.0), || {
+            still(|_, _| motions())
         }),
         story("icons", "Icons", "Every icon", icons_size(), || {
             still(|_, _| icons())

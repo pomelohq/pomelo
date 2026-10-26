@@ -1,7 +1,7 @@
 //! Atoms put together into one control: a menu of choices, and a select with its menu open.
 
 use components::{BannerTone, ButtonKind, MenuItem};
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::InputField;
 
@@ -279,7 +279,7 @@ fn list(rows: &[(&str, IconKind)], selected: usize, hovered: Option<u64>) -> Nod
         .col()
         .w_px(280.0)
         .py(4.0)
-        .rounded(8.0)
+        .rounded(Radius::Large)
         .bg(theme().elevated_surface_background);
     for (index, (text, kind)) in rows.iter().enumerate() {
         let id = ID + index as u64;

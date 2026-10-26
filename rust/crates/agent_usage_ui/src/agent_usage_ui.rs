@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::{Item, ItemTick, UsageInfo};
 
 pub const TAB_ID: &str = "agent-usage";
@@ -258,7 +258,7 @@ fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
         .w_px(width)
         .p(12.0)
         .gap(2.0)
-        .rounded(8.0)
+        .rounded(Radius::Large)
         .border(1.0, colors.border_variant)
         .child(label(value).size_px(22.0).weight(600).color(colors.text))
         .child(
@@ -279,7 +279,10 @@ fn meter(used: f32) -> Node {
 
 fn rows(items: Vec<Node>) -> Node {
     let colors = theme();
-    let mut column = div().col().rounded(8.0).border(1.0, colors.border_variant);
+    let mut column = div()
+        .col()
+        .rounded(Radius::Large)
+        .border(1.0, colors.border_variant);
     for (index, item) in items.into_iter().enumerate() {
         if index > 0 {
             column = column.child(components::divider());
@@ -449,7 +452,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .col()
             .gap(6.0)
             .p(12.0)
-            .rounded(8.0)
+            .rounded(Radius::Large)
             .border(1.0, colors.border_variant)
             .child(
                 div()
@@ -562,7 +565,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         let mut axis = div().row().gap(gap);
         for (index, day) in days.iter().enumerate() {
             let height = (totals[index] / max) as f32 * CHART_H;
-            let mut bar = div().col().w_px(bar_w).h_px(height.max(1.0)).rounded(3.0);
+            let mut bar = div()
+                .col()
+                .w_px(bar_w)
+                .h_px(height.max(1.0))
+                .rounded(Radius::Small);
             for group in shown.iter().rev() {
                 let part: f64 = group
                     .turns
@@ -695,13 +702,13 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .row()
                     .flex(1.0)
                     .h_px(4.0)
-                    .rounded(2.0)
+                    .rounded(Radius::XSmall)
                     .bg(colors.border_variant)
                     .child(
                         div()
                             .flex(share.max(0.0001))
                             .h_px(4.0)
-                            .rounded(2.0)
+                            .rounded(Radius::XSmall)
                             .bg(color_of(&group.key)),
                     )
                     .child(div().flex((1.0 - share).max(0.0001))),
@@ -726,7 +733,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .row()
             .px(8.0)
             .py(2.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .on_click(CLEAR_FILTER)
             .bg(if hovered == Some(CLEAR_FILTER) {
                 colors.ghost_element_hover
@@ -782,7 +789,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .h_px(18.0)
             .px(6.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .border(1.0, colors.border_variant)
             .child(
                 div().row().w_px(text_w.min(max)).child(
@@ -860,7 +867,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                             .h_px(26.0)
                             .px(10.0)
                             .items_center()
-                            .rounded(5.0)
+                            .rounded(Radius::Medium)
                             .border(1.0, colors.border)
                             .bg(if hovered == Some(open) {
                                 colors.element_hover

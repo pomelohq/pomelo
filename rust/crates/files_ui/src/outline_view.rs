@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use ui::{div, label, theme, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, Node, Radius, Rgba};
 
 use crate::fuzzy::fuzzy_match;
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
@@ -562,7 +562,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
     let pane = div()
         .col()
         .flex(1.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .bg(colors.editor_background);
     let Some(content) = content else {
         return pane

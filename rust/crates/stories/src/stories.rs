@@ -93,7 +93,11 @@ pub fn still(render: fn(f32, f32) -> ui::Node) -> anyhow::Result<Box<dyn Story>>
 /// Each page's groups by what they are for, in the order the gallery lays them out: a section per job, so
 /// controls that answer the same need sit together.
 pub const SECTIONS: &[(&str, &str, &[&str])] = &[
-    ("Foundations", "Tokens", &["Color", "Type", "Icons"]),
+    (
+        "Foundations",
+        "Tokens",
+        &["Color", "Type", "Radius", "Elevation", "Motion", "Icons"],
+    ),
     (
         "Atoms",
         "Actions",
@@ -156,6 +160,9 @@ pub fn group_note(group: &str) -> Option<&'static str> {
     Some(match group {
         "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors.",
         "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
+        "Radius" => "Corner radius steps. Small 4 for controls and rows, Medium 6 for inputs and chips, Large 8 for menus and popovers, XLarge 10 for cards and modals.",
+        "Elevation" => "How far a surface floats, which sets its shadow: Elevated for menus, popovers and tooltips, Modal for dialogs and pickers, Overlay for toasts over everything.",
+        "Motion" => "How long UI motion takes: Fast for hover and press, Normal for what enters or leaves, Slow for fades that linger.",
         "Icons" => "Every icon the app ships. Pick one here before drawing a new one.",
         "Button" => "Every button. Primary for the one action a dialog or card is for, Secondary for the rest, Ghost where a border would be noise, Danger for destructive actions, Agent where the work goes to an agent. Small in panels and toolbars, Medium in dialogs and forms.",
         "Icon button" => "A square button showing only an icon: XSmall beside a value, Small in toolbars, Medium in headers. Toggled when it switches something on; name it with a tooltip.",

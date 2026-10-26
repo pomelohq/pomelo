@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 use crate::Session;
 
@@ -125,7 +125,7 @@ pub fn welcome_page(
         None => div()
             .w_px(48.0)
             .h_px(48.0)
-            .rounded(10.0)
+            .rounded(Radius::XLarge)
             .bg(colors.text_accent)
             .into(),
     };
@@ -205,7 +205,7 @@ pub fn welcome_page(
                 .gap(12.0)
                 .h_px(44.0)
                 .px(8.0)
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .on_click(id)
                 .child(icon(kind).size(16.0).color(colors.icon_muted))
                 .child(
@@ -332,7 +332,7 @@ pub struct CenterNotice {
     pub facts: Vec<NoticeFact>,
 }
 
-const NOTICE_CARD_RADIUS: f32 = components::BANNER_RADIUS;
+const NOTICE_CARD_RADIUS: Radius = components::BANNER_RADIUS;
 
 fn notice_button(notice: &CenterNotice, index: usize, hovered: Option<u64>) -> Option<Node> {
     let button = notice.actions.get(index)?;

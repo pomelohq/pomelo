@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 pub const STATUS_ITEM_HEIGHT: f32 = 20.0;
 
@@ -102,9 +102,9 @@ impl StatusItem {
                 4.0
             })
             .rounded(if self.height > STATUS_ITEM_HEIGHT {
-                6.0
+                Radius::Medium
             } else {
-                4.0
+                Radius::Small
             })
             .items_center();
         if let Some(width) = self.width {

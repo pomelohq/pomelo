@@ -6,7 +6,7 @@ use std::sync::Arc;
 use pom_config::Config;
 use pom_paths::StateDir;
 use pom_services::ServiceRunner;
-use ui::{div, Node, Rect};
+use ui::{div, Node, Radius, Rect};
 
 pub use env_item::EnvItem;
 pub use secrets_item::SecretsItem;
@@ -39,7 +39,7 @@ fn action_button(id: u64, kind: ui::IconKind, color: ui::Rgba, hot: bool) -> Nod
     let mut button = div()
         .w_px(16.0)
         .h_px(20.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .items_center()
         .justify_center()
         .on_click(id)

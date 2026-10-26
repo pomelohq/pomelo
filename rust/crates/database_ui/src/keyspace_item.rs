@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -20,7 +20,7 @@ const STATUS_H: f32 = 32.0;
 const FIELD_H: f32 = 28.0;
 const CARD_INSET: f32 = 8.0;
 const CARD_GAP: f32 = 6.0;
-const CARD_RADIUS: f32 = 6.0;
+const CARD_RADIUS: Radius = Radius::Medium;
 const ROW_H: f32 = 26.0;
 const TREE_W: f32 = 300.0;
 const KEYS_MAX: usize = 5000;
@@ -611,7 +611,7 @@ impl KeyspaceItem {
         };
         let mut table = div()
             .col()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .border(1.0, colors.border_variant)
             .child(head_row(head))
             .child(components::divider());
@@ -758,7 +758,7 @@ impl KeyspaceItem {
                             div()
                                 .col()
                                 .p(10.0)
-                                .rounded(6.0)
+                                .rounded(Radius::Medium)
                                 .border(1.0, colors.border_variant)
                                 .bg(colors.editor_background)
                                 .child(
@@ -820,7 +820,7 @@ impl KeyspaceItem {
                             .h_px(22.0)
                             .px(8.0)
                             .items_center()
-                            .rounded(4.0)
+                            .rounded(Radius::Small)
                             .bg(colors.element_background)
                             .border(1.0, colors.border_variant)
                             .child(label(member).size(TEXT).mono().color(colors.text)),

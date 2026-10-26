@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 /// A short read-only tag: a branch, a kind, a plan, a detected stack.
 pub struct Chip {
@@ -49,7 +49,7 @@ impl Chip {
             .px(4.0)
             .gap(2.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .border(1.0, self.border.unwrap_or(colors.border))
             .bg(self.fill.unwrap_or(colors.element_background));
         if let Some(kind) = self.icon {

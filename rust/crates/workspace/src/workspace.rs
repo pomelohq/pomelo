@@ -49,9 +49,9 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    delete_workspace_detail, elevation_shadow, notification_preview, toast_preview,
-    unpushed_warning, workspace_row_menu, ParkedWorkspace, ResizeCursor, RowMenuFacts,
-    SessionRequest, TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
+    delete_workspace_detail, notification_preview, toast_preview, unpushed_warning,
+    workspace_row_menu, ParkedWorkspace, ResizeCursor, RowMenuFacts, SessionRequest,
+    TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
@@ -89,7 +89,9 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
 }
 
 use components::{button, key_chip, ButtonKind, MenuItem};
-use ui::{div, folder_icon, label, render, theme, LabelSize, Node, Painted, Rect, Rgba, Text};
+use ui::{
+    div, folder_icon, label, render, theme, LabelSize, Node, Painted, Radius, Rect, Rgba, Text,
+};
 
 pub const TOP_BAR_H: f32 = 40.0;
 pub const STATUS_BAR_H: f32 = 28.0; // the thin status strip at the very bottom (a component, not a dock)
@@ -1825,21 +1827,11 @@ pub struct EditorLayout {
     pub dividers: Vec<DividerPlacement>,
 }
 
-/// How high a surface floats, which sets its shadow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Elevation {
-    /// Popovers and small floating panels.
-    Elevated,
-    /// Modals that take over input, such as pickers.
-    Modal,
-    Overlay,
-}
-
 pub struct ModalView {
     pub node: Node,
     /// Width in design px.
     pub width: f32,
-    pub elevation: Elevation,
+    pub elevation: ui::Elevation,
 }
 
 /// What a key did in the focused terminal. Copy and Paste need the system clipboard, which the workspace owns.
@@ -2989,7 +2981,7 @@ impl Layout {
             .items_center()
             .px(8.0)
             .h_px(24.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .on_click(SESSION_TRIGGER)
             .child(label(name).size(LabelSize::Medium).color(text_c()));
         if active {
@@ -3045,7 +3037,7 @@ impl Layout {
             .row()
             .w_px(24.0)
             .h_px(24.0)
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .items_center()
             .justify_center()
             .on_click(APP_MENU)
@@ -3072,7 +3064,7 @@ impl Layout {
                         .items_center()
                         .h_px(18.0)
                         .px(5.0)
-                        .rounded(4.0)
+                        .rounded(Radius::Small)
                         .bg(theme().element_hover)
                         .child(ui::render_keystroke(keys, LabelSize::Mini)),
                 );
@@ -3119,7 +3111,7 @@ impl Layout {
                 .row()
                 .w_px(20.0)
                 .h_px(20.0)
-                .rounded(10.0)
+                .rounded(Radius::XLarge)
                 .items_center()
                 .justify_center()
                 .on_click(id)
@@ -3258,23 +3250,15 @@ impl Layout {
 
         // ---- Fixed chrome (unclipped): shadow, panel, search, dividers, footer, scrollbar. ----
         let mut fixed = Painted::default();
-        for i in (1..=6).rev() {
-            let sp = i as f32 * 2.0 * scale;
-            fixed.rects.push(Rect {
-                x: x - sp,
-                y: y - sp + 4.0 * scale,
-                w: menu_w + 2.0 * sp,
-                h: menu_h + 2.0 * sp,
-                color: Rgba::new(0.0, 0.0, 0.0, 0.05),
-                radius: 8.0 * scale + sp,
-                border: 0.0,
-                border_color: Rgba::TRANSPARENT,
-            });
-        }
+        fixed.rects.extend(ui::elevation_shadow(
+            Rect::new(x, y, menu_w, menu_h, Rgba::TRANSPARENT),
+            ui::Elevation::Elevated,
+            scale,
+        ));
         let panel: Node = div()
             .col()
             .bg(theme().elevated_surface_background)
-            .rounded(8.0)
+            .rounded(Radius::Large)
             .border(1.0, theme().border)
             .into();
         push_into(
@@ -3466,7 +3450,7 @@ fn action_row(icon: Node, text: &str, id: u64, hovered: Option<u64>) -> Node {
         .gap(8.0)
         .px(8.0)
         .h_px(28.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(id)
         .child(icon)
         .child(label(text).size(LabelSize::Medium).color(text_c()));
@@ -3519,7 +3503,7 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
         .items_center()
         .px(8.0)
         .h_px(28.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(id);
     if row_hover {
         // Hover: row action buttons pinned to the right (open in new window, open in this window, reveal,
@@ -3826,16 +3810,11 @@ pub fn context_menu(
         (atop - gap - mhpx).max(6.0 * scale)
     };
     let mut out = Painted::default();
-    out.rects.push(Rect {
-        x: x - 2.0 * scale,
-        y: y - 1.0 * scale,
-        w: mw * scale + 4.0 * scale,
-        h: mh * scale + 4.0 * scale,
-        color: Rgba::new(0.0, 0.0, 0.0, 0.14),
-        radius: 10.0 * scale,
-        border: 0.0,
-        border_color: Rgba::TRANSPARENT,
-    });
+    out.rects.extend(ui::elevation_shadow(
+        Rect::new(x, y, mw * scale, mh * scale, Rgba::TRANSPARENT),
+        ui::Elevation::Elevated,
+        scale,
+    ));
     push_into(
         &mut out,
         &card,
@@ -3905,16 +3884,11 @@ pub fn tooltip_above(anchor: Rect, text: &str, keys: Option<&str>, viewport_w: f
     }
     let y = anchor.y - h - 5.0 * scale;
     let mut out = Painted::default();
-    out.rects.push(Rect {
-        x: x - 2.0 * scale,
-        y: y - 1.0 * scale,
-        w: w + 4.0 * scale,
-        h: h + 4.0 * scale,
-        color: Rgba::new(0.0, 0.0, 0.0, 0.12),
-        radius: 8.0 * scale,
-        border: 0.0,
-        border_color: Rgba::TRANSPARENT,
-    });
+    out.rects.extend(ui::elevation_shadow(
+        Rect::new(x, y, w, h, Rgba::TRANSPARENT),
+        ui::Elevation::Elevated,
+        scale,
+    ));
     push_into(&mut out, &node, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
     out
 }
@@ -3949,17 +3923,11 @@ pub fn tooltip(anchor: Rect, text: &str, viewport_w: f32) -> Painted {
     let y = anchor.y + anchor.h + 5.0 * scale;
     let node: Node = components::tooltip_bubble(text, None).into();
     let mut out = Painted::default();
-    // A faint shadow under the bubble.
-    out.rects.push(Rect {
-        x: x - 2.0 * scale,
-        y: y - 1.0 * scale,
-        w: w + 4.0 * scale,
-        h: h + 4.0 * scale,
-        color: Rgba::new(0.0, 0.0, 0.0, 0.12),
-        radius: 8.0 * scale,
-        border: 0.0,
-        border_color: Rgba::TRANSPARENT,
-    });
+    out.rects.extend(ui::elevation_shadow(
+        Rect::new(x, y, w, h, Rgba::TRANSPARENT),
+        ui::Elevation::Elevated,
+        scale,
+    ));
     push_into(&mut out, &node, Rect::new(x, y, w, h, Rgba::TRANSPARENT));
     out
 }
@@ -3971,7 +3939,7 @@ fn icon_button(icon: Node, id: u64, hovered: Option<u64>) -> Node {
         .justify_center()
         .w_px(20.0)
         .h_px(20.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .on_click(id)
         .child(icon);
     if hovered == Some(id) {

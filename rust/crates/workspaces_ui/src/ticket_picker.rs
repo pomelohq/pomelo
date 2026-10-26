@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
-use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
@@ -514,7 +514,7 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
         .gap(10.0)
         .h_px(28.0)
         .px(8.0)
-        .rounded(5.0)
+        .rounded(Radius::Medium)
         .on_click(id)
         .bg(if highlighted {
             colors.element_selected

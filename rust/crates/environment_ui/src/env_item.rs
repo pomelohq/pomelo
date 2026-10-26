@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use pom_services::{ServiceExplain, ServiceTarget};
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 use crate::{action_button, hit_at, EnvironmentContext};
@@ -260,7 +260,7 @@ impl EnvItem {
             .px(8.0)
             .gap(12.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .child(
                 div().row().w_px(KEY_W).child(
                     label(key.to_string())
@@ -315,7 +315,7 @@ impl EnvItem {
                         .h_px(18.0)
                         .px(7.0)
                         .items_center()
-                        .rounded(4.0)
+                        .rounded(Radius::Small)
                         .bg(color.alpha(0.14))
                         .child(
                             label(text.to_string())

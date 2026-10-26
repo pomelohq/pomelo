@@ -1,6 +1,6 @@
-use ui::{div, theme, Div, Node, Rgba};
+use ui::{div, theme, Div, Node, Radius, Rgba};
 
-pub const CARD_RADIUS: f32 = 10.0;
+pub const CARD_RADIUS: Radius = Radius::XLarge;
 
 /// The one card: a rounded box on the element fill with a hairline edge; the caller fills it. A `tint`
 /// makes it a notice in that color, `chosen` rings it in the accent, `raised` floats it as a popover.
@@ -69,7 +69,11 @@ impl Card {
         div()
             .col()
             .p(self.padding)
-            .rounded(if self.raised { 8.0 } else { CARD_RADIUS })
+            .rounded(if self.raised {
+                Radius::Large
+            } else {
+                CARD_RADIUS
+            })
             .bg(fill)
             .border(
                 1.0,

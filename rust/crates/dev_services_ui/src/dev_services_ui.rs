@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -624,7 +624,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
             .col()
             .px(12.0)
             .py(10.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .bg(colors.editor_background);
         let lines: Vec<&str> = text.lines().collect();
         for line in lines.iter().take(BODY_LINES_SHOWN) {
@@ -1051,7 +1051,12 @@ impl Item for DevRequestsPage {
             &bar,
             Rect::new(body.x, body.y, body.w, bar_h, Rgba::TRANSPARENT),
         );
-        let card = || div().rounded(6.0).bg(theme().panel_background).into();
+        let card = || {
+            div()
+                .rounded(Radius::Medium)
+                .bg(theme().panel_background)
+                .into()
+        };
         for area in [
             Rect::new(body.x + inset, top, list_w, cards_h, Rgba::TRANSPARENT),
             Rect::new(side_x, top, side_w, cards_h, Rgba::TRANSPARENT),

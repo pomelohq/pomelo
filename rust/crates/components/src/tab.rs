@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 pub const TAB_HEIGHT: f32 = 26.0;
 
@@ -97,7 +97,7 @@ impl Tab {
             .h_px(TAB_HEIGHT)
             .px(10.0)
             .gap(6.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .items_center();
         match self.content {
             Some(content) => row = row.child(content),
@@ -151,7 +151,7 @@ impl Tab {
                     .col()
                     .h_px(TAB_HEIGHT + 1.0)
                     .pb(1.0)
-                    .rounded(7.0)
+                    .rounded(Radius::Large)
                     .bg(shadow())
                     .child(row),
             )
@@ -166,7 +166,7 @@ fn end_slot(id: u64, pinned: bool, unsaved: Option<Rgba>, hovered: bool) -> Node
     let mut slot = div()
         .w_px(if unsaved.is_some() { 7.0 } else { 12.0 })
         .h_px(16.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .items_center()
         .justify_center()
         .on_click(id);

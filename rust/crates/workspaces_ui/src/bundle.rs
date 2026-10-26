@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use components::{modal_footer, modal_frame, modal_header, modal_section};
 use pom_bundle::Contents;
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 480.0;
@@ -293,7 +293,7 @@ impl ImportConfigModal {
             .col()
             .px(8.0)
             .py(6.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.editor_background)
             .border(1.0, colors.border_variant);
         for line in lines.iter().take(PREVIEW_LINES) {

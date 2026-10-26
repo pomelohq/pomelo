@@ -3548,10 +3548,9 @@ fn main() -> anyhow::Result<()> {
                 bottom - frame,
                 ui::Rgba::TRANSPARENT,
             );
-            painted.rects.extend(workspace::elevation_shadow(
-                card,
-                workspace::Elevation::Modal,
-            ));
+            painted
+                .rects
+                .extend(ui::elevation_shadow(card, ui::Elevation::Modal, 1.0));
         }
         painted.rects.extend(content.rects);
         painted.tris.extend(content.tris);
@@ -3612,10 +3611,9 @@ fn main() -> anyhow::Result<()> {
                 for (node, rect) in popovers {
                     let rect =
                         ui::Rect::new(rect.x + 24.0, rect.y + 24.0, rect.w, rect.h, rect.color);
-                    painted.rects.extend(workspace::elevation_shadow(
-                        rect,
-                        workspace::Elevation::Elevated,
-                    ));
+                    painted
+                        .rects
+                        .extend(ui::elevation_shadow(rect, ui::Elevation::Elevated, 1.0));
                     let part = ui::render(&ui::div().col().child(node).into(), rect);
                     painted.rects.extend(part.rects);
                     painted.tris.extend(part.tris);

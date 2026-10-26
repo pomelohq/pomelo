@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 use crate::key_chip;
 
@@ -144,7 +144,7 @@ impl Button {
             .gap(if button.leading.is_some() { 6.0 } else { 4.0 })
             .h_px(button.size.height())
             .px(button.size.pad_x())
-            .rounded(6.0);
+            .rounded(Radius::Medium);
         node = match button.kind {
             ButtonKind::Primary => node.bg(dim(colors.accent_fill)),
             ButtonKind::Secondary => node

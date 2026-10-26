@@ -1,7 +1,7 @@
 //! The agent dock's popovers: the "+" one that starts a side agent (what it is for, what it starts with),
 //! and the history of archived side agents to reopen.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 use crate::{SideAgentRole, SideAgentStart};
 
@@ -116,7 +116,7 @@ pub fn new_agent(
             .py(6.0)
             .gap(10.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .child(icon(role_icon(each)).size(15.0).color(colors.icon_muted))
             .child(
                 div()
@@ -215,7 +215,7 @@ pub fn new_agent(
             .px(10.0)
             .py(6.0)
             .gap(10.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .child(div().col().pt(2.0).child(radio))
             .child(
                 div()
@@ -292,7 +292,7 @@ pub fn new_agent(
                         .h_px(28.0)
                         .px(12.0)
                         .items_center()
-                        .rounded(5.0)
+                        .rounded(Radius::Medium)
                         .bg(if hot(hover, START_BUTTON) {
                             colors.info_border.alpha(0.4)
                         } else {
@@ -310,7 +310,7 @@ pub fn new_agent(
         .py(6.0)
         .gap(10.0)
         .items_center()
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(NEW_WORKSPACE)
         .child(
             icon(IconKind::SquarePlus)
@@ -389,7 +389,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
             .px(10.0)
             .py(6.0)
             .gap(1.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .on_click(id)
             .child(
                 label(agent.title.clone())

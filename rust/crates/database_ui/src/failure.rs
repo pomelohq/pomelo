@@ -1,6 +1,6 @@
 use components::ButtonKind;
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
-use ui::{div, icon, label, measure, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, measure, theme, IconKind, LabelSize, Node, Radius, Rgba};
 
 const PAD: f32 = 10.0;
 const GAP: f32 = 6.0;
@@ -250,7 +250,7 @@ impl Failure {
             .p(PAD)
             .py(8.0)
             .gap(GAP)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(background)
             .border(1.0, border)
             .child(title)
@@ -293,7 +293,7 @@ impl Failure {
                     .w_px(inner)
                     .px(8.0)
                     .py(6.0)
-                    .rounded(5.0)
+                    .rounded(Radius::Medium)
                     .bg(colors.editor_background)
                     .border(1.0, colors.border_variant)
                     .child(
@@ -319,7 +319,7 @@ impl Failure {
                         .w_px(inner)
                         .px(8.0)
                         .py(6.0)
-                        .rounded(5.0)
+                        .rounded(Radius::Medium)
                         .bg(colors.editor_background)
                         .border(1.0, colors.border_variant)
                         .child(
@@ -410,7 +410,7 @@ impl Failure {
         let copy = div()
             .w_px(22.0)
             .h_px(22.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .items_center()
             .justify_center()
             .border(1.0, colors.border_variant)

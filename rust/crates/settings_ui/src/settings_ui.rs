@@ -17,7 +17,7 @@ pub use host_tab::{
 pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
-use ui::{div, label, render, theme, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, render, theme, LabelSize, Node, Radius, Rect, Rgba};
 
 // Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
 // the theme. Names map the screen's needs onto the design-system tokens.
@@ -56,7 +56,7 @@ fn dim_c() -> Rgba {
     theme().text_muted
 }
 
-const ROUND: f32 = 6.0;
+const ROUND: Radius = Radius::Medium;
 const SMALL_LINE_HEIGHT: f32 = 16.0;
 
 // Categories and their sub-sections. Trimmed to what we have (or will fill soon); a root with sub-sections
@@ -1537,19 +1537,11 @@ pub fn popover(
 
     // A soft drop shadow: a few stacked, growing, translucent rects, since the renderer has no blur.
     let mut layered = Vec::with_capacity(out.rects.len() + 6);
-    for i in (1..=6).rev() {
-        let sp = i as f32 * 2.0 * s;
-        layered.push(Rect {
-            x: x - sp,
-            y: y - sp + 4.0 * s,
-            w: w + 2.0 * sp,
-            h: h + 2.0 * sp,
-            color: Rgba::new(0.0, 0.0, 0.0, 0.05),
-            radius: 8.0 * s + sp,
-            border: 0.0,
-            border_color: Rgba::TRANSPARENT,
-        });
-    }
+    layered.extend(ui::elevation_shadow(
+        Rect::new(x, y, w, h, Rgba::TRANSPARENT),
+        ui::Elevation::Elevated,
+        s,
+    ));
     layered.extend(out.rects);
     out.rects = layered;
 
@@ -3215,7 +3207,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
                     div()
                         .w_px(22.0)
                         .h_px(22.0)
-                        .rounded(4.0)
+                        .rounded(Radius::Small)
                         .items_center()
                         .justify_center()
                         .on_click(CTRL_LANGUAGE_BACK)
@@ -4411,7 +4403,7 @@ fn keys(binding: &str) -> Node {
                 .items_center()
                 .h_px(18.0)
                 .px(5.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .bg(hover_c())
                 .child(ui::render_keystroke(stroke, LabelSize::Mini)),
         );
@@ -4546,7 +4538,7 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
             row = row.child(
                 div()
                     .px(4.0)
-                    .rounded(3.0)
+                    .rounded(Radius::Small)
                     .bg(chip_c())
                     .child(label(part).size(LabelSize::Small).mono().color(title_c())),
             );

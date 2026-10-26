@@ -12,7 +12,7 @@ use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::WINDOW_MODAL_BASE;
 
@@ -242,7 +242,7 @@ impl BranchPicker {
             .child(
                 div()
                     .col()
-                    .rounded(10.0)
+                    .rounded(Radius::XLarge)
                     .bg(colors.panel_background)
                     .child(div().h_px(8.0).bg(colors.panel_background))
                     .child(
@@ -523,7 +523,7 @@ impl BranchPicker {
             .row()
             .px(8.0)
             .py(6.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .on_click(ENTRY_BASE + index as u64)
             .bg(if index == self.highlighted {
                 colors.overlay_selected

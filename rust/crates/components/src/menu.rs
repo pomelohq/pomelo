@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 /// One row of a menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
 #[derive(Clone, Debug)]
@@ -155,7 +155,7 @@ impl<'a> Menu<'a> {
         let mut card = div()
             .col()
             .p(MENU_PAD)
-            .rounded(8.0)
+            .rounded(Radius::Large)
             .bg(colors.elevated_surface_background)
             .border(1.0, colors.border);
         let mut search = self.search.map(|query| {
@@ -210,7 +210,7 @@ impl<'a> Menu<'a> {
             .px(8.0)
             .gap(6.0)
             .items_center()
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .on_click(item.id);
         if self.hovered == Some(item.id) && !item.disabled {
             row = row.bg(menu_hover());

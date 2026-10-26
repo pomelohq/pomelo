@@ -760,8 +760,13 @@ impl Div {
         self.bg = Some(c);
         self
     }
-    pub fn rounded(mut self, r: f32) -> Self {
-        self.radius = rem(r);
+    pub fn rounded(mut self, radius: crate::Radius) -> Self {
+        self.radius = rem(radius.px());
+        self
+    }
+    /// A radius that follows the box, such as half its height for a pill.
+    pub fn rounded_px(mut self, px: f32) -> Self {
+        self.radius = rem(px);
         self
     }
     /// Fills the div with diagonal stripes `period` apart (see `Rect::slash_pattern`).

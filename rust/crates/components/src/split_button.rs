@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, Node, Radius, Rgba};
 
 use crate::button::raised_hover;
 use crate::ButtonSize;
@@ -134,7 +134,7 @@ impl SplitButton {
             (false, true) => (colors.element_hover, colors.border_variant),
             _ => (colors.element_background, colors.border),
         };
-        let mut control = div().row().rounded(6.0).items_center().bg(fill);
+        let mut control = div().row().rounded(Radius::Medium).items_center().bg(fill);
         if !self.primary {
             control = control.border(1.0, colors.border);
         }

@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, Node, Radius, Rgba};
 
 use crate::ButtonSize;
 
@@ -85,9 +85,9 @@ impl IconButton {
             .items_center()
             .justify_center()
             .rounded(if button.size == ButtonSize::XSmall {
-                4.0
+                Radius::Small
             } else {
-                6.0
+                Radius::Medium
             })
             .child(ui::icon(button.icon).size(glyph).color(ink));
         if button.toggled {

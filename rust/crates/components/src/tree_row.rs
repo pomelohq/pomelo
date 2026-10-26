@@ -1,4 +1,4 @@
-use ui::{div, icon, theme, Div, Icon, IconKind, Node, Rgba};
+use ui::{div, icon, theme, Div, Icon, IconKind, Node, Radius, Rgba};
 
 pub const TREE_INDENT: f32 = 16.0;
 const PAD_LEFT: f32 = 8.0;
@@ -103,7 +103,7 @@ impl TreeRow {
             .items_center()
             .on_click(self.id);
         if self.rounded {
-            row = row.rounded(6.0);
+            row = row.rounded(Radius::Medium);
         }
         row = indent_guides(row, self.depth);
         if self.focused {

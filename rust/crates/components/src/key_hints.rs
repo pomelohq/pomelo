@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, LabelSize, Node};
+use ui::{div, label, theme, Div, LabelSize, Node, Radius};
 
 /// The strip at the foot of a picker that says what the keys do: Enter opens, arrows move, Escape closes.
 /// A hint with an id is also a button. Built with [`key_hints`].
@@ -28,7 +28,7 @@ impl KeyHints {
             .px(4.0)
             .gap(6.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .child(
                 div()
                     .row()

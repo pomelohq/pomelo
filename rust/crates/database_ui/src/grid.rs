@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 
 const HEADER_H: f32 = 30.0;
 pub const ROW_H: f32 = 26.0;
@@ -696,7 +696,7 @@ impl Grid {
                     cell = cell.child(icon(IconKind::ArrowUpRight).size(10.0).color(colors.hint));
                 }
                 if selected {
-                    cell = cell.border(1.0, colors.text_accent).rounded(2.0);
+                    cell = cell.border(1.0, colors.text_accent).rounded(Radius::XSmall);
                 } else if edited {
                     cell = cell.bg(colors.warning.alpha(0.13));
                 }

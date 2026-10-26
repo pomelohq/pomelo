@@ -68,11 +68,12 @@ fn local_fs(root: &Path) -> SharedFs {
     std::sync::Arc::new(LocalFs::new(root.to_path_buf()))
 }
 use ui::{
-    div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Rect, Rgba,
+    div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Radius, Rect,
+    Rgba,
 };
 use workspace::{
-    ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, Elevation, FunctionView, Item,
-    ItemInput, ModalView, FUNC_VIEW_BASE,
+    ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, FunctionView, Item, ItemInput,
+    ModalView, FUNC_VIEW_BASE,
 };
 
 // Editor text metrics (design px). Each source line is `edit_line_h()` tall with `edit_font()` mono text. Caret/selection geometry uses these plus the mono advance so it aligns with the glyphs.
@@ -4973,7 +4974,7 @@ impl Item for FileItem {
                         .h_px(edit_line_h())
                         .px(4.0)
                         .items_center()
-                        .rounded(2.0)
+                        .rounded(Radius::XSmall)
                         .bg(color.alpha(0.05))
                         .child(
                             label(message)
@@ -4999,7 +5000,7 @@ impl Item for FileItem {
                     r = r.child(
                         div()
                             .px(FOLD_PILL_PAD)
-                            .rounded(3.0)
+                            .rounded(Radius::Small)
                             .bg(theme().element_hover)
                             .child(
                                 label("...".to_string())
@@ -9655,35 +9656,35 @@ impl FunctionView for FilesView {
             return Some(ModalView {
                 node: view.render(OUTLINE_BASE, preview),
                 width: view.size().width,
-                elevation: Elevation::Modal,
+                elevation: ui::Elevation::Modal,
             });
         }
         if let Some((_, palette)) = self.palette.as_ref() {
             return Some(ModalView {
                 node: palette.render(PALETTE_BASE),
                 width: command_palette::WIDTH,
-                elevation: Elevation::Modal,
+                elevation: ui::Elevation::Modal,
             });
         }
         if let Some((_, finder)) = self.finder.as_ref() {
             return Some(ModalView {
                 node: finder.render(FINDER_BASE),
                 width: file_finder::WIDTH,
-                elevation: Elevation::Modal,
+                elevation: ui::Elevation::Modal,
             });
         }
         if let Some((_, selector)) = self.language_selector.as_ref() {
             return Some(ModalView {
                 node: selector.render(LANGUAGE_BASE),
                 width: language_selector::WIDTH,
-                elevation: Elevation::Modal,
+                elevation: ui::Elevation::Modal,
             });
         }
         let (_, modal) = self.go_to_line.as_ref()?;
         Some(ModalView {
             node: modal.render(),
             width: go_to_line::WIDTH,
-            elevation: Elevation::Elevated,
+            elevation: ui::Elevation::Elevated,
         })
     }
 

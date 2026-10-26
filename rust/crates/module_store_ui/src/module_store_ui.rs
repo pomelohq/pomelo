@@ -12,7 +12,7 @@ use module_store::{format_size, Holding, Overview, RepoState, User, Version};
 pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
@@ -503,7 +503,7 @@ fn chips(
             .row()
             .px(7.0)
             .py(1.0)
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .on_click(more_id)
             .child(label(text).size(LabelSize::Small).color(colors.text_accent));
         if hovered == Some(more_id) {
@@ -1511,7 +1511,7 @@ impl Item for StorePage {
         };
         let area = Rect::new(x, y, w, h, Rgba::TRANSPARENT);
         let mut painted = ui::render(&node, area);
-        let mut rects = workspace::elevation_shadow(area, workspace::Elevation::Overlay);
+        let mut rects = ui::elevation_shadow(area, ui::Elevation::Overlay, 1.0);
         rects.append(&mut painted.rects);
         painted.rects = rects;
         self.popover_rect = Some(area);
