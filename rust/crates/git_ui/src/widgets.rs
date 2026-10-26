@@ -1,6 +1,6 @@
 use git::working_copy::Staging;
 use git::ChangeStatus;
-use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
@@ -34,7 +34,7 @@ pub(crate) fn status_icon(status: ChangeStatus) -> Node {
     icon(kind).size(13.0).color(color).into()
 }
 
-pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: f32) -> Node {
+pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: LabelSize) -> Node {
     let colors = theme();
     let (Some(added), Some(deleted)) = (added, deleted) else {
         return label("binary").size(size).color(colors.text_muted).into();
@@ -95,7 +95,7 @@ pub(crate) fn arrow_count(kind: IconKind, count: usize, color: Rgba) -> Node {
         .gap(1.0)
         .items_center()
         .child(icon(kind).size(10.0).color(color))
-        .child(label(count.to_string()).size(10.5).color(color))
+        .child(label(count.to_string()).size(LabelSize::Mini).color(color))
         .into()
 }
 

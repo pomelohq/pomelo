@@ -2,7 +2,7 @@
 //! the target row while typing and restoring the scroll when cancelled.
 
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
-use ui::{div, label, theme, Node};
+use ui::{div, label, theme, LabelSize, Node};
 
 pub const WIDTH: f32 = 384.0;
 
@@ -125,11 +125,11 @@ impl GoToLine {
             )))
             .child(components::divider())
             .child(
-                div()
-                    .row()
-                    .px(8.0)
-                    .py(4.0)
-                    .child(label(self.help_text()).size(14.0).color(colors.text_muted)),
+                div().row().px(8.0).py(4.0).child(
+                    label(self.help_text())
+                        .size(LabelSize::Default)
+                        .color(colors.text_muted),
+                ),
             )
             .into()
     }

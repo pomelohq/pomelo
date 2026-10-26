@@ -287,7 +287,7 @@ impl FileFinder {
             results = results.child(
                 div().row().px(10.0).py(4.0).child(
                     label(text)
-                        .label_size(LabelSize::Default)
+                        .size(LabelSize::Default)
                         .color(colors.text_muted),
                 ),
             );
@@ -346,8 +346,7 @@ impl FileFinder {
         let name_label = highlighted(name, &name_positions, colors.text, LabelSize::Default);
         let folder_budget = WIDTH - ROW_CHROME - ui::measure(&name_label).0;
         let (folder, folder_positions) = elide_folder(folder, &folder_positions, |text| {
-            ui::measure(&label(text.to_string()).label_size(LabelSize::Small).into()).0
-                <= folder_budget
+            ui::measure(&label(text.to_string()).size(LabelSize::Small).into()).0 <= folder_budget
         });
         let path_labels = div()
             .row()
@@ -490,7 +489,7 @@ pub(crate) fn highlighted(
     let accent = theme().text_accent;
     if positions.is_empty() {
         return label(text.to_string())
-            .label_size(size)
+            .size(size)
             .color(color)
             .truncate_start()
             .into();
@@ -503,7 +502,7 @@ pub(crate) fn highlighted(
         if matched != run_matched && !run.is_empty() {
             row = row.child(
                 label(std::mem::take(&mut run))
-                    .label_size(size)
+                    .size(size)
                     .color(if run_matched { accent } else { color }),
             );
         }
@@ -511,12 +510,11 @@ pub(crate) fn highlighted(
         run.push(c);
     }
     if !run.is_empty() {
-        row =
-            row.child(
-                label(run)
-                    .label_size(size)
-                    .color(if run_matched { accent } else { color }),
-            );
+        row = row.child(
+            label(run)
+                .size(size)
+                .color(if run_matched { accent } else { color }),
+        );
     }
     row.into()
 }

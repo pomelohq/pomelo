@@ -1,7 +1,7 @@
 //! Drawing pieces of the onboarding page that carry no state of their own.
 
 use components::text_line;
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node};
 use workspace::text_field::{FieldFont, TextField};
 
 pub const COLUMN_W: f32 = 640.0;
@@ -34,11 +34,15 @@ pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
         mark = if finished {
             mark.child(icon(IconKind::Check).size(10.0).color(colors.success))
         } else {
-            mark.child(label((index + 1).to_string()).size(12.0).color(if active {
-                colors.on_accent
-            } else {
-                colors.text_placeholder
-            }))
+            mark.child(
+                label((index + 1).to_string())
+                    .size(LabelSize::Small)
+                    .color(if active {
+                        colors.on_accent
+                    } else {
+                        colors.text_placeholder
+                    }),
+            )
         };
         let ink = if active {
             colors.text
@@ -54,7 +58,7 @@ pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
                 .gap(8.0)
                 .on_click(crate::ids::STEP_BASE + index as u64)
                 .child(mark)
-                .child(label(title.to_string()).size(12.0).color(ink)),
+                .child(label(title.to_string()).size(LabelSize::Small).color(ink)),
         );
     }
     row.into()
@@ -66,7 +70,7 @@ pub fn head(title: &str, sub: Option<&str>) -> Node {
     let mut column = div().col().gap(4.0).child(text_line(
         28.0,
         label(title.to_string())
-            .size(20.0)
+            .size_px(20.0)
             .weight(600)
             .color(colors.text)
             .truncate(),
@@ -75,7 +79,7 @@ pub fn head(title: &str, sub: Option<&str>) -> Node {
         column = column.child(text_line(
             20.0,
             label(sub.to_string())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .color(colors.text_placeholder)
                 .truncate(),
         ));
@@ -115,7 +119,7 @@ pub fn chip(text: &str, on: bool) -> Node {
 
 pub fn muted(text: &str) -> ui::Label {
     label(text.to_string())
-        .size(12.0)
+        .size(LabelSize::Small)
         .color(theme().text_placeholder)
 }
 
@@ -123,7 +127,7 @@ pub fn muted(text: &str) -> ui::Label {
 pub fn note_paragraph(text: &str, width: f32) -> Node {
     Node::from(
         components::paragraph(text, width)
-            .size(12.0, 16.0)
+            .size(LabelSize::Small, 16.0)
             .color(theme().text_placeholder),
     )
 }
@@ -242,7 +246,7 @@ pub fn repo_row(lead: Node, name: Node, second: &str, trailing: Vec<Node>) -> No
             div().col().flex(1.0).child(name).child(text_line(
                 16.0,
                 label(second.to_string())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .truncate_start(),
             )),
@@ -257,7 +261,7 @@ pub fn strong_line(text: &str) -> Node {
     text_line(
         20.0,
         label(text.to_string())
-            .size(13.0)
+            .size(LabelSize::Medium)
             .medium()
             .color(theme().text)
             .truncate(),

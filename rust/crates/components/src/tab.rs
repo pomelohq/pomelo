@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 pub const TAB_HEIGHT: f32 = 26.0;
 
@@ -105,7 +105,7 @@ impl Tab {
                 if let Some(glyph) = self.glyph {
                     row = row.child(glyph);
                 }
-                let mut title = label(self.title).size(13.0);
+                let mut title = label(self.title).size(LabelSize::Medium);
                 title = if self.active || self.floating {
                     title.medium().color(colors.text)
                 } else {
@@ -116,7 +116,11 @@ impl Tab {
                 }
                 row = row.child(title);
                 if let Some(detail) = self.detail {
-                    row = row.child(label(detail).size(13.0).color(colors.text_placeholder));
+                    row = row.child(
+                        label(detail)
+                            .size(LabelSize::Medium)
+                            .color(colors.text_placeholder),
+                    );
                 }
             }
         }

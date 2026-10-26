@@ -1,5 +1,5 @@
 use components::MenuItem;
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 
 use crate::scene::{Board, Group};
 
@@ -67,7 +67,7 @@ fn header(title: &str, trailing: Node) -> Node {
         .justify_between()
         .pl(16.0)
         .pr(INSET)
-        .child(label(title).size(13.0).weight(600))
+        .child(label(title).size(LabelSize::Medium).weight(600))
         .child(trailing)
         .into()
 }
@@ -81,12 +81,16 @@ fn section(title: &str, trailing: Option<String>) -> Node {
         .pt(6.0)
         .child(
             label(title)
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .weight(600)
                 .color(theme().text_muted),
         );
     if let Some(text) = trailing {
-        line = line.child(label(text).size(11.0).color(muted(theme().text_muted, 0.7)));
+        line = line.child(
+            label(text)
+                .size(LabelSize::Mini)
+                .color(muted(theme().text_muted, 0.7)),
+        );
     }
     line.into()
 }
@@ -131,7 +135,7 @@ fn row(
     line = line.child(leading).child(
         div().flex(1.0).child(
             label(text)
-                .size(12.0)
+                .size(LabelSize::Small)
                 .weight(if selected { 500 } else { 400 })
                 .color(if selected {
                     colors.text
@@ -199,11 +203,11 @@ pub fn left(
                     .child(
                         div()
                             .flex(1.0)
-                            .child(label(group.title).size(12.0).weight(600)),
+                            .child(label(group.title).size(LabelSize::Small).weight(600)),
                     )
                     .child(
                         label(members.len().to_string())
-                            .size(11.0)
+                            .size(LabelSize::Mini)
                             .color(muted(theme().text_muted, 0.7)),
                     ),
             ),
@@ -286,7 +290,7 @@ pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom
                 .hover_bg(theme().ghost_element_hover)
                 .child(
                     label(format!("{}%", (zoom * 100.0).round()))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono(),
                 ),
         )
@@ -374,25 +378,35 @@ pub fn board_title(title: &str, note: Option<&str>, width: f32) -> Node {
     let mut line = div()
         .w_px(width)
         .gap(6.0)
-        .child(label(title).size(12.0).weight(500).truncate());
+        .child(label(title).size(LabelSize::Small).weight(500).truncate());
     if let Some(note) = note {
-        line = line.child(label(note).size(12.0).color(theme().text_muted).wrap(width));
+        line = line.child(
+            label(note)
+                .size(LabelSize::Small)
+                .color(theme().text_muted)
+                .wrap(width),
+        );
     }
     line.into()
 }
 
 pub fn section_title(title: &str) -> Node {
-    label(title).size(26.0).weight(600).into()
+    label(title).size_px(26.0).weight(600).into()
 }
 
 pub fn group_title(title: &str) -> Node {
-    label(title).size(15.0).weight(600).into()
+    label(title).size(LabelSize::Large).weight(600).into()
 }
 
 pub fn group_note(note: &str, width: f32) -> Node {
     div()
         .w_px(width)
-        .child(label(note).size(12.0).color(theme().text_muted).wrap(width))
+        .child(
+            label(note)
+                .size(LabelSize::Small)
+                .color(theme().text_muted)
+                .wrap(width),
+        )
         .into()
 }
 
@@ -429,10 +443,13 @@ pub fn mini(page: &str) -> Node {
     pill()
         .gap(4.0)
         .pl(14.0)
-        .child(label("Pomelo Gallery").size(13.0).weight(600))
+        .child(label("Pomelo Gallery").size(LabelSize::Medium).weight(600))
         .child(picker(
             PAGES,
-            label(page).size(13.0).color(theme().text_muted).into(),
+            label(page)
+                .size(LabelSize::Medium)
+                .color(theme().text_muted)
+                .into(),
         ))
         .child(panels_button())
         .into()
@@ -473,7 +490,7 @@ pub fn shortcut_tip(action: &str) -> Node {
             .color(theme().icon)
             .into()
     } else {
-        label("Ctrl").size(11.0).into()
+        label("Ctrl").size(LabelSize::Mini).into()
     };
     div()
         .items_center()
@@ -482,7 +499,7 @@ pub fn shortcut_tip(action: &str) -> Node {
         .rounded(8.0)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
-        .child(label(action).size(12.0))
+        .child(label(action).size(LabelSize::Small))
         .child(
             div()
                 .gap(2.0)
@@ -491,7 +508,7 @@ pub fn shortcut_tip(action: &str) -> Node {
                     .color(theme().icon)
                     .into()))
                 .child(key(modifier))
-                .child(key(label("\\").size(11.0).mono().into())),
+                .child(key(label("\\").size(LabelSize::Mini).mono().into())),
         )
         .into()
 }

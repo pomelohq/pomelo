@@ -24,7 +24,7 @@ pub fn page_header(title: impl Into<Node>) -> PageHeader {
 /// The large title of the full form, wrapped to `width`.
 pub fn page_title(text: impl Into<String>, width: f32) -> Label {
     label(text.into())
-        .size(20.0)
+        .size_px(20.0)
         .weight(600)
         .color(theme().text)
         .wrap(width)

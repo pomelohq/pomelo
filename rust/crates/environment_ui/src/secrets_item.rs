@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect};
 use workspace::text_field::TextField;
 use workspace::{EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
 
@@ -164,7 +164,7 @@ impl SecretsItem {
             )
             .child(
                 label(format!("{{{{secret.{name}}}}}"))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(colors.text_accent),
             )
@@ -185,7 +185,7 @@ impl SecretsItem {
                         } else {
                             value.clone()
                         })
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(colors.text_muted)
                         .truncate(),
@@ -227,7 +227,7 @@ impl SecretsItem {
                     .on_click(base + DELETE)
                     .child(
                         label("Delete?")
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .weight(600)
                             .color(colors.background),
                     ),
@@ -299,18 +299,17 @@ impl Item for SecretsItem {
         let (width, height) = (body.w / scale, body.h / scale);
         let doc_w = width.min(DOC_W);
         let intro = label("Encrypted app-local values for {{secret.NAME}} referenced in your config. Names are listed; values show only when you ask.")
-            .size(12.0)
+            .size(LabelSize::Small)
             .color(colors.text_muted)
             .wrap(doc_w - 48.0);
         let mut list = div().col().rounded(6.0).bg(colors.panel_background);
         if self.names.is_empty() {
             list = list.child(
-                div()
-                    .row()
-                    .h_px(ROW_H)
-                    .px(14.0)
-                    .items_center()
-                    .child(label("No secrets yet.").size(12.0).color(colors.text_muted)),
+                div().row().h_px(ROW_H).px(14.0).items_center().child(
+                    label("No secrets yet.")
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted),
+                ),
             );
         }
         let first = (self.scroll / ROW_H) as usize;
@@ -346,9 +345,11 @@ impl Item for SecretsItem {
                     .enabled(add_ready),
             );
         let note = match &self.error {
-            Some(error) => label(error.clone()).size(12.0).color(colors.error),
+            Some(error) => label(error.clone())
+                .size(LabelSize::Small)
+                .color(colors.error),
             None => label("Names use letters, digits and _ only, as in {{secret.NAME}}.")
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder),
         };
         let doc = div()

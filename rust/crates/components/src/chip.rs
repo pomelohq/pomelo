@@ -57,7 +57,7 @@ impl Chip {
         }
         chip.child(
             ui::label(self.label)
-                .label_size(LabelSize::XSmall)
+                .size(LabelSize::XSmall)
                 .mono()
                 .color(ink),
         )

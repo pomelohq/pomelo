@@ -6,12 +6,12 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 
 const HEADER_H: f32 = 30.0;
 pub const ROW_H: f32 = 26.0;
 const CELL_PAD: f32 = 4.0;
-const FONT: f32 = 12.0;
+const FONT: LabelSize = LabelSize::Small;
 const MIN_WIDTH: f32 = 40.0;
 /// Content-sized columns stay between these widths until resized by hand.
 const AUTO_MIN: f32 = 70.0;
@@ -119,7 +119,7 @@ fn scale() -> f32 {
 }
 
 fn text_width(text: &str) -> f32 {
-    ui::measure_text_width(text, FONT, true, 400)
+    ui::measure_text_width(text, FONT.px(), true, 400)
 }
 
 impl Grid {
@@ -230,7 +230,7 @@ impl Grid {
             0.0
         };
         let kind = self.types.get(column).map_or(0.0, |kind| {
-            ui::measure_text_width(kind, FONT - 1.5, true, 400) + 6.0
+            ui::measure_text_width(kind, FONT.smaller().px(), true, 400) + 6.0
         });
         text_width(&self.columns[column]) + kind + marker + 16.0
     }
@@ -532,11 +532,13 @@ impl Grid {
                 .types
                 .get(*column)
                 .filter(|kind| !kind.is_empty())
-                .filter(|kind| ui::measure_text_width(kind, FONT - 1.5, true, 400) + 6.0 <= room)
+                .filter(|kind| {
+                    ui::measure_text_width(kind, FONT.smaller().px(), true, 400) + 6.0 <= room
+                })
             {
                 title = title.child(
                     label(kind.clone())
-                        .size(FONT - 1.5)
+                        .size(FONT.smaller())
                         .mono()
                         .color(colors.text_placeholder)
                         .truncate(),
@@ -610,7 +612,7 @@ impl Grid {
                         .justify_end()
                         .child(
                             label((row + 1).to_string())
-                                .size(FONT - 1.0)
+                                .size(FONT.smaller())
                                 .mono()
                                 .color(colors.text_placeholder),
                         ),

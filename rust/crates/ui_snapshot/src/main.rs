@@ -3264,15 +3264,18 @@ fn main() -> anyhow::Result<()> {
                         colors.title_bar_background,
                     ))
                     .child(
-                        ui::div()
-                            .row()
-                            .items_center()
-                            .h_px(24.0)
-                            .px(8.0)
-                            .child(ui::label("myproject").size(13.0).color(colors.text)),
+                        ui::div().row().items_center().h_px(24.0).px(8.0).child(
+                            ui::label("myproject")
+                                .size(ui::LabelSize::Medium)
+                                .color(colors.text),
+                        ),
                     )
                     .child(ui::div().row().flex(1.0))
-                    .child(ui::label(meta).size(11.0).color(colors.text_placeholder)),
+                    .child(
+                        ui::label(meta)
+                            .size(ui::LabelSize::Mini)
+                            .color(colors.text_placeholder),
+                    ),
             );
         }
         let painted = ui::render(

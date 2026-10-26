@@ -128,7 +128,7 @@ impl Segmented {
             if let Some(count) = segment.count {
                 cell = cell.child(
                     ui::label(count.to_string())
-                        .size(size.text() - 1.0)
+                        .size(size.text().smaller())
                         .color(colors.text_placeholder),
                 );
             }

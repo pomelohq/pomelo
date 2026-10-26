@@ -7,7 +7,7 @@ use std::any::Any;
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
 use components::{field, modal_footer, modal_frame, modal_header, modal_section, MODAL_INSET};
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -66,7 +66,7 @@ pub trait WindowModal: 'static {
 
 /// Content height of a one-line input: 30px box minus 5px padding top and bottom.
 const INPUT_HEIGHT: f32 = 20.0;
-const INPUT_FONT: f32 = 13.0;
+const INPUT_FONT: LabelSize = LabelSize::Medium;
 /// Width of a confirmation in design px.
 pub const PROMPT_WIDTH: f32 = 460.0;
 
@@ -169,7 +169,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                 )
                 .child(Node::from(
                     components::paragraph(warning, text_width - 46.0)
-                        .size(13.0, 20.0)
+                        .size(LabelSize::Medium, 20.0)
                         .color(colors.text),
                 )),
         );
@@ -194,7 +194,7 @@ fn body_text(text: &str, width: f32) -> Node {
     if !fits {
         return Node::from(
             components::paragraph(plain, width)
-                .size(13.0, 20.0)
+                .size(LabelSize::Medium, 20.0)
                 .color(colors.text_muted),
         );
     }
@@ -203,7 +203,7 @@ fn body_text(text: &str, width: f32) -> Node {
         if run.is_empty() {
             continue;
         }
-        let run = label(run.to_string()).size(13.0);
+        let run = label(run.to_string()).size(LabelSize::Medium);
         row = row.child(if index % 2 == 1 {
             run.weight(600).color(colors.text)
         } else {
@@ -227,7 +227,7 @@ pub struct InputField {
 impl InputField {
     pub fn new(label: &'static str, placeholder: &'static str) -> InputField {
         let mut field = TextField::default();
-        field.set_font_size(INPUT_FONT);
+        field.set_font_size(INPUT_FONT.px());
         InputField {
             field,
             label,
@@ -332,7 +332,7 @@ impl InputField {
             return None;
         }
         let mut dots = TextField::default();
-        dots.set_font_size(INPUT_FONT);
+        dots.set_font_size(INPUT_FONT.px());
         dots.set_text(&"*".repeat(self.field.text().chars().count()));
         dots.move_to_end();
         Some(dots)

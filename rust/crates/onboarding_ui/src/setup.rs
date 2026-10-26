@@ -2,7 +2,7 @@
 
 use components::{text_line, ButtonKind};
 use onboarding::{CheckKind, CheckStatus};
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 use crate::ids::*;
 use crate::model::{Onboarding, Phase, Request, Run};
@@ -282,11 +282,12 @@ fn phase_row(title: &str, state: PhaseState, note: Option<&str>) -> Node {
         .rounded(4.0)
         .child(icon(kind).size(14.0).color(tint))
         .child(
-            div()
-                .row()
-                .flex(1.0)
-                .items_center()
-                .child(label(title.to_string()).size(13.0).color(ink).truncate()),
+            div().row().flex(1.0).items_center().child(
+                label(title.to_string())
+                    .size(LabelSize::Medium)
+                    .color(ink)
+                    .truncate(),
+            ),
         );
     if state == PhaseState::Running {
         row = row.bg(colors.element_selected);
@@ -316,7 +317,7 @@ fn problem_card(
         log = log.child(text_line(
             16.0,
             label(line.to_string())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .mono()
                 .color(colors.text_muted)
                 .truncate(),
@@ -467,7 +468,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
             .child(text_line(
                 28.0,
                 label(value.to_string())
-                    .size(20.0)
+                    .size_px(20.0)
                     .weight(600)
                     .color(colors.text),
             ))

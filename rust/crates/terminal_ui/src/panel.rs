@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use terminal::Waker;
-use ui::{div, label, theme, IconKind, Node, Painted, Rect};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Painted, Rect};
 use workspace::pane::{Pane, PaneCommand};
 use workspace::pane_group::SplitDirection;
 use workspace::pane_group_view::{
@@ -107,10 +107,10 @@ fn spawn_failure(error: String) -> Node {
         .bg(colors.editor_background)
         .child(
             label("Failed to start the shell")
-                .size(14.0)
+                .size(LabelSize::Default)
                 .color(colors.text),
         )
-        .child(label(error).size(12.0).color(colors.text_muted))
+        .child(label(error).size(LabelSize::Small).color(colors.text_muted))
         .into()
 }
 

@@ -1,7 +1,7 @@
 //! The shared controls screens are built from, one state per board.
 
 use components::{ButtonKind, ButtonSize};
-use ui::{div, theme, Corner, IconKind, Node, Rgba};
+use ui::{div, theme, Corner, IconKind, LabelSize, Node, Rgba};
 use workspace::InputField;
 
 use crate::{still, Story, StoryDef};
@@ -598,9 +598,17 @@ pub fn stories() -> Vec<StoryDef> {
                             .row()
                             .gap(8.0)
                             .items_center()
-                            .child(ui::label("Ln 12, Col 4").size(12.0).color(theme().text))
+                            .child(
+                                ui::label("Ln 12, Col 4")
+                                    .size(LabelSize::Small)
+                                    .color(theme().text),
+                            )
                             .child(components::vertical_divider(14.0))
-                            .child(ui::label("Rust").size(12.0).color(theme().text_muted)),
+                            .child(
+                                ui::label("Rust")
+                                    .size(LabelSize::Small)
+                                    .color(theme().text_muted),
+                            ),
                     )
                 })
             },
@@ -783,14 +791,17 @@ pub fn stories() -> Vec<StoryDef> {
                         .child(components::key_value(
                             components::key_label("Branch"),
                             ui::label("feat-login")
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .mono()
                                 .color(theme().text),
                             None,
                         ))
                         .child(components::key_value(
                             components::key_label("Port"),
-                            ui::label("3000").size(12.0).mono().color(theme().text),
+                            ui::label("3000")
+                                .size(LabelSize::Small)
+                                .mono()
+                                .color(theme().text),
                             Some("forwarded"),
                         )),
                 )

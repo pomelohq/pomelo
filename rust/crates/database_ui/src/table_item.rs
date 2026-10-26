@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextArea, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -1351,7 +1351,7 @@ impl TableItem {
                     FieldFont::Mono,
                 ),
                 _ => label("filter")
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .mono()
                     .color(colors.text_placeholder)
                     .truncate()
@@ -1396,10 +1396,18 @@ impl TableItem {
             bar = bar
                 .child(self.icon_button(FIRST_PAGE, IconKind::ChevronLeft, self.offset > 0))
                 .child(self.icon_button(PREVIOUS_PAGE, IconKind::ArrowLeft, self.offset > 0))
-                .child(label(self.page_label()).size(12.0).color(colors.text_muted))
+                .child(
+                    label(self.page_label())
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted),
+                )
                 .child(self.icon_button(NEXT_PAGE, IconKind::ArrowRight, self.can_go_next()));
         } else if data {
-            bar = bar.child(label(self.page_label()).size(12.0).color(colors.text_muted));
+            bar = bar.child(
+                label(self.page_label())
+                    .size(LabelSize::Small)
+                    .color(colors.text_muted),
+            );
         }
         let (status, error) = if self.loading.busy() {
             ("Loading...".to_string(), false)
@@ -1500,7 +1508,7 @@ impl TableItem {
                 .p(12.0)
                 .child(
                     label("Select a cell to see its whole value")
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_muted)
                         .wrap(width - 24.0),
                 )
@@ -2198,12 +2206,20 @@ impl Item for TableItem {
                 (View::Ddl, _, Some(Err(error))) => div()
                     .col()
                     .p(12.0)
-                    .child(label(error.clone()).size(12.0).color(colors.error))
+                    .child(
+                        label(error.clone())
+                            .size(LabelSize::Small)
+                            .color(colors.error),
+                    )
                     .into(),
                 _ => div()
                     .col()
                     .p(12.0)
-                    .child(label("Loading...").size(12.0).color(colors.text_muted))
+                    .child(
+                        label("Loading...")
+                            .size(LabelSize::Small)
+                            .color(colors.text_muted),
+                    )
                     .into(),
             };
             let view = self.view_pane.paint(&content, middle_area);

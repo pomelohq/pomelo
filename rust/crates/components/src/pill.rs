@@ -1,4 +1,4 @@
-use ui::{div, theme, Appearance, Div, IconKind, Node, Rgba};
+use ui::{div, theme, Appearance, Div, IconKind, LabelSize, Node, Rgba};
 
 use crate::dot;
 
@@ -83,7 +83,7 @@ impl Pill {
             .child(
                 div().row().flex(1.0).items_center().child(
                     ui::label(pill.text)
-                        .size(11.0)
+                        .size(LabelSize::Mini)
                         .medium()
                         .color(ink)
                         .truncate(),

@@ -2,7 +2,7 @@
 
 use components::{field, ButtonKind};
 use pom_agent::AgentCli;
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::text_field::FieldFont;
 
 use crate::ids::*;
@@ -341,7 +341,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         .gap(8.0)
         .child(
             label("Set up with an agent CLI")
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .medium()
                 .color(if any_agent {
                     colors.text
@@ -405,7 +405,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         .w_px(220.0),
     );
     if let Some(error) = branch_error {
-        branch_row = branch_row.child(label(error).size(12.0).color(colors.error));
+        branch_row = branch_row.child(label(error).size(LabelSize::Small).color(colors.error));
     }
     let options = div()
         .col()
@@ -522,13 +522,17 @@ fn review(state: &Onboarding, width: f32) -> Node {
                 .gap(12.0)
                 .px(10.0)
                 .py(8.0)
-                .child(div().w_px(120.0).child(components::text_line(
-                    20.0,
-                    label(key).size(13.0).color(colors.text_placeholder),
-                )))
+                .child(
+                    div().w_px(120.0).child(components::text_line(
+                        20.0,
+                        label(key)
+                            .size(LabelSize::Medium)
+                            .color(colors.text_placeholder),
+                    )),
+                )
                 .child(Node::from(
                     components::paragraph(value, value_w)
-                        .size(13.0, 20.0)
+                        .size(LabelSize::Medium, 20.0)
                         .color(colors.text),
                 ))
                 .into()

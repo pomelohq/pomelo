@@ -997,7 +997,7 @@ impl CommandPalette {
             command
                 .binding
                 .iter()
-                .map(|keystroke| render_keystroke(keystroke, LabelSize::Default.px())),
+                .map(|keystroke| render_keystroke(keystroke, LabelSize::Default)),
         );
         components::list_row(id_base + PaletteClick::Row(row).offset())
             .selected(row == self.selected)
@@ -1012,7 +1012,7 @@ impl CommandPalette {
                     .child(highlighted_label(
                         &command.name,
                         &found.positions,
-                        LabelSize::Default.px(),
+                        LabelSize::Default,
                     ))
                     .child(keys),
             )
@@ -1024,7 +1024,7 @@ const SWITCHER_ROW_HEIGHT: f32 = 45.0;
 const SWITCHER_HEADER_HEIGHT: f32 = 26.0;
 const SWITCHER_LIST_HEIGHT: f32 = 420.0;
 const SWITCHER_TILE: f32 = 32.0;
-const SWITCHER_TITLE: f32 = 13.0;
+const SWITCHER_TITLE: LabelSize = LabelSize::Medium;
 /// The row's horizontal insets: the list's, the item's, then the gap after the tile.
 const SWITCHER_TEXT_LEFT: f32 = 6.0 + 8.0 + SWITCHER_TILE + 10.0;
 const SWITCHER_TEXT_RIGHT: f32 = 8.0 + 6.0;
@@ -1057,7 +1057,7 @@ impl CommandPalette {
         let waiting = entry.row.agent == Some(workspace::AgentDot::AwaitingInput);
         let line = workspace::switcher_status(&entry.row).unwrap_or_else(|| {
             label(entry.row.branch.clone())
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .mono()
                 .color(colors.text_placeholder)
                 .truncate()
@@ -1105,7 +1105,7 @@ impl CommandPalette {
                     .px(8.0)
                     .child(
                         label(section.to_uppercase())
-                            .size(10.5)
+                            .size(LabelSize::Mini)
                             .weight(600)
                             .color(colors.text_placeholder),
                     ),
@@ -1148,7 +1148,7 @@ impl CommandPalette {
 fn fitted_label(text: &str, positions: &[usize], width: f32) -> Node {
     let size = SWITCHER_TITLE;
     let measure =
-        |candidate: &str| ui::measure_text_width(candidate, size, false, ui::ui_font_weight());
+        |candidate: &str| ui::measure_text_width(candidate, size.px(), false, ui::ui_font_weight());
     if measure(text) <= width {
         return highlighted_label(text, positions, size);
     }
@@ -1178,7 +1178,7 @@ fn row_height() -> f32 {
 }
 
 /// The name with matched chars in the accent color.
-fn highlighted_label(text: &str, positions: &[usize], size: f32) -> Node {
+fn highlighted_label(text: &str, positions: &[usize], size: LabelSize) -> Node {
     let colors = theme();
     let mut row = div().row();
     let mut run = String::new();

@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 /// A checkbox (14px box, accent filled when on) and its label, the whole row clickable. Built with
 /// [`checkbox`].
@@ -63,7 +63,11 @@ impl From<Checkbox> for Node {
             .on_click(checkbox.id)
             .child(square);
         if !checkbox.text.is_empty() {
-            row = row.child(label(checkbox.text).size(12.0).color(colors.text));
+            row = row.child(
+                label(checkbox.text)
+                    .size(LabelSize::Small)
+                    .color(colors.text),
+            );
         }
         row.into()
     }

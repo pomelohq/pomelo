@@ -89,7 +89,7 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
 }
 
 use components::{button, key_chip, ButtonKind, MenuItem};
-use ui::{div, folder_icon, label, render, theme, Node, Painted, Rect, Rgba, Text};
+use ui::{div, folder_icon, label, render, theme, LabelSize, Node, Painted, Rect, Rgba, Text};
 
 pub const TOP_BAR_H: f32 = 40.0;
 pub const STATUS_BAR_H: f32 = 28.0; // the thin status strip at the very bottom (a component, not a dock)
@@ -2991,7 +2991,7 @@ impl Layout {
             .h_px(24.0)
             .rounded(6.0)
             .on_click(SESSION_TRIGGER)
-            .child(label(name).size(13.0).color(text_c()));
+            .child(label(name).size(LabelSize::Medium).color(text_c()));
         if active {
             trigger = trigger.bg(theme().ghost_element_hover);
         }
@@ -3022,7 +3022,11 @@ impl Layout {
                             .size(12.0)
                             .color(text_dim_c()),
                     )
-                    .child(label(project.active.clone()).size(12.0).color(text_dim_c())),
+                    .child(
+                        label(project.active.clone())
+                            .size(LabelSize::Small)
+                            .color(text_dim_c()),
+                    ),
             );
         }
         let bar: Node = bar_row.into();
@@ -3070,7 +3074,7 @@ impl Layout {
                         .px(5.0)
                         .rounded(4.0)
                         .bg(theme().element_hover)
-                        .child(ui::render_keystroke(keys, 11.0)),
+                        .child(ui::render_keystroke(keys, LabelSize::Mini)),
                 );
             }
         }
@@ -3288,12 +3292,14 @@ impl Layout {
             .on_click(SESSION_SEARCH)
             .child(ui::search_icon().size(13.0).color(text_dim_c()));
         if query.is_empty() {
-            search = search
-                .child(caret(search_caret))
-                .child(label("Search sessions...").size(13.0).color(text_dim_c()));
+            search = search.child(caret(search_caret)).child(
+                label("Search sessions...")
+                    .size(LabelSize::Medium)
+                    .color(text_dim_c()),
+            );
         } else {
             search = search
-                .child(label(query).size(13.0).color(text_c()))
+                .child(label(query).size(LabelSize::Medium).color(text_c()))
                 .child(caret(search_caret));
         }
         push_into(
@@ -3382,7 +3388,7 @@ impl Layout {
                         .px(8.0)
                         .h_px(MENU_HEADER_H)
                         .items_center()
-                        .child(label(h).size(12.0).color(text_dim_c())),
+                        .child(label(h).size(LabelSize::Small).color(text_dim_c())),
                 );
             } else if let Some(i) = item {
                 if let Some(s) = self.sessions.get(i) {
@@ -3463,7 +3469,7 @@ fn action_row(icon: Node, text: &str, id: u64, hovered: Option<u64>) -> Node {
         .rounded(6.0)
         .on_click(id)
         .child(icon)
-        .child(label(text).size(13.0).color(text_c()));
+        .child(label(text).size(LabelSize::Medium).color(text_c()));
     if hovered == Some(id) {
         r = r.bg(theme().element_hover);
     }
@@ -3486,25 +3492,25 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
         .items_center()
         .gap(8.0)
         .child(ui::monitor_icon().size(16.0).color(text_dim_c()))
-        .child(
-            label(&s.name)
-                .size(13.0)
-                .color(if current { text_c() } else { text_dim_c() }),
-        );
+        .child(label(&s.name).size(LabelSize::Medium).color(if current {
+            text_c()
+        } else {
+            text_dim_c()
+        }));
     if current {
         left = left.child(ui::check_icon().size(15.0));
     }
     if let Some(host) = &s.host {
         left = left.child(
             label(format!("on {host}"))
-                .label_size(ui::LabelSize::XSmall)
+                .size(LabelSize::XSmall)
                 .color(theme().text_placeholder),
         );
     }
     if s.missing {
         left = left.child(
             label("missing")
-                .label_size(ui::LabelSize::XSmall)
+                .size(LabelSize::XSmall)
                 .color(theme().text_disabled),
         );
     }
@@ -3676,7 +3682,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             )
                             .child(
                                 label(summary.errors.to_string())
-                                    .size(12.0)
+                                    .size(LabelSize::Small)
                                     .color(colors.text),
                             );
                     }
@@ -3689,7 +3695,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                             )
                             .child(
                                 label(summary.warnings.to_string())
-                                    .size(12.0)
+                                    .size(LabelSize::Small)
                                     .color(colors.text),
                             );
                     }

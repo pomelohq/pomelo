@@ -1,4 +1,4 @@
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 
 use crate::icon_button;
 
@@ -15,7 +15,7 @@ pub fn dock_header(title: &str, action: Option<(IconKind, u64)>) -> Node {
         .items_center()
         .child(
             label(title.to_uppercase())
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .weight(600)
                 .color(theme().text_muted),
         )

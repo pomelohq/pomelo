@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{Item, ItemTick, UsageInfo};
 
 pub const TAB_ID: &str = "agent-usage";
@@ -260,8 +260,12 @@ fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
         .gap(2.0)
         .rounded(8.0)
         .border(1.0, colors.border_variant)
-        .child(label(value).size(22.0).weight(600).color(colors.text))
-        .child(label(title.to_string()).size(12.0).color(colors.text_muted))
+        .child(label(value).size_px(22.0).weight(600).color(colors.text))
+        .child(
+            label(title.to_string())
+                .size(LabelSize::Small)
+                .color(colors.text_muted),
+        )
         .child(div().pt(4.0).child(detail))
         .into()
 }
@@ -290,7 +294,7 @@ fn num(text: String, color: Rgba) -> Node {
         .row()
         .w_px(84.0)
         .justify_end()
-        .child(label(text).size(12.5).color(color))
+        .child(label(text).size(LabelSize::Medium).color(color))
         .into()
 }
 
@@ -336,7 +340,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .gap(2.0)
                 .child(
                     label("Agent usage")
-                        .size(20.0)
+                        .size_px(20.0)
                         .weight(600)
                         .color(colors.text),
                 )
@@ -344,7 +348,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     label(format!(
                         "{scope} - read from the agents' transcripts, no tokens spent"
                     ))
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .italic()
                     .color(colors.text_muted),
                 ),
@@ -370,7 +374,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     let change: Node = if previous_cost > 0.0 {
         let percent = ((cost - previous_cost) / previous_cost * 100.0).round();
         label(format!("{percent:+.0}% vs the {span} before"))
-            .size(11.5)
+            .size(LabelSize::Small)
             .color(if percent > 0.0 {
                 colors.warning
             } else {
@@ -379,12 +383,16 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .into()
     } else {
         label("nothing the period before")
-            .size(11.5)
+            .size(LabelSize::Small)
             .color(colors.text_placeholder)
             .into()
     };
-    let hint =
-        |text: String| -> Node { label(text).size(11.5).color(colors.text_placeholder).into() };
+    let hint = |text: String| -> Node {
+        label(text)
+            .size(LabelSize::Small)
+            .color(colors.text_placeholder)
+            .into()
+    };
     let mut stats = div().row().gap(10.0);
     if state.show_costs {
         stats = stats.child(stat(
@@ -450,13 +458,13 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .gap(6.0)
                     .child(
                         label(account.name.clone())
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .weight(500)
                             .color(colors.text),
                     )
                     .child(
                         label(capitalized(&account.plan))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder),
                     )
                     .child(div().flex(1.0))
@@ -465,7 +473,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                             "{:.0}% 5h - {:.0}% week",
                             session.used, weekly.used
                         ))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(colors.text),
                     ),
@@ -587,11 +595,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 String::new()
             };
             axis = axis.child(
-                div()
-                    .row()
-                    .w_px(bar_w)
-                    .justify_center()
-                    .child(label(text).size(11.0).color(colors.text_placeholder)),
+                div().row().w_px(bar_w).justify_center().child(
+                    label(text)
+                        .size(LabelSize::Mini)
+                        .color(colors.text_placeholder),
+                ),
             );
         }
         chart_body = chart_body
@@ -609,7 +617,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .child(components::dot(color_of(&group.key), 8.0))
                 .child(
                     label(group.label.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_muted),
                 )
                 .into(),
@@ -677,7 +685,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .child(components::dot(color_of(&group.key), 8.0))
                     .child(
                         label(group.label.clone())
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .color(colors.text)
                             .truncate(),
                     ),
@@ -727,7 +735,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             })
             .child(
                 label("Show every workspace")
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted),
             )
             .into()
@@ -768,7 +776,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         key(b).total_cmp(&key(a))
     });
     let chip = |text: String, max: f32| -> Node {
-        let text_w = ui::measure(&label(text.clone()).size(11.0).into()).0;
+        let text_w = ui::measure(&label(text.clone()).size(LabelSize::Mini).into()).0;
         div()
             .row()
             .h_px(18.0)
@@ -777,10 +785,12 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .rounded(4.0)
             .border(1.0, colors.border_variant)
             .child(
-                div()
-                    .row()
-                    .w_px(text_w.min(max))
-                    .child(label(text).size(11.0).color(colors.text_muted).truncate()),
+                div().row().w_px(text_w.min(max)).child(
+                    label(text)
+                        .size(LabelSize::Mini)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ),
             )
             .into()
     };
@@ -821,9 +831,12 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                         .color(colors.icon_muted),
                     )
                     .child(
-                        div()
-                            .w_px(title_w)
-                            .child(label(title).size(13.0).color(colors.text).truncate()),
+                        div().w_px(title_w).child(
+                            label(title)
+                                .size(LabelSize::Medium)
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                     )
                     .child(chip(workspace.to_string(), workspace_w))
                     .child(chip(model_family(model).to_string(), 88.0))
@@ -855,7 +868,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                                 colors.element_background
                             })
                             .on_click(open)
-                            .child(label("Open").size(12.5).color(colors.text)),
+                            .child(label("Open").size(LabelSize::Medium).color(colors.text)),
                     )
                     .into()
             },
@@ -871,7 +884,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .child(rows(heavy))
                 .child(
                     label("Most of a long session's tokens are its context read again each reply; a side agent that starts compacted or fresh costs a fraction of one forked from it.")
-                        .size(11.5)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .wrap(content_w),
                 )

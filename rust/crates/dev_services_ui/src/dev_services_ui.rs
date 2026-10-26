@@ -355,7 +355,7 @@ fn pretty_json(text: &str) -> String {
 }
 
 fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
-    label(text.into()).label_size(LabelSize::Small).color(color)
+    label(text.into()).size(LabelSize::Small).color(color)
 }
 
 fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node {

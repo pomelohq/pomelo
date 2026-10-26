@@ -4,7 +4,9 @@ use std::ops::Range;
 
 use pom_db::object_storage::format_size;
 use pom_db::{Engine, TableKind};
-use ui::{div, icon, label, material_icon, theme, Div, IconKind, MaterialIcon, Node, Rgba};
+use ui::{
+    div, icon, label, material_icon, theme, Div, IconKind, LabelSize, MaterialIcon, Node, Rgba,
+};
 use workspace::text_field::FieldFont;
 
 use crate::panel::{
@@ -58,7 +60,7 @@ fn object_icon(name: &str) -> MaterialIcon {
 /// A name with the filter's hit marked; the part after the hit gives way when the row is narrow.
 fn name(text: &str, hit: Option<Range<usize>>, color: Rgba, medium: bool) -> Node {
     let styled = |part: &str| {
-        let part = label(part.to_string()).size(13.0).color(color);
+        let part = label(part.to_string()).size(LabelSize::Medium).color(color);
         if medium {
             part.medium()
         } else {
@@ -91,7 +93,7 @@ fn name(text: &str, hit: Option<Range<usize>>, color: Rgba, medium: bool) -> Nod
 
 fn trailing(text: String) -> Node {
     label(text)
-        .size(11.5)
+        .size(LabelSize::Small)
         .color(theme().text_placeholder)
         .into()
 }
@@ -266,11 +268,15 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             let (kind, color) = engine_logo(found.engine);
             let line = row_base(panel, index, row, Some(*open), false)
                 .child(icon(kind).size(14.0).color(color))
-                .child(label(found.label.clone()).size(13.0).color(colors.text))
+                .child(
+                    label(found.label.clone())
+                        .size(LabelSize::Medium)
+                        .color(colors.text),
+                )
                 .child(
                     div().row().flex(1.0).items_center().child(
                         label(subtitle)
-                            .size(11.5)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder)
                             .truncate(),
                     ),
@@ -338,7 +344,12 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             row_base(panel, index, row, None, false)
                 .child(glyph)
                 .child(name(&column.name, hit.clone(), colors.text_muted, false))
-                .child(label(kind).size(11.0).mono().color(colors.text_placeholder))
+                .child(
+                    label(kind)
+                        .size(LabelSize::Mini)
+                        .mono()
+                        .color(colors.text_placeholder),
+                )
                 .into()
         }
         Row::Keyspace { table, hit, .. } => {
@@ -403,7 +414,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
                 } else {
                     "Show 50 more"
                 })
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_accent),
             )
             .into(),
@@ -418,7 +429,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
         )
         .child(
             label(text.clone())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(if *error {
                     colors.error
                 } else {
@@ -513,11 +524,16 @@ pub(crate) fn render_panel(
         .pr(6.0)
         .gap(4.0)
         .items_center()
-        .child(label("Database").size(13.0).medium().color(colors.text))
+        .child(
+            label("Database")
+                .size(LabelSize::Medium)
+                .medium()
+                .color(colors.text),
+        )
         .child(
             div().row().flex(1.0).pl(4.0).items_center().child(
                 label(panel.context.branch.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .truncate(),
             ),

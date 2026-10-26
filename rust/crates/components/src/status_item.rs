@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 pub const STATUS_ITEM_HEIGHT: f32 = 20.0;
 
@@ -47,14 +47,23 @@ impl StatusItem {
     }
 
     pub fn text(mut self, text: impl Into<String>, color: Rgba) -> Self {
-        self.parts
-            .push(label(text.into()).size(12.0).color(color).into());
+        self.parts.push(
+            label(text.into())
+                .size(LabelSize::Small)
+                .color(color)
+                .into(),
+        );
         self
     }
 
     pub fn mono(mut self, text: impl Into<String>, color: Rgba) -> Self {
-        self.parts
-            .push(label(text.into()).size(12.0).mono().color(color).into());
+        self.parts.push(
+            label(text.into())
+                .size(LabelSize::Small)
+                .mono()
+                .color(color)
+                .into(),
+        );
         self
     }
 

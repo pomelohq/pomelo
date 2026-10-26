@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -24,7 +24,7 @@ const CARD_RADIUS: f32 = 6.0;
 const ROW_H: f32 = 26.0;
 const TREE_W: f32 = 300.0;
 const KEYS_MAX: usize = 5000;
-const TEXT: f32 = 12.0;
+const TEXT: LabelSize = LabelSize::Small;
 
 const PATTERN_FIELD: u64 = 1;
 const REFRESH: u64 = 2;
@@ -91,7 +91,7 @@ pub struct KeyspaceItem {
 
 fn field(text: &str) -> TextField {
     let mut field = TextField::default();
-    field.set_font_size(TEXT);
+    field.set_font_size(TEXT.px());
     field.set_text(text);
     field.move_to_end();
     field
@@ -456,7 +456,11 @@ impl KeyspaceItem {
                 "session:*",
                 self.focus == Focus::Pattern,
             )))
-            .child(label(count).size(11.5).color(colors.text_placeholder))
+            .child(
+                label(count)
+                    .size(LabelSize::Small)
+                    .color(colors.text_placeholder),
+            )
             .child(components::icon_button(REFRESH, IconKind::RotateCw).hovered(self.hovered))
             .into()
     }
@@ -479,7 +483,7 @@ impl KeyspaceItem {
                         .px(12.0)
                         .h_px(ROW_H)
                         .items_center()
-                        .child(label(text).size(12.0).color(colors.text_muted)),
+                        .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
                 )
                 .into();
         }
@@ -507,7 +511,7 @@ impl KeyspaceItem {
                         )
                         .child(
                             label(count.to_string())
-                                .size(11.0)
+                                .size(LabelSize::Mini)
                                 .color(colors.text_placeholder),
                         );
                     if self.hovered == Some(id) {
@@ -552,7 +556,7 @@ impl KeyspaceItem {
                     if let Some(ttl) = key.ttl {
                         row = row.child(
                             label(short_ttl(ttl))
-                                .size(11.0)
+                                .size(LabelSize::Mini)
                                 .color(colors.text_placeholder),
                         );
                     }
@@ -571,7 +575,7 @@ impl KeyspaceItem {
                     label(format!(
                         "The first {KEYS_MAX}; narrow the pattern for the rest"
                     ))
-                    .size(11.5)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder),
                 ),
             );
@@ -591,7 +595,7 @@ impl KeyspaceItem {
                 .child(
                     div().row().w_px(if numbered { 50.0 } else { 160.0 }).child(
                         label(cells[0].to_uppercase())
-                            .size(10.5)
+                            .size(LabelSize::Mini)
                             .weight(600)
                             .color(colors.text_placeholder),
                     ),
@@ -599,7 +603,7 @@ impl KeyspaceItem {
                 .child(
                     div().row().flex(1.0).child(
                         label(cells[1].to_uppercase())
-                            .size(10.5)
+                            .size(LabelSize::Mini)
                             .weight(600)
                             .color(colors.text_placeholder),
                     ),
@@ -660,7 +664,7 @@ impl KeyspaceItem {
                 .p(14.0)
                 .child(
                     label("Select a key to see its value")
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_muted),
                 )
                 .into();
@@ -674,7 +678,7 @@ impl KeyspaceItem {
             .child(
                 div().row().flex(1.0).items_center().child(
                     label(key.key.clone())
-                        .size(13.0)
+                        .size(LabelSize::Medium)
                         .mono()
                         .color(colors.text)
                         .truncate(),
@@ -704,7 +708,11 @@ impl KeyspaceItem {
             Some((shown, value)) if *shown == key.key => value.clone(),
             _ => {
                 return content
-                    .child(label("Loading...").size(12.0).color(colors.text_muted))
+                    .child(
+                        label("Loading...")
+                            .size(LabelSize::Small)
+                            .color(colors.text_muted),
+                    )
                     .into();
             }
         };
@@ -799,7 +807,7 @@ impl KeyspaceItem {
                 let mut line = div().row().gap(6.0);
                 let mut used = 0.0;
                 for member in members {
-                    let chip_w = ui::measure_text_width(&member, TEXT, true, 400) + 18.0;
+                    let chip_w = ui::measure_text_width(&member, TEXT.px(), true, 400) + 18.0;
                     if used + chip_w > width - 40.0 && used > 0.0 {
                         lines = lines.child(line);
                         line = div().row().gap(6.0);
@@ -857,7 +865,7 @@ impl KeyspaceItem {
                     "Delete every key matching {}?",
                     self.pattern.text()
                 ))
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.error),
             )
             .child(self.text_button(CONFIRM_MATCHING, "Delete all", true))

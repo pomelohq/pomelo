@@ -71,12 +71,12 @@ pub fn parse_port(text: &str) -> Option<(u16, Option<u16>)> {
 }
 
 fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
-    label(text.into()).label_size(LabelSize::Small).color(color)
+    label(text.into()).size(LabelSize::Small).color(color)
 }
 
 fn head_cell(text: &str) -> ui::Label {
     label(text.to_uppercase())
-        .size(11.0)
+        .size(LabelSize::Mini)
         .weight(600)
         .color(theme().text_placeholder)
 }
@@ -130,7 +130,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
                 .border(1.0, colors.border_variant)
                 .child(
                     label("shared")
-                        .size(10.5)
+                        .size(LabelSize::Mini)
                         .mono()
                         .color(colors.text_placeholder),
                 ),

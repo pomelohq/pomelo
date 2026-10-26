@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
 
 /// What a pane or list says when it has nothing to show: why, and what fills it. Built with
 /// [`empty_state`].
@@ -47,7 +47,7 @@ impl EmptyState {
         if self.compact {
             return div().row().h_px(28.0).px(10.0).items_center().child(
                 label(self.title)
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .truncate(),
             );
@@ -58,7 +58,7 @@ impl EmptyState {
         }
         column = column.child(
             label(self.title)
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .medium()
                 .color(colors.text_muted),
         );

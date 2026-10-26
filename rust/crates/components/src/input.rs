@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Label, Node};
+use ui::{div, label, theme, Div, Label, LabelSize, Node};
 
 pub const INPUT_HEIGHT: f32 = 30.0;
 
@@ -39,13 +39,15 @@ fn field_note(hint: Option<&str>, error: Option<&str>) -> Option<Node> {
     match (error, hint) {
         (Some(error), _) => Some(text_line(
             16.0,
-            label(error.to_string()).size(12.0).color(colors.error),
+            label(error.to_string())
+                .size(LabelSize::Small)
+                .color(colors.error),
         )),
         // A long hint (a path) keeps its end, the part that differs, and never pushes past the field.
         (None, Some(hint)) if !hint.is_empty() => Some(text_line(
             16.0,
             label(hint.to_string())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder)
                 .truncate_start(),
         )),

@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, IconKind, Node, Rgba};
+use ui::{div, label, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 pub const MODAL_RADIUS: f32 = 10.0;
 /// Horizontal inset of the header title and the body.
@@ -37,7 +37,7 @@ pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
         .child(
             div().row().flex(1.0).items_center().child(
                 label(title.to_string())
-                    .size(15.0)
+                    .size(LabelSize::Large)
                     .weight(600)
                     .color(colors.text)
                     .truncate(),
@@ -85,7 +85,7 @@ pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
 /// A muted one-line note for the footer's start.
 pub fn modal_note(text: &str) -> Node {
     label(text.to_string())
-        .size(12.0)
+        .size(LabelSize::Small)
         .color(theme().text_placeholder)
         .truncate()
         .into()

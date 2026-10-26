@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pom_db::object_storage::{format_size, HttpTransport, ObjectEntry, ObjectRead};
 use pom_db::Database;
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, Node, Rect};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect};
 use workspace::{Item, ItemTick};
 
 use crate::{DatabaseContext, Pending};
@@ -314,7 +314,7 @@ impl ObjectItem {
                         "Delete {} from the bucket? It cannot be recovered.",
                         self.path()
                     ))
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .color(colors.error)
                     .truncate(),
                 )
@@ -341,11 +341,11 @@ impl ObjectItem {
         let inner = width - 2.0 * 12.0;
         let preview: Node = match &self.preview {
             Preview::Loading => label("Loading...")
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_muted)
                 .into(),
             Preview::None(text) => label(text.clone())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder)
                 .wrap(inner)
                 .into(),
@@ -375,7 +375,7 @@ impl ObjectItem {
                     text = text.child(
                         div().row().h_px(LINE_H).items_center().child(
                             label(line.clone())
-                                .size(11.5)
+                                .size(LabelSize::Small)
                                 .mono()
                                 .color(colors.editor_foreground)
                                 .truncate(),
@@ -394,15 +394,20 @@ impl ObjectItem {
                     .gap(8.0)
                     .items_center()
                     .child(
-                        div()
-                            .w_px(90.0)
-                            .child(label(name).size(12.0).color(colors.text_placeholder)),
+                        div().w_px(90.0).child(
+                            label(name)
+                                .size(LabelSize::Small)
+                                .color(colors.text_placeholder),
+                        ),
                     )
                     .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .child(label(value).size(12.0).mono().color(colors.text).truncate()),
+                        div().row().flex(1.0).child(
+                            label(value)
+                                .size(LabelSize::Small)
+                                .mono()
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                     ),
             );
         }
@@ -412,7 +417,7 @@ impl ObjectItem {
                 .gap(6.0)
                 .child(
                     label("Delete it from the bucket? It cannot be recovered.")
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.error)
                         .wrap(inner),
                 )
@@ -462,7 +467,7 @@ impl ObjectItem {
             .gap(8.0)
             .child(
                 label(self.object.name().to_string())
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .mono()
                     .color(colors.text)
                     .truncate(),
@@ -475,7 +480,7 @@ impl ObjectItem {
         if let Some((text, error)) = &self.status {
             side = side.child(
                 label(text.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(if *error {
                         colors.error
                     } else {
@@ -555,25 +560,30 @@ impl Item for ObjectItem {
                     .gap(12.0)
                     .items_center()
                     .child(
-                        div()
-                            .w_px(96.0)
-                            .child(label(name).size(12.5).color(colors.text_placeholder)),
+                        div().w_px(96.0).child(
+                            label(name)
+                                .size(LabelSize::Medium)
+                                .color(colors.text_placeholder),
+                        ),
                     )
                     .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .child(label(value).size(12.0).mono().color(colors.text).truncate()),
+                        div().row().flex(1.0).child(
+                            label(value)
+                                .size(LabelSize::Small)
+                                .mono()
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                     ),
             );
         }
         let preview: Node = match &self.preview {
             Preview::Loading => label("Loading...")
-                .size(12.5)
+                .size(LabelSize::Medium)
                 .color(colors.text_muted)
                 .into(),
             Preview::None(text) => label(text.clone())
-                .size(12.5)
+                .size(LabelSize::Medium)
                 .color(colors.text_placeholder)
                 .wrap(width - 2.0 * PAD)
                 .into(),
@@ -598,7 +608,7 @@ impl Item for ObjectItem {
                     text = text.child(
                         div().row().h_px(LINE_H).items_center().child(
                             label(line.clone())
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .mono()
                                 .color(colors.editor_foreground)
                                 .truncate(),
@@ -617,7 +627,7 @@ impl Item for ObjectItem {
             .bg(colors.editor_background)
             .child(self.toolbar());
         if let Some((text, error)) = &self.status {
-            content = content.child(label(text.clone()).size(12.0).color(if *error {
+            content = content.child(label(text.clone()).size(LabelSize::Small).color(if *error {
                 colors.error
             } else {
                 colors.text_muted

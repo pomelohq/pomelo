@@ -41,7 +41,7 @@ impl From<StatusLine> for Node {
             .child(
                 div().row().flex(1.0).items_center().child(
                     label(line.text)
-                        .label_size(LabelSize::Small)
+                        .size(LabelSize::Small)
                         .color(ink)
                         .truncate(),
                 ),

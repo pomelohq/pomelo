@@ -768,7 +768,7 @@ impl CreateWorkspaceModal {
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
                 label(shown)
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(name_color)
                     .truncate(),
@@ -777,7 +777,7 @@ impl CreateWorkspaceModal {
             branch_box = branch_box.child(
                 div().row().flex(1.0).items_center().child(
                     label(how)
-                        .label_size(LabelSize::Small)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 ),
@@ -809,7 +809,7 @@ impl CreateWorkspaceModal {
                     .on_click(REPO_BASE + index as u64)
                     .child(
                         label(row.name.clone())
-                            .label_size(LabelSize::Small)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(if row.picked {
                                 colors.text
@@ -845,12 +845,7 @@ impl CreateWorkspaceModal {
         };
         let mut cell = div().row().w_px(MODULES_W).items_center().justify_end();
         if let Some((text, color)) = shown {
-            cell = cell.child(
-                label(text)
-                    .label_size(LabelSize::Small)
-                    .color(color)
-                    .truncate(),
-            );
+            cell = cell.child(label(text).size(LabelSize::Small).color(color).truncate());
         }
         cell.into()
     }
@@ -1230,7 +1225,7 @@ impl WindowModal for RenameWorkspaceModal {
             .child(ui::material_icon(ui::MaterialIcon::Git).size(12.0))
             .child(
                 label(self.branch.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .truncate(),
             );

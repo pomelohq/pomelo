@@ -7,7 +7,7 @@ use markdown::{MarkdownBody, MarkdownStyle, DOCUMENT_STYLE};
 use pom_forge::{MergeMethod, PrTarget, PullRequest, TimelineItem, TimelineKind};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{TextArea, TextField};
 use workspace::{Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -221,7 +221,8 @@ impl PrItem {
             .author
             .as_ref()
             .map_or("", |author| author.login.as_str());
-        let mono = |text: String, color: Rgba| label(text).size(11.5).mono().color(color);
+        let mono =
+            |text: String, color: Rgba| label(text).size(LabelSize::Small).mono().color(color);
         let meta = div()
             .row()
             .h_px(14.0)
@@ -229,7 +230,7 @@ impl PrItem {
             .items_center()
             .child(
                 label(author.to_string())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted),
             )
             .child(mono(
@@ -244,7 +245,7 @@ impl PrItem {
             .lead(mono(format!("#{}", pr.number), colors.text_placeholder))
             .lead(
                 label(self.target.repo.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder),
             )
             .action(Self::header_button(
@@ -271,7 +272,7 @@ impl PrItem {
         if let Some(error) = &self.error {
             column = column.child(
                 label(error.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.error)
                     .wrap(width),
             );
@@ -366,7 +367,7 @@ impl PrItem {
                     )
                     .child(
                         label(format!("Looking up {} on GitHub...", self.target.head))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
             );
@@ -418,14 +419,14 @@ impl PrItem {
                     .child(icon(kind).size(20.0).color(color))
                     .child(
                         label(title)
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .weight(600)
                             .color(colors.text)
                             .wrap(card_width - 36.0),
                     )
                     .child(
                         label(hint)
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .color(colors.text_placeholder)
                             .wrap(card_width - 36.0),
                     )
@@ -525,14 +526,14 @@ impl PrItem {
                         .items_center()
                         .child(
                             label(item.author.clone())
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .weight(600)
                                 .color(colors.text),
                         )
-                        .child(label(verb).size(12.0).color(color))
+                        .child(label(verb).size(LabelSize::Small).color(color))
                         .child(
                             label(short_time(&item.at))
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_placeholder),
                         ),
                 );
@@ -546,13 +547,18 @@ impl PrItem {
                 };
                 let mut head = div().row().h_px(16.0).gap(10.0).items_center().child(
                     label(place)
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(colors.text_muted)
                         .truncate_start(),
                 );
                 if thread.resolved {
-                    head = head.child(label("Resolved").size(12.0).mono().color(colors.success));
+                    head = head.child(
+                        label("Resolved")
+                            .size(LabelSize::Small)
+                            .mono()
+                            .color(colors.success),
+                    );
                 }
                 let mut thread_box = div()
                     .col()
@@ -574,13 +580,13 @@ impl PrItem {
                                     .items_center()
                                     .child(
                                         label(comment.author.clone())
-                                            .size(12.0)
+                                            .size(LabelSize::Small)
                                             .weight(600)
                                             .color(colors.text),
                                     )
                                     .child(
                                         label(short_time(&comment.at))
-                                            .size(12.0)
+                                            .size(LabelSize::Small)
                                             .color(colors.text_placeholder),
                                     ),
                             )
@@ -617,7 +623,7 @@ impl PrItem {
         };
         let muted = |text: &str| -> Node {
             label(text.to_string())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder)
                 .into()
         };
@@ -642,8 +648,12 @@ impl PrItem {
                         .gap(8.0)
                         .items_center()
                         .child(components::avatar(&reviewer.name))
-                        .child(label(reviewer.name.clone()).size(12.0).color(colors.text))
-                        .child(label(text).size(12.0).color(color)),
+                        .child(
+                            label(reviewer.name.clone())
+                                .size(LabelSize::Small)
+                                .color(colors.text),
+                        )
+                        .child(label(text).size(LabelSize::Small).color(color)),
                 );
             }
             list.into()
@@ -682,7 +692,11 @@ impl PrItem {
         let mut column = div().col().gap(2.0);
         if pr.status_check_rollup.is_empty() {
             return column
-                .child(label("No checks").size(12.0).color(colors.text_placeholder))
+                .child(
+                    label("No checks")
+                        .size(LabelSize::Small)
+                        .color(colors.text_placeholder),
+                )
                 .into();
         }
         for (index, check) in pr.status_check_rollup.iter().enumerate() {
@@ -703,14 +717,14 @@ impl PrItem {
                 .child(icon(kind).size(14.0).color(color))
                 .child(
                     label(check.name.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .weight(500)
                         .color(colors.text),
                 );
             if !check.workflow_name.is_empty() {
                 row = row.child(
                     label(check.workflow_name.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder),
                 );
             }
@@ -721,7 +735,11 @@ impl PrItem {
                 duration(&check.started_at, &check.completed_at)
             };
             if let Some(took) = took {
-                row = row.child(label(took).size(12.0).color(colors.text_placeholder));
+                row = row.child(
+                    label(took)
+                        .size(LabelSize::Small)
+                        .color(colors.text_placeholder),
+                );
             }
             if !check.details_url.is_empty() {
                 row = row.on_click(CHECK_BASE + index as u64).child(

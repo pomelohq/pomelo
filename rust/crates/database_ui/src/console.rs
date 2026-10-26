@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use components::ButtonKind;
 use pom_db::{Console, ConsoleKind, Database, Engine, QueryResult};
-use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::persistence::SerializedItem;
 use workspace::{EditKey, Item, ItemFooter, RunRequest};
 
@@ -179,7 +179,7 @@ impl ConsoleFooter {
             .child(run)
             .lead(
                 label(status)
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(if error {
                         colors.error
                     } else {
@@ -239,7 +239,7 @@ impl ItemFooter for ConsoleFooter {
                 .h_px(grid_area.h / scale)
                 .justify_center()
                 .pt(16.0)
-                .child(label(hint).size(12.0).color(colors.text_muted))
+                .child(label(hint).size(LabelSize::Small).color(colors.text_muted))
                 .into()
         } else {
             let grid = self.grid.render(grid_area, None, None);

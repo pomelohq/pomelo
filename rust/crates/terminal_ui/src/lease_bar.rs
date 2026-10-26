@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use pom_agent::PendingApproval;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::keymap::{key_hint, Action};
 
 const TAKE_OVER: u64 = 0;
@@ -185,7 +185,7 @@ pub fn strip(
             .child(
                 label(pending.tool.clone())
                     .mono()
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .weight(700)
                     .color(colors.text),
             );

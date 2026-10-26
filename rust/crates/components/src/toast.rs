@@ -1,4 +1,4 @@
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 
 use crate::icon_button;
 
@@ -25,7 +25,11 @@ pub fn toast(message: &str, action: Option<(&str, u64)>, close_id: u64) -> (Node
         .rounded(8.0)
         .bg(colors.elevated_surface_background)
         .border(1.0, colors.border)
-        .child(label(message.to_string()).size(13.0).color(colors.text));
+        .child(
+            label(message.to_string())
+                .size(LabelSize::Medium)
+                .color(colors.text),
+        );
     if let Some((text, id)) = action {
         row = row.child(
             div()
@@ -38,7 +42,7 @@ pub fn toast(message: &str, action: Option<(&str, u64)>, close_id: u64) -> (Node
                 .on_click(id)
                 .child(
                     label(text.to_string())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .medium()
                         .color(colors.text),
                 ),

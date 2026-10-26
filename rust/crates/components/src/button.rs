@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 use crate::key_chip;
 
@@ -43,11 +43,11 @@ impl ButtonSize {
         }
     }
 
-    pub(crate) fn text(self) -> f32 {
+    pub(crate) fn text(self) -> LabelSize {
         match self {
-            ButtonSize::XSmall => 11.0,
-            ButtonSize::Small => 12.0,
-            ButtonSize::Medium => 13.0,
+            ButtonSize::XSmall => LabelSize::Mini,
+            ButtonSize::Small => LabelSize::Small,
+            ButtonSize::Medium => LabelSize::Medium,
         }
     }
 

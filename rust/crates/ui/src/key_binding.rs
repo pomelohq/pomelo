@@ -1,4 +1,4 @@
-use crate::{div, icon, label, theme, IconKind, Node, Rgba};
+use crate::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 
 /// Split `cmd-shift-k` into its modifiers and key; the key may itself be `-` (`ctrl--`).
 fn parse_keystroke(keystroke: &str) -> (Vec<&str>, &str) {
@@ -138,23 +138,24 @@ fn as_typed_off_macos(keystroke: &str) -> String {
 
 /// One keystroke as modifier glyphs (control, option, command, shift, in that order) then the key; Linux and
 /// Windows spell it out instead.
-pub fn render_keystroke(keystroke: &str, size: f32) -> Node {
+pub fn render_keystroke(keystroke: &str, size: LabelSize) -> Node {
     render_keystroke_in(keystroke, size, theme().text_muted)
 }
 
 /// [`render_keystroke`] in `muted`, for keys drawn on a filled button.
-pub fn render_keystroke_in(keystroke: &str, size: f32, muted: Rgba) -> Node {
+pub fn render_keystroke_in(keystroke: &str, text: LabelSize, muted: Rgba) -> Node {
+    let size = text.px();
     if !cfg!(target_os = "macos") {
         let words: Vec<String> = keystroke
             .split_whitespace()
             .map(|stroke| keystroke_words(&as_typed_off_macos(stroke)))
             .collect();
-        return label(words.join(", ")).size(size).color(muted).into();
+        return label(words.join(", ")).size(text).color(muted).into();
     }
     if keystroke.trim().contains(' ') {
         let mut chord = div().row().items_center().gap(size * 0.45);
         for stroke in keystroke.split_whitespace() {
-            chord = chord.child(render_keystroke_in(stroke, size, muted));
+            chord = chord.child(render_keystroke_in(stroke, text, muted));
         }
         return chord.into();
     }
@@ -185,7 +186,7 @@ pub fn render_keystroke_in(keystroke: &str, size: f32, muted: Rgba) -> Node {
     }
     // The key keeps its own line height and the row centers it on the glyphs; unboxed it would sit below them.
     let key_box = div().row().items_center();
-    row.child(key_box.child(label(key_label(key)).size(size).medium().color(muted)))
+    row.child(key_box.child(label(key_label(key)).size(text).medium().color(muted)))
         .into()
 }
 

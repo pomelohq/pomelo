@@ -8,7 +8,7 @@ use editor::syntax::Syntax;
 use editor::{EditorBuffer, Lang};
 use lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use terminal::Modifiers;
-use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 pub const ITEM_ID: &str = "project-diagnostics";
@@ -21,8 +21,8 @@ const BUTTON: f32 = 20.0;
 const HEADER_ROW_H: f32 = 30.0;
 const LINE_H: f32 = 20.0;
 const SEPARATOR_H: f32 = 10.0;
-const CODE_FONT: f32 = 13.0;
-const MESSAGE_FONT: f32 = 13.0;
+const CODE_FONT: LabelSize = LabelSize::Medium;
+const MESSAGE_FONT: LabelSize = LabelSize::Medium;
 const MESSAGE_LINE_H: f32 = 18.0;
 const MESSAGE_PAD_Y: f32 = 4.0;
 const MESSAGE_PAD_X: f32 = 6.0;
@@ -329,7 +329,7 @@ impl ProjectDiagnostics {
         };
         text.lines()
             .map(|line| {
-                let width = ui::measure_text_width(line, MESSAGE_FONT, false, 400) / scale;
+                let width = ui::measure_text_width(line, MESSAGE_FONT.px(), false, 400) / scale;
                 ((width / available).ceil() as usize).max(1)
             })
             .sum::<usize>()
@@ -460,10 +460,10 @@ impl ProjectDiagnostics {
             .bg(colors.tab_bar_background)
             .on_click(id)
             .child(material_icon(crate::file_icon(&name)).size(14.0))
-            .child(label(name).size(13.0).color(colors.text))
+            .child(label(name).size(LabelSize::Medium).color(colors.text))
             .child(
                 label(folder)
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .truncate_start(),
             );
@@ -635,19 +635,27 @@ impl Item for ProjectDiagnostics {
         if self.errors == 0 && self.warnings == 0 {
             return Some(
                 row.child(icon(IconKind::Check).size(14.0).color(colors.success))
-                    .child(label("No problems").size(13.0).color(text))
+                    .child(label("No problems").size(LabelSize::Medium).color(text))
                     .into(),
             );
         }
         if self.errors > 0 {
             row = row
                 .child(icon(IconKind::XCircle).size(14.0).color(colors.error))
-                .child(label(self.errors.to_string()).size(13.0).color(text));
+                .child(
+                    label(self.errors.to_string())
+                        .size(LabelSize::Medium)
+                        .color(text),
+                );
         }
         if self.warnings > 0 {
             row = row
                 .child(icon(IconKind::Warning).size(14.0).color(colors.warning))
-                .child(label(self.warnings.to_string()).size(13.0).color(text));
+                .child(
+                    label(self.warnings.to_string())
+                        .size(LabelSize::Medium)
+                        .color(text),
+                );
         }
         Some(row.into())
     }

@@ -467,7 +467,7 @@ impl GridPainter {
                         line.child(div().w_px((run.column - column) as f32 * metrics.cell_width));
                 }
                 let mut text = label(run.text)
-                    .size(metrics.font_size)
+                    .size_px(metrics.font_size)
                     .terminal_font()
                     .color(run.style.foreground);
                 if run.style.bold {

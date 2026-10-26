@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -378,7 +378,11 @@ impl ServiceItem {
                 "Not running. Start it to follow its output here."
             };
             return list
-                .child(label(note).size(12.5).color(colors.text_placeholder))
+                .child(
+                    label(note)
+                        .size(LabelSize::Medium)
+                        .color(colors.text_placeholder),
+                )
                 .into();
         }
         if !self.wrap {
@@ -423,7 +427,7 @@ impl ServiceItem {
             times = times.child(
                 div().row().h_px(LOG_ROW_H).items_center().child(
                     label(line.time.clone().unwrap_or_default())
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .mono()
                         .color(colors.text_placeholder),
                 ),
@@ -568,7 +572,7 @@ impl ServiceItem {
             .child(
                 div().row().h_px(14.0).items_center().child(
                     label(title.to_uppercase())
-                        .size(10.5)
+                        .size(LabelSize::Mini)
                         .weight(600)
                         .color(theme().text_muted),
                 ),
@@ -631,7 +635,7 @@ impl ServiceItem {
             title
                 .child(
                     label(self.target.service.clone())
-                        .size(14.0)
+                        .size(LabelSize::Default)
                         .medium()
                         .color(colors.text),
                 )
@@ -639,7 +643,7 @@ impl ServiceItem {
         } else if self.target.is_workspace_level() {
             title.child(
                 label(self.target.service.clone())
-                    .size(14.0)
+                    .size(LabelSize::Default)
                     .medium()
                     .color(colors.text),
             )
@@ -647,13 +651,17 @@ impl ServiceItem {
             title
                 .child(
                     label(self.target.repo.clone())
-                        .size(14.0)
+                        .size(LabelSize::Default)
                         .color(colors.text_muted),
                 )
-                .child(label(">").size(14.0).color(colors.text_placeholder))
+                .child(
+                    label(">")
+                        .size(LabelSize::Default)
+                        .color(colors.text_placeholder),
+                )
                 .child(
                     label(self.target.service.clone())
-                        .size(14.0)
+                        .size(LabelSize::Default)
                         .medium()
                         .color(colors.text),
                 )
@@ -778,7 +786,7 @@ impl ServiceItem {
                     .bg(ui::Rgba::new(0.0, 0.0, 0.0, 0.2))
                     .child(
                         label(detail)
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(colors.text)
                             .wrap(inner - 16.0),
@@ -828,7 +836,10 @@ impl ServiceItem {
             if let Some(pid) = self.context.access.pid(&self.process_holder()) {
                 facts.push(Self::fact(
                     "PID",
-                    label(pid.to_string()).size(12.0).color(colors.text).into(),
+                    label(pid.to_string())
+                        .size(LabelSize::Small)
+                        .color(colors.text)
+                        .into(),
                 ));
             }
         }
@@ -839,7 +850,12 @@ impl ServiceItem {
                     .row()
                     .gap(6.0)
                     .items_center()
-                    .child(label(url).size(12.0).color(colors.text_accent).truncate())
+                    .child(
+                        label(url)
+                            .size(LabelSize::Small)
+                            .color(colors.text_accent)
+                            .truncate(),
+                    )
                     .child(view::icon_button(self.base + COPY_URL, IconKind::Copy))
                     .into(),
             ));
@@ -857,7 +873,7 @@ impl ServiceItem {
                         .items_center()
                         .child(
                             label(format!(":{port}"))
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .weight(600)
                                 .color(colors.text),
                         )
@@ -904,7 +920,12 @@ impl ServiceItem {
                             .row()
                             .gap(8.0)
                             .items_center()
-                            .child(label(shown).size(12.0).color(colors.text).truncate())
+                            .child(
+                                label(shown)
+                                    .size(LabelSize::Small)
+                                    .color(colors.text)
+                                    .truncate(),
+                            )
                             .child(components::link(self.base + OPEN_ENV, None, "Open", true))
                             .into(),
                     ));
@@ -935,8 +956,17 @@ impl ServiceItem {
             .rounded(6.0)
             .items_center()
             .bg(colors.background)
-            .child(label("$").size(12.0).color(colors.text_placeholder))
-            .child(label(command).size(12.0).color(colors.text).truncate())
+            .child(
+                label("$")
+                    .size(LabelSize::Small)
+                    .color(colors.text_placeholder),
+            )
+            .child(
+                label(command)
+                    .size(LabelSize::Small)
+                    .color(colors.text)
+                    .truncate(),
+            )
             .child(div().row().flex(1.0))
             .child(view::icon_button(copy, IconKind::Copy))
             .into()
@@ -1011,7 +1041,10 @@ impl ServiceItem {
         if let Some(image) = image {
             facts.push(Self::fact(
                 "Image",
-                label(image).size(12.0).color(colors.text).into(),
+                label(image)
+                    .size(LabelSize::Small)
+                    .color(colors.text)
+                    .into(),
             ));
         }
         let command = def.filter(|def| def.is_command());
@@ -1023,7 +1056,10 @@ impl ServiceItem {
             let shown = self.context.access.shared_folder(config, def);
             facts.push(Self::fact(
                 "Folder",
-                label(shown).size(12.0).color(colors.text).into(),
+                label(shown)
+                    .size(LabelSize::Small)
+                    .color(colors.text)
+                    .into(),
             ));
         }
         let port = self.context.access.shared_host_port(name);
@@ -1031,7 +1067,7 @@ impl ServiceItem {
             facts.push(Self::fact(
                 "Port",
                 label(format!(":{port}"))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .weight(600)
                     .color(colors.text)
                     .into(),
@@ -1050,7 +1086,7 @@ impl ServiceItem {
                     .items_center()
                     .child(
                         label(connection)
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_accent)
                             .truncate(),
                     )
@@ -1065,11 +1101,14 @@ impl ServiceItem {
             "Used by",
             if users.is_empty() {
                 label("not used here")
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .into()
             } else {
-                label(users.join(", ")).size(12.0).color(colors.text).into()
+                label(users.join(", "))
+                    .size(LabelSize::Small)
+                    .color(colors.text)
+                    .into()
             },
         ));
         facts
@@ -1471,14 +1510,14 @@ impl ServiceItem {
         let live = *state == State::Running && self.paused_at.is_none();
         let mut title = div().row().gap(6.0).items_center().child(
             label("LOGS")
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .weight(600)
                 .color(colors.text_placeholder),
         );
         if live {
             title = title
                 .child(components::dot(colors.success, 6.0))
-                .child(label("live").size(11.5).color(colors.success));
+                .child(label("live").size(LabelSize::Small).color(colors.success));
         }
         let mut field = components::search_box(self.base + FILTER, self.filter_focused)
             .w_px(280.0)
@@ -1523,7 +1562,7 @@ impl ServiceItem {
                 } else {
                     colors.icon_muted
                 }))
-                .child(label(text).size(12.5).color(if on {
+                .child(label(text).size(LabelSize::Medium).color(if on {
                     colors.text
                 } else {
                     colors.text_muted
@@ -1560,7 +1599,7 @@ impl ServiceItem {
                 .child(div().flex(1.0))
                 .child(
                     label("type to use the console")
-                        .size(11.5)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder),
                 )
                 .into();
@@ -1585,7 +1624,11 @@ impl ServiceItem {
             ))
             .child(toggle(WRAP, IconKind::Return, "Wrap".into(), self.wrap));
         bar.child(div().flex(1.0))
-            .child(label(count).size(11.5).color(colors.text_placeholder))
+            .child(
+                label(count)
+                    .size(LabelSize::Small)
+                    .color(colors.text_placeholder),
+            )
             .into()
     }
 
@@ -1645,7 +1688,7 @@ fn log_row(line: &LogLine, query: &str, width: f32) -> Node {
         .child(
             div().row().w_px(TIME_W).h_px(LINE_H).items_center().child(
                 label(line.time.clone().unwrap_or_default())
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .mono()
                     .color(colors.text_placeholder),
             ),
@@ -1676,12 +1719,17 @@ fn log_text(line: &LogLine, query: &str, wrap: Option<f32>) -> Node {
         };
         let (before, matched) = (&rest[..at], &rest[at..at + query.len()]);
         if !before.is_empty() {
-            text = text.child(label(before.to_string()).size(12.5).mono().color(tint));
+            text = text.child(
+                label(before.to_string())
+                    .size(LabelSize::Medium)
+                    .mono()
+                    .color(tint),
+            );
         }
         text = text.child(
             div().rounded(2.0).bg(colors.warning.alpha(0.3)).child(
                 label(matched.to_string())
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .mono()
                     .color(colors.text),
             ),
@@ -1689,11 +1737,17 @@ fn log_text(line: &LogLine, query: &str, wrap: Option<f32>) -> Node {
         rest = &rest[at + query.len()..];
         rest_lower = &rest_lower[at + query.len()..];
     }
-    let tail = label(rest.to_string()).size(12.5).mono().color(tint);
+    let tail = label(rest.to_string())
+        .size(LabelSize::Medium)
+        .mono()
+        .color(tint);
     if !query.is_empty() {
         return text.child(tail).into();
     }
-    let whole = label(line.text.clone()).size(12.5).mono().color(tint);
+    let whole = label(line.text.clone())
+        .size(LabelSize::Medium)
+        .mono()
+        .color(tint);
     match wrap {
         Some(width) => whole.wrap(width).into(),
         None => whole.into(),

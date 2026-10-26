@@ -8,7 +8,7 @@ use crate::EditKey;
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 use crate::text_field::INPUT_FONT;
 const INPUT_H: f32 = 32.0;
@@ -18,7 +18,7 @@ const TOOLBAR_PAD_X: f32 = 8.0;
 const TOOLBAR_PAD_Y: f32 = 6.0;
 const LINE_GAP: f32 = 8.0;
 const MAX_HISTORY: usize = 50;
-const COUNT_FONT: f32 = 12.0;
+const COUNT_FONT: LabelSize = LabelSize::Small;
 const COUNT_MARGIN: f32 = 8.0;
 const COUNT_MIN_W: f32 = 40.0;
 /// Below this bar width the match count and close button are dropped to leave room for the query.
@@ -497,9 +497,10 @@ impl SearchBar {
             Some(index) => format!("{}/{}", index + 1, self.matches.len()),
             None => "0/0".to_string(),
         };
-        let count_w = (ui::measure_text_width(&count, COUNT_FONT, false, ui::ui_font_weight())
-            / ui::ui_text_scale())
-        .max(COUNT_MIN_W);
+        let count_w =
+            (ui::measure_text_width(&count, COUNT_FONT.px(), false, ui::ui_font_weight())
+                / ui::ui_text_scale())
+            .max(COUNT_MIN_W);
         let narrow = width < NARROW_W;
         let supported = self.supported;
         let optional_buttons = supported.replace as usize + supported.select_all as usize;
@@ -619,10 +620,11 @@ impl SearchBar {
             .child(search_line);
         if let Some(error) = &self.error {
             bar = bar.child(
-                div()
-                    .h_px(INPUT_FONT)
-                    .pl(8.0)
-                    .child(label(error.clone()).size(12.0).color(colors.error)),
+                div().h_px(INPUT_FONT).pl(8.0).child(
+                    label(error.clone())
+                        .size(LabelSize::Small)
+                        .color(colors.error),
+                ),
             );
         }
         if self.replace_enabled {

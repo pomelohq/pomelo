@@ -39,7 +39,7 @@ pub(crate) const ROW_END: u64 = 7300;
 const JSON_LINE_H: f32 = 18.0;
 /// Children an open object or array lists before "show N more".
 const SHOWN_CHILDREN: usize = 50;
-const TEXT: f32 = 12.0;
+const TEXT: LabelSize = LabelSize::Small;
 
 pub(crate) type Pane = ui::ScrollPane;
 
@@ -91,7 +91,7 @@ pub(crate) fn merge(into: &mut ui::Painted, part: ui::Painted) {
 }
 
 pub(crate) fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
-    label(text.into()).label_size(LabelSize::Small).color(color)
+    label(text.into()).size(LabelSize::Small).color(color)
 }
 
 pub(crate) fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
@@ -441,13 +441,13 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
         .items_center()
         .child(
             label(cell.column.to_string())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .mono()
                 .color(colors.text),
         )
         .child(
             label(cell.data_type.to_string())
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .mono()
                 .color(colors.text_placeholder),
         );
@@ -528,7 +528,7 @@ pub(crate) fn value_actions(
     actions = actions.child(div().row().flex(1.0));
     if editing {
         return actions
-            .child(workspace::render_keystroke("cmd-enter", 10.5))
+            .child(workspace::render_keystroke("cmd-enter", LabelSize::Mini))
             .child(small(" keeps it  ", colors.text_placeholder))
             .child(link(CANCEL_VALUE, "Cancel", hovered))
             .child(link(SAVE_VALUE, "Keep", hovered))
@@ -592,7 +592,7 @@ pub(crate) fn value_target(cell: &CellView<'_>, hovered: Option<u64>) -> Option<
                 .child(
                     div().row().flex(1.0).items_center().child(
                         label(format!("Open {table} #{value}"))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.hint),
                     ),
                 )
@@ -797,7 +797,7 @@ fn table_head(columns: &[(&str, f32)]) -> Node {
     for (name, width) in columns {
         let cell = div().row().items_center().child(
             label(name.to_uppercase())
-                .size(10.5)
+                .size(LabelSize::Mini)
                 .weight(600)
                 .color(colors.text_placeholder),
         );

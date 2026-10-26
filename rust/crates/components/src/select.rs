@@ -94,7 +94,7 @@ impl From<Select> for Node {
         let icon_size = size.icon() - 2.0;
         let gap = 8.0;
         let natural = size.pad_x() * 2.0
-            + ui::measure_text_width(&text, size.text(), false, ui::ui_font_weight())
+            + ui::measure_text_width(&text, size.text().px(), false, ui::ui_font_weight())
             + gap
             + icon_size
             + select.leading.map_or(0.0, |_| size.icon() + gap);

@@ -527,11 +527,10 @@ impl CompletionsMenu {
                 }
                 if let Some(doc) = doc {
                     item = item.child(div().flex(1.0)).child(
-                        div().row().pl(DOC_MARGIN).child(
-                            label(doc)
-                                .label_size(LabelSize::Small)
-                                .color(colors.text_muted),
-                        ),
+                        div()
+                            .row()
+                            .pl(DOC_MARGIN)
+                            .child(label(doc).size(LabelSize::Small).color(colors.text_muted)),
                     );
                 }
                 return Node::from(div().row().px(4.0).child(item));
@@ -558,7 +557,7 @@ impl CompletionsMenu {
                 item = item.child(div().flex(1.0)).child(
                     div().row().pl(16.0).child(
                         label(detail.to_string())
-                            .label_size(LabelSize::Small)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
                 );
@@ -723,7 +722,7 @@ fn lsp_row_runs(
 }
 
 fn code_run(text: String, color: Rgba, bold: bool) -> Node {
-    let run = label(text).size(crate::edit_font()).mono().color(color);
+    let run = label(text).size_px(crate::edit_font()).mono().color(color);
     if bold {
         run.weight(700).into()
     } else {
@@ -733,7 +732,7 @@ fn code_run(text: String, color: Rgba, bold: bool) -> Node {
 
 fn word_run(text: String, bold: bool) -> Node {
     let run = label(text)
-        .size(crate::edit_font())
+        .size_px(crate::edit_font())
         .mono()
         .color(theme().editor_foreground);
     if bold {

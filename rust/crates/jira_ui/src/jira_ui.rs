@@ -9,7 +9,7 @@ use markdown::{MarkdownBody as Body, DOCUMENT_STYLE};
 use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 const PAD_X: f32 = 28.0;
@@ -180,12 +180,15 @@ impl TicketItem {
                 } else {
                     format!("{} could not be loaded", self.key)
                 };
-                label(text).size(13.0).color(colors.text_muted).into()
+                label(text)
+                    .size(LabelSize::Medium)
+                    .color(colors.text_muted)
+                    .into()
             }
         };
         let mut header = components::page_header(title).lead(
             label(self.key.clone())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .mono()
                 .color(colors.text_muted),
         );
@@ -248,7 +251,7 @@ impl TicketItem {
         let description = match self.description.as_mut() {
             Some(body) => body.render(width, DOCUMENT_STYLE, DESCRIPTION_LINK_BASE),
             None => label("No description.")
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .color(colors.text_muted)
                 .into(),
         };
@@ -275,7 +278,12 @@ impl TicketItem {
                                 .size(12.0)
                                 .color(colors.text_accent),
                         )
-                        .child(label(title).size(13.0).color(colors.text_accent).truncate()),
+                        .child(
+                            label(title)
+                                .size(LabelSize::Medium)
+                                .color(colors.text_accent)
+                                .truncate(),
+                        ),
                 );
             }
             column = column.child(Self::section("Web links".into())).child(links);
@@ -285,7 +293,11 @@ impl TicketItem {
             detail.comments.len()
         )));
         if detail.comments.is_empty() {
-            column = column.child(label("No comments.").size(13.0).color(colors.text_muted));
+            column = column.child(
+                label("No comments.")
+                    .size(LabelSize::Medium)
+                    .color(colors.text_muted),
+            );
         }
         for (index, comment) in detail.comments.iter().enumerate() {
             let body = match self.comments.get_mut(index) {
@@ -311,13 +323,13 @@ impl TicketItem {
                             .items_center()
                             .child(
                                 label(comment.author.clone())
-                                    .size(12.0)
+                                    .size(LabelSize::Small)
                                     .weight(600)
                                     .color(colors.text),
                             )
                             .child(
                                 label(short_time(&comment.created))
-                                    .size(12.0)
+                                    .size(LabelSize::Small)
                                     .color(colors.text_placeholder),
                             ),
                     )

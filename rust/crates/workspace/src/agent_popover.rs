@@ -1,7 +1,7 @@
 //! The agent dock's popovers: the "+" one that starts a side agent (what it is for, what it starts with),
 //! and the history of archived side agents to reopen.
 
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 use crate::{SideAgentRole, SideAgentStart};
 
@@ -86,7 +86,7 @@ pub fn new_agent(
         .child(
             div().row().h_px(30.0).px(10.0).items_center().child(
                 label(format!("New side agent in {branch}"))
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .color(colors.text_muted),
             ),
         );
@@ -123,8 +123,17 @@ pub fn new_agent(
                     .col()
                     .w_px(WIDTH - 165.0)
                     .gap(1.0)
-                    .child(label(each.title()).size(14.0).color(text_color))
-                    .child(label(note).size(12.5).color(colors.text_muted).truncate()),
+                    .child(
+                        label(each.title())
+                            .size(LabelSize::Default)
+                            .color(text_color),
+                    )
+                    .child(
+                        label(note)
+                            .size(LabelSize::Medium)
+                            .color(colors.text_muted)
+                            .truncate(),
+                    ),
             )
             .child(div().flex(1.0))
             .child(
@@ -154,12 +163,13 @@ pub fn new_agent(
             .px(10.0)
             .items_center()
             .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .child(label("Starts with").size(12.5).color(colors.text_muted)),
+                div().row().flex(1.0).child(
+                    label("Starts with")
+                        .size(LabelSize::Medium)
+                        .color(colors.text_muted),
+                ),
             )
-            .child(label(main).size(12.5).color(colors.text_muted)),
+            .child(label(main).size(LabelSize::Medium).color(colors.text_muted)),
     );
     let packet_only = role == SideAgentRole::SecondOpinion;
     for (index, each) in SideAgentStart::ALL.into_iter().enumerate() {
@@ -217,10 +227,11 @@ pub fn new_agent(
                             .row()
                             .items_center()
                             .child(
-                                div()
-                                    .row()
-                                    .flex(1.0)
-                                    .child(label(each.title()).size(14.0).color(text_color)),
+                                div().row().flex(1.0).child(
+                                    label(each.title())
+                                        .size(LabelSize::Default)
+                                        .color(text_color),
+                                ),
                             )
                             .child(
                                 label(
@@ -228,14 +239,14 @@ pub fn new_agent(
                                         .map(|tokens| format!("~{}", token_text(tokens)))
                                         .unwrap_or_default(),
                                 )
-                                .size(13.0)
+                                .size(LabelSize::Medium)
                                 .mono()
                                 .color(colors.text_muted),
                             ),
                     )
                     .child(
                         label(note)
-                            .size(12.5)
+                            .size(LabelSize::Medium)
                             .color(colors.text_muted)
                             .wrap(inner - 30.0),
                     ),
@@ -271,7 +282,7 @@ pub fn new_agent(
                 .child(
                     div().row().flex(1.0).child(
                         label("Double-click a type to start")
-                            .size(12.5)
+                            .size(LabelSize::Medium)
                             .color(colors.text_muted),
                     ),
                 )
@@ -289,7 +300,7 @@ pub fn new_agent(
                         })
                         .border(1.0, colors.info_border)
                         .on_click(START_BUTTON)
-                        .child(label(start_text).size(13.0).color(colors.text)),
+                        .child(label(start_text).size(LabelSize::Medium).color(colors.text)),
                 ),
         )
         .child(separator());
@@ -313,12 +324,12 @@ pub fn new_agent(
                 .gap(1.0)
                 .child(
                     label("New agent in a new workspace")
-                        .size(14.0)
+                        .size(LabelSize::Default)
                         .color(colors.text),
                 )
                 .child(
                     label("For parallel code changes: its own branch, ports and database")
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .color(colors.text_muted)
                         .wrap(inner - 30.0),
                 ),
@@ -346,13 +357,13 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
                 .child(
                     div().row().flex(1.0).child(
                         label("Archived side agents")
-                            .size(12.5)
+                            .size(LabelSize::Medium)
                             .color(colors.text_muted),
                     ),
                 )
                 .child(
                     label(archived.len().to_string())
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .color(colors.text_muted),
                 ),
         );
@@ -364,7 +375,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
                         "Nothing archived. Closing a side agent stops its CLI and keeps the \
                          transcript here, so you can reopen it.",
                     )
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .color(colors.text_muted)
                     .wrap(WIDTH - 64.0),
                 ),
@@ -382,13 +393,13 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
             .on_click(id)
             .child(
                 label(agent.title.clone())
-                    .size(13.5)
+                    .size(LabelSize::Default)
                     .color(colors.text)
                     .truncate(),
             )
             .child(
                 label(agent.detail.clone())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .truncate(),
             );

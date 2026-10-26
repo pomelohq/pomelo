@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use components::{modal_footer, modal_frame, modal_header, modal_section};
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 460.0;
@@ -186,7 +186,7 @@ impl WindowModal for RemoveRepoModal {
                      worktrees with changes and main's clone stay on disk.",
                     self.repo
                 ))
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .color(colors.text_muted)
                 .wrap(WIDTH - 36.0),
             )
@@ -500,7 +500,7 @@ impl WindowModal for UseBranchModal {
                 "Only {repo} changes branch; the other repos stay on {}.",
                 self.workspace_branch
             ))
-            .size(13.0)
+            .size(LabelSize::Medium)
             .color(colors.text_muted)
             .truncate(),
         );

@@ -134,8 +134,17 @@ fn swatches(tokens: &[&str]) -> Node {
                         .bg(color)
                         .border(1.0, colors.border),
                 )
-                .child(div().flex(1.0).child(label(*name).size(12.0).truncate()))
-                .child(label(hex(color)).size(11.0).mono().color(colors.text_muted)),
+                .child(
+                    div()
+                        .flex(1.0)
+                        .child(label(*name).size(LabelSize::Small).truncate()),
+                )
+                .child(
+                    label(hex(color))
+                        .size(LabelSize::Mini)
+                        .mono()
+                        .color(colors.text_muted),
+                ),
         );
     }
     column.into()
@@ -158,7 +167,9 @@ fn sizes() -> Node {
     for (name, size) in [
         ("Large 16", LabelSize::Large),
         ("Default 14", LabelSize::Default),
+        ("Medium 13", LabelSize::Medium),
         ("Small 12", LabelSize::Small),
+        ("Mini 11", LabelSize::Mini),
         ("XSmall 10", LabelSize::XSmall),
     ] {
         column = column.child(
@@ -166,13 +177,11 @@ fn sizes() -> Node {
                 .items_center()
                 .gap(16.0)
                 .child(
-                    div().w_px(90.0).child(
-                        label(name)
-                            .label_size(LabelSize::Small)
-                            .color(theme().text_muted),
-                    ),
+                    div()
+                        .w_px(90.0)
+                        .child(label(name).size(LabelSize::Small).color(theme().text_muted)),
                 )
-                .child(label("Start every service of feat-login").label_size(size)),
+                .child(label("Start every service of feat-login").size(size)),
         );
     }
     column.into()
@@ -190,13 +199,15 @@ fn weights() -> Node {
                 .items_center()
                 .gap(16.0)
                 .child(
-                    div().w_px(90.0).child(
-                        label(name)
-                            .label_size(LabelSize::Small)
-                            .color(theme().text_muted),
-                    ),
+                    div()
+                        .w_px(90.0)
+                        .child(label(name).size(LabelSize::Small).color(theme().text_muted)),
                 )
-                .child(label("Services feat-login").size(14.0).weight(weight)),
+                .child(
+                    label("Services feat-login")
+                        .size(LabelSize::Default)
+                        .weight(weight),
+                ),
         );
     }
     column
@@ -207,11 +218,15 @@ fn weights() -> Node {
                 .child(
                     div().w_px(90.0).child(
                         label("Mono")
-                            .label_size(LabelSize::Small)
+                            .size(LabelSize::Small)
                             .color(theme().text_muted),
                     ),
                 )
-                .child(label("bin/rails server -p $PORT").size(13.0).mono()),
+                .child(
+                    label("bin/rails server -p $PORT")
+                        .size(LabelSize::Medium)
+                        .mono(),
+                ),
         )
         .into()
 }
@@ -225,7 +240,11 @@ fn text_colors() -> Node {
         ("Placeholder", TextColor::Placeholder),
         ("Disabled", TextColor::Disabled),
     ] {
-        column = column.child(label(format!("{name} text")).size(14.0).color(color.rgba()));
+        column = column.child(
+            label(format!("{name} text"))
+                .size(LabelSize::Default)
+                .color(color.rgba()),
+        );
     }
     column.into()
 }
@@ -247,7 +266,7 @@ fn icons() -> Node {
                     .child(icon(*kind).size(18.0).color(colors.icon))
                     .child(
                         label(format!("{kind:?}"))
-                            .size(10.0)
+                            .size(LabelSize::XSmall)
                             .color(colors.text_muted)
                             .truncate(),
                     ),
@@ -291,7 +310,7 @@ pub fn stories() -> Vec<StoryDef> {
         color("color-text", 3, || still(|_, _| colors(3))),
         color("color-status", 4, || still(|_, _| colors(4))),
         color("color-editor", 5, || still(|_, _| colors(5))),
-        story("type-sizes", "Type", "Sizes", (460.0, 176.0), || {
+        story("type-sizes", "Type", "Sizes", (460.0, 248.0), || {
             still(|_, _| sizes())
         }),
         story("type-weights", "Type", "Weights", (460.0, 176.0), || {

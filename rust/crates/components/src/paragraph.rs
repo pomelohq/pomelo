@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Node, Rgba};
+use ui::{div, label, theme, LabelSize, Node, Rgba};
 
 use crate::text_line;
 
@@ -6,7 +6,7 @@ use crate::text_line;
 pub struct Paragraph {
     text: String,
     width: f32,
-    size: f32,
+    size: LabelSize,
     line_height: f32,
     color: Option<Rgba>,
     centered: bool,
@@ -16,7 +16,7 @@ pub fn paragraph(text: impl Into<String>, width: f32) -> Paragraph {
     Paragraph {
         text: text.into(),
         width,
-        size: 12.0,
+        size: LabelSize::Small,
         line_height: 16.0,
         color: None,
         centered: false,
@@ -24,7 +24,7 @@ pub fn paragraph(text: impl Into<String>, width: f32) -> Paragraph {
 }
 
 impl Paragraph {
-    pub fn size(mut self, size: f32, line_height: f32) -> Self {
+    pub fn size(mut self, size: LabelSize, line_height: f32) -> Self {
         self.size = size;
         self.line_height = line_height;
         self
@@ -43,7 +43,7 @@ impl Paragraph {
     /// The lines the text breaks into at this width.
     pub fn lines(&self) -> Vec<String> {
         let fits = |candidate: &str| {
-            ui::measure_text_width(candidate, self.size, false, ui::ui_font_weight())
+            ui::measure_text_width(candidate, self.size.px(), false, ui::ui_font_weight())
                 / ui::ui_text_scale()
                 <= self.width
         };

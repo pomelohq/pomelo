@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Rgba};
 
 /// One row of a menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
 #[derive(Clone, Debug)]
@@ -121,7 +121,7 @@ impl<'a> Menu<'a> {
                 }
                 (None, true) => 14.0,
                 (Some(key), false) if !key.is_empty() => {
-                    ui::measure(&ui::render_keystroke(key, 12.0)).0 + 24.0
+                    ui::measure(&ui::render_keystroke(key, LabelSize::Small)).0 + 24.0
                 }
                 _ => 0.0,
             };
@@ -160,9 +160,13 @@ impl<'a> Menu<'a> {
             .border(1.0, colors.border);
         let mut search = self.search.map(|query| {
             let line = if query.is_empty() {
-                ui::label("Search...").size(12.0).color(colors.text_muted)
+                ui::label("Search...")
+                    .size(LabelSize::Small)
+                    .color(colors.text_muted)
             } else {
-                ui::label(query.to_string()).size(12.0).color(colors.text)
+                ui::label(query.to_string())
+                    .size(LabelSize::Small)
+                    .color(colors.text)
             };
             div()
                 .row()
@@ -184,7 +188,7 @@ impl<'a> Menu<'a> {
                 card = card.child(
                     div().row().h_px(MENU_ROW).px(8.0).items_center().child(
                         ui::label(item.label.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
                 );
@@ -243,7 +247,7 @@ impl<'a> Menu<'a> {
         }
         row = row.child(
             ui::label(item.label.to_string())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .color(label_color),
         );
         if (self.opens_submenu)(item.id) {
@@ -251,7 +255,7 @@ impl<'a> Menu<'a> {
             if let Some(hint) = &item.hint {
                 row = row.child(
                     ui::label(hint.to_string())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_muted),
                 );
             }
@@ -264,12 +268,12 @@ impl<'a> Menu<'a> {
             match item.hint.as_deref() {
                 Some(hint) if self.plain_hints => row.child(div().flex(1.0)).child(
                     ui::label(hint.to_string())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder),
                 ),
                 Some(key) if !key.is_empty() => row
                     .child(div().flex(1.0))
-                    .child(ui::render_keystroke(key, 12.0)),
+                    .child(ui::render_keystroke(key, LabelSize::Small)),
                 _ => row,
             }
         }

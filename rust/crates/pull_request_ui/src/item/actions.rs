@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use pom_forge::{MergeMethod, Mutation, PullRequest, ReviewEvent, ThreadComment, TimelineItem};
 use terminal::Keystroke;
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 use workspace::{EditKey, PanelRequest, TerminalKeyOutcome};
 
 use super::PrItem;
@@ -227,15 +227,16 @@ impl PrItem {
                     .col()
                     .flex(1.0)
                     .child(
-                        div()
-                            .row()
-                            .h_px(16.0)
-                            .items_center()
-                            .child(label(title).size(12.0).weight(600).color(colors.text)),
+                        div().row().h_px(16.0).items_center().child(
+                            label(title)
+                                .size(LabelSize::Small)
+                                .weight(600)
+                                .color(colors.text),
+                        ),
                     )
                     .child({
                         let detail_label = label(detail.clone())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder);
                         // One line keeps the 16px rhythm of the title above; a longer one wraps.
                         if ui::measure_text_width(&detail, 12.0, false, ui::ui_font_weight())
@@ -292,7 +293,7 @@ impl PrItem {
             )
         } else {
             label("Reply...")
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder)
                 .into()
         };

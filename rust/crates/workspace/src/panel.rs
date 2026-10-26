@@ -4,7 +4,7 @@
 //! interior (the workspace list) now renders through `ProjectPanel` instead of hand-placed rects.
 
 use components::status_line;
-use ui::{div, icon, label, theme, Corner, Div, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Rgba};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DockPosition {
@@ -186,7 +186,11 @@ pub fn function_content(active: PaneKind) -> Node {
         .px(10.0)
         .py(10.0)
         .gap(4.0)
-        .child(label(active.title()).size(12.0).color(theme().text_muted))
+        .child(
+            label(active.title())
+                .size(LabelSize::Small)
+                .color(theme().text_muted),
+        )
         .child(function_row_list(active))
         .into()
 }
@@ -211,7 +215,7 @@ pub fn panel_header(title: &str) -> Node {
         .items_center()
         .child(
             label(title.to_string())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(theme().text_muted),
         )
         .into()
@@ -507,7 +511,7 @@ impl Panel for ProjectPanel {
             .justify_between()
             .child(
                 label(self.title())
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .weight(600)
                     .color(colors.text_placeholder),
             )
@@ -650,7 +654,7 @@ fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
             )
             .child(
                 label(count.to_string())
-                    .size(10.0)
+                    .size(LabelSize::XSmall)
                     .medium()
                     .color(colors.text_placeholder),
             );
@@ -908,7 +912,7 @@ fn tile_text(prefix: Option<String>, name: String, ink: Rgba) -> Div {
     if let Some(prefix) = prefix {
         text = text.child(line(
             label(prefix)
-                .size(8.0)
+                .size_px(8.0)
                 .weight(600)
                 .color(with_alpha(ink, ink.a * 0.6))
                 .into(),
@@ -916,7 +920,7 @@ fn tile_text(prefix: Option<String>, name: String, ink: Rgba) -> Div {
         ));
     }
     text.child(line(
-        label(name).size(size).medium().color(ink).into(),
+        label(name).size_px(size).medium().color(ink).into(),
         size,
     ))
 }
@@ -1048,7 +1052,7 @@ fn pin_pill_with(
     if let Some(text) = text {
         inner_w += ui::measure_text_width(&text, 9.5, false, 700)
             + if glyph.is_some() { 1.0 } else { 0.0 };
-        pill = pill.child(label(text).size(9.5).weight(700).color(ink));
+        pill = pill.child(label(text).size(LabelSize::XSmall).weight(700).color(ink));
     }
     let inner_w = if glyph.is_some() && inner_w > GLYPH {
         inner_w + 3.0 + 4.0
@@ -1206,7 +1210,7 @@ fn workspace_row(
     let trouble = pr_trouble(row);
     let waiting = row.agent == Some(AgentDot::AwaitingInput);
     let mut name = label(title(row, key.as_deref()))
-        .size(13.0)
+        .size(LabelSize::Medium)
         .truncate()
         .color(if current || hovered {
             colors.text
@@ -1417,7 +1421,7 @@ fn headline(text: String, color: Rgba) -> Node {
         .row()
         .flex(1.0)
         .items_center()
-        .child(label(text).size(11.5).color(color).truncate())
+        .child(label(text).size(LabelSize::Small).color(color).truncate())
         .into()
 }
 
@@ -1445,9 +1449,17 @@ pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
         .gap(6.0)
         .items_center()
         .child(div().w_px(6.0).h_px(6.0).rounded(2.0).bg(group.color()))
-        .child(label(group.label()).size(12.0).color(colors.text))
+        .child(
+            label(group.label())
+                .size(LabelSize::Small)
+                .color(colors.text),
+        )
         .child(div().row().flex(1.0))
-        .child(label(count.to_string()).size(11.0).color(colors.text_muted))
+        .child(
+            label(count.to_string())
+                .size(LabelSize::Mini)
+                .color(colors.text_muted),
+        )
         .into()
 }
 
@@ -1522,7 +1534,7 @@ fn failure_line(text: String, base: u64, expanded: bool) -> Node {
         .child(status_line(IconKind::Warning, colors.error, text).tinted())
         .child(
             label(if expanded { "Hide" } else { "Details" })
-                .size(10.5)
+                .size(LabelSize::Mini)
                 .color(colors.text_muted)
                 .underline(colors.text_muted),
         )
@@ -1563,7 +1575,7 @@ fn op_details(
         if let Some(kind) = kind {
             chip = chip.child(icon(kind).size(9.0).color(color));
         }
-        chip = chip.child(label(name.clone()).size(10.5).color(color));
+        chip = chip.child(label(name.clone()).size(LabelSize::Mini).color(color));
         if let Some(line) = lines.last_mut() {
             line.push(chip.into());
         }
@@ -1590,7 +1602,7 @@ fn op_details(
         .border(1.0, colors.border_variant)
         .child(
             label(log.clone())
-                .size(10.0)
+                .size(LabelSize::XSmall)
                 .mono()
                 .color(colors.text)
                 .wrap((width - 18.0).max(60.0)),
@@ -1685,10 +1697,10 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
             .py(6.0)
             .rounded(5.0)
             .on_click(id)
-            .child(label(title).size(12.0).color(colors.text))
+            .child(label(title).size(LabelSize::Small).color(colors.text))
             .child(
                 label(note)
-                    .size(10.5)
+                    .size(LabelSize::Mini)
                     .mono()
                     .color(colors.text_placeholder)
                     .wrap((width - 34.0).max(60.0)),
@@ -1777,7 +1789,7 @@ fn op_row(
         .child(
             div().row().h_px(16.0).items_center().child(
                 label(name)
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .truncate()
                     .color(colors.text_placeholder),
             ),
@@ -1795,7 +1807,7 @@ fn op_row(
         main_line = main_line.child(
             div().col().h_px(44.0).pt(8.0).child(
                 label(format!("{percent}%"))
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .mono()
                     .color(colors.text_placeholder),
             ),
@@ -1837,7 +1849,7 @@ impl Panel for AgentEmptyPanel {
             .child(panel_header(self.title()))
             .child(
                 label("No agent open in this dock.")
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .color(theme().text_muted),
             )
             .child(
@@ -1882,7 +1894,12 @@ pub fn terminal_dock_body() -> Node {
         .py(8.0)
         .gap(4.0)
         .child(panel_header("TERMINAL"))
-        .child(label("pomelo % ").size(13.0).mono().color(theme().text))
+        .child(
+            label("pomelo % ")
+                .size(LabelSize::Medium)
+                .mono()
+                .color(theme().text),
+        )
         .into()
 }
 
@@ -1894,8 +1911,17 @@ pub fn terminal_content() -> Node {
         .px(12.0)
         .py(8.0)
         .gap(4.0)
-        .child(label("TERMINAL").size(12.0).color(theme().text_muted))
-        .child(label("pomelo % ").size(13.0).mono().color(theme().text))
+        .child(
+            label("TERMINAL")
+                .size(LabelSize::Small)
+                .color(theme().text_muted),
+        )
+        .child(
+            label("pomelo % ")
+                .size(LabelSize::Medium)
+                .mono()
+                .color(theme().text),
+        )
         .into()
 }
 

@@ -588,7 +588,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
                     .pr(8.0)
                     .child(
                         label(row.number.to_string())
-                            .size(crate::edit_font())
+                            .size_px(crate::edit_font())
                             .mono()
                             .color(number_color),
                     ),
@@ -632,7 +632,7 @@ fn preview_segments(segments: Vec<(String, Rgba)>, name: Option<Range<usize>>) -
 }
 
 fn preview_run(text: String, color: Rgba, marked: bool, highlight: Rgba) -> Node {
-    let text = label(text).size(crate::edit_font()).mono().color(color);
+    let text = label(text).size_px(crate::edit_font()).mono().color(color);
     if marked {
         div().row().bg(highlight).child(text).into()
     } else {
@@ -666,7 +666,7 @@ fn label_segments(symbol: &Symbol, positions: &[usize]) -> Vec<Node> {
     }
     runs.into_iter()
         .map(|(text, color, matched)| {
-            let text = label(text).size(crate::edit_font()).mono().color(color);
+            let text = label(text).size_px(crate::edit_font()).mono().color(color);
             if matched {
                 div().row().bg(highlight).child(text).into()
             } else {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use settings::Settings;
-use ui::{div, label, theme, Node};
+use ui::{div, label, theme, LabelSize, Node};
 
 use super::{
     control_value, dim_c, is_default, jira_items, proxy_text, Control, IntegrationsPage, Page,
@@ -614,7 +614,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                 .gap(8.0)
                 .items_center()
                 .child(ui::icon(icon).size(14.0).color(ink))
-                .child(label(text).size(12.0).color(dim_c()).truncate())
+                .child(label(text).size(LabelSize::Small).color(dim_c()).truncate())
                 .child(div().flex(1.0));
             if let Some((id, text)) = button {
                 row = row.child(components::button(id, text));
@@ -665,7 +665,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                     label(format!(
                         "{pom} cannot show its settings here. Update it to change them in this window."
                     ))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(dim_c())
                     .truncate(),
                 )
@@ -682,7 +682,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                             "Until then, {name} reads them from {} there.",
                             host.settings_path()
                         ))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder),
                     )
                     .into(),
@@ -700,7 +700,7 @@ pub fn note(text: &str, under_header: bool) -> Node {
         .gap(6.0)
         .items_center()
         .child(ui::icon(ui::IconKind::Info).size(12.0).color(ink))
-        .child(label(text.to_string()).size(12.0).color(ink));
+        .child(label(text.to_string()).size(LabelSize::Small).color(ink));
     if under_header {
         div().col().pb(4.0).child(note).into()
     } else {
@@ -711,7 +711,7 @@ pub fn note(text: &str, under_header: bool) -> Node {
 /// The message a host gave for a row, under its description.
 pub fn row_error(text: &str, wrap: f32) -> Node {
     label(text.to_string())
-        .size(12.0)
+        .size(LabelSize::Small)
         .line_height(super::SMALL_LINE_HEIGHT)
         .color(theme().error)
         .wrap(wrap)
