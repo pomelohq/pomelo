@@ -923,7 +923,7 @@ impl ServicesPanel {
         if let Some(when) = when {
             title = title.child(label(when).size(11.0).color(colors.text_placeholder));
         }
-        title = title.child(self.button(self.card_id(index, CardAction::Logs), IconKind::File));
+        title = title.child(self.button(self.card_id(index, CardAction::Logs), IconKind::Terminal));
         if !port_conflict {
             title = title
                 .child(self.button(self.card_id(index, CardAction::Restart), IconKind::RotateCw));
