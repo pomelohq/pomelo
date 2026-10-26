@@ -153,11 +153,6 @@ pub(crate) fn uptime_since(started: std::time::SystemTime) -> Option<String> {
     })
 }
 
-/// `node` with the panel's side margin and a gap below it.
-pub(crate) fn inset(node: Node) -> Node {
-    div().row().px(8.0).pb(6.0).child(node).into()
-}
-
 /// "just now", "2m ago", "3h ago", "2d ago".
 pub fn ago(at: std::time::SystemTime) -> String {
     let seconds = at.elapsed().map_or(0, |elapsed| elapsed.as_secs());
