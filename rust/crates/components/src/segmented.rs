@@ -140,10 +140,11 @@ impl Segmented {
             }
             track = track.child(cell);
         }
+        // Centered rather than stretched, so a taller parent does not leave the cells hugging the track's top.
         if self.fill {
-            div().row().flex(1.0).child(track.flex(1.0))
+            div().row().flex(1.0).items_center().child(track.flex(1.0))
         } else {
-            div().row().child(track)
+            div().row().items_center().child(track)
         }
     }
 }
