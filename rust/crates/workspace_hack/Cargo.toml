@@ -65,20 +65,18 @@ syn = { version = "3", features = ["extra-traits", "fold", "full", "visit", "vis
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
-block2 = { version = "0.5" }
+block2 = { version = "0.6" }
 core-foundation-sys = { version = "0.8" }
 errno = { version = "0.3" }
 getrandom = { version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 half = { version = "2", features = ["num-traits"] }
 libc = { version = "0.2" }
 num-traits = { version = "0.2", default-features = false, features = ["libm"] }
-objc2-3b31131e45eafb45 = { package = "objc2", version = "0.6" }
-objc2-app-kit = { version = "0.2", features = ["NSAlert", "NSAppearance", "NSApplication", "NSBitmapImageRep", "NSButton", "NSColor", "NSControl", "NSCursor", "NSDragging", "NSEvent", "NSGraphics", "NSGraphicsContext", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSOpenGLView", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSScreen", "NSSound", "NSTextInputClient", "NSTextInputContext", "NSView", "NSWindow", "NSWindowScripting", "NSWindowTabGroup", "block2"] }
+objc2 = { version = "0.6" }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAlert", "NSApplication", "NSButton", "NSControl", "NSCursor", "NSEvent", "NSGraphicsContext", "NSImage", "NSMenu", "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSSound", "NSView", "NSWindow", "block2", "objc2-core-foundation", "objc2-core-graphics", "std"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFArray", "CFAttributedString", "CFBase", "CFCGTypes", "CFCalendar", "CFCharacterSet", "CFData", "CFDate", "CFDictionary", "CFError", "CFFileSecurity", "CFLocale", "CFMachPort", "CFMessagePort", "CFPlugInCOM", "CFRunLoop", "CFSet", "CFStream", "CFString", "CFURL", "CFUUID", "objc2", "std"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGColor", "CGColorSpace", "CGContext", "CGDataProvider", "CGDirectDisplay", "CGEventTypes", "CGFont", "CGImage", "CGPath", "objc2", "std"] }
-objc2-d8f496e17d97b5cb = { package = "objc2", version = "0.5", features = ["relax-sign-encoding"] }
-objc2-foundation-468e82937335b1c9 = { package = "objc2-foundation", version = "0.3", default-features = false, features = ["NSArray", "NSBundle", "NSCoder", "NSData", "NSDictionary", "NSEnumerator", "NSError", "NSFileManager", "NSFileWrapper", "NSGeometry", "NSItemProvider", "NSKeyValueObserving", "NSLocale", "NSNull", "NSObjCRuntime", "NSObject", "NSProcessInfo", "NSRange", "NSSet", "NSString", "NSThread", "NSURL", "NSValue", "objc2-core-foundation", "std"] }
-objc2-foundation-6f8ce4dd05d13bba = { package = "objc2-foundation", version = "0.2", features = ["NSArray", "NSAttributedString", "NSBundle", "NSCalendar", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSDistributedNotificationCenter", "NSEnumerator", "NSError", "NSException", "NSFileWrapper", "NSFormatter", "NSGeometry", "NSItemProvider", "NSKeyValueObserving", "NSLocale", "NSNotification", "NSObjCRuntime", "NSObject", "NSPathUtilities", "NSProcessInfo", "NSRange", "NSRunLoop", "NSScriptCommand", "NSScriptStandardSuiteCommands", "NSSet", "NSString", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "NSZone", "block2", "dispatch"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSAttributedString", "NSBundle", "NSCalendar", "NSCoder", "NSData", "NSDate", "NSDictionary", "NSEnumerator", "NSError", "NSException", "NSFileManager", "NSFileWrapper", "NSFormatter", "NSGeometry", "NSItemProvider", "NSKeyValueObserving", "NSLocale", "NSNotification", "NSNull", "NSObjCRuntime", "NSObject", "NSProcessInfo", "NSRange", "NSSet", "NSString", "NSThread", "NSURL", "NSUndoManager", "NSUserActivity", "NSValue", "NSZone", "objc2-core-foundation", "std"] }
 rustix = { version = "1", features = ["event", "fs", "mm", "param", "pipe", "process", "termios", "time"] }
 
 ### END HAKARI SECTION

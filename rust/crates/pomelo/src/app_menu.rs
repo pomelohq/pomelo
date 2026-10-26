@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, Sel};
-use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
+use objc2::{define_class, msg_send, sel, AllocAnyThread};
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSMenuItem,
 };
@@ -159,22 +159,15 @@ static STATE: Mutex<State> = Mutex::new(State {
 /// Tags at or above this replay `keys` instead of queuing a command.
 const KEYS_TAG: isize = 1 << 20;
 
-declare_class!(
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "PomeloMenuTarget"]
     struct Target;
 
-    unsafe impl ClassType for Target {
-        type Super = NSObject;
-        type Mutability = mutability::InteriorMutable;
-        const NAME: &'static str = "PomeloMenuTarget";
-    }
-
-    impl DeclaredClass for Target {}
-
-    unsafe impl Target {
-        #[method(menuItemSelected:)]
+    impl Target {
+        #[unsafe(method(menuItemSelected:))]
         fn menu_item_selected(&self, item: &NSMenuItem) {
-            // SAFETY: a plain getter on the item AppKit just activated.
-            let tag = unsafe { item.tag() };
+            let tag = item.tag();
             if tag >= KEYS_TAG {
                 let keys = STATE
                     .lock()
@@ -204,7 +197,7 @@ fn target() -> Option<Retained<Target>> {
     let mut slot = TARGET.lock().ok()?;
     if slot.is_none() {
         // SAFETY: a plain NSObject subclass with no ivars.
-        let target: Retained<Target> = unsafe { msg_send_id![Target::alloc(), init] };
+        let target: Retained<Target> = unsafe { msg_send![Target::alloc(), init] };
         *slot = Some(TargetHandle(target));
     }
     slot.as_ref().map(|handle| handle.0.clone())
@@ -340,16 +333,16 @@ fn key_equivalent(keys: &str) -> (String, NSEventModifierFlags) {
 fn modifier_flags(stroke: &Keystroke) -> NSEventModifierFlags {
     let mut flags = NSEventModifierFlags(0);
     if stroke.cmd {
-        flags |= NSEventModifierFlags::NSEventModifierFlagCommand;
+        flags |= NSEventModifierFlags::Command;
     }
     if stroke.shift {
-        flags |= NSEventModifierFlags::NSEventModifierFlagShift;
+        flags |= NSEventModifierFlags::Shift;
     }
     if stroke.alt {
-        flags |= NSEventModifierFlags::NSEventModifierFlagOption;
+        flags |= NSEventModifierFlags::Option;
     }
     if stroke.ctrl {
-        flags |= NSEventModifierFlags::NSEventModifierFlagControl;
+        flags |= NSEventModifierFlags::Control;
     }
     flags
 }
@@ -395,80 +388,65 @@ fn replay(keys: &str) {
     let Some(window) = app.keyWindow() else {
         return;
     };
-    // SAFETY: event construction and delivery on the main thread, to a live window.
-    unsafe {
-        let from_keyboard = app
-            .currentEvent()
-            .is_some_and(|event| event.r#type() == NSEventType::KeyDown);
-        let number = window.windowNumber();
-        let flags = modifier_flags(&stroke);
-        let modifier_keys: Vec<(bool, u16, NSEventModifierFlags)> = vec![
-            (
-                stroke.cmd,
-                COMMAND_KEY_CODE,
-                NSEventModifierFlags::NSEventModifierFlagCommand,
-            ),
-            (
-                stroke.shift,
-                SHIFT_KEY_CODE,
-                NSEventModifierFlags::NSEventModifierFlagShift,
-            ),
-            (
-                stroke.ctrl,
-                CONTROL_KEY_CODE,
-                NSEventModifierFlags::NSEventModifierFlagControl,
-            ),
-        ];
-        let flags_event = |held: NSEventModifierFlags, code: u16| {
-            NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-                NSEventType::FlagsChanged,
-                NSPoint::new(0.0, 0.0),
-                held,
-                0.0,
-                number,
-                None,
-                &NSString::from_str(""),
-                &NSString::from_str(""),
-                false,
-                code,
-            )
-        };
-        let mut held = NSEventModifierFlags(0);
-        if !from_keyboard {
-            for (pressed, code, flag) in &modifier_keys {
-                if *pressed {
-                    held |= *flag;
-                    if let Some(event) = flags_event(held, *code) {
-                        window.sendEvent(&event);
-                    }
+    let from_keyboard = app
+        .currentEvent()
+        .is_some_and(|event| event.r#type() == NSEventType::KeyDown);
+    let number = window.windowNumber();
+    let flags = modifier_flags(&stroke);
+    let modifier_keys: Vec<(bool, u16, NSEventModifierFlags)> = vec![
+        (stroke.cmd, COMMAND_KEY_CODE, NSEventModifierFlags::Command),
+        (stroke.shift, SHIFT_KEY_CODE, NSEventModifierFlags::Shift),
+        (stroke.ctrl, CONTROL_KEY_CODE, NSEventModifierFlags::Control),
+    ];
+    let flags_event = |held: NSEventModifierFlags, code: u16| {
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::FlagsChanged,
+            NSPoint::new(0.0, 0.0),
+            held,
+            0.0,
+            number,
+            None,
+            &NSString::from_str(""),
+            &NSString::from_str(""),
+            false,
+            code,
+        )
+    };
+    let mut held = NSEventModifierFlags(0);
+    if !from_keyboard {
+        for (pressed, code, flag) in &modifier_keys {
+            if *pressed {
+                held |= *flag;
+                if let Some(event) = flags_event(held, *code) {
+                    window.sendEvent(&event);
                 }
             }
         }
-        let characters = NSString::from_str(&stroke.key);
-        for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
-            let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-                kind,
-                NSPoint::new(0.0, 0.0),
-                flags,
-                0.0,
-                number,
-                None,
-                &characters,
-                &characters,
-                false,
-                code,
-            );
-            if let Some(event) = event {
-                window.sendEvent(&event);
-            }
+    }
+    let characters = NSString::from_str(&stroke.key);
+    for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            kind,
+            NSPoint::new(0.0, 0.0),
+            flags,
+            0.0,
+            number,
+            None,
+            &characters,
+            &characters,
+            false,
+            code,
+        );
+        if let Some(event) = event {
+            window.sendEvent(&event);
         }
-        if !from_keyboard {
-            for (pressed, code, flag) in modifier_keys.iter().rev() {
-                if *pressed {
-                    held &= !*flag;
-                    if let Some(event) = flags_event(held, *code) {
-                        window.sendEvent(&event);
-                    }
+    }
+    if !from_keyboard {
+        for (pressed, code, flag) in modifier_keys.iter().rev() {
+            if *pressed {
+                held &= !*flag;
+                if let Some(event) = flags_event(held, *code) {
+                    window.sendEvent(&event);
                 }
             }
         }
@@ -512,18 +490,16 @@ pub fn route_edit_keys_to_window(window: &winit::window::Window) {
     let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
         return;
     };
-    extern "C" fn perform_key_equivalent(this: &AnyObject, _: Sel, event: &NSEvent) -> Bool {
-        let relevant = NSEventModifierFlags::NSEventModifierFlagCommand
-            | NSEventModifierFlags::NSEventModifierFlagShift
-            | NSEventModifierFlags::NSEventModifierFlagOption
-            | NSEventModifierFlags::NSEventModifierFlagControl;
-        let (key, flags) = unsafe {
-            let key = event
-                .charactersIgnoringModifiers()
-                .map(|key| key.to_string().to_lowercase())
-                .unwrap_or_default();
-            (key, event.modifierFlags() & relevant)
-        };
+    extern "C-unwind" fn perform_key_equivalent(this: &AnyObject, _: Sel, event: &NSEvent) -> Bool {
+        let relevant = NSEventModifierFlags::Command
+            | NSEventModifierFlags::Shift
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Control;
+        let key = event
+            .charactersIgnoringModifiers()
+            .map(|key| key.to_string().to_lowercase())
+            .unwrap_or_default();
+        let flags = event.modifierFlags() & relevant;
         let ours = REPLAYED
             .lock()
             .is_ok_and(|replayed| replayed.iter().any(|(k, f)| *k == key && *f == flags));
@@ -542,12 +518,12 @@ pub fn route_edit_keys_to_window(window: &winit::window::Window) {
             return;
         }
         let imp: Imp = std::mem::transmute(
-            perform_key_equivalent as extern "C" fn(&AnyObject, Sel, &NSEvent) -> Bool,
+            perform_key_equivalent as extern "C-unwind" fn(&AnyObject, Sel, &NSEvent) -> Bool,
         );
         objc2::ffi::class_addMethod(
             class as *mut _,
-            sel!(performKeyEquivalent:).as_ptr(),
-            Some(imp),
+            sel!(performKeyEquivalent:),
+            imp,
             c"c@:@".as_ptr(),
         );
     }
@@ -561,8 +537,8 @@ mod tests {
     fn bindings_become_key_equivalents() {
         let (key, flags) = key_equivalent("cmd-shift-c");
         assert_eq!(key, "c");
-        assert!(flags.contains(NSEventModifierFlags::NSEventModifierFlagCommand));
-        assert!(flags.contains(NSEventModifierFlags::NSEventModifierFlagShift));
+        assert!(flags.contains(NSEventModifierFlags::Command));
+        assert!(flags.contains(NSEventModifierFlags::Shift));
         assert_eq!(key_equivalent("ctrl-`").0, "`");
         assert_eq!(key_equivalent("cmd-alt-left").0, "\u{f702}");
         assert_eq!(key_equivalent("f13").0, "");
@@ -583,8 +559,8 @@ mod tests {
     #[test]
     fn the_edit_keys_are_taken_before_the_menu_bar() {
         let strokes = replayed_strokes();
-        let command = NSEventModifierFlags::NSEventModifierFlagCommand;
-        let shift = NSEventModifierFlags::NSEventModifierFlagShift;
+        let command = NSEventModifierFlags::Command;
+        let shift = NSEventModifierFlags::Shift;
         assert!(strokes.contains(&("v".to_string(), command)));
         assert!(strokes.contains(&("z".to_string(), command | shift)));
         assert!(

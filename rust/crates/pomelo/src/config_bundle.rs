@@ -140,21 +140,20 @@ fn choose_bundle_file() -> Option<std::path::PathBuf> {
     use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
     use objc2_foundation::{MainThreadMarker, NSString};
     let mtm = MainThreadMarker::new()?;
-    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
-    unsafe {
-        panel.setCanChooseFiles(true);
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(false);
-        panel.setPrompt(Some(&NSString::from_str("Import")));
-        panel.setMessage(Some(&NSString::from_str(
-            "Choose a pom.yml or a .pombundle to import",
-        )));
-    }
-    if unsafe { panel.runModal() } != NSModalResponseOK {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setPrompt(Some(&NSString::from_str("Import")));
+    panel.setMessage(Some(&NSString::from_str(
+        "Choose a pom.yml or a .pombundle to import",
+    )));
+    if panel.runModal() != NSModalResponseOK {
         return None;
     }
-    let url = unsafe { panel.URL() }?;
-    unsafe { url.path() }.map(|path| std::path::PathBuf::from(path.to_string()))
+    let url = panel.URL()?;
+    url.path()
+        .map(|path| std::path::PathBuf::from(path.to_string()))
 }
 
 #[cfg(target_os = "macos")]
@@ -164,19 +163,17 @@ pub(crate) fn choose_upload_files() -> Vec<std::path::PathBuf> {
     let Some(mtm) = MainThreadMarker::new() else {
         return Vec::new();
     };
-    let panel = unsafe { NSOpenPanel::openPanel(mtm) };
-    unsafe {
-        panel.setCanChooseFiles(true);
-        panel.setCanChooseDirectories(false);
-        panel.setAllowsMultipleSelection(true);
-        panel.setPrompt(Some(&NSString::from_str("Upload")));
-    }
-    if unsafe { panel.runModal() } != NSModalResponseOK {
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(true);
+    panel.setPrompt(Some(&NSString::from_str("Upload")));
+    if panel.runModal() != NSModalResponseOK {
         return Vec::new();
     }
-    let urls = unsafe { panel.URLs() };
+    let urls = panel.URLs();
     urls.iter()
-        .filter_map(|url| unsafe { url.path() })
+        .filter_map(|url| url.path())
         .map(|path| std::path::PathBuf::from(path.to_string()))
         .collect()
 }
@@ -196,16 +193,15 @@ fn choose_save_path(file_name: &str) -> Option<std::path::PathBuf> {
     use objc2_app_kit::{NSModalResponseOK, NSSavePanel};
     use objc2_foundation::{MainThreadMarker, NSString};
     let mtm = MainThreadMarker::new()?;
-    let panel = unsafe { NSSavePanel::savePanel(mtm) };
-    unsafe {
-        panel.setNameFieldStringValue(&NSString::from_str(file_name));
-        panel.setPrompt(Some(&NSString::from_str("Export")));
-    }
-    if unsafe { panel.runModal() } != NSModalResponseOK {
+    let panel = NSSavePanel::savePanel(mtm);
+    panel.setNameFieldStringValue(&NSString::from_str(file_name));
+    panel.setPrompt(Some(&NSString::from_str("Export")));
+    if panel.runModal() != NSModalResponseOK {
         return None;
     }
-    let url = unsafe { panel.URL() }?;
-    unsafe { url.path() }.map(|path| std::path::PathBuf::from(path.to_string()))
+    let url = panel.URL()?;
+    url.path()
+        .map(|path| std::path::PathBuf::from(path.to_string()))
 }
 
 #[cfg(not(target_os = "macos"))]

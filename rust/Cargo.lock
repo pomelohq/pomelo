@@ -1655,7 +1655,7 @@ version = "0.9.10"
 dependencies = [
  "anyhow",
  "components",
- "objc2 0.5.2",
+ "objc2 0.6.4",
  "serde",
  "serde_json",
  "stories",
@@ -3013,7 +3013,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
 ]
@@ -3253,7 +3255,7 @@ dependencies = [
  "objc2-quartz-core 0.2.2",
  "objc2-symbols",
  "objc2-uniform-type-identifiers",
- "objc2-user-notifications",
+ "objc2-user-notifications 0.2.2",
 ]
 
 [[package]]
@@ -3278,6 +3280,18 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -4083,7 +4097,7 @@ dependencies = [
  "arboard",
  "auto_update",
  "auto_update_ui",
- "block2 0.5.1",
+ "block2 0.6.2",
  "database_ui",
  "desktop",
  "dev_services_ui",
@@ -4098,10 +4112,10 @@ dependencies = [
  "lsp",
  "module_store",
  "module_store_ui",
- "objc2 0.5.2",
- "objc2-app-kit 0.2.2",
- "objc2-foundation 0.2.2",
- "objc2-user-notifications",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-user-notifications 0.3.2",
  "onboarding",
  "onboarding_ui",
  "pom_agent",
@@ -7264,7 +7278,7 @@ dependencies = [
  "aho-corasick",
  "anyhow",
  "bitflags 2.13.2",
- "block2 0.5.1",
+ "block2 0.6.2",
  "core-foundation-sys",
  "cranelift-bitset",
  "crc32fast",
@@ -7284,12 +7298,10 @@ dependencies = [
  "log",
  "memchr",
  "num-traits",
- "objc2 0.5.2",
  "objc2 0.6.4",
- "objc2-app-kit 0.2.2",
+ "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
- "objc2-foundation 0.2.2",
  "objc2-foundation 0.3.2",
  "once_cell",
  "percent-encoding",

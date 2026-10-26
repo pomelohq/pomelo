@@ -5,7 +5,7 @@ use std::sync::Mutex;
 
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-use objc2::{declare_class, msg_send_id, mutability, ClassType, DeclaredClass};
+use objc2::{define_class, msg_send, AllocAnyThread};
 use objc2_foundation::{NSBundle, NSError, NSString};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
@@ -20,21 +20,15 @@ const PRESENT: usize = (1 << 4) | (1 << 1);
 /// The workspace branch of the notification the user clicked, for the app to switch to.
 static CLICKED: Mutex<Option<String>> = Mutex::new(None);
 
-declare_class!(
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "PomeloNotificationDelegate"]
     struct Delegate;
-
-    unsafe impl ClassType for Delegate {
-        type Super = NSObject;
-        type Mutability = mutability::InteriorMutable;
-        const NAME: &'static str = "PomeloNotificationDelegate";
-    }
-
-    impl DeclaredClass for Delegate {}
 
     unsafe impl NSObjectProtocol for Delegate {}
 
     unsafe impl UNUserNotificationCenterDelegate for Delegate {
-        #[method(userNotificationCenter:willPresentNotification:withCompletionHandler:)]
+        #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
         fn will_present(
             &self,
             _center: &UNUserNotificationCenter,
@@ -44,15 +38,14 @@ declare_class!(
             handler.call((UNNotificationPresentationOptions(PRESENT),));
         }
 
-        #[method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:)]
+        #[unsafe(method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:))]
         fn did_receive(
             &self,
             _center: &UNUserNotificationCenter,
             response: &UNNotificationResponse,
             handler: &block2::Block<dyn Fn()>,
         ) {
-            // SAFETY: plain getters on the delivered response.
-            let identifier = unsafe { response.notification().request().identifier() }.to_string();
+            let identifier = response.notification().request().identifier().to_string();
             if let Some(branch) = identifier
                 .strip_prefix(IDENTIFIER_PREFIX)
                 .and_then(|rest| rest.split_once(':'))
@@ -81,15 +74,14 @@ static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 
 /// Asks for permission once (the system remembers the answer) and installs the delegate.
 pub fn start() {
-    // SAFETY: reading the main bundle's identifier.
-    let bundled = unsafe { NSBundle::mainBundle().bundleIdentifier() }.is_some();
+    let bundled = NSBundle::mainBundle().bundleIdentifier().is_some();
     if !bundled {
         return;
     }
     // SAFETY: standard Notification Center setup from the main thread.
     unsafe {
         let center = UNUserNotificationCenter::currentNotificationCenter();
-        let delegate: Retained<Delegate> = msg_send_id![Delegate::alloc(), init];
+        let delegate: Retained<Delegate> = msg_send![Delegate::alloc(), init];
         center.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         let done = block2::RcBlock::new(|granted: objc2::runtime::Bool, error: *mut NSError| {
             if let Some(error) = error.as_ref() {
@@ -103,8 +95,7 @@ pub fn start() {
         });
         center.requestAuthorizationWithOptions_completionHandler(
             UNAuthorizationOptions(
-                UNAuthorizationOptions::UNAuthorizationOptionAlert.0
-                    | UNAuthorizationOptions::UNAuthorizationOptionSound.0,
+                UNAuthorizationOptions::Alert.0 | UNAuthorizationOptions::Sound.0,
             ),
             &done,
         );
@@ -134,11 +125,8 @@ pub fn post_test() {
 
 /// A macOS system sound by name (Glass, Ping...).
 pub fn play_sound(name: &str) {
-    // SAFETY: looking up and playing a named system sound; the shared instance outlives the call.
-    unsafe {
-        if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&NSString::from_str(name)) {
-            sound.play();
-        }
+    if let Some(sound) = objc2_app_kit::NSSound::soundNamed(&NSString::from_str(name)) {
+        sound.play();
     }
 }
 
