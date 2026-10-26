@@ -8518,7 +8518,7 @@ fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Paint
     let mut painted = Painted::default();
     painted
         .rects
-        .push(Rect::new(0.0, 0.0, w, h, Rgba::new(0.0, 0.0, 0.0, 0.2)));
+        .push(Rect::new(0.0, 0.0, w, h, ui::theme().scrim()));
     painted.hits.push((
         Rect::new(0.0, 0.0, w, h, Rgba::TRANSPARENT),
         PROMPT_BACKDROP,

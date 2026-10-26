@@ -645,7 +645,7 @@ fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
             .bg(if hovered {
                 colors.element_hover
             } else {
-                with_alpha(colors.text, 0.05)
+                (colors.text).alpha(0.05)
             })
             .child(
                 icon(IconKind::ChevronRight)
@@ -810,10 +810,6 @@ fn op_ticket_key(op: &crate::WorkspaceOp) -> Option<String> {
     branch_key(&op.branch).filter(|key| op.title.to_uppercase().starts_with(key.as_str()))
 }
 
-fn with_alpha(color: Rgba, alpha: f32) -> Rgba {
-    Rgba::new(color.r, color.g, color.b, alpha)
-}
-
 /// A PR shown on the default branch says nothing (every PR targets it), so main never carries one.
 fn shown_pr(row: &WorkspaceRow) -> Option<crate::PrSummary> {
     row.pr.filter(|_| row.index != 0)
@@ -914,7 +910,7 @@ fn tile_text(prefix: Option<String>, name: String, ink: Rgba) -> Div {
             label(prefix)
                 .size_px(8.0)
                 .weight(600)
-                .color(with_alpha(ink, ink.a * 0.6))
+                .color((ink).alpha(ink.a * 0.6))
                 .into(),
             8.0,
         ));
@@ -933,7 +929,7 @@ fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running
         let scan = div()
             .row()
             .rounded(Radius::XSmall)
-            .bg(with_alpha(ink, ink.a * 0.18))
+            .bg((ink).alpha(ink.a * 0.18))
             .child(
                 div()
                     .w_px(track * 0.4)
@@ -953,7 +949,7 @@ fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running
                 .w_px(3.0)
                 .h_px(3.0)
                 .rounded(Radius::XSmall)
-                .bg(with_alpha(ink, ink.a * 0.55)),
+                .bg((ink).alpha(ink.a * 0.55)),
         );
     }
     tile.pin(Corner::BottomLeft, 0.0, -3.0, size, 3.0, pips)
@@ -987,7 +983,7 @@ fn workspace_tile(row: &WorkspaceRow, size: f32, current: bool, hovered: bool, q
     } else if hovered && !quiet {
         (colors.element_hover, colors.text)
     } else {
-        (with_alpha(colors.text, 0.06), colors.text_muted)
+        ((colors.text).alpha(0.06), colors.text_muted)
     };
     let working = !quiet && agent_working(row.agent);
     let floor = working || row.running > 0;
@@ -1004,7 +1000,7 @@ fn workspace_tile(row: &WorkspaceRow, size: f32, current: bool, hovered: bool, q
         tile = tile.pb(4.0);
     }
     if waiting && colors.appearance == ui::Appearance::Light {
-        tile = tile.border(1.0, with_alpha(colors.on_attention, 0.22));
+        tile = tile.border(1.0, (colors.on_attention).alpha(0.22));
     }
     tile = if row.index == 0 {
         tile.child(icon(IconKind::Branch).size(14.0).color(ink))
@@ -1124,11 +1120,11 @@ fn creation_tile(op: &crate::WorkspaceOp, size: f32) -> Div {
     };
     // Opaque so the level's flat top and rounded bottom can overlap without doubling the tint; the panel sits
     // on the app background.
-    let face = with_alpha(colors.text, 0.06).over(colors.background);
+    let face = (colors.text).alpha(0.06).over(colors.background);
     let mut tile = div().w_px(size).h_px(size).rounded(TILE_RADIUS).bg(face);
     if op.status == OpStatus::Running {
         let level = size * op_progress(op).clamp(0.0, 1.0);
-        let fill = with_alpha(colors.text_accent, 0.28).over(face);
+        let fill = (colors.text_accent).alpha(0.28).over(face);
         tile = tile
             .pin(
                 Corner::BottomLeft,
@@ -1834,10 +1830,13 @@ fn op_row(
         .rounded(Radius::Medium)
         .child(main_line);
     if expanded && op.status == OpStatus::Failed {
-        row = row
-            .pb(8.0)
-            .bg(with_alpha(colors.error, 0.06))
-            .child(op_details(op, position, width, true, manual_open));
+        row = row.pb(8.0).bg((colors.error).alpha(0.06)).child(op_details(
+            op,
+            position,
+            width,
+            true,
+            manual_open,
+        ));
     }
     row.into()
 }

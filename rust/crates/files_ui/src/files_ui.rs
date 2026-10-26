@@ -3427,15 +3427,9 @@ impl FileItem {
         // The reference tints the selection with the player color (a translucent blue) behind the text, not the
         // opaque gray UI-list selection.
         let st = syntax_theme();
-        let [sr, sg, sb] = st.selection.0;
         // Selections dim while the editor isn't focused.
         let unfocused_opacity = if self.focused { 1.0 } else { 0.5 };
-        let sel_color = Rgba::new(
-            sr as f32 / 255.0,
-            sg as f32 / 255.0,
-            sb as f32 / 255.0,
-            st.selection_alpha * unfocused_opacity,
-        );
+        let sel_color = Rgba::rgb8(st.selection.0).alpha(st.selection_alpha * unfocused_opacity);
         let mut tris = Vec::new();
         for s in b.selections() {
             let Some((a, e)) = s.range() else { continue };
@@ -4350,7 +4344,7 @@ impl FileItem {
                 )
             };
             if hunk.staged {
-                rect.color = blend(colors.editor_background, color.alpha(color.a * 0.3));
+                rect.color = color.alpha(color.a * 0.3).over(colors.editor_background);
                 rect.border = 1.0;
                 rect.border_color = color;
             }
@@ -9355,24 +9349,13 @@ fn flatten(nodes: &[FileNode], depth: usize, expanded: &HashSet<String>, out: &m
     }
 }
 
-fn blend(base: Rgba, over: Rgba) -> Rgba {
-    let mix = |b: f32, o: f32| b * (1.0 - over.a) + o * over.a;
-    Rgba::new(
-        mix(base.r, over.r),
-        mix(base.g, over.g),
-        mix(base.b, over.b),
-        1.0,
-    )
-}
-
 fn color_of(theme: &Theme, capture: &str) -> Rgba {
     let c = if capture.is_empty() {
         theme.foreground
     } else {
         theme.syntax_color(capture)
     };
-    let [r, g, b] = c.0;
-    Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
+    Rgba::rgb8(c.0)
 }
 
 impl ItemInput for FilesView {
@@ -9887,7 +9870,7 @@ impl FunctionView for FilesView {
                 // Separator under the pinned stack: a 1px border then a soft shadow fading into the content.
                 sticky = sticky
                     .child(components::edge_divider())
-                    .child(div().h_px(4.0).bg(Rgba::new(0.0, 0.0, 0.0, 0.10)));
+                    .child(div().h_px(4.0).bg(theme().recess()));
             }
         }
 

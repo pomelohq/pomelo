@@ -649,7 +649,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         .h_px(30.0)
         .px(12.0)
         .gap(10.0)
-        .bg(Rgba::new(0.0, 0.0, 0.0, 0.06))
+        .bg(theme().recess())
         .child(div().w_px(200.0).child(hint(group_name.into())))
         .child(div().flex(1.0).child(hint("Share".into())))
         .child(num("Sessions".into(), colors.text_placeholder))

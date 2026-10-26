@@ -25,6 +25,11 @@ impl Rgba {
         Self { a, ..self }
     }
 
+    /// An opaque color from 8-bit channels, as syntax themes store them.
+    pub const fn rgb8([r, g, b]: [u8; 3]) -> Self {
+        Self::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
+    }
+
     /// Parse `#rrggbb` or `#rrggbbaa`. Unknown/short input yields opaque black rather than panicking.
     pub fn hex(s: &str) -> Self {
         let s = s.trim_start_matches('#');
@@ -1287,6 +1292,46 @@ pub fn set_reduce_motion(reduce: bool) {
 static CURRENT: RwLock<Option<ThemeColors>> = RwLock::new(None);
 
 /// The active theme (defaults to One Dark until `set_theme` is called).
+/// Translucent tints derived from the theme, for edges and fills that must read the same over any surface.
+impl ThemeColors {
+    fn ink(&self, dark: Rgba, alpha_dark: f32, alpha_light: f32) -> Rgba {
+        match self.appearance {
+            Appearance::Dark => dark.alpha(alpha_dark),
+            Appearance::Light => self.text.alpha(alpha_light),
+        }
+    }
+
+    /// A rule or control edge that reads the same on a panel and on a tinted row.
+    pub fn hairline(&self) -> Rgba {
+        self.ink(Rgba::new(1.0, 1.0, 1.0, 1.0), 0.12, 0.15)
+    }
+
+    /// The ring around a floating surface; on light layers it needs a dark tint to stand off the page.
+    pub fn overlay_ring(&self) -> Rgba {
+        self.ink(Rgba::new(1.0, 1.0, 1.0, 1.0), 0.08, 0.12)
+    }
+
+    /// A hover or chip fill on a raised card, where the element fill would not show.
+    pub fn tint(&self) -> Rgba {
+        self.ink(Rgba::new(1.0, 1.0, 1.0, 1.0), 0.05, 0.04)
+    }
+
+    /// The one-pixel shadow edge under a raised tab or along a panel's side.
+    pub fn edge_shadow(&self) -> Rgba {
+        self.ink(Rgba::new(0.0, 0.0, 0.0, 1.0), 0.3, 0.08)
+    }
+
+    /// A band set into the surface around it, such as a strip of shared rows.
+    pub fn recess(&self) -> Rgba {
+        Rgba::new(0.0, 0.0, 0.0, 0.08)
+    }
+
+    /// The dim laid over the window behind a modal.
+    pub fn scrim(&self) -> Rgba {
+        Rgba::new(0.0, 0.0, 0.0, 0.2)
+    }
+}
+
 pub fn theme() -> ThemeColors {
     CURRENT
         .read()

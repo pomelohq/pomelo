@@ -829,13 +829,7 @@ fn capture_color(colors: &editor::Theme, capture: &str) -> Rgba {
     } else {
         colors.syntax_color(capture)
     };
-    let [r, g, b] = color.0;
-    Rgba::new(
-        f32::from(r) / 255.0,
-        f32::from(g) / 255.0,
-        f32::from(b) / 255.0,
-        1.0,
-    )
+    Rgba::rgb8(color.0)
 }
 
 /// A code block's lines as colored runs, highlighted when its language is known, each wrapped to `columns`.
@@ -1124,10 +1118,6 @@ impl Markdown {
     }
 }
 
-fn with_alpha(color: Rgba, alpha: f32) -> Rgba {
-    Rgba::new(color.r, color.g, color.b, alpha)
-}
-
 impl MarkdownLayout {
     pub fn line_count(&self) -> usize {
         self.lines.len()
@@ -1296,7 +1286,7 @@ impl MarkdownLayout {
                             .w_px(width)
                             .h_px(line.height)
                             .px(CODE_BLOCK_PAD)
-                            .bg(with_alpha(colors.editor_foreground, 0.04));
+                            .bg((colors.editor_foreground).alpha(0.04));
                         if *first {
                             boxed_row = boxed_row.pt(CODE_BLOCK_PAD);
                         }
@@ -1414,13 +1404,13 @@ fn render_run(
         run = run.strikethrough(color);
     }
     if style.link.is_some() {
-        run = run.underline(with_alpha(colors.text_accent, 0.5));
+        run = run.underline((colors.text_accent).alpha(0.5));
     }
     let node: Node = if style.code {
         div()
             .row()
             .rounded(Radius::Small)
-            .bg(with_alpha(colors.editor_foreground, 0.08))
+            .bg((colors.editor_foreground).alpha(0.08))
             .child(run)
             .into()
     } else {

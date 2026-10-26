@@ -783,7 +783,7 @@ impl ServiceItem {
                     .w_px(inner)
                     .p(8.0)
                     .rounded(Radius::Small)
-                    .bg(ui::Rgba::new(0.0, 0.0, 0.0, 0.2))
+                    .bg(ui::theme().scrim())
                     .child(
                         label(detail)
                             .size(LabelSize::Small)

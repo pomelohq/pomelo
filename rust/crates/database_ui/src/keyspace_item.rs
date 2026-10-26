@@ -110,15 +110,7 @@ fn short_ttl(seconds: i64) -> String {
 fn kind_color(kind: &str) -> Rgba {
     let colors = theme();
     let palette = workspace::syntax_theme();
-    let syntax = |capture: &str| {
-        let [r, g, b] = palette.syntax_color(capture).0;
-        Rgba::new(
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            1.0,
-        )
-    };
+    let syntax = |capture: &str| Rgba::rgb8(palette.syntax_color(capture).0);
     match kind {
         "string" => syntax("string"),
         "hash" => colors.hint,

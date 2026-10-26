@@ -162,13 +162,7 @@ impl TextField {
             let text = styled(piece(range)).color(color);
             if selected && focused {
                 let st = crate::syntax_theme();
-                let [r, g, b] = st.selection.0;
-                let tint = ui::Rgba::new(
-                    r as f32 / 255.0,
-                    g as f32 / 255.0,
-                    b as f32 / 255.0,
-                    st.selection_alpha,
-                );
+                let tint = ui::Rgba::rgb8(st.selection.0).alpha(st.selection_alpha);
                 row.child(div().bg(tint).child(text))
             } else {
                 row.child(text)
@@ -588,20 +582,11 @@ impl TextArea {
         let selection = self.buffer.newest();
         let (start, end, head) = (selection.start, selection.end, selection.head());
         let st = crate::syntax_theme();
-        let [r, g, b] = st.selection.0;
-        let tint = ui::Rgba::new(
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            st.selection_alpha,
-        );
+        let tint = ui::Rgba::rgb8(st.selection.0).alpha(st.selection_alpha);
         let last_row = self.rows.len().saturating_sub(1);
         let palette = crate::syntax_theme();
         let capture_color = |capture: Option<&str>| match capture {
-            Some(capture) => {
-                let [r, g, b] = palette.syntax_color(capture).0;
-                ui::Rgba::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-            }
+            Some(capture) => ui::Rgba::rgb8(palette.syntax_color(capture).0),
             None => text_color,
         };
         let current_line = self

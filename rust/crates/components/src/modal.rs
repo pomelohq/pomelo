@@ -4,12 +4,8 @@ pub const MODAL_RADIUS: Radius = Radius::XLarge;
 /// Horizontal inset of the header title and the body.
 pub const MODAL_INSET: f32 = 18.0;
 
-/// The hairline ring around a floating surface; on light layers it needs a dark tint to stand off the page.
 pub fn overlay_ring() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.08),
-        ui::Appearance::Light => Rgba::hex("#1d17301f"),
-    }
+    theme().overlay_ring()
 }
 
 /// The modal surface: the overlay layer, large rounding and a hairline ring.

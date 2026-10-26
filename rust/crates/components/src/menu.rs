@@ -213,7 +213,7 @@ impl<'a> Menu<'a> {
             .rounded(Radius::Medium)
             .on_click(item.id);
         if self.hovered == Some(item.id) && !item.disabled {
-            row = row.bg(menu_hover());
+            row = row.bg(theme().tint());
         }
         let label_color = if item.disabled {
             colors.text_disabled
@@ -290,14 +290,6 @@ pub fn menu_row(item: &MenuItem, hovered: Option<u64>) -> Node {
 impl From<Menu<'_>> for Node {
     fn from(menu: Menu<'_>) -> Node {
         menu.render().0
-    }
-}
-
-// On the raised card the element fill is not under the row, so tint toward the text instead.
-fn menu_hover() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.05),
-        ui::Appearance::Light => Rgba::new(0.0, 0.0, 0.0, 0.04),
     }
 }
 
