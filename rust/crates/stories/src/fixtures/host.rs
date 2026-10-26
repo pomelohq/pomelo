@@ -170,6 +170,52 @@ pub fn conflict_prompt() -> Option<workspace::Prompt> {
     None
 }
 
+/// The host's git over the wire, run in the scratch copy that stands in for its worktree.
+struct HostGit {
+    local: std::path::PathBuf,
+}
+
+impl HostGit {
+    fn here(&self, repo: &git::access::RepoSource) -> git::access::RepoSource {
+        let relative = repo.root.strip_prefix(WORKTREE).unwrap_or(&repo.root);
+        git::access::RepoSource {
+            root: self.local.join(relative),
+            ..repo.clone()
+        }
+    }
+}
+
+impl git::access::GitAccess for HostGit {
+    fn scan(&self, repo: &git::access::RepoSource) -> git::scan::RepoScan {
+        super::git::WireGit.scan(&self.here(repo))
+    }
+
+    fn act(
+        &self,
+        repo: &git::access::RepoSource,
+        op: git::access::GitOp,
+    ) -> Result<(), git::working_copy::CommandError> {
+        super::git::WireGit.act(&self.here(repo), op)
+    }
+
+    fn read(
+        &self,
+        repo: &git::access::RepoSource,
+        query: git::access::GitRead,
+    ) -> Result<git::access::GitAnswer, String> {
+        super::git::WireGit.read(&self.here(repo), query)
+    }
+
+    fn remote(
+        &self,
+        repo: &git::access::RepoSource,
+        command: git::access::RemoteCommand,
+        progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
+        super::git::WireGit.remote(&self.here(repo), command, progress)
+    }
+}
+
 /// The file tree and editor of the host's workspace, with the controller open when the tree is whole (the
 /// log when it is too large to open), read only in the board of a file merely open.
 fn host_files(mode: HostFilesMode) -> anyhow::Result<files_ui::FilesView> {
@@ -188,7 +234,7 @@ fn host_files_opening(mode: HostFilesMode, open: bool) -> anyhow::Result<files_u
         std::fs::write(&log, "Started GET /users\n")?;
     }
     let fs = Arc::new(HostFiles {
-        local: files::LocalFs::new(root),
+        local: files::LocalFs::new(root.clone()),
         mode,
     });
     let partial = mode == HostFilesMode::Partial;
@@ -196,6 +242,20 @@ fn host_files_opening(mode: HostFilesMode, open: bool) -> anyhow::Result<files_u
         mode,
         HostFilesMode::Partial | HostFilesMode::Whole
     ));
+    if mode != HostFilesMode::Offline {
+        let api = git::access::RepoSource {
+            name: "api".into(),
+            root: std::path::Path::new(WORKTREE).join("api"),
+            default_branch: "main".into(),
+            expected_branch: "main".into(),
+            kept: false,
+            origin: None,
+        };
+        files.set_repo_files(Some(git::access::RepoFiles::new(
+            Arc::new(HostGit { local: root }),
+            vec![api],
+        )));
+    }
     let shown = if mode == HostFilesMode::TooLarge {
         LOG
     } else {
