@@ -1187,12 +1187,10 @@ pub fn failure_popover(op: &crate::WorkspaceOp, position: usize, manual_open: bo
     } else {
         op.title.clone()
     };
-    components::card()
-        .padding(10.0)
-        .raised()
+    components::popover(WIDTH)
+        .content()
+        .title(title)
         .render()
-        .w_px(WIDTH)
-        .child(label(title).medium().color(colors.text).truncate())
         .child(
             div()
                 .row()
@@ -1203,7 +1201,7 @@ pub fn failure_popover(op: &crate::WorkspaceOp, position: usize, manual_open: bo
         .child(op_details(
             op,
             position,
-            WIDTH - 20.0,
+            WIDTH - 24.0,
             !op.quiet,
             manual_open,
         ))
@@ -1728,11 +1726,7 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
             )
             .into()
     };
-    let mut menu = components::card()
-        .padding(4.0)
-        .raised()
-        .render()
-        .w_px(width);
+    let mut menu = components::popover(width).render();
     if !op.fix_dir.is_empty() {
         let path = std::path::Path::new(&op.fix_dir);
         let repo = path

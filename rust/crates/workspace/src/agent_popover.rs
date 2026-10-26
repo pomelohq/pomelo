@@ -78,18 +78,9 @@ pub fn new_agent(
 ) -> Node {
     let colors = theme();
     let inner = WIDTH - 24.0;
-    let mut card = components::card()
-        .padding(4.0)
-        .raised()
-        .render()
-        .w_px(WIDTH)
-        .child(
-            div().row().h_px(30.0).px(Space::S10).items_center().child(
-                label(format!("New side agent in {branch}"))
-                    .size(LabelSize::Medium)
-                    .color(colors.text_muted),
-            ),
-        );
+    let mut card = components::popover(WIDTH)
+        .title(format!("New side agent in {branch}"))
+        .render();
     for (index, each) in SideAgentRole::ALL.into_iter().enumerate() {
         let id = ROLE_BASE + index as u64;
         let unavailable = each == SideAgentRole::SecondOpinion && other_cli.is_none();
@@ -112,7 +103,7 @@ pub fn new_agent(
         };
         let mut row = div()
             .row()
-            .px(Space::S10)
+            .px(Space::S8)
             .py(Space::S6)
             .gap(Space::S10)
             .items_center()
@@ -160,7 +151,7 @@ pub fn new_agent(
         div()
             .row()
             .h_px(28.0)
-            .px(Space::S10)
+            .px(Space::S8)
             .items_center()
             .child(
                 div().row().flex(1.0).child(
@@ -212,7 +203,7 @@ pub fn new_agent(
         };
         let mut row = div()
             .row()
-            .px(Space::S10)
+            .px(Space::S8)
             .py(Space::S6)
             .gap(Space::S10)
             .rounded(Radius::Medium)
@@ -277,7 +268,7 @@ pub fn new_agent(
             div()
                 .row()
                 .h_px(40.0)
-                .px(Space::S10)
+                .px(Space::S8)
                 .items_center()
                 .child(
                     div().row().flex(1.0).child(
@@ -306,7 +297,7 @@ pub fn new_agent(
         .child(separator());
     let mut workspace = div()
         .row()
-        .px(Space::S10)
+        .px(Space::S8)
         .py(Space::S6)
         .gap(Space::S10)
         .items_center()
@@ -343,34 +334,14 @@ pub fn new_agent(
 /// The history popover: side agents that were closed, newest first, to reopen with their transcript.
 pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
     let colors = theme();
-    let mut card = components::card()
-        .padding(4.0)
-        .raised()
-        .render()
-        .w_px(WIDTH - 40.0)
-        .child(
-            div()
-                .row()
-                .h_px(30.0)
-                .px(Space::S10)
-                .items_center()
-                .child(
-                    div().row().flex(1.0).child(
-                        label("Archived side agents")
-                            .size(LabelSize::Medium)
-                            .color(colors.text_muted),
-                    ),
-                )
-                .child(
-                    label(archived.len().to_string())
-                        .size(LabelSize::Medium)
-                        .color(colors.text_muted),
-                ),
-        );
+    let mut card = components::popover(WIDTH - 40.0)
+        .title("Archived side agents")
+        .aside(archived.len().to_string())
+        .render();
     if archived.is_empty() {
         return card
             .child(
-                div().row().px(Space::S10).pb(Space::S10).child(
+                div().row().px(Space::S8).pb(Space::S10).child(
                     label(
                         "Nothing archived. Closing a side agent stops its CLI and keeps the \
                          transcript here, so you can reopen it.",
@@ -386,7 +357,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
         let id = HISTORY_BASE + index as u64;
         let mut row = div()
             .col()
-            .px(Space::S10)
+            .px(Space::S8)
             .py(Space::S6)
             .gap(Space::Px(1.0))
             .rounded(Radius::Medium)
