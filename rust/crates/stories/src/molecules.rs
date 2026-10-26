@@ -552,6 +552,20 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|_, _| picker_board("main", true)),
         ),
         story(
+            "tab-bar-pane",
+            "Tab bar",
+            "Pane, with history and buttons",
+            (640.0, 34.0),
+            || still(|width, _| tab_bar_board(width, true)),
+        ),
+        story(
+            "tab-bar-page",
+            "Tab bar",
+            "Page, one tab",
+            (640.0, 34.0),
+            || still(|width, _| tab_bar_board(width, false)),
+        ),
+        story(
             "picker-empty",
             "Picker",
             "No matches",
@@ -1043,6 +1057,45 @@ fn card_board(card: components::Card) -> Node {
 }
 
 /// A file finder's shape: the query, a few matches with the first selected, and the keys.
+fn tab_bar_board(width: f32, pane: bool) -> Node {
+    let document = || ui::material_icon(ui::MaterialIcon::Document).size(14.0);
+    let mut tabs = vec![components::tab(1, "Usage")
+        .glyph(icon_glyph(IconKind::Sparkle))
+        .close(2)
+        .active(!pane)];
+    if pane {
+        tabs = vec![
+            components::tab(1, "main.rs").glyph(document()).close(2),
+            components::tab(3, "session.rs")
+                .glyph(document())
+                .close(4)
+                .active(true)
+                .unsaved(Some(theme().text_muted)),
+            components::tab(5, "README.md")
+                .glyph(document())
+                .close(6)
+                .preview(true),
+            components::tab(7, "pom.yml")
+                .glyph(document())
+                .close(8)
+                .pinned(true),
+        ];
+    }
+    let mut bar = components::tab_bar().strip(components::tab_strip(tabs));
+    if pane {
+        bar = bar
+            .leading(components::icon_button(10, IconKind::ArrowLeft))
+            .leading(components::icon_button(11, IconKind::ArrowRight).enabled(false))
+            .trailing(components::icon_button(12, IconKind::DiffSplit))
+            .trailing(components::icon_button(13, IconKind::Ellipsis));
+    }
+    div().col().w_px(width).child(bar.render()).into()
+}
+
+fn icon_glyph(kind: IconKind) -> Node {
+    ui::icon(kind).size(14.0).color(theme().text).into()
+}
+
 fn picker_board(text: &str, matches: bool) -> Node {
     let colors = theme();
     let mut query = TextField::default();

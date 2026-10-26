@@ -159,7 +159,13 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     (
         "Molecules",
         "Headers and bars",
-        &["Page header", "Dock header", "Toolbar", "Breadcrumb"],
+        &[
+            "Page header",
+            "Dock header",
+            "Tab bar",
+            "Toolbar",
+            "Breadcrumb",
+        ],
     ),
     ("Molecules", "Surfaces", &["Card", "Popover", "Modal"]),
     ("Molecules", "Messages", &["Banner", "Toast"]),
@@ -219,6 +225,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Dock header" => "A docked panel's title strip: the name in small caps and one icon action.",
         "Tree row" => "One row of a tree: files, databases, changes, services. A guide for each level, a chevron when it opens; selected, hovered, ringed where the keyboard is, or marked by what is picked elsewhere.",
         "Breadcrumb" => "Where the thing on screen sits: its parents, each a step back, then itself, and the branch it is on.",
+        "Tab bar" => "The strip at the top of a pane or a page: back and forward at the start, the open tabs, the pane's own buttons at the end. Tabs that do not fit scroll sideways under a wheel.",
         "Toolbar" => "The strip over a tab with what acts on its content: where it is, filters and buttons. Under a tab it counts what is shown and says what the last action did.",
         "Empty state" => "What a pane says when it has nothing to show: the reason, how it fills, and the action that fills it. Compact is the one line a list shows instead of rows.",
         "Modal" => "A form over the whole window: the title with a close button, the fields, and the footer with a note at the left and the buttons at the right.",

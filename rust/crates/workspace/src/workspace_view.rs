@@ -2212,19 +2212,14 @@ impl WorkspaceView {
             });
             let scale = ui::ui_text_scale();
             let bar_h = crate::pane::TAB_H * scale;
+            let mut bar = components::tab_bar();
+            if let Some(strip) = strip {
+                bar = bar.strip(strip);
+            }
             let bar = ui::div()
                 .row()
                 .w_px(cr.w / scale)
-                .bg(ui::theme().tab_bar_background)
-                .children(strip)
-                .child(
-                    ui::div()
-                        .col()
-                        .flex(1.0)
-                        .h_px(crate::pane::TAB_H)
-                        .child(ui::div().flex(1.0))
-                        .child(components::edge_divider()),
-                );
+                .child(bar.render().flex(1.0));
             let p = ui::render(
                 &bar.into(),
                 Rect::new(cr.x, cr.y, cr.w, bar_h, Rgba::TRANSPARENT),
