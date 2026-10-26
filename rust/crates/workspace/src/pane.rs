@@ -8,12 +8,7 @@ use crate::pane_group::{PaneId, SplitDirection};
 use crate::search_bar::{SearchBar, Searchable};
 use crate::Item;
 
-pub const TAB_H: f32 = 34.0;
-/// A tab is a pill this tall, centered in the bar; the active one is lifted off the bar.
-/// Space between the bar's ends and its clusters, and between neighbours inside a cluster.
-const BAR_PAD: f32 = 6.0;
-const BAR_GAP: f32 = 2.0;
-const BAR_BUTTON_W: f32 = 28.0;
+pub const TAB_H: f32 = components::TAB_BAR_HEIGHT;
 const MAX_NAVIGATION_HISTORY_LEN: usize = 1024;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -432,39 +427,22 @@ pub fn render_pane(pane: &Pane, config: &TabBarConfig, ids: PaneClickIds, width:
     if pane.open.is_empty() {
         return div().col().flex(1.0).into();
     }
-    let mut tab_bar = div()
-        .row()
-        .h_px(TAB_H)
-        .items_center()
-        .bg(theme().tab_bar_background);
+    let mut tab_bar = components::tab_bar();
     if config.show_nav {
         tab_bar = tab_bar
-            .child(div().w_px(BAR_PAD))
-            .child(nav_button(
+            .leading(nav_button(
                 IconKind::ArrowLeft,
                 ids.nav_back,
                 pane.can_back(),
             ))
-            .child(div().w_px(BAR_GAP))
-            .child(nav_button(
+            .leading(nav_button(
                 IconKind::ArrowRight,
                 ids.nav_forward,
                 pane.can_forward(),
-            ))
-            .child(div().w_px(BAR_PAD))
-            .child(components::vertical_divider(TAB_H))
-            .child(div().w_px(4.0));
+            ));
     }
-    tab_bar = tab_bar.child(div().flex(1.0));
-    if !config.buttons.is_empty() {
-        tab_bar = tab_bar.child(div().w_px(BAR_PAD));
-        for (index, button) in config.buttons.iter().enumerate() {
-            if index > 0 {
-                tab_bar = tab_bar.child(div().w_px(BAR_GAP));
-            }
-            tab_bar = tab_bar.child(tab_bar_button(button));
-        }
-        tab_bar = tab_bar.child(div().w_px(BAR_PAD));
+    for button in &config.buttons {
+        tab_bar = tab_bar.trailing(tab_bar_button(button));
     }
     let mut chrome = div().col().flex(1.0).child(tab_bar);
     if let Some(item) = pane
@@ -496,8 +474,7 @@ fn trail_off(text: &str, max: usize) -> String {
 }
 
 pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> Node {
-    let mut strip = div().row().h_px(TAB_H).items_center();
-    for (index, item) in pane.open.iter().enumerate() {
+    let tabs = pane.open.iter().enumerate().map(|(index, item)| {
         let is_active = pane.active == Some(index);
         let activate_id = ids.tab_activate + index as u64;
         let close_id = ids.tab_close + index as u64;
@@ -530,7 +507,7 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
                 theme().text_muted
             }
         });
-        let cell = components::tab(activate_id, trail_off(&item.title(), MAX_TAB_TITLE_CHARS))
+        components::tab(activate_id, trail_off(&item.title(), MAX_TAB_TITLE_CHARS))
             .glyph(glyph)
             .detail(
                 item.tab_detail()
@@ -542,29 +519,14 @@ pub fn render_tab_strip(pane: &Pane, ids: PaneClickIds, hover: Option<u64>) -> N
             .hovered(hovered)
             .preview(pane.is_preview(index))
             .pinned(pane.is_pinned(index))
-            .unsaved(unsaved);
-        if index > 0 {
-            strip = strip.child(div().w_px(BAR_GAP));
-        }
-        strip = strip.child(cell);
-    }
-    strip.into()
+            .unsaved(unsaved)
+    });
+    components::tab_strip(tabs).into()
 }
 
 /// Design-px widths of the tab bar's fixed parts around the strip: (leading nav, trailing buttons).
 pub fn tab_bar_edges(config: &TabBarConfig) -> (f32, f32) {
-    let nav = if config.show_nav {
-        BAR_PAD + BAR_BUTTON_W * 2.0 + BAR_GAP + BAR_PAD + 1.0 + 4.0
-    } else {
-        BAR_PAD
-    };
-    let count = config.buttons.len() as f32;
-    let buttons = if config.buttons.is_empty() {
-        BAR_PAD
-    } else {
-        BAR_PAD * 2.0 + BAR_BUTTON_W * count + BAR_GAP * (count - 1.0)
-    };
-    (nav, buttons)
+    components::tab_bar_edges(if config.show_nav { 2 } else { 0 }, config.buttons.len())
 }
 
 /// The scroll that keeps `span` (x, width) in a `view`-wide strip with the least movement.
@@ -579,19 +541,7 @@ pub fn scroll_into_view(scroll: f32, (x, w): (f32, f32), view: f32) -> f32 {
 }
 
 fn nav_button(kind: IconKind, id: u64, enabled: bool) -> Node {
-    bar_slot(components::icon_button(id, kind).enabled(enabled).into())
-}
-
-// The tab bar sizes its end from BAR_BUTTON_W, so each square button sits in a slot that wide.
-fn bar_slot(button: Node) -> Node {
-    div()
-        .row()
-        .w_px(BAR_BUTTON_W)
-        .h_px(24.0)
-        .items_center()
-        .justify_center()
-        .child(button)
-        .into()
+    components::icon_button(id, kind).enabled(enabled).into()
 }
 
 fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node {
@@ -627,16 +577,14 @@ fn toolbar_button(button: &TabBarButton) -> Node {
 }
 
 fn tab_bar_button(button: &TabBarButton) -> Node {
-    bar_slot(
-        components::icon_button(button.id, button.icon)
-            .enabled(!button.disabled)
-            .color(if button.selected {
-                theme().icon_accent
-            } else {
-                theme().icon_muted
-            })
-            .into(),
-    )
+    components::icon_button(button.id, button.icon)
+        .enabled(!button.disabled)
+        .color(if button.selected {
+            theme().icon_accent
+        } else {
+            theme().icon_muted
+        })
+        .into()
 }
 
 #[cfg(test)]

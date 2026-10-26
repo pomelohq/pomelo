@@ -9,6 +9,8 @@ cargo build --release -p gallery
 APP="target/release/Pomelo Gallery.app"
 ICON=crates/gallery/assets/gallery-icon.png
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+# A copy over the old binary keeps its inode, and macOS then kills the new one for a stale signature.
+rm -f "$APP/Contents/MacOS/gallery"
 cp target/release/gallery "$APP/Contents/MacOS/gallery"
 
 if [[ ! -f "$APP/Contents/Resources/AppIcon.icns" || "$ICON" -nt "$APP/Contents/Resources/AppIcon.icns" ]]; then
