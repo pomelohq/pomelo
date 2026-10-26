@@ -46,6 +46,10 @@ pub trait Story {
     fn pending(&mut self) -> bool {
         false
     }
+    /// True for a story that moves on its own, such as a spinner; the gallery redraws it every frame.
+    fn animating(&self) -> bool {
+        false
+    }
 }
 
 /// Waits for a story to fill in, for a still that must show it whole.
@@ -126,6 +130,8 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
             "Chip",
             "Progress",
             "Skeleton",
+            "Spinner",
+            "Badge",
             "Status line",
             "Status item",
         ],
@@ -192,6 +198,8 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Tab" => "One open thing in a pane: its icon and title, a close button where a pin or an unsaved dot can stand, italic while it is only a preview. The dragged copy floats.",
         "Avatar" => "A person as the first letter of their name in a circle: a commit's author, a reviewer.",
         "Skeleton" => "A gray bar that pulses where text will be once it loads; it stays still with reduced motion.",
+        "Spinner" => "Work under way with no known end, such as a take over or an install; it stays still with reduced motion.",
+        "Badge" => "How many things wait to be seen, past 99 as 99+; zero shows nothing. The dot form marks a status bar icon.",
         "Key value" => "One fact: a muted key in a fixed column, its value, and a quieter note after it.",
         "Key hints" => "The keys a picker answers to, along its footer; a hint with an id is also a button.",
         "Paragraph" => "Body copy broken at word boundaries to fit a width; centered under an empty state's title.",

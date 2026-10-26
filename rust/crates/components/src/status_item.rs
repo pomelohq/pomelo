@@ -39,7 +39,7 @@ impl StatusItem {
                     .col()
                     .h_px(14.0)
                     .justify_end()
-                    .child(crate::dot(badge, 6.0)),
+                    .child(crate::badge_dot(badge)),
             );
         }
         self.parts.push(glyph.into());
