@@ -8,7 +8,6 @@ use crate::fuzzy::{match_paths, CharBag};
 
 pub const WIDTH: f32 = 544.0;
 const MAX_RESULTS_HEIGHT: f32 = 384.0;
-const HEAD_HEIGHT: f32 = 36.0;
 const PLACEHOLDER: &str = "Search project files...";
 const MAX_MATCHES: usize = 100;
 pub const MAX_RECENT: usize = 20;
@@ -263,36 +262,23 @@ impl FileFinder {
 
     pub fn render(&self, id_base: u64) -> Node {
         let colors = theme();
-        let head = div()
-            .row()
-            .items_center()
-            .h_px(HEAD_HEIGHT)
-            .px(Space::S10)
-            .child(self.field.render(
-                PLACEHOLDER,
-                true,
-                colors.editor_foreground,
-                INPUT_FONT * FieldFont::Ui.line_height(),
-                FieldFont::Ui,
-            ));
+        let query = self.field.render(
+            PLACEHOLDER,
+            true,
+            colors.editor_foreground,
+            INPUT_FONT * FieldFont::Ui.line_height(),
+            FieldFont::Ui,
+        );
         let visible = Self::visible_rows();
         let end = (self.scroll_top + visible).min(self.matches.len());
-        let mut results = div().col().py(Space::S4);
-        if self.matches.is_empty() {
-            let text = if self.field.text().trim().is_empty() {
+        let mut picker =
+            components::picker(WIDTH, query).empty(if self.field.text().trim().is_empty() {
                 "No recent files"
             } else {
                 "No matches"
-            };
-            results = results.child(
-                div().row().px(Space::S10).py(Space::S4).child(
-                    label(text)
-                        .size(LabelSize::Default)
-                        .color(colors.text_muted),
-                ),
-            );
-        } else {
-            results = results
+            });
+        if !self.matches.is_empty() {
+            picker = picker
                 .children(crate::list_scrollbar::render(
                     WIDTH - 1.0,
                     visible.min(self.matches.len()) as f32 * row_height() + 8.0,
@@ -303,16 +289,8 @@ impl FileFinder {
                 ))
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)));
         }
-        components::card()
-            .padding(0.0)
-            .raised()
-            .render()
-            .w_px(WIDTH)
-            .child(head)
-            .child(components::divider())
-            .child(results)
-            .child(components::divider())
-            .child(
+        picker
+            .footer(
                 components::key_hints()
                     .hint(None, &["enter"], "Open")
                     .hint(None, &["up", "down"], "Move")

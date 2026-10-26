@@ -11,7 +11,6 @@ use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
 /// Width with the preview hidden; showing it grows the picker to a share of the window.
 pub const WIDTH: f32 = 544.0;
-const HEAD_HEIGHT: f32 = 36.0;
 const FOOTER_HEIGHT: f32 = 35.0;
 const LIST_PADDING: f32 = 8.0;
 const PREVIEW_KEY: &str = "cmd-alt-p";
@@ -319,7 +318,7 @@ impl OutlineView {
     /// (never past the space left under the modal's top offset), the preview taking 30% of the window.
     pub fn size(&self) -> PickerSize {
         let (window_w, window_h) = self.viewport;
-        let header_chrome = HEAD_HEIGHT + 1.0 + FOOTER_HEIGHT + LIST_PADDING;
+        let header_chrome = components::PICKER_HEAD_HEIGHT + 1.0 + FOOTER_HEIGHT + LIST_PADDING;
         if self.preview == PreviewLayout::Hidden {
             let list_height = window_h * 0.75;
             return PickerSize {
@@ -434,23 +433,15 @@ impl OutlineView {
 
     fn render_results(&self, id_base: u64, size: &PickerSize) -> Node {
         let colors = theme();
-        let head = div()
-            .row()
-            .items_center()
-            .h_px(HEAD_HEIGHT)
-            .px(Space::S10)
-            .child(self.field.render(
-                PLACEHOLDER,
-                true,
-                colors.editor_foreground,
-                INPUT_FONT * FieldFont::Ui.line_height(),
-                FieldFont::Ui,
-            ));
+        let head = components::picker_head(self.field.render(
+            PLACEHOLDER,
+            true,
+            colors.editor_foreground,
+            INPUT_FONT * FieldFont::Ui.line_height(),
+            FieldFont::Ui,
+        ));
         let mut list = if self.entries.is_empty() {
-            div()
-                .col()
-                .py(Space::S4)
-                .child(components::empty_state("No matches").compact())
+            components::picker_empty("No matches")
         } else {
             let visible = self.visible_rows();
             let end = (self.scroll_top + visible).min(self.entries.len());

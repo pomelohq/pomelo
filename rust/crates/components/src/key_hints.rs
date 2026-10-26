@@ -59,7 +59,6 @@ impl KeyHints {
             .px(Space::S8)
             .py(Space::S6)
             .gap(Space::S6)
-            .bg(theme().panel_background)
             .children(self.hints)
     }
 }

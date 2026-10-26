@@ -13,7 +13,6 @@ use crate::text_field::{FieldFont, TextField, INPUT_FONT};
 
 pub const WIDTH: f32 = 608.0;
 const MAX_RESULTS_HEIGHT: f32 = 384.0;
-const HEAD_HEIGHT: f32 = 36.0;
 const PLACEHOLDER: &str = "Execute a command...";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -928,25 +927,15 @@ impl CommandPalette {
 
     pub fn render(&self, id_base: u64) -> Node {
         let colors = theme();
-        let head = div()
-            .row()
-            .items_center()
-            .h_px(HEAD_HEIGHT)
-            .px(Space::S10)
-            .child(self.field.render(
-                self.placeholder,
-                true,
-                colors.editor_foreground,
-                INPUT_FONT * FieldFont::Ui.line_height(),
-                FieldFont::Ui,
-            ));
-        let results: Node = if self.matches.is_empty() {
-            div()
-                .col()
-                .py(Space::S8)
-                .child(components::empty_state(self.empty_text()).compact())
-                .into()
-        } else {
+        let query = self.field.render(
+            self.placeholder,
+            true,
+            colors.editor_foreground,
+            INPUT_FONT * FieldFont::Ui.line_height(),
+            FieldFont::Ui,
+        );
+        let mut picker = components::picker(WIDTH, query).empty(self.empty_text());
+        if !self.matches.is_empty() {
             let end = self.visible_end(self.scroll_top);
             let shown: f32 = (self.scroll_top..end).map(|row| self.height_of(row)).sum();
             let scrollbar = crate::list_scrollbar::render(
@@ -961,28 +950,13 @@ impl CommandPalette {
                 Some(_) => self.render_workspace_row(row, id_base),
                 None => self.render_row(row, id_base),
             });
-            div()
-                .col()
-                .py(Space::S4)
-                .children(scrollbar)
-                .children(rows)
-                .into()
-        };
+            picker = picker.children(scrollbar).children(rows);
+        }
         let footer = match &self.switcher {
             Some(switcher) => self.switcher_footer(switcher, id_base),
             None => self.palette_footer(id_base),
         };
-        components::card()
-            .padding(0.0)
-            .raised()
-            .render()
-            .w_px(WIDTH)
-            .child(head)
-            .child(components::divider())
-            .child(results)
-            .child(components::divider())
-            .child(footer)
-            .into()
+        picker.footer(footer).into()
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {

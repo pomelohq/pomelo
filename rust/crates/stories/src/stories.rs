@@ -150,7 +150,7 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
         ],
     ),
     ("Molecules", "Forms", &["Field", "Search field"]),
-    ("Molecules", "Menus", &["Menu", "Select menu"]),
+    ("Molecules", "Menus", &["Menu", "Select menu", "Picker"]),
     (
         "Molecules",
         "Lists",
@@ -212,6 +212,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Section header" => "The title over a group of rows or fields: uppercase and muted, with a count or one quiet action at the right; a chevron when the group folds away.",
         "List row" => "One row of a picker or list: icon, text and anything at the end; tinted while selected, lit while hovered.",
         "Banner" => "A card across a page for one thing that needs doing or knowing: what is wrong, the fix as a button, and the commands it runs. A second line says what happens meanwhile; flush runs edge to edge over a panel; a pill can stand for the icon when a decision waits.",
+        "Picker" => "The one picker: the query on top, the matches under it or why there are none, and the keys at the foot. File finder, command palette, language and outline use it.",
         "Popover" => "A raised card under what opened it. Rows sit edge to edge with a 4px inset; text and buttons get the content padding. The title lines up with what is below it.",
         "Card" => "The one card: a rounded box on the element fill. Hovered when it opens something, chosen when picked, tinted for a problem, raised for a popover over the screen.",
         "Page header" => "The head of a page in a tab: the key and state with the actions on top, then the title and a meta line. Compact puts all of it on one line.",
