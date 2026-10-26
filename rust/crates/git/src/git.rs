@@ -3,7 +3,7 @@
 //! between the index and the buffer overlaps it.
 
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use imara_diff::{sources::lines, Algorithm, Diff, InternedInput};
@@ -24,7 +24,8 @@ pub mod scan;
 pub mod working_copy;
 
 /// What the buffer is compared against. `None` means the file has no version there (new, or not staged).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DiffBases {
     pub head: Option<String>,
     pub index: Option<String>,
@@ -69,6 +70,32 @@ pub fn load_bases(path: &Path) -> Option<DiffBases> {
         head: show(format!("HEAD:./{name}")),
         index: show(format!(":./{name}")),
     })
+}
+
+/// An open file's git, wherever it runs: on this machine ([`LocalFile`]), or in a repo another machine serves.
+pub trait FileGit: Send + Sync {
+    fn bases(&self) -> Option<DiffBases>;
+    /// Blame the file as `contents` reads.
+    fn blame(&self, contents: &str) -> Option<Vec<BlameEntry>>;
+    /// Put `text` in the index as the file's staged version, or drop the file from the index for `None`.
+    fn write_index(&self, text: Option<&str>) -> Result<(), String>;
+}
+
+/// A file on this machine.
+pub struct LocalFile(pub PathBuf);
+
+impl FileGit for LocalFile {
+    fn bases(&self) -> Option<DiffBases> {
+        load_bases(&self.0)
+    }
+
+    fn blame(&self, contents: &str) -> Option<Vec<BlameEntry>> {
+        blame(&self.0, contents)
+    }
+
+    fn write_index(&self, text: Option<&str>) -> Result<(), String> {
+        write_index(&self.0, text)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

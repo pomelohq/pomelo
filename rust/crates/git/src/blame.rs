@@ -7,7 +7,8 @@ use std::path::Path;
 use time::{OffsetDateTime, UtcOffset};
 
 /// A run of lines last changed by one commit. Lines not committed yet have no entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BlameEntry {
     pub sha: String,
     /// First buffer line (0-based) and how many follow.
