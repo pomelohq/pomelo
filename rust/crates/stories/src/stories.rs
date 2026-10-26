@@ -29,6 +29,11 @@ pub trait Story {
     fn key(&mut self, _key: workspace::EditKey, _shift: bool) -> bool {
         false
     }
+    /// What floats above the story, such as an open menu, painted as a layer of its own so the story's text
+    /// does not show through it.
+    fn overlay(&mut self, _area: ui::Rect) -> Option<ui::Painted> {
+        None
+    }
     /// The context menu a right click on `id` opens; empty when it opens none.
     fn context_menu(&mut self, _id: u64) -> Vec<components::MenuItem> {
         Vec::new()
@@ -218,24 +223,43 @@ pub fn paint(story: &mut dyn Story, width: f32, height: f32) -> ui::Painted {
     )
 }
 
+/// The story and what floats above it, one layer each.
+pub fn paint_layers(story: &mut dyn Story, width: f32, height: f32) -> Vec<ui::Painted> {
+    let mut layers = vec![paint(story, width, height)];
+    layers.extend(story.overlay(ui::Rect::new(
+        0.0,
+        0.0,
+        width,
+        height,
+        ui::Rgba::TRANSPARENT,
+    )));
+    layers
+}
+
+pub fn layers(painted: &[ui::Painted]) -> Vec<ui::Layer<'_>> {
+    painted
+        .iter()
+        .map(|layer| {
+            (
+                layer.rects.as_slice(),
+                layer.tris.as_slice(),
+                layer.texts.as_slice(),
+                layer.icons.as_slice(),
+                None,
+            )
+        })
+        .collect()
+}
+
 /// Renders a story with the GPU, off screen, to a PNG at `scale` device pixels per point.
 pub fn write_png(def: &StoryDef, scale: f32, out: &Path) -> anyhow::Result<(u32, u32)> {
     let (width, height) = def.size;
     let mut story = (def.build)()?;
     settle(story.as_mut());
-    let painted = paint(story.as_mut(), width, height);
+    let painted = paint_layers(story.as_mut(), width, height);
     let mut renderer =
         ui::UiRenderer::new_headless((width * scale) as u32, (height * scale) as u32, scale)?;
-    renderer.render_frame(
-        ui::theme().panel_background,
-        &[(
-            painted.rects.as_slice(),
-            painted.tris.as_slice(),
-            painted.texts.as_slice(),
-            painted.icons.as_slice(),
-            None,
-        )],
-    )?;
+    renderer.render_frame(ui::theme().panel_background, &layers(&painted))?;
     let (w, h, rgba) = renderer.read_rgba()?;
     let mut encoder = png::Encoder::new(BufWriter::new(std::fs::File::create(out)?), w, h);
     encoder.set_color(png::ColorType::Rgba);

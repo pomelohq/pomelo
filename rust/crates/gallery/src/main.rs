@@ -530,6 +530,7 @@ impl Gallery {
 
         let mut live = ui::Painted::default();
         let mut live_clip = None;
+        let mut live_overlay: Option<ui::Painted> = None;
         if let Some(index) = self.focused {
             let canvas_x = canvas.x;
             let camera = self.camera;
@@ -556,6 +557,7 @@ impl Gallery {
                             pressed: None,
                         },
                     );
+                    live_overlay = story.overlay(area);
                 }
                 let x0 = area.x.max(canvas.x);
                 let y0 = area.y.max(0.0);
@@ -569,7 +571,7 @@ impl Gallery {
         let mut side = ui::Painted::default();
         let mut list = ui::Painted::default();
         let mut list_clip = None;
-        let mut overlay = ui::Painted::default();
+        let mut overlay = live_overlay.unwrap_or_default();
         if self.chrome {
             let (top, layers) = chrome::left(
                 &self.pages,

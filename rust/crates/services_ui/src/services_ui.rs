@@ -1696,6 +1696,16 @@ impl ServicesPanel {
         }
     }
 
+    /// The hit id of the row for service `name`, repo `name` or shared container `name`, as drawn last.
+    pub fn row_id(&self, name: &str) -> Option<u64> {
+        let index = self.rows.iter().position(|row| match row {
+            Row::Service { target, .. } => target.service == name,
+            Row::Group { key, .. } => key == name,
+            Row::Shared { name: shared } => shared == name,
+        })?;
+        Some(self.id(index, Control::Row))
+    }
+
     fn open_menu_for(&mut self, index: usize) -> bool {
         self.menu = match self.rows.get(index).cloned() {
             Some(Row::Service { target, holder }) => Some(self.service_menu(&target, &holder)),
