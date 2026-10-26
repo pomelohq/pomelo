@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -1973,7 +1973,7 @@ impl SidePanelView for ServicesPanel {
             .child(self.filter_bar())
             .child(list);
         if !shared_rows.is_empty() {
-            let mut zone = div().col().h_px(shared_h).bg(Rgba::new(0.0, 0.0, 0.0, 0.1));
+            let mut zone = div().col().h_px(shared_h).bg(theme().recess());
             let fit = (shared_h / ROW_H).floor() as usize;
             for index in shared_rows.into_iter().take(fit) {
                 if let Some(row) = self.rows.get(index) {

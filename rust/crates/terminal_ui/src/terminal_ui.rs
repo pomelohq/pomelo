@@ -138,12 +138,7 @@ fn to_rgb(color: Rgba) -> Rgb {
 }
 
 fn from_rgb(color: Rgb) -> Rgba {
-    Rgba::new(
-        color.r as f32 / 255.0,
-        color.g as f32 / 255.0,
-        color.b as f32 / 255.0,
-        1.0,
-    )
+    Rgba::rgb8([color.r, color.g, color.b])
 }
 
 pub fn palette(theme: &ThemeColors) -> Palette {
@@ -248,16 +243,6 @@ fn color_key(color: Rgba) -> [u32; 4] {
         color.b.to_bits(),
         color.a.to_bits(),
     ]
-}
-
-fn blend(base: Rgba, over: Rgba) -> Rgba {
-    let mix = |b: f32, o: f32| b * (1.0 - over.a) + o * over.a;
-    Rgba::new(
-        mix(base.r, over.r),
-        mix(base.g, over.g),
-        mix(base.b, over.b),
-        1.0,
-    )
 }
 
 /// Whether `(line, column)` falls in one of the sorted, inclusive search matches.
@@ -366,11 +351,11 @@ impl GridPainter {
             let mut background = (!default_background).then(|| convert_color(bg, theme, &palette));
             if matched {
                 let base = background.unwrap_or(theme.terminal_background);
-                background = Some(blend(base, theme.search_match_background));
+                background = Some(theme.search_match_background.over(base));
             }
             if selected {
                 let base = background.unwrap_or(theme.terminal_background);
-                background = Some(blend(base, theme.player_selection));
+                background = Some(theme.player_selection.over(base));
             }
             let mut foreground =
                 self.foreground(cell, fg, bg, theme, &palette, options.minimum_contrast);

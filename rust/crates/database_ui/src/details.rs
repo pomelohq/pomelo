@@ -296,15 +296,7 @@ pub(crate) fn json_tree(
 ) -> Node {
     let colors = theme();
     let palette = workspace::syntax_theme();
-    let syntax = |capture: &str| {
-        let [r, g, b] = palette.syntax_color(capture).0;
-        Rgba::new(
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            1.0,
-        )
-    };
+    let syntax = |capture: &str| Rgba::rgb8(palette.syntax_color(capture).0);
     let lines = json_lines(value, fold);
     let first = ((window.0 / JSON_LINE_H).floor().max(0.0) as usize).min(lines.len());
     let count = ((window.1 / JSON_LINE_H).ceil() as usize).saturating_add(2);
@@ -1052,15 +1044,7 @@ fn sql_line(line: &str, syntax: &dyn Fn(&str) -> Rgba, plain: Rgba) -> Node {
 pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
     let colors = theme();
     let palette = workspace::syntax_theme();
-    let syntax = |capture: &str| {
-        let [r, g, b] = palette.syntax_color(capture).0;
-        Rgba::new(
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            1.0,
-        )
-    };
+    let syntax = |capture: &str| Rgba::rgb8(palette.syntax_color(capture).0);
     let mut code = div()
         .col()
         .p(10.0)

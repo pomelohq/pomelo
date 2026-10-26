@@ -284,13 +284,7 @@ fn json_line(line: &str, syntax: &editor::Theme) -> Node {
         } else {
             syntax.syntax_color(capture)
         };
-        let [r, g, b] = color.0;
-        let color = Rgba::new(
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            1.0,
-        );
+        let color = Rgba::rgb8(color.0);
         row = row.child(small(text.to_string(), color).mono().truncate());
     }
     row.into()

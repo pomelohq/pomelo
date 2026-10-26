@@ -8,8 +8,8 @@ use settings::Settings;
 use ui::{div, label, theme, LabelSize, Node, Radius};
 
 use super::{
-    control_value, dim_c, is_default, jira_items, proxy_text, Control, IntegrationsPage, Page,
-    PageItem, SettingRow, AGENT, CTRL_AGENT_COMMAND, CTRL_MODULES_DAYS_DEC, CTRL_MODULES_DAYS_EDIT,
+    control_value, is_default, jira_items, proxy_text, Control, IntegrationsPage, Page, PageItem,
+    SettingRow, AGENT, CTRL_AGENT_COMMAND, CTRL_MODULES_DAYS_DEC, CTRL_MODULES_DAYS_EDIT,
     CTRL_MODULES_DAYS_INC, CTRL_MODULES_ENABLED, CTRL_MODULES_FALLBACK, CTRL_MODULES_LIMIT_DEC,
     CTRL_MODULES_LIMIT_EDIT, CTRL_MODULES_LIMIT_INC, CTRL_PROXY_BIND, CTRL_PROXY_DOMAIN,
     CTRL_PROXY_PORT_DEC, CTRL_PROXY_PORT_EDIT, CTRL_PROXY_PORT_INC, CTRL_PROXY_PUBLIC_PORT,
@@ -614,7 +614,12 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                 .gap(8.0)
                 .items_center()
                 .child(ui::icon(icon).size(14.0).color(ink))
-                .child(label(text).size(LabelSize::Small).color(dim_c()).truncate())
+                .child(
+                    label(text)
+                        .size(LabelSize::Small)
+                        .color(ui::theme().text_muted)
+                        .truncate(),
+                )
                 .child(div().flex(1.0));
             if let Some((id, text)) = button {
                 row = row.child(components::button(id, text));
@@ -666,7 +671,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                         "{pom} cannot show its settings here. Update it to change them in this window."
                     ))
                     .size(LabelSize::Small)
-                    .color(dim_c())
+                    .color(ui::theme().text_muted)
                     .truncate(),
                 )
                 .child(div().flex(1.0))

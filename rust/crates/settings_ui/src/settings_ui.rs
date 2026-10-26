@@ -19,43 +19,6 @@ pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 use settings::Settings;
 use ui::{div, label, render, theme, LabelSize, Node, Radius, Rect, Rgba};
 
-// Semantic colors resolved from the active theme (no hardcoded hex), so the settings screen restyles with
-// the theme. Names map the screen's needs onto the design-system tokens.
-fn bg_c() -> Rgba {
-    // The settings content pane sits on editor_background (darker than the window background), which is what
-    // makes the ghost-outlined controls' faint border_variant edge read against it.
-    theme().editor_background
-}
-fn sidebar_c() -> Rgba {
-    theme().panel_background
-}
-fn chip_c() -> Rgba {
-    theme().element_background
-}
-fn panel_edge_c() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.25),
-        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.06),
-    }
-}
-
-// Settings rules and control edges are translucent so they read the same on the panel and on a tinted hit row.
-fn border_c() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(1.0, 1.0, 1.0, 0.12),
-        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.15),
-    }
-}
-fn hover_c() -> Rgba {
-    theme().element_hover
-}
-fn title_c() -> Rgba {
-    theme().text
-}
-fn dim_c() -> Rgba {
-    theme().text_muted
-}
-
 const ROUND: Radius = Radius::Medium;
 const SMALL_LINE_HEIGHT: f32 = 16.0;
 
@@ -1691,7 +1654,7 @@ pub fn chrome(
     let ring = |rect: Rect| Rect {
         radius: radius + 1.0,
         border: 1.0,
-        border_color: panel_edge_c(),
+        border_color: theme().edge_shadow(),
         ..Rect::new(
             rect.x - 1.0,
             rect.y - 1.0,
@@ -1710,7 +1673,7 @@ pub fn chrome(
                 label("Settings")
                     .size(LabelSize::Medium)
                     .medium()
-                    .color(title_c()),
+                    .color(theme().text),
             )
             .into(),
         Rect::new(0.0, 0.0, w, rem(TITLE_H), Rgba::TRANSPARENT),
@@ -1738,7 +1701,13 @@ pub fn chrome(
         0,
         Rect {
             radius,
-            ..Rect::new(gap, rem(TITLE_H), rem(NAV_W), panel_h, sidebar_c())
+            ..Rect::new(
+                gap,
+                rem(TITLE_H),
+                rem(NAV_W),
+                panel_h,
+                theme().panel_background,
+            )
         },
     );
     out.rects.insert(
@@ -1811,14 +1780,20 @@ pub fn chrome(
     let content_w = (w - x - gap).max(0.0);
     out.rects.push(Rect {
         radius,
-        ..Rect::new(x, rem(TITLE_H), content_w, rem(TOOLBAR_H), bg_c())
+        ..Rect::new(
+            x,
+            rem(TITLE_H),
+            content_w,
+            rem(TOOLBAR_H),
+            theme().editor_background,
+        )
     });
     out.rects.push(Rect::new(
         x,
         rem(TITLE_H) + radius,
         content_w,
         rem(TOOLBAR_H) - radius,
-        bg_c(),
+        theme().editor_background,
     ));
     let strip: Node = div()
         .col()
@@ -1886,7 +1861,7 @@ pub fn page(
                 rem(TITLE_H),
                 (w - cl - rem(GAP)).max(0.0),
                 (h - rem(TITLE_H) - rem(GAP)).max(0.0),
-                bg_c(),
+                theme().editor_background,
             )
         }],
         ..Default::default()
@@ -1946,10 +1921,10 @@ pub fn page(
         div()
             .col()
             .gap(16.0)
-            .child(label("Project").size(LabelSize::Large).color(title_c()))
+            .child(label("Project").size(LabelSize::Large).color(theme().text))
             .child(
                 label("Open a project first: its repositories and config are edited here.")
-                    .color(dim_c()),
+                    .color(theme().text_muted),
             )
             .into()
     } else if selected == INTEGRATIONS && !jira.session.is_empty() {
@@ -1961,9 +1936,12 @@ pub fn page(
             .child(
                 label("Integrations")
                     .size(LabelSize::Large)
-                    .color(title_c()),
+                    .color(theme().text),
             )
-            .child(label("Open a project first: Jira is set up per project.").color(dim_c()))
+            .child(
+                label("Open a project first: Jira is set up per project.")
+                    .color(theme().text_muted),
+            )
             .into()
     } else {
         stub_body(CATEGORIES[selected].0)
@@ -2054,7 +2032,7 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
             .row()
             .flex(1.0)
             .items_center()
-            .child(label(search).size(LabelSize::Medium).color(title_c()))
+            .child(label(search).size(LabelSize::Medium).color(theme().text))
             .child(caret(show_caret))
     };
     let mut search_box = components::search_box(CTRL_SEARCH, search_active).child(text_area);
@@ -2118,9 +2096,9 @@ fn sidebar_nav(
             label(*name)
                 .size(LabelSize::Medium)
                 .color(if cat_active || searching {
-                    title_c()
+                    theme().text
                 } else {
-                    dim_c()
+                    theme().text_muted
                 });
         if cat_active {
             name_label = name_label.medium();
@@ -2147,7 +2125,7 @@ fn sidebar_nav(
                         .child(label(sub).size(LabelSize::Small).color(if is_active {
                             theme().text_accent
                         } else {
-                            dim_c()
+                            theme().text_muted
                         })),
                 );
             }
@@ -2294,11 +2272,11 @@ fn stub_body(name: &str) -> Node {
     div()
         .col()
         .gap(10.0)
-        .child(label(name).size_px(20.0).color(title_c()))
+        .child(label(name).size_px(20.0).color(theme().text))
         .child(
             label("No settings here yet.")
                 .size(LabelSize::Medium)
-                .color(dim_c()),
+                .color(theme().text_muted),
         )
         .into()
 }
@@ -3189,9 +3167,9 @@ fn sub_page_header(trail: &[&str]) -> Node {
     let mut crumbs = div().row().items_center().gap(4.0);
     for (index, part) in trail.iter().enumerate() {
         if index > 0 {
-            crumbs = crumbs.child(label("/").color(dim_c()));
+            crumbs = crumbs.child(label("/").color(theme().text_muted));
         }
-        crumbs = crumbs.child(label(part.to_string()).color(dim_c()));
+        crumbs = crumbs.child(label(part.to_string()).color(theme().text_muted));
     }
     div()
         .row()
@@ -3214,7 +3192,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
                         .child(
                             ui::icon(ui::IconKind::ArrowLeft)
                                 .size(14.0)
-                                .color(title_c()),
+                                .color(theme().text),
                         ),
                 )
                 .child(crumbs),
@@ -4170,7 +4148,7 @@ fn page_title(text: &str) -> Node {
             label(text.to_string())
                 .size_px(20.0)
                 .weight(600)
-                .color(title_c()),
+                .color(theme().text),
         )
         .into()
 }
@@ -4226,7 +4204,11 @@ fn render_page_under(
 
     if searching && visible.iter().all(|v| !v) {
         return col
-            .child(inset(label("No matching settings.").color(dim_c()).into()))
+            .child(inset(
+                label("No matching settings.")
+                    .color(theme().text_muted)
+                    .into(),
+            ))
             .into();
     }
 
@@ -4364,7 +4346,7 @@ fn render_page_under(
                     col = col.child(inset(binding_row(
                         label(row.title.to_string())
                             .size(LabelSize::Medium)
-                            .color(title_c())
+                            .color(theme().text)
                             .into(),
                         label(row.description.to_string())
                             .size(LabelSize::Small)
@@ -4404,7 +4386,7 @@ fn keys(binding: &str) -> Node {
                 .h_px(18.0)
                 .px(5.0)
                 .rounded(Radius::Small)
-                .bg(hover_c())
+                .bg(theme().element_hover)
                 .child(ui::render_keystroke(stroke, LabelSize::Mini)),
         );
     }
@@ -4479,7 +4461,7 @@ fn row_frame(
             label(title)
                 .size(LabelSize::Medium)
                 .medium()
-                .color(title_c()),
+                .color(theme().text),
         ),
     );
     if !desc.is_empty() {
@@ -4525,7 +4507,7 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
         return label(desc)
             .size(LabelSize::Small)
             .line_height(SMALL_LINE_HEIGHT)
-            .color(dim_c())
+            .color(theme().text_muted)
             .wrap(wrap_w)
             .into();
     }
@@ -4539,11 +4521,16 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
                 div()
                     .px(4.0)
                     .rounded(Radius::Small)
-                    .bg(chip_c())
-                    .child(label(part).size(LabelSize::Small).mono().color(title_c())),
+                    .bg(theme().element_background)
+                    .child(
+                        label(part)
+                            .size(LabelSize::Small)
+                            .mono()
+                            .color(theme().text),
+                    ),
             );
         } else {
-            row = row.child(label(part).size(LabelSize::Small).color(dim_c()));
+            row = row.child(label(part).size(LabelSize::Small).color(theme().text_muted));
         }
     }
     row.into()
@@ -4593,7 +4580,7 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
             label(text)
                 .size(LabelSize::Medium)
                 .mono()
-                .color(title_c())
+                .color(theme().text)
                 .truncate(),
         )
     };
@@ -4619,14 +4606,14 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
         .gap(8.0)
         .items_center()
         .rounded(ROUND)
-        .bg(chip_c())
-        .border(1.0, border_c())
+        .bg(theme().element_background)
+        .border(1.0, theme().hairline())
         .child(
             ui::icon(ui::IconKind::Check)
                 .size(12.0)
                 .color(theme().success),
         )
-        .child(label(text).size(LabelSize::Small).color(title_c()))
+        .child(label(text).size(LabelSize::Small).color(theme().text))
         .child(clear)
         .into()
 }
@@ -4643,7 +4630,7 @@ fn value_text(text: &str) -> Node {
     label(text)
         .size(LabelSize::Small)
         .mono()
-        .color(title_c())
+        .color(theme().text)
         .into()
 }
 
@@ -4654,11 +4641,15 @@ fn sub_page_button(id: u64) -> Node {
         .gap(6.0)
         .items_center()
         .on_click(id)
-        .child(label("Configure").size(LabelSize::Medium).color(dim_c()))
+        .child(
+            label("Configure")
+                .size(LabelSize::Medium)
+                .color(theme().text_muted),
+        )
         .child(
             ui::icon(ui::IconKind::ChevronRight)
                 .size(12.0)
-                .color(dim_c()),
+                .color(theme().text_muted),
         )
         .into()
 }

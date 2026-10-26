@@ -152,7 +152,7 @@ impl Tab {
                     .h_px(TAB_HEIGHT + 1.0)
                     .pb(1.0)
                     .rounded(Radius::Large)
-                    .bg(shadow())
+                    .bg(theme().edge_shadow())
                     .child(row),
             )
         } else {
@@ -181,13 +181,6 @@ fn end_slot(id: u64, pinned: bool, unsaved: Option<Rgba>, hovered: bool) -> Node
         (false, None) => slot.child(icon(IconKind::Close).size(12.0).color(ink)),
     };
     slot.into()
-}
-
-fn shadow() -> Rgba {
-    match theme().appearance {
-        ui::Appearance::Dark => Rgba::new(0.0, 0.0, 0.0, 0.35),
-        ui::Appearance::Light => Rgba::new(0.114, 0.09, 0.188, 0.1),
-    }
 }
 
 impl From<Tab> for Node {

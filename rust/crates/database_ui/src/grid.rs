@@ -581,13 +581,7 @@ impl Grid {
 
         let last = (self.first_row + self.visible_rows()).min(self.rows.len());
         let palette = workspace::syntax_theme();
-        let [r, g, b] = palette.syntax_color("string").0;
-        let json_color = Rgba::new(
-            f32::from(r) / 255.0,
-            f32::from(g) / 255.0,
-            f32::from(b) / 255.0,
-            1.0,
-        );
+        let json_color = Rgba::rgb8(palette.syntax_color("string").0);
         for row in self.first_row..last {
             let chosen_row = self.selected.is_some_and(|(selected, _)| selected == row);
             let background = if chosen_row {

@@ -158,7 +158,7 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
 /// What a group is for, so someone picking a control knows which one fits.
 pub fn group_note(group: &str) -> Option<&'static str> {
     Some(match group {
-        "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors.",
+        "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors. Hover: ghost element hover on rows and bare controls, element hover on filled controls, the theme tint on raised cards and menus.",
         "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
         "Radius" => "Corner radius steps. Small 4 for controls and rows, Medium 6 for inputs and chips, Large 8 for menus and popovers, XLarge 10 for cards and modals.",
         "Elevation" => "How far a surface floats, which sets its shadow: Elevated for menus, popovers and tooltips, Modal for dialogs and pickers, Overlay for toasts over everything.",
