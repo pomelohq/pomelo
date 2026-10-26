@@ -1,5 +1,5 @@
 use components::MenuItem;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 use crate::scene::{Board, Group};
 
@@ -7,7 +7,7 @@ pub const LEFT: f32 = 248.0;
 pub const RIGHT: f32 = 240.0;
 const HEADER: f32 = 44.0;
 const ROW: f32 = 28.0;
-const INSET: f32 = 8.0;
+const INSET: Space = Space::S8;
 
 pub const PAGE: u64 = 1 << 20;
 pub const BOARD: u64 = 2 << 20;
@@ -65,7 +65,7 @@ fn header(title: &str, trailing: Node) -> Node {
         .h_px(HEADER)
         .items_center()
         .justify_between()
-        .pl(16.0)
+        .pl(Space::S16)
         .pr(INSET)
         .child(label(title).size(LabelSize::Medium).weight(600))
         .child(trailing)
@@ -77,8 +77,8 @@ fn section(title: &str, trailing: Option<String>) -> Node {
         .h_px(32.0)
         .items_center()
         .justify_between()
-        .px(16.0)
-        .pt(6.0)
+        .px(Space::S16)
+        .pt(Space::S6)
         .child(
             label(title)
                 .size(LabelSize::Mini)
@@ -120,12 +120,12 @@ fn row(
 ) -> Node {
     let colors = theme();
     let mut line = div()
-        .w_px(width - INSET * 2.0)
+        .w_px(width - INSET.px() * 2.0)
         .h_px(ROW)
         .items_center()
-        .gap(8.0)
-        .pl(8.0 + depth * 16.0)
-        .pr(8.0)
+        .gap(Space::S8)
+        .pl(Space::Px(8.0 + depth * 16.0))
+        .pr(Space::S8)
         .rounded(Radius::Medium)
         .on_click(id)
         .hover_bg(colors.ghost_element_hover);
@@ -163,7 +163,7 @@ fn row_icon(kind: IconKind, selected: bool) -> Node {
 }
 
 fn rule() -> Node {
-    div().py(6.0).child(components::divider()).into()
+    div().py(Space::S6).child(components::divider()).into()
 }
 
 /// The left panel's fixed top (title, pages, the Layers heading) and its layer list, which scrolls under it.
@@ -189,12 +189,12 @@ pub fn left(
         layers = layers.child(
             div().px(INSET).child(
                 div()
-                    .w_px(LEFT - INSET * 2.0)
+                    .w_px(LEFT - INSET.px() * 2.0)
                     .h_px(ROW)
                     .items_center()
-                    .gap(6.0)
-                    .pl(6.0)
-                    .pr(8.0)
+                    .gap(Space::S6)
+                    .pl(Space::S6)
+                    .pr(Space::S8)
                     .rounded(Radius::Medium)
                     .on_click(GROUP + group_index as u64)
                     .hover_bg(theme().ghost_element_hover)
@@ -267,7 +267,7 @@ fn swatch(name: &str) -> Node {
             .border(1.0, muted(theme().border, 0.9))
     };
     div()
-        .gap(2.0)
+        .gap(Space::S2)
         .child(chip(colors.panel_background))
         .child(chip(colors.text_accent))
         .child(chip(colors.text))
@@ -277,7 +277,7 @@ fn swatch(name: &str) -> Node {
 pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom: f32) -> Node {
     let zoom_bar = div()
         .items_center()
-        .gap(2.0)
+        .gap(Space::S2)
         .child(icon_button(ZOOM_OUT, IconKind::Dash))
         .child(
             div()
@@ -377,7 +377,7 @@ fn panels_button() -> Node {
 pub fn board_title(title: &str, note: Option<&str>, width: f32) -> Node {
     let mut line = div()
         .w_px(width)
-        .gap(6.0)
+        .gap(Space::S6)
         .child(label(title).size(LabelSize::Small).weight(500).truncate());
     if let Some(note) = note {
         line = line.child(
@@ -414,7 +414,7 @@ fn pill() -> ui::Div {
     div()
         .h_px(40.0)
         .items_center()
-        .px(6.0)
+        .px(Space::S6)
         .rounded(Radius::XLarge)
         .bg(theme().panel_background)
         .border(1.0, theme().border)
@@ -424,8 +424,8 @@ fn picker(id: u64, content: Node) -> Node {
     div()
         .h_px(28.0)
         .items_center()
-        .gap(6.0)
-        .px(8.0)
+        .gap(Space::S6)
+        .px(Space::S8)
         .rounded(Radius::Medium)
         .on_click(id)
         .hover_bg(theme().ghost_element_hover)
@@ -441,8 +441,8 @@ fn picker(id: u64, content: Node) -> Node {
 /// What stays on screen with the panels hidden: the gallery's name, a page picker, and a way back.
 pub fn mini(page: &str) -> Node {
     pill()
-        .gap(4.0)
-        .pl(14.0)
+        .gap(Space::S4)
+        .pl(Space::S14)
         .child(label("Pomelo Gallery").size(LabelSize::Medium).weight(600))
         .child(picker(
             PAGES,
@@ -477,7 +477,7 @@ pub fn shortcut_tip(action: &str) -> Node {
     let key = |content: Node| {
         div()
             .h_px(20.0)
-            .px(5.0)
+            .px(Space::S6)
             .items_center()
             .justify_center()
             .rounded(Radius::Small)
@@ -494,15 +494,15 @@ pub fn shortcut_tip(action: &str) -> Node {
     };
     div()
         .items_center()
-        .gap(6.0)
-        .p(6.0)
+        .gap(Space::S6)
+        .p(Space::S6)
         .rounded(Radius::Large)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
         .child(label(action).size(LabelSize::Small))
         .child(
             div()
-                .gap(2.0)
+                .gap(Space::S2)
                 .child(key(icon(IconKind::Shift)
                     .size(12.0)
                     .color(theme().icon)

@@ -706,37 +706,45 @@ impl Div {
         self.grow = v;
         self
     }
-    pub fn p(mut self, v: f32) -> Self {
+    pub fn p(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad = [rem(v); 4];
         self
     }
-    pub fn px(mut self, v: f32) -> Self {
+    pub fn px(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[1] = rem(v);
         self.pad[3] = rem(v);
         self
     }
-    pub fn py(mut self, v: f32) -> Self {
+    pub fn py(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[0] = rem(v);
         self.pad[2] = rem(v);
         self
     }
-    pub fn pt(mut self, v: f32) -> Self {
+    pub fn pt(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[0] = rem(v);
         self
     }
-    pub fn pb(mut self, v: f32) -> Self {
+    pub fn pb(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[2] = rem(v);
         self
     }
-    pub fn pl(mut self, v: f32) -> Self {
+    pub fn pl(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[3] = rem(v);
         self
     }
-    pub fn pr(mut self, v: f32) -> Self {
+    pub fn pr(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.pad[1] = rem(v);
         self
     }
-    pub fn gap(mut self, v: f32) -> Self {
+    pub fn gap(mut self, space: crate::Space) -> Self {
+        let v = space.px();
         self.gap = rem(v);
         self
     }
@@ -1787,7 +1795,7 @@ mod tests {
         let long = "proj-101-tech-spike-request-routing-and-architecture-handoff";
         let tree: Node = div()
             .row()
-            .gap(8.0)
+            .gap(crate::Space::S8)
             .child(div().w_px(6.0).h_px(6.0))
             .child(label(long).truncate())
             .into();

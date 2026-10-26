@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, LabelSize, Node, Radius};
+use ui::{div, label, theme, Div, LabelSize, Node, Radius, Space};
 
 /// The strip at the foot of a picker that says what the keys do: Enter opens, arrows move, Escape closes.
 /// A hint with an id is also a button. Built with [`key_hints`].
@@ -25,15 +25,15 @@ impl KeyHints {
         let mut hint = div()
             .row()
             .h_px(22.0)
-            .px(4.0)
-            .gap(6.0)
+            .px(Space::S4)
+            .gap(Space::S6)
             .items_center()
             .rounded(Radius::Small)
             .child(
                 div()
                     .row()
                     .items_center()
-                    .gap(3.0)
+                    .gap(Space::S4)
                     .children(keys.iter().map(|keys| crate::key_chip(keys, false))),
             )
             .child(
@@ -56,9 +56,9 @@ impl KeyHints {
             .row()
             .justify_end()
             .items_center()
-            .px(8.0)
-            .py(6.0)
-            .gap(6.0)
+            .px(Space::S8)
+            .py(Space::S6)
+            .gap(Space::S6)
             .bg(theme().panel_background)
             .children(self.hints)
     }

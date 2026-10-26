@@ -7,7 +7,7 @@ use std::any::Any;
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
 use components::{field, modal_footer, modal_frame, modal_header, modal_section, MODAL_INSET};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -80,14 +80,14 @@ const DESTRUCTIVE: [&str; 9] = [
 /// `active`, Escape the one named Cancel; button `i` emits `button_base + i`.
 pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> Node {
     let colors = theme();
-    let text_width = PROMPT_WIDTH - 2.0 * MODAL_INSET;
+    let text_width = PROMPT_WIDTH - 2.0 * MODAL_INSET.px();
     let mut body = modal_section(10.0);
     let detail = prompt.detail.as_deref().unwrap_or_default();
     let bullet = |item: &str| -> Node {
         div()
             .row()
-            .gap(10.0)
-            .pl(6.0)
+            .gap(Space::S10)
+            .pl(Space::S6)
             .child(
                 div().row().h_px(20.0).items_center().child(
                     div()
@@ -106,7 +106,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
         match line.trim_start().strip_prefix("- ") {
             Some(item) => {
                 list = Some(
-                    list.unwrap_or_else(|| div().col().gap(4.0))
+                    list.unwrap_or_else(|| div().col().gap(Space::S4))
                         .child(bullet(item)),
                 );
             }
@@ -121,7 +121,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
     if let Some(done) = list {
         body = body.child(done);
     }
-    let mut buttons = div().row().items_center().gap(8.0);
+    let mut buttons = div().row().items_center().gap(Space::S8);
     for (index, text) in prompt.buttons.iter().enumerate().rev() {
         let cancel = text == "Cancel";
         let kind = match index {
@@ -157,9 +157,9 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
         body = body.child(
             div()
                 .row()
-                .gap(8.0)
-                .px(12.0)
-                .py(10.0)
+                .gap(Space::S8)
+                .px(Space::S12)
+                .py(Space::S10)
                 .rounded(Radius::Medium)
                 .bg(colors.editor_background)
                 .child(

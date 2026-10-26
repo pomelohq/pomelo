@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, LabelSize, Node};
+use ui::{div, label, theme, Div, LabelSize, Node, Space};
 
 /// The title over a group of rows or fields: small, uppercase and muted, with what the group counts or one
 /// quiet action at the right.
@@ -39,7 +39,7 @@ impl SectionHeader {
         let mut row = div()
             .row()
             .h_px(SECTION_HEADER_HEIGHT)
-            .gap(6.0)
+            .gap(Space::S6)
             .items_center();
         if let Some(open) = self.expander {
             row = row.child(crate::disclosure(open));

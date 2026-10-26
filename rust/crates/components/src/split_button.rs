@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, Node, Radius, Rgba, Space};
 
 use crate::button::raised_hover;
 use crate::ButtonSize;
@@ -83,8 +83,8 @@ impl SplitButton {
         let mut main = div()
             .row()
             .h_px(self.size.height())
-            .px(self.size.pad_x() + 2.0)
-            .gap(6.0)
+            .px(Space::Px(self.size.pad_x() + 2.0))
+            .gap(Space::S6)
             .items_center()
             .on_click(self.main);
         if self.enabled && self.hovered == Some(self.main) {

@@ -2,7 +2,7 @@
 
 use components::{text_line, ButtonKind};
 use onboarding::{CheckKind, CheckStatus};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::ids::*;
 use crate::model::{Onboarding, Phase, Request, Run};
@@ -34,7 +34,7 @@ pub(crate) fn progress(state: &Onboarding, width: f32, _hovered: Option<u64>) ->
     let mut column = div()
         .col()
         .w_px(width)
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::head(
             &format!("Setting up {}", run.name),
             Some("Clone, scan, configure, then verify until every repo installs and boots."),
@@ -276,8 +276,8 @@ fn phase_row(title: &str, state: PhaseState, note: Option<&str>) -> Node {
     let mut row = div()
         .row()
         .h_px(34.0)
-        .px(8.0)
-        .gap(10.0)
+        .px(Space::S8)
+        .gap(Space::S10)
         .items_center()
         .rounded(Radius::Small)
         .child(icon(kind).size(14.0).color(tint))
@@ -309,8 +309,8 @@ fn problem_card(
     let colors = theme();
     let mut log = div()
         .col()
-        .px(12.0)
-        .py(10.0)
+        .px(Space::S12)
+        .py(Space::S10)
         .rounded(Radius::Small)
         .bg(colors.editor_background);
     for line in output.lines() {
@@ -325,13 +325,13 @@ fn problem_card(
     }
     let mut column = components::card()
         .render()
-        .gap(10.0)
+        .gap(Space::S10)
         .child(
             div()
                 .row()
                 .h_px(20.0)
                 .items_center()
-                .gap(8.0)
+                .gap(Space::S8)
                 .child(icon(IconKind::BadgeAlert).size(16.0).color(colors.error))
                 .child(view::strong_line(title)),
         )
@@ -339,7 +339,7 @@ fn problem_card(
     if let Some(hint) = hint {
         column = column.child(view::note_paragraph(hint, width - 28.0));
     }
-    let mut row = div().row().items_center().gap(8.0);
+    let mut row = div().row().items_center().gap(Space::S8);
     for button in buttons {
         row = row.child(button);
     }
@@ -414,7 +414,7 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
     let mut manual = div()
         .row()
         .items_center()
-        .gap(8.0)
+        .gap(Space::S8)
         .child(view::muted("Fix it yourself:"))
         .child(
             components::button(OPEN_CONFIG, "Open pom.yml")
@@ -431,7 +431,7 @@ fn finding_card(run: &Run, width: f32) -> Option<Node> {
     Some(
         div()
             .col()
-            .gap(10.0)
+            .gap(Space::S10)
             .child(card)
             .child(manual.child(view::muted("then Verify again")))
             .into(),
@@ -462,9 +462,9 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         view::card_frame(false)
             .col()
             .w_px(stat_w)
-            .gap(2.0)
-            .px(14.0)
-            .py(12.0)
+            .gap(Space::S2)
+            .px(Space::S14)
+            .py(Space::S12)
             .child(text_line(
                 28.0,
                 label(value.to_string())
@@ -477,7 +477,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
     };
     let stats = div()
         .row()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(stat(run.counts.repos, "repositories"))
         .child(stat(run.counts.services, "services"))
         .child(stat(run.counts.shared, "shared services"))
@@ -499,8 +499,8 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
         let mut frame = view::card_frame(primary)
             .col()
             .w_px(card_w)
-            .gap(6.0)
-            .p(14.0)
+            .gap(Space::S6)
+            .p(Space::S14)
             .on_click(id)
             .child(lead)
             .child(view::strong_line(title))
@@ -512,7 +512,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
     };
     let cards = div()
         .row()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(card(
             OPEN_WORKSPACE + 1000,
             icon(IconKind::Branch)
@@ -561,7 +561,7 @@ pub(crate) fn done(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node
     let mut column = div()
         .col()
         .w_px(width)
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::steps(&titles, titles.len(), true))
         .child(view::head(&format!("{} is ready", run.name), Some(&sub)))
         .child(stats);

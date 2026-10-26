@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 /// A checkbox (14px box, accent filled when on) and its label, the whole row clickable. Built with
 /// [`checkbox`].
@@ -62,7 +62,7 @@ impl From<Checkbox> for Node {
         let mut row = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .h_px(16.0)
             .on_click(checkbox.id)
             .child(square);

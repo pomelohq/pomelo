@@ -96,7 +96,15 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     (
         "Foundations",
         "Tokens",
-        &["Color", "Type", "Radius", "Elevation", "Motion", "Icons"],
+        &[
+            "Color",
+            "Type",
+            "Spacing",
+            "Radius",
+            "Elevation",
+            "Motion",
+            "Icons",
+        ],
     ),
     (
         "Atoms",
@@ -160,6 +168,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
     Some(match group {
         "Color" => "Every color token of the active theme, by role. Screens use these names, never raw colors. Hover: ghost element hover on rows and bare controls, element hover on filled controls, the theme tint on raised cards and menus.",
         "Type" => "Text sizes, weights and colors. Default 14 for body text, Small 12 for secondary lines.",
+        "Spacing" => "Gap and padding steps. 4 to 8 between items in a row, 10 to 16 around a card or a section, 20 and 24 between groups. Px only for space that follows something else, such as a hairline.",
         "Radius" => "Corner radius steps. Small 4 for controls and rows, Medium 6 for inputs and chips, Large 8 for menus and popovers, XLarge 10 for cards and modals.",
         "Elevation" => "How far a surface floats, which sets its shadow: Elevated for menus, popovers and tooltips, Modal for dialogs and pickers, Overlay for toasts over everything.",
         "Motion" => "How long UI motion takes: Fast for hover and press, Normal for what enters or leaves, Slow for fades that linger.",

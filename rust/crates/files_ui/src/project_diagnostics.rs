@@ -8,7 +8,9 @@ use editor::syntax::Syntax;
 use editor::{EditorBuffer, Lang};
 use lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use terminal::Modifiers;
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{
+    div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space,
+};
 use workspace::{Item, ItemTick};
 
 pub const ITEM_ID: &str = "project-diagnostics";
@@ -24,8 +26,8 @@ const SEPARATOR_H: f32 = 10.0;
 const CODE_FONT: LabelSize = LabelSize::Medium;
 const MESSAGE_FONT: LabelSize = LabelSize::Medium;
 const MESSAGE_LINE_H: f32 = 18.0;
-const MESSAGE_PAD_Y: f32 = 4.0;
-const MESSAGE_PAD_X: f32 = 6.0;
+const MESSAGE_PAD_Y: Space = Space::S4;
+const MESSAGE_PAD_X: Space = Space::S6;
 const COPY_W: f32 = 24.0;
 const GUTTER_W: f32 = 56.0;
 /// Files larger than this are listed without their code.
@@ -320,7 +322,8 @@ impl ProjectDiagnostics {
     }
 
     fn message_lines(&self, entry: &Entry) -> usize {
-        let available = (self.width - GUTTER_W - COPY_W - 2.0 * MESSAGE_PAD_X - 16.0).max(80.0);
+        let available =
+            (self.width - GUTTER_W - COPY_W - 2.0 * MESSAGE_PAD_X.px() - 16.0).max(80.0);
         let scale = ui::ui_text_scale();
         let text = if entry.source.is_empty() {
             entry.message.clone()
@@ -342,7 +345,7 @@ impl ProjectDiagnostics {
             Row::Line { .. } => LINE_H,
             Row::Message { file, entry } => {
                 let lines = self.message_lines(&self.files[file].entries[entry]);
-                lines as f32 * MESSAGE_LINE_H + 2.0 * MESSAGE_PAD_Y + 2.0
+                lines as f32 * MESSAGE_LINE_H + 2.0 * MESSAGE_PAD_Y.px() + 2.0
             }
             Row::Separator => SEPARATOR_H,
         }
@@ -454,8 +457,8 @@ impl ProjectDiagnostics {
         let mut header = div()
             .row()
             .h_px(HEADER_ROW_H)
-            .px(12.0)
-            .gap(6.0)
+            .px(Space::S12)
+            .gap(Space::S6)
             .items_center()
             .bg(colors.tab_bar_background)
             .on_click(id)
@@ -489,12 +492,17 @@ impl ProjectDiagnostics {
             .items_center()
             .on_click(id)
             .child(
-                div().row().w_px(GUTTER_W).pr(12.0).justify_end().child(
-                    label((line + 1).to_string())
-                        .size(CODE_FONT)
-                        .mono()
-                        .color(colors.editor_line_number),
-                ),
+                div()
+                    .row()
+                    .w_px(GUTTER_W)
+                    .pr(Space::S12)
+                    .justify_end()
+                    .child(
+                        label((line + 1).to_string())
+                            .size(CODE_FONT)
+                            .mono()
+                            .color(colors.editor_line_number),
+                    ),
             )
             .child(text);
         if self.hovered == Some(id) {
@@ -507,8 +515,8 @@ impl ProjectDiagnostics {
         let colors = theme();
         let entry = &self.files[file].entries[entry];
         let (border, background) = severity_colors(entry.severity);
-        let block_h = self.message_lines(entry) as f32 * MESSAGE_LINE_H + 2.0 * MESSAGE_PAD_Y;
-        let text_w = (width - GUTTER_W - COPY_W - 2.0 * MESSAGE_PAD_X - 16.0).max(80.0);
+        let block_h = self.message_lines(entry) as f32 * MESSAGE_LINE_H + 2.0 * MESSAGE_PAD_Y.px();
+        let text_w = (width - GUTTER_W - COPY_W - 2.0 * MESSAGE_PAD_X.px() - 16.0).max(80.0);
         let mut body = div().col().w_px(text_w);
         let lines: Vec<&str> = entry.message.lines().collect();
         for (index, line) in lines.iter().enumerate() {
@@ -543,8 +551,8 @@ impl ProjectDiagnostics {
         let row_id = ROW_BASE + row_index as u64;
         div()
             .row()
-            .py(1.0)
-            .pr(8.0)
+            .py(Space::Px(1.0))
+            .pr(Space::S8)
             .child(div().w_px(GUTTER_W))
             .child(
                 div()
@@ -560,7 +568,7 @@ impl ProjectDiagnostics {
                             .flex(1.0)
                             .py(MESSAGE_PAD_Y)
                             .px(MESSAGE_PAD_X)
-                            .gap(4.0)
+                            .gap(Space::S4)
                             .child(body)
                             .child(div().flex(1.0))
                             .child(copy),
@@ -631,7 +639,7 @@ impl Item for ProjectDiagnostics {
         } else {
             colors.text_muted
         };
-        let mut row = div().row().gap(4.0).items_center();
+        let mut row = div().row().gap(Space::S4).items_center();
         if self.errors == 0 && self.warnings == 0 {
             return Some(
                 row.child(icon(IconKind::Check).size(14.0).color(colors.success))

@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 /// A short read-only tag: a branch, a kind, a plan, a detected stack.
 pub struct Chip {
@@ -46,8 +46,8 @@ impl Chip {
         let mut chip = div()
             .row()
             .h_px(18.0)
-            .px(4.0)
-            .gap(2.0)
+            .px(Space::S4)
+            .gap(Space::S2)
             .items_center()
             .rounded(Radius::Small)
             .border(1.0, self.border.unwrap_or(colors.border))

@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use pom_forge::{MergeMethod, Mutation, PullRequest, ReviewEvent, ThreadComment, TimelineItem};
 use terminal::Keystroke;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::{EditKey, PanelRequest, TerminalKeyOutcome};
 
 use super::PrItem;
@@ -202,7 +202,7 @@ impl PrItem {
         } else {
             method.label().to_string()
         };
-        let mut actions = div().row().gap(8.0).items_center();
+        let mut actions = div().row().gap(Space::S8).items_center();
         if self.confirm_merge && enabled {
             actions = actions.child(components::button(MERGE_CANCEL, "Cancel"));
         }
@@ -217,9 +217,9 @@ impl PrItem {
         let row = div()
             .row()
             .w_px(width)
-            .px(16.0)
-            .py(12.0)
-            .gap(12.0)
+            .px(Space::S16)
+            .py(Space::S12)
+            .gap(Space::S12)
             .items_center()
             .child(icon(kind).size(16.0).color(color))
             .child(
@@ -252,7 +252,7 @@ impl PrItem {
             .child(actions);
         let mut column = div()
             .col()
-            .gap(6.0)
+            .gap(Space::S6)
             .child(components::card().padding(0.0).raised().render().child(row));
         if self.merge_menu && enabled {
             let items: Vec<components::MenuItem> = MergeMethod::ALL
@@ -302,8 +302,8 @@ impl PrItem {
             .row()
             .w_px(width)
             .h_px(36.0)
-            .px(8.0)
-            .gap(8.0)
+            .px(Space::S8)
+            .gap(Space::S8)
             .items_center()
             .rounded(Radius::Medium)
             .bg(colors.editor_background)
@@ -349,7 +349,7 @@ impl PrItem {
             width - 2.0 * 12.0 - 2.0 * 10.0,
             4,
         );
-        let mut buttons = div().row().gap(8.0).items_center();
+        let mut buttons = div().row().gap(Space::S8).items_center();
         for (index, event) in REVIEW_EVENTS.iter().enumerate() {
             buttons = buttons.child(
                 components::button(REVIEW_EVENT_BASE + index as u64, event.label())
@@ -366,12 +366,12 @@ impl PrItem {
                 .padding(12.0)
                 .render()
                 .w_px(width)
-                .gap(8.0)
+                .gap(Space::S8)
                 .child(
                     div()
                         .col()
-                        .px(10.0)
-                        .py(8.0)
+                        .px(Space::S10)
+                        .py(Space::S8)
                         .rounded(Radius::Medium)
                         .bg(colors.panel_background)
                         .border(

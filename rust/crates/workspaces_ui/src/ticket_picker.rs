@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
-use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
@@ -338,7 +338,7 @@ impl TicketPicker {
         let mut header = div()
             .row()
             .items_center()
-            .gap(6.0)
+            .gap(Space::S6)
             .h_px(14.0)
             .child(section_header(self.field.label));
         if let Some(name) = self.source_name() {
@@ -371,7 +371,7 @@ impl TicketPicker {
                 );
             }
         }
-        let mut column = div().col().gap(6.0).child(header).child(anchor);
+        let mut column = div().col().gap(Space::S6).child(header).child(anchor);
         let source = self.source_name().unwrap_or_else(|| "tickets".into());
         let hint = filled
             .map(str::to_string)
@@ -420,7 +420,7 @@ impl TicketPicker {
             let note = format!("No ticket matches; {typed} is used as the key");
             return Some(
                 list.child(
-                    div().row().h_px(28.0).px(8.0).items_center().child(
+                    div().row().h_px(28.0).px(Space::S8).items_center().child(
                         label(note)
                             .size(LabelSize::Small)
                             .color(colors.text_muted)
@@ -475,9 +475,9 @@ fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
     div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .h_px(28.0)
-        .px(8.0)
+        .px(Space::S8)
         .child(div().row().w_px(KEY_W).items_center().child(bar(64.0)))
         .child(
             div()
@@ -511,9 +511,9 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
     div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .h_px(28.0)
-        .px(8.0)
+        .px(Space::S8)
         .rounded(Radius::Medium)
         .on_click(id)
         .bg(if highlighted {

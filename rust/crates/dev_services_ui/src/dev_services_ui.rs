@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use pom_proxy::{Delivery, Payload, ProxyLogEntry, RequestKind};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -22,7 +22,7 @@ const TOOLBAR_H: f32 = 46.0;
 const CARD_INSET: f32 = 8.0;
 const CARD_GAP: f32 = 6.0;
 const FOOT_H: f32 = 36.0;
-const DETAIL_PAD: f32 = 14.0;
+const DETAIL_PAD: Space = Space::S14;
 const BODY_LINES_SHOWN: usize = 300;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -364,7 +364,7 @@ fn server_dot(name: &str, server: &ServerStatus, served_elsewhere: bool) -> Node
     div()
         .row()
         .items_center()
-        .gap(6.0)
+        .gap(Space::S6)
         .child(components::dot(color, 7.0))
         .child(small(format!("{name} :{}", server.port), colors.text_muted))
         .into()
@@ -421,7 +421,7 @@ fn toolbar(state: &DevRequestsState, hovered: Option<u64>) -> Node {
             div()
                 .row()
                 .items_center()
-                .gap(12.0)
+                .gap(Space::S12)
                 .child(server_dot("proxy", &state.proxy, state.served_elsewhere))
                 .child(server_dot(
                     "webhooks",
@@ -454,8 +454,8 @@ fn row(entry: &ProxyLogEntry, hovered: bool, selected: bool) -> Node {
     let mut line = div()
         .row()
         .items_center()
-        .gap(10.0)
-        .px(12.0)
+        .gap(Space::S10)
+        .px(Space::S12)
         .h_px(30.0)
         .on_click(ROW_BASE + entry.seq)
         .child(fixed(
@@ -520,7 +520,7 @@ fn fact(name: &str, value: impl Into<String>, color: Rgba) -> Node {
 }
 
 fn key_values(rows: Vec<Node>) -> Node {
-    let mut column = div().col().gap(6.0).px(DETAIL_PAD).py(6.0);
+    let mut column = div().col().gap(Space::S6).px(DETAIL_PAD).py(Space::S6);
     for row in rows {
         column = column.child(row);
     }
@@ -532,10 +532,17 @@ fn section_head(title: Node, action: Option<Node>) -> Node {
         .row()
         .items_center()
         .pl(DETAIL_PAD)
-        .pr(8.0)
-        .pt(8.0)
+        .pr(Space::S8)
+        .pt(Space::S8)
         .h_px(32.0)
-        .child(div().row().flex(1.0).items_center().gap(8.0).child(title));
+        .child(
+            div()
+                .row()
+                .flex(1.0)
+                .items_center()
+                .gap(Space::S8)
+                .child(title),
+        );
     if let Some(action) = action {
         head = head.child(action);
     }
@@ -598,7 +605,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
     let title = div()
         .row()
         .items_center()
-        .gap(8.0)
+        .gap(Space::S8)
         .child(components::section_header("Body"))
         .child(small(meta, colors.text_placeholder))
         .into();
@@ -608,7 +615,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
             div()
                 .row()
                 .px(DETAIL_PAD)
-                .pt(4.0)
+                .pt(Space::S4)
                 .child(small(note, colors.text_muted)),
         );
     }
@@ -616,8 +623,8 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
         let syntax = (kind == "JSON").then(workspace::syntax_theme);
         let mut code = div()
             .col()
-            .px(12.0)
-            .py(10.0)
+            .px(Space::S12)
+            .py(Space::S10)
             .rounded(Radius::Small)
             .bg(colors.editor_background);
         let lines: Vec<&str> = text.lines().collect();
@@ -639,7 +646,7 @@ fn body_block(payload: &Payload, headers: &[(String, String)], hovered: Option<u
                 colors.text_placeholder,
             ));
         }
-        column = column.child(div().col().px(DETAIL_PAD).py(6.0).child(code));
+        column = column.child(div().col().px(DETAIL_PAD).py(Space::S6).child(code));
     }
     column.into()
 }
@@ -657,7 +664,7 @@ fn delivery_row(delivery: &Delivery) -> Node {
     div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .h_px(26.0)
         .child(components::dot(
             if ok { colors.success } else { colors.error },
@@ -667,7 +674,7 @@ fn delivery_row(delivery: &Delivery) -> Node {
             div()
                 .row()
                 .flex(1.0)
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(small(delivery.workspace.clone(), colors.text).truncate())
                 .child(small(format!(":{}", delivery.port), colors.text_placeholder).mono()),
         )
@@ -704,7 +711,7 @@ fn tabs_for(entry: &ProxyLogEntry) -> Vec<(DetailTab, String)> {
 fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     let colors = theme();
     let Some(entry) = state.selected_entry() else {
-        let mut column = div().col().gap(6.0).p(16.0).child(small(
+        let mut column = div().col().gap(Space::S6).p(Space::S16).child(small(
             "Select a request to see what was sent and what came back.",
             colors.text_muted,
         ));
@@ -741,16 +748,16 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
     let mut column = div().col().child(
         div()
             .col()
-            .gap(10.0)
+            .gap(Space::S10)
             .px(DETAIL_PAD)
-            .pt(14.0)
-            .pb(6.0)
+            .pt(Space::S14)
+            .pb(Space::S6)
             .child(
                 div()
                     .row()
                     .items_center()
                     .h_px(16.0)
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(kind_text(entry.kind))
                     .child(
                         div().row().flex(1.0).child(
@@ -761,14 +768,14 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                     )
                     .child(small(result, result_color)),
             )
-            .child(div().col().gap(6.0).py(6.0).children(facts)),
+            .child(div().col().gap(Space::S6).py(Space::S6).children(facts)),
     );
     let tab = if !webhook && state.tab == DetailTab::FanOut {
         DetailTab::Request
     } else {
         state.tab
     };
-    let mut strip = div().row().gap(14.0);
+    let mut strip = div().row().gap(Space::S14);
     for (index, (kind, text)) in tabs_for(entry).iter().enumerate() {
         let id = TAB_BASE + index as u64;
         let on = *kind == tab;
@@ -785,7 +792,7 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
                     div()
                         .row()
                         .items_center()
-                        .px(2.0)
+                        .px(Space::S2)
                         .h_px(26.0)
                         .child(small(text.clone(), ink)),
                 )
@@ -800,12 +807,12 @@ fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
         div()
             .col()
             .px(DETAIL_PAD)
-            .pt(4.0)
+            .pt(Space::S4)
             .child(strip)
             .child(components::divider()),
     );
     if tab == DetailTab::FanOut {
-        let mut deliveries = div().col().px(DETAIL_PAD).py(6.0);
+        let mut deliveries = div().col().px(DETAIL_PAD).py(Space::S6);
         if entry.deliveries.is_empty() {
             deliveries = deliveries.child(small(
                 "No workspace was running the service when it arrived.",

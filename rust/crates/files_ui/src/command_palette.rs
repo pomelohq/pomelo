@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
 use editor::transform::{LineTransform, TextTransform};
-use ui::{div, label, theme, LabelSize, Node, Radius};
+use ui::{div, label, theme, LabelSize, Node, Radius, Space};
 use workspace::{render_keystroke, EditKey};
 
 use crate::fuzzy::{fuzzy_match, Match};
@@ -932,7 +932,7 @@ impl CommandPalette {
             .row()
             .items_center()
             .h_px(HEAD_HEIGHT)
-            .px(10.0)
+            .px(Space::S10)
             .child(self.field.render(
                 self.placeholder,
                 true,
@@ -943,7 +943,7 @@ impl CommandPalette {
         let results: Node = if self.matches.is_empty() {
             div()
                 .col()
-                .py(8.0)
+                .py(Space::S8)
                 .child(components::empty_state(self.empty_text()).compact())
                 .into()
         } else {
@@ -963,7 +963,7 @@ impl CommandPalette {
             });
             div()
                 .col()
-                .py(4.0)
+                .py(Space::S4)
                 .children(scrollbar)
                 .children(rows)
                 .into()
@@ -993,7 +993,7 @@ impl CommandPalette {
         else {
             return div().into();
         };
-        let keys = div().row().items_center().gap(4.0).children(
+        let keys = div().row().items_center().gap(Space::S4).children(
             command
                 .binding
                 .iter()
@@ -1005,10 +1005,10 @@ impl CommandPalette {
                 div()
                     .row()
                     .flex(1.0)
-                    .py(1.0)
+                    .py(Space::Px(1.0))
                     .items_center()
                     .justify_between()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(highlighted_label(
                         &command.name,
                         &found.positions,
@@ -1066,7 +1066,7 @@ impl CommandPalette {
         let text = div()
             .col()
             .flex(1.0)
-            .gap(3.0)
+            .gap(Space::S4)
             .child(div().row().h_px(16.0).items_center().child(fitted_label(
                 &title,
                 &found.positions,
@@ -1083,8 +1083,8 @@ impl CommandPalette {
             .row()
             .flex(1.0)
             .h_px(44.0)
-            .px(8.0)
-            .gap(10.0)
+            .px(Space::S8)
+            .gap(Space::S10)
             .items_center()
             .rounded(Radius::Medium)
             .on_click(id_base + PaletteClick::Row(row).offset())
@@ -1094,15 +1094,15 @@ impl CommandPalette {
         if row == self.selected {
             item = item.bg(colors.overlay_selected);
         }
-        let mut column = div().col().px(6.0).pb(1.0);
+        let mut column = div().col().px(Space::S6).pb(Space::Px(1.0));
         if let Some(section) = self.header_of(row) {
             column = column.child(
                 div()
                     .row()
                     .h_px(SWITCHER_HEADER_HEIGHT)
-                    .pt(10.0)
-                    .pb(4.0)
-                    .px(8.0)
+                    .pt(Space::S10)
+                    .pb(Space::S4)
+                    .px(Space::S8)
                     .child(
                         label(section.to_uppercase())
                             .size(LabelSize::Mini)

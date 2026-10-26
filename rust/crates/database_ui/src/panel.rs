@@ -8,7 +8,7 @@ use pom_db::{
     ConnectError, ConnectErrorKind, Connector, Console, ConsoleKind, Database, Engine, Schema,
     Table, TableKind,
 };
-use ui::measure;
+use ui::{measure, Space};
 use workspace::keymap::Action as KeyAction;
 use workspace::list_nav::{ListNav, NavMove};
 use workspace::persistence::SerializedItem;
@@ -40,10 +40,10 @@ pub(crate) const COLLAPSE_ALL: u64 = REFRESH + 3;
 pub(crate) const RENAME_FIELD: u64 = REFRESH + 4;
 pub(crate) const FAILURE: u64 = REFRESH + 16;
 const MENU: u64 = 9_500_000;
-pub(crate) const FAILURE_BLOCK_LEFT: f32 = 44.0;
-pub(crate) const FAILURE_BLOCK_RIGHT: f32 = 8.0;
-pub(crate) const FAILURE_BLOCK_TOP: f32 = 2.0;
-pub(crate) const FAILURE_BLOCK_BOTTOM: f32 = 6.0;
+pub(crate) const FAILURE_BLOCK_LEFT: Space = Space::Px(44.0);
+pub(crate) const FAILURE_BLOCK_RIGHT: Space = Space::S8;
+pub(crate) const FAILURE_BLOCK_TOP: Space = Space::S2;
+pub(crate) const FAILURE_BLOCK_BOTTOM: Space = Space::S6;
 const SERVER_START_WAIT: Duration = Duration::from_secs(30);
 const CONFIRM_PROMPT: u64 = 1;
 const SELECT_LIMIT: usize = 100;

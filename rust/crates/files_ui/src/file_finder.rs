@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Space};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
 use crate::command_palette::scroll_rows;
@@ -267,7 +267,7 @@ impl FileFinder {
             .row()
             .items_center()
             .h_px(HEAD_HEIGHT)
-            .px(10.0)
+            .px(Space::S10)
             .child(self.field.render(
                 PLACEHOLDER,
                 true,
@@ -277,7 +277,7 @@ impl FileFinder {
             ));
         let visible = Self::visible_rows();
         let end = (self.scroll_top + visible).min(self.matches.len());
-        let mut results = div().col().py(4.0);
+        let mut results = div().col().py(Space::S4);
         if self.matches.is_empty() {
             let text = if self.field.text().trim().is_empty() {
                 "No recent files"
@@ -285,7 +285,7 @@ impl FileFinder {
                 "No matches"
             };
             results = results.child(
-                div().row().px(10.0).py(4.0).child(
+                div().row().px(Space::S10).py(Space::S4).child(
                     label(text)
                         .size(LabelSize::Default)
                         .color(colors.text_muted),
@@ -351,8 +351,8 @@ impl FileFinder {
         let path_labels = div()
             .row()
             .flex(1.0)
-            .py(1.0)
-            .gap(6.0)
+            .py(Space::Px(1.0))
+            .gap(Space::S6)
             .items_center()
             .child(name_label)
             .child(div().row().flex(1.0).items_center().child(highlighted(

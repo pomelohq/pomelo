@@ -8,18 +8,18 @@ use crate::EditKey;
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::text_field::INPUT_FONT;
 const INPUT_H: f32 = 32.0;
 const BUTTON: f32 = 20.0;
 const BUTTON_ICON: f32 = 16.0;
-const TOOLBAR_PAD_X: f32 = 8.0;
-const TOOLBAR_PAD_Y: f32 = 6.0;
-const LINE_GAP: f32 = 8.0;
+const TOOLBAR_PAD_X: Space = Space::S8;
+const TOOLBAR_PAD_Y: Space = Space::S6;
+const LINE_GAP: Space = Space::S8;
 const MAX_HISTORY: usize = 50;
 const COUNT_FONT: LabelSize = LabelSize::Small;
-const COUNT_MARGIN: f32 = 8.0;
+const COUNT_MARGIN: Space = Space::S8;
 const COUNT_MIN_W: f32 = 40.0;
 /// Below this bar width the match count and close button are dropped to leave room for the query.
 const NARROW_W: f32 = 340.0;
@@ -164,12 +164,12 @@ impl SearchBar {
         if self.dismissed {
             return 0.0;
         }
-        let mut h = 2.0 * TOOLBAR_PAD_Y + INPUT_H + 1.0;
+        let mut h = 2.0 * TOOLBAR_PAD_Y.px() + INPUT_H + 1.0;
         if self.error.is_some() {
-            h += LINE_GAP + INPUT_FONT;
+            h += LINE_GAP.px() + INPUT_FONT;
         }
         if self.replace_enabled {
-            h += LINE_GAP + INPUT_H;
+            h += LINE_GAP.px() + INPUT_H;
         }
         h
     }
@@ -472,9 +472,9 @@ impl SearchBar {
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .pl(8.0)
-                    .pr(4.0)
-                    .gap(4.0)
+                    .pl(Space::S8)
+                    .pr(Space::S4)
+                    .gap(Space::S4)
                     .items_center()
                     .rounded(Radius::Medium)
                     .border(1.0, border)
@@ -507,14 +507,14 @@ impl SearchBar {
         let mut mode_content =
             optional_buttons as f32 * (BUTTON + BUTTON_GAP) + 1.0 + 2.0 * BUTTON + 3.0 * BUTTON_GAP;
         if !narrow {
-            mode_content += COUNT_MARGIN + count_w + BUTTON_GAP + BUTTON;
+            mode_content += COUNT_MARGIN.px() + count_w + BUTTON_GAP + BUTTON;
         }
         let mode_w = if narrow {
             mode_content
         } else {
             mode_content.max(MODE_MIN_W)
         };
-        let query_w = (width - 2.0 * TOOLBAR_PAD_X - LINE_GAP - mode_w).max(QUERY_MIN_W);
+        let query_w = (width - 2.0 * TOOLBAR_PAD_X.px() - LINE_GAP.px() - mode_w).max(QUERY_MIN_W);
         let mut query_column = input(
             &self.query,
             SearchField::Query,
@@ -550,7 +550,7 @@ impl SearchBar {
         let matches_column = div()
             .row()
             .items_center()
-            .gap(4.0)
+            .gap(Space::S4)
             .child(vertical_rule())
             .child(icon_button(
                 IconKind::ChevronLeft,
@@ -569,7 +569,7 @@ impl SearchBar {
                     .row()
                     .h_px(BUTTON)
                     .items_center()
-                    .w_px(COUNT_MARGIN + count_w)
+                    .w_px(COUNT_MARGIN.px() + count_w)
                     .pl(COUNT_MARGIN)
                     .child(label(count).size(COUNT_FONT).color(if has_match {
                         colors.text
@@ -578,7 +578,7 @@ impl SearchBar {
                     }))
                     .into()
             }));
-        let mut mode_column = div().row().items_center().gap(4.0);
+        let mut mode_column = div().row().items_center().gap(Space::S4);
         if supported.replace {
             mode_column = mode_column.child(icon_button(
                 IconKind::Replace,
@@ -620,7 +620,7 @@ impl SearchBar {
             .child(search_line);
         if let Some(error) = &self.error {
             bar = bar.child(
-                div().h_px(INPUT_FONT).pl(8.0).child(
+                div().h_px(INPUT_FONT).pl(Space::S8).child(
                     label(error.clone())
                         .size(LabelSize::Small)
                         .color(colors.error),
@@ -631,7 +631,7 @@ impl SearchBar {
             let replace_actions = div()
                 .row()
                 .items_center()
-                .gap(4.0)
+                .gap(Space::S4)
                 .child(icon_button(
                     IconKind::ReplaceNext,
                     SearchClick::ReplaceNext,

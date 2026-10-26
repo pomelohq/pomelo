@@ -1,6 +1,6 @@
 use components::{checkbox, field, status_line, ButtonKind};
 use components::{modal_footer, modal_frame, modal_header, modal_section};
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Space};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 /// Opens the system folder picker; returns the folders chosen.
@@ -120,7 +120,7 @@ impl AddRepoModal {
 
     fn workspaces_section(&self) -> Node {
         let colors = theme();
-        let mut list = div().col().gap(6.0);
+        let mut list = div().col().gap(Space::S6);
         if self.workspaces.is_empty() {
             list = list.child(
                 label("No other workspaces yet")
@@ -152,7 +152,7 @@ impl WindowModal for AddRepoModal {
         let source_row = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(div().col().flex(1.0).child(self.source.render_input(
                 SOURCE_FIELD,
                 self.focus == Focus::Source,
@@ -201,7 +201,7 @@ impl WindowModal for AddRepoModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -370,7 +370,7 @@ impl WindowModal for CloneReposModal {
                 div()
                     .row()
                     .items_center()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(div().col().flex(1.0).child(field.render(
                         CLONE_SOURCE_BASE + index as u64,
                         self.focus == index,
@@ -387,7 +387,7 @@ impl WindowModal for CloneReposModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)

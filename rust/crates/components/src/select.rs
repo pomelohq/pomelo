@@ -1,4 +1,4 @@
-use ui::{div, theme, IconKind, Node, Radius, Rgba};
+use ui::{div, theme, IconKind, Node, Radius, Rgba, Space};
 
 use crate::button::raised_hover;
 use crate::ButtonSize;
@@ -101,9 +101,9 @@ impl From<Select> for Node {
         let mut node = div()
             .row()
             .items_center()
-            .gap(gap)
+            .gap(Space::Px(gap))
             .h_px(size.height())
-            .px(size.pad_x())
+            .px(Space::Px(size.pad_x()))
             .rounded(Radius::Medium);
         if !select.quiet {
             node = node

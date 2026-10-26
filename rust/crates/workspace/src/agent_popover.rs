@@ -1,7 +1,7 @@
 //! The agent dock's popovers: the "+" one that starts a side agent (what it is for, what it starts with),
 //! and the history of archived side agents to reopen.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::{SideAgentRole, SideAgentStart};
 
@@ -84,7 +84,7 @@ pub fn new_agent(
         .render()
         .w_px(WIDTH)
         .child(
-            div().row().h_px(30.0).px(10.0).items_center().child(
+            div().row().h_px(30.0).px(Space::S10).items_center().child(
                 label(format!("New side agent in {branch}"))
                     .size(LabelSize::Medium)
                     .color(colors.text_muted),
@@ -112,9 +112,9 @@ pub fn new_agent(
         };
         let mut row = div()
             .row()
-            .px(10.0)
-            .py(6.0)
-            .gap(10.0)
+            .px(Space::S10)
+            .py(Space::S6)
+            .gap(Space::S10)
             .items_center()
             .rounded(Radius::Medium)
             .child(icon(role_icon(each)).size(15.0).color(colors.icon_muted))
@@ -122,7 +122,7 @@ pub fn new_agent(
                 div()
                     .col()
                     .w_px(WIDTH - 165.0)
-                    .gap(1.0)
+                    .gap(Space::Px(1.0))
                     .child(
                         label(each.title())
                             .size(LabelSize::Default)
@@ -160,7 +160,7 @@ pub fn new_agent(
         div()
             .row()
             .h_px(28.0)
-            .px(10.0)
+            .px(Space::S10)
             .items_center()
             .child(
                 div().row().flex(1.0).child(
@@ -212,16 +212,16 @@ pub fn new_agent(
         };
         let mut row = div()
             .row()
-            .px(10.0)
-            .py(6.0)
-            .gap(10.0)
+            .px(Space::S10)
+            .py(Space::S6)
+            .gap(Space::S10)
             .rounded(Radius::Medium)
-            .child(div().col().pt(2.0).child(radio))
+            .child(div().col().pt(Space::S2).child(radio))
             .child(
                 div()
                     .col()
                     .flex(1.0)
-                    .gap(2.0)
+                    .gap(Space::S2)
                     .child(
                         div()
                             .row()
@@ -277,7 +277,7 @@ pub fn new_agent(
             div()
                 .row()
                 .h_px(40.0)
-                .px(10.0)
+                .px(Space::S10)
                 .items_center()
                 .child(
                     div().row().flex(1.0).child(
@@ -290,7 +290,7 @@ pub fn new_agent(
                     div()
                         .row()
                         .h_px(28.0)
-                        .px(12.0)
+                        .px(Space::S12)
                         .items_center()
                         .rounded(Radius::Medium)
                         .bg(if hot(hover, START_BUTTON) {
@@ -306,9 +306,9 @@ pub fn new_agent(
         .child(separator());
     let mut workspace = div()
         .row()
-        .px(10.0)
-        .py(6.0)
-        .gap(10.0)
+        .px(Space::S10)
+        .py(Space::S6)
+        .gap(Space::S10)
         .items_center()
         .rounded(Radius::Medium)
         .on_click(NEW_WORKSPACE)
@@ -321,7 +321,7 @@ pub fn new_agent(
             div()
                 .col()
                 .flex(1.0)
-                .gap(1.0)
+                .gap(Space::Px(1.0))
                 .child(
                     label("New agent in a new workspace")
                         .size(LabelSize::Default)
@@ -352,7 +352,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
             div()
                 .row()
                 .h_px(30.0)
-                .px(10.0)
+                .px(Space::S10)
                 .items_center()
                 .child(
                     div().row().flex(1.0).child(
@@ -370,7 +370,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
     if archived.is_empty() {
         return card
             .child(
-                div().row().px(10.0).pb(10.0).child(
+                div().row().px(Space::S10).pb(Space::S10).child(
                     label(
                         "Nothing archived. Closing a side agent stops its CLI and keeps the \
                          transcript here, so you can reopen it.",
@@ -386,9 +386,9 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
         let id = HISTORY_BASE + index as u64;
         let mut row = div()
             .col()
-            .px(10.0)
-            .py(6.0)
-            .gap(1.0)
+            .px(Space::S10)
+            .py(Space::S6)
+            .gap(Space::Px(1.0))
             .rounded(Radius::Medium)
             .on_click(id)
             .child(
@@ -413,7 +413,7 @@ pub fn history(archived: &[ArchivedAgent], hover: Option<u64>) -> Node {
 
 fn separator() -> Node {
     div()
-        .py(4.0)
+        .py(Space::S4)
         .child(components::divider().w_px(WIDTH - 8.0))
         .into()
 }

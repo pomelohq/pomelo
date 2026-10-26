@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Label, Node};
+use ui::{div, label, theme, Label, Node, Space};
 
 /// The head of a page in a tab: what it is (a ticket, a pull request, a service) and its actions. The full
 /// form puts the lead (key, state) and actions on a line over a large wrapped title and a meta line;
@@ -54,7 +54,7 @@ impl PageHeader {
 
 impl From<PageHeader> for Node {
     fn from(header: PageHeader) -> Node {
-        let mut line = div().row().items_center().gap(8.0);
+        let mut line = div().row().items_center().gap(Space::S8);
         let mut title = Some(header.title);
         if header.compact {
             line = line.h_px(44.0).children(title.take());
@@ -69,7 +69,11 @@ impl From<PageHeader> for Node {
         if header.compact {
             return line.into();
         }
-        let mut column = div().col().gap(10.0).child(line.pb(2.0)).children(title);
+        let mut column = div()
+            .col()
+            .gap(Space::S10)
+            .child(line.pb(Space::S2))
+            .children(title);
         if let Some(meta) = header.meta {
             column = column.child(meta);
         }

@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -715,7 +715,7 @@ impl ServicesPanel {
             .hovered(hovered)
             .marked(related.then_some(colors.text_accent))
             .render()
-            .pr(6.0);
+            .pr(Space::S6);
         match row {
             Row::Group {
                 key,
@@ -725,7 +725,7 @@ impl ServicesPanel {
                 collapsed: _,
                 states,
             } => {
-                let mut name = div().row().flex(1.0).gap(6.0).items_center();
+                let mut name = div().row().flex(1.0).gap(Space::S6).items_center();
                 if key == SHARED_GROUP {
                     name = name.child(
                         label(text.to_uppercase())
@@ -740,7 +740,7 @@ impl ServicesPanel {
                 let trailing: Node = if hovered {
                     div()
                         .row()
-                        .gap(2.0)
+                        .gap(Space::S2)
                         .child(self.button(self.id(index, Control::StartAll), IconKind::Play))
                         .child(self.button(self.id(index, Control::StopAll), IconKind::Stop))
                         .child(self.more_button(index))
@@ -766,7 +766,7 @@ impl ServicesPanel {
                         .color(colors.text_muted)
                         .into(),
                     (State::Running, true) => {
-                        let mut buttons = div().row().gap(2.0).child(
+                        let mut buttons = div().row().gap(Space::S2).child(
                             self.button(self.id(index, Control::Restart), IconKind::RotateCw),
                         );
                         if self.port(target).is_some() {
@@ -784,7 +784,7 @@ impl ServicesPanel {
                     }
                     (_, true) => div()
                         .row()
-                        .gap(2.0)
+                        .gap(Space::S2)
                         .child(self.button(self.id(index, Control::Start), IconKind::Play))
                         .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                         .child(self.more_button(index))
@@ -810,7 +810,7 @@ impl ServicesPanel {
                 let mut name = div()
                     .row()
                     .flex(1.0)
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(label(target.service.clone()).color(colors.text).truncate());
                 if let Some(mode) = self.mode(target).filter(|mode| !mode.is_empty()) {
@@ -844,13 +844,13 @@ impl ServicesPanel {
                         .into(),
                     (_, true) if !self.offers(access::ServiceControl::Shared) => div()
                         .row()
-                        .gap(2.0)
+                        .gap(Space::S2)
                         .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                         .child(self.more_button(index))
                         .into(),
                     (State::Running, true) => div()
                         .row()
-                        .gap(2.0)
+                        .gap(Space::S2)
                         .child(self.button(self.id(index, Control::Restart), IconKind::RotateCw))
                         .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                         .child(self.button(self.id(index, Control::Stop), IconKind::Stop))
@@ -858,7 +858,7 @@ impl ServicesPanel {
                         .into(),
                     (_, true) => div()
                         .row()
-                        .gap(2.0)
+                        .gap(Space::S2)
                         .child(self.button(self.id(index, Control::Start), IconKind::Play))
                         .child(self.more_button(index))
                         .into(),
@@ -875,7 +875,7 @@ impl ServicesPanel {
                         div()
                             .row()
                             .flex(1.0)
-                            .gap(6.0)
+                            .gap(Space::S6)
                             .items_center()
                             .child(label(name.clone()).color(ink).truncate())
                             .child(
@@ -909,11 +909,11 @@ impl ServicesPanel {
             (None, Some(port)) => (format!("cannot bind :{port}"), None),
             (None, None) => ("failed to start".to_string(), None),
         };
-        let mut title = div().row().gap(4.0).items_center().child(
+        let mut title = div().row().gap(Space::S4).items_center().child(
             div()
                 .row()
                 .flex(1.0)
-                .gap(5.0)
+                .gap(Space::S6)
                 .items_center()
                 .child(
                     label(service_title(&card.target))
@@ -939,7 +939,7 @@ impl ServicesPanel {
             title = title
                 .child(self.button(self.card_id(index, CardAction::Restart), IconKind::RotateCw));
         }
-        let mut body = div().col().flex(1.0).gap(5.0).child(title);
+        let mut body = div().col().flex(1.0).gap(Space::S6).child(title);
         let detail = match &card.crash {
             Some(crash) => crash.line.clone(),
             None => card.error.as_deref().map(first_line),
@@ -986,10 +986,10 @@ impl ServicesPanel {
         let mut strip = div()
             .row()
             .w_px(width)
-            .pl(12.0)
-            .pr(6.0)
-            .py(6.0)
-            .gap(8.0)
+            .pl(Space::S12)
+            .pr(Space::S6)
+            .py(Space::S6)
+            .gap(Space::S8)
             .on_click(open)
             .child(div().w_px(2.0).rounded(Radius::XSmall).bg(tint))
             .child(body);
@@ -1014,7 +1014,7 @@ impl ServicesPanel {
                     FieldFont::Ui,
                 )),
         );
-        div().col().h_px(FILTER_H).px(8.0).child(field).into()
+        div().col().h_px(FILTER_H).px(Space::S8).child(field).into()
     }
 
     /// What scrolls under the filter: what needs attention, then the tree.
@@ -1043,7 +1043,7 @@ impl ServicesPanel {
                 div()
                     .row()
                     .h_px(ROW_H)
-                    .px(12.0)
+                    .px(Space::S12)
                     .items_center()
                     .child(label(text).size(LabelSize::Small).color(theme().text_muted))
                     .into(),
@@ -1888,9 +1888,9 @@ impl SidePanelView for ServicesPanel {
         let mut header = div()
             .row()
             .h_px(HEADER_H)
-            .pl(12.0)
-            .pr(6.0)
-            .gap(6.0)
+            .pl(Space::S12)
+            .pr(Space::S6)
+            .gap(Space::S6)
             .items_center()
             .child(
                 label("Services")
@@ -1902,7 +1902,7 @@ impl SidePanelView for ServicesPanel {
                 div()
                     .row()
                     .flex(1.0)
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(
                         label(self.model.context.branch.clone())

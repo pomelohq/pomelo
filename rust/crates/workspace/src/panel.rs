@@ -4,7 +4,7 @@
 //! interior (the workspace list) now renders through `ProjectPanel` instead of hand-placed rects.
 
 use components::status_line;
-use ui::{div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DockPosition {
@@ -119,7 +119,7 @@ pub fn function_bar(
     sides: &[DockPosition],
     want: DockPosition,
 ) -> Node {
-    let mut row = div().row().gap(2.0).items_center();
+    let mut row = div().row().gap(Space::S2).items_center();
     for (i, kind) in PaneKind::ALL.iter().enumerate() {
         if hidden.get(i).copied().unwrap_or(false) {
             continue;
@@ -164,13 +164,13 @@ fn function_rows(active: PaneKind) -> &'static [&'static str] {
 }
 
 fn function_row_list(active: PaneKind) -> Node {
-    let mut col = div().col().gap(4.0);
+    let mut col = div().col().gap(Space::S4);
     for r in function_rows(active) {
         col = col.child(
             div()
                 .row()
                 .h_px(24.0)
-                .px(4.0)
+                .px(Space::S4)
                 .items_center()
                 .child(label(r.to_string()).color(theme().text_muted)),
         );
@@ -183,9 +183,9 @@ pub fn function_content(active: PaneKind) -> Node {
     div()
         .col()
         .bg(theme().editor_background)
-        .px(10.0)
-        .py(10.0)
-        .gap(4.0)
+        .px(Space::S10)
+        .py(Space::S10)
+        .gap(Space::S4)
         .child(
             label(active.title())
                 .size(LabelSize::Small)
@@ -199,9 +199,9 @@ pub fn function_content(active: PaneKind) -> Node {
 pub fn function_dock_body(active: PaneKind) -> Node {
     div()
         .col()
-        .px(10.0)
-        .py(10.0)
-        .gap(4.0)
+        .px(Space::S10)
+        .py(Space::S10)
+        .gap(Space::S4)
         .child(panel_header(active.title()))
         .child(function_row_list(active))
         .into()
@@ -505,8 +505,8 @@ impl Panel for ProjectPanel {
         let header = div()
             .row()
             .h_px(32.0)
-            .pl(8.0)
-            .pr(2.0)
+            .pl(Space::S8)
+            .pr(Space::S2)
             .items_center()
             .justify_between()
             .child(
@@ -526,7 +526,13 @@ impl Panel for ProjectPanel {
                     .on_click(crate::WORKSPACE_NEW)
                     .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
             );
-        let mut col = div().col().px(8.0).pt(4.0).pb(8.0).gap(2.0).child(header);
+        let mut col = div()
+            .col()
+            .px(Space::S8)
+            .pt(Space::S4)
+            .pb(Space::S8)
+            .gap(Space::S2)
+            .child(header);
         let upkeep = upkeep_of(&self.ops, &self.expanded, self.upkeep_done);
         // Panel padding and a row's own insets.
         let inner_w = (self.width - 16.0 - 16.0).max(120.0);
@@ -619,13 +625,13 @@ fn group_header(
         .expander(folded.then_some(false))
         .render()
         .h_px(20.0)
-        .px(8.0)
+        .px(Space::S8)
         .rounded(Radius::Small)
         .on_click(id);
     if hovered == Some(id) {
         header = header.bg(colors.element_hover);
     }
-    div().col().pt(12.0).child(header).into()
+    div().col().pt(Space::S12).child(header).into()
 }
 
 /// A group on the rail: a hairline above its tiles, or a chip with its count once folded away.
@@ -640,8 +646,8 @@ fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
     if folded {
         marker = marker
             .h_px(18.0)
-            .px(6.0)
-            .gap(2.0)
+            .px(Space::S6)
+            .gap(Space::S2)
             .bg(if hovered {
                 colors.element_hover
             } else {
@@ -668,7 +674,12 @@ fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
             marker = marker.bg(colors.element_hover);
         }
     }
-    div().row().pt(4.0).justify_center().child(marker).into()
+    div()
+        .row()
+        .pt(Space::S4)
+        .justify_center()
+        .child(marker)
+        .into()
 }
 
 /// What a rail cell calls a workspace, as two short lines. A workspace with a Jira ticket shows its project
@@ -717,9 +728,9 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
     let mut column = div()
         .col()
         .w_px(width)
-        .pt(4.0)
-        .pb(8.0)
-        .gap(4.0)
+        .pt(Space::S4)
+        .pb(Space::S8)
+        .gap(Space::S4)
         .items_center()
         .child(
             div()
@@ -904,7 +915,7 @@ fn tile_text(prefix: Option<String>, name: String, ink: Rgba) -> Div {
             .justify_center()
             .child(node)
     };
-    let mut text = div().col().items_center().gap(1.0);
+    let mut text = div().col().items_center().gap(Space::Px(1.0));
     if let Some(prefix) = prefix {
         text = text.child(line(
             label(prefix)
@@ -942,7 +953,7 @@ fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running
     if running == 0 {
         return tile;
     }
-    let mut pips = div().row().justify_center().gap(2.0);
+    let mut pips = div().row().justify_center().gap(Space::S2);
     for _ in 0..running.min(3) {
         pips = pips.child(
             div()
@@ -997,7 +1008,7 @@ fn workspace_tile(row: &WorkspaceRow, size: f32, current: bool, hovered: bool, q
         .bg(bg);
     // A floor lifts the label so the two never touch.
     if floor {
-        tile = tile.pb(4.0);
+        tile = tile.pb(Space::S4);
     }
     if waiting && colors.appearance == ui::Appearance::Light {
         tile = tile.border(1.0, (colors.on_attention).alpha(0.22));
@@ -1044,7 +1055,7 @@ fn pin_pill_with(
         .row()
         .items_center()
         .justify_center()
-        .gap(1.0)
+        .gap(Space::Px(1.0))
         .rounded_px(INNER_H / 2.0 + RING)
         .bg(bg)
         .border(RING, colors.panel_background);
@@ -1283,7 +1294,7 @@ fn workspace_row(
     let mut text = div()
         .col()
         .flex(1.0)
-        .gap(3.0)
+        .gap(Space::S4)
         .child(div().row().h_px(16.0).items_center().child(name));
     if let Some(line) = line {
         text = text.child(div().row().h_px(line_h).items_center().child(line));
@@ -1291,13 +1302,13 @@ fn workspace_row(
     let mut main_line = div()
         .row()
         .h_px(content_h)
-        .gap(10.0)
+        .gap(Space::S10)
         .items_center()
         .child(workspace_tile(row, LIST_TILE, current, hovered, true))
         .child(text);
     if let Some((pr, _)) = trouble {
         main_line = main_line.child(
-            div().col().h_px(content_h).pt(6.0).child(
+            div().col().h_px(content_h).pt(Space::S6).child(
                 components::pill(pr.count.to_string())
                     .color(theme().error)
                     .icon(IconKind::PullRequest)
@@ -1315,15 +1326,15 @@ fn workspace_row(
     };
     let mut item = div()
         .col()
-        .px(8.0)
-        .py(5.0)
+        .px(Space::S8)
+        .py(Space::S6)
         .rounded(Radius::Medium)
         .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
         .child(main_line);
     if let Some((op, position)) = open_failure {
         let manual_open = manual == Some(op.id);
         item = item
-            .pb(8.0)
+            .pb(Space::S8)
             .child(op_details(op, position, inner_w, false, manual_open));
     }
     if current {
@@ -1449,8 +1460,8 @@ pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
         .render()
         .row()
         .h_px(30.0)
-        .px(10.0)
-        .gap(6.0)
+        .px(Space::S10)
+        .gap(Space::S6)
         .items_center()
         .child(
             div()
@@ -1538,7 +1549,7 @@ fn failure_line(text: String, base: u64, expanded: bool) -> Node {
     div()
         .row()
         .flex(1.0)
-        .gap(8.0)
+        .gap(Space::S8)
         .items_center()
         .on_click(base + crate::WORKSPACE_OP_TOGGLE)
         .child(status_line(IconKind::Warning, colors.error, text).tinted())
@@ -1561,7 +1572,7 @@ fn op_details(
     manual_open: bool,
 ) -> Node {
     use crate::StageState;
-    const CHIP_GAP: f32 = 10.0;
+    const CHIP_GAP: Space = Space::S10;
     const CHIP_ICON: f32 = 12.0;
     let colors = theme();
     let base = crate::WORKSPACE_OP_BASE + position as u64 * crate::WORKSPACE_OP_STRIDE;
@@ -1576,12 +1587,12 @@ fn op_details(
         };
         let chip_w = ui::measure_text_width(name, 10.5, false, 400)
             + if kind.is_some() { CHIP_ICON } else { 0.0 };
-        if used > 0.0 && used + CHIP_GAP + chip_w > width {
+        if used > 0.0 && used + CHIP_GAP.px() + chip_w > width {
             lines.push(Vec::new());
             used = 0.0;
         }
-        used += if used > 0.0 { CHIP_GAP } else { 0.0 } + chip_w;
-        let mut chip = div().row().gap(3.0).items_center();
+        used += if used > 0.0 { CHIP_GAP.px() } else { 0.0 } + chip_w;
+        let mut chip = div().row().gap(Space::S4).items_center();
         if let Some(kind) = kind {
             chip = chip.child(icon(kind).size(9.0).color(color));
         }
@@ -1590,7 +1601,7 @@ fn op_details(
             line.push(chip.into());
         }
     }
-    let mut stages = div().col().gap(4.0);
+    let mut stages = div().col().gap(Space::S4);
     for line in lines {
         let mut row = div().row().gap(CHIP_GAP).items_center();
         for chip in line {
@@ -1605,8 +1616,8 @@ fn op_details(
     };
     let error = div()
         .col()
-        .px(8.0)
-        .py(7.0)
+        .px(Space::S8)
+        .py(Space::S8)
         .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(1.0, colors.border_variant)
@@ -1617,7 +1628,7 @@ fn op_details(
                 .color(colors.text)
                 .wrap((width - 18.0).max(60.0)),
         );
-    let mut fixes = div().row().gap(6.0).items_center();
+    let mut fixes = div().row().gap(Space::S6).items_center();
     let mut fixes_w = 0.0;
     if op.retryable {
         fixes = fixes.child(
@@ -1643,7 +1654,7 @@ fn op_details(
     let manual_w = button_width("Fix manually", 8.0 + 9.0);
     let mut icons = div()
         .row()
-        .gap(2.0)
+        .gap(Space::S2)
         .items_center()
         .child(icon_button(IconKind::Copy, base + crate::WORKSPACE_OP_COPY));
     let mut icons_w = 22.0;
@@ -1666,7 +1677,7 @@ fn op_details(
     } else {
         div()
             .col()
-            .gap(6.0)
+            .gap(Space::S6)
             .child(fixes)
             .child(
                 div()
@@ -1680,8 +1691,8 @@ fn op_details(
     };
     let body = div()
         .col()
-        .gap(6.0)
-        .pt(6.0)
+        .gap(Space::S6)
+        .pt(Space::S6)
         .child(stages)
         .child(error)
         .child(actions);
@@ -1702,9 +1713,9 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
     let item = |title: String, note: String, id: u64| -> Node {
         div()
             .col()
-            .gap(1.0)
-            .px(8.0)
-            .py(6.0)
+            .gap(Space::Px(1.0))
+            .px(Space::S8)
+            .py(Space::S6)
             .rounded(Radius::Medium)
             .on_click(id)
             .child(label(title).size(LabelSize::Small).color(colors.text))
@@ -1780,7 +1791,12 @@ fn op_row(
         OpStatus::Done => headline("Done".into(), colors.success),
         OpStatus::Failed => failure_line(op.error.clone(), base, expanded),
     };
-    let mut second = div().row().h_px(14.0).gap(8.0).items_center().child(line);
+    let mut second = div()
+        .row()
+        .h_px(14.0)
+        .gap(Space::S8)
+        .items_center()
+        .child(line);
     if op.status == OpStatus::Queued || (op.remote && op.status == OpStatus::Running) {
         second = second.child(
             components::button(base + crate::WORKSPACE_OP_CANCEL, "Cancel")
@@ -1795,7 +1811,7 @@ fn op_row(
     let text = div()
         .col()
         .flex(1.0)
-        .gap(3.0)
+        .gap(Space::S4)
         .child(
             div().row().h_px(16.0).items_center().child(
                 label(name)
@@ -1808,14 +1824,14 @@ fn op_row(
     let mut main_line = div()
         .row()
         .h_px(44.0)
-        .gap(10.0)
+        .gap(Space::S10)
         .items_center()
         .child(creation_tile(op, LIST_TILE))
         .child(text);
     if op.status == OpStatus::Running {
         let percent = (op_progress(op) * 100.0).round() as u32;
         main_line = main_line.child(
-            div().col().h_px(44.0).pt(8.0).child(
+            div().col().h_px(44.0).pt(Space::S8).child(
                 label(format!("{percent}%"))
                     .size(LabelSize::Mini)
                     .mono()
@@ -1825,18 +1841,15 @@ fn op_row(
     }
     let mut row = div()
         .col()
-        .px(8.0)
-        .py(5.0)
+        .px(Space::S8)
+        .py(Space::S6)
         .rounded(Radius::Medium)
         .child(main_line);
     if expanded && op.status == OpStatus::Failed {
-        row = row.pb(8.0).bg((colors.error).alpha(0.06)).child(op_details(
-            op,
-            position,
-            width,
-            true,
-            manual_open,
-        ));
+        row = row
+            .pb(Space::S8)
+            .bg((colors.error).alpha(0.06))
+            .child(op_details(op, position, width, true, manual_open));
     }
     row.into()
 }
@@ -1861,9 +1874,9 @@ impl Panel for AgentEmptyPanel {
     fn render(&mut self) -> Node {
         div()
             .col()
-            .px(10.0)
-            .py(10.0)
-            .gap(8.0)
+            .px(Space::S10)
+            .py(Space::S10)
+            .gap(Space::S8)
             .child(panel_header(self.title()))
             .child(
                 label("No agent open in this dock.")
@@ -1908,9 +1921,9 @@ impl Panel for TerminalPanel {
 pub fn terminal_dock_body() -> Node {
     div()
         .col()
-        .px(12.0)
-        .py(8.0)
-        .gap(4.0)
+        .px(Space::S12)
+        .py(Space::S8)
+        .gap(Space::S4)
         .child(panel_header("TERMINAL"))
         .child(
             label("pomelo % ")
@@ -1926,9 +1939,9 @@ pub fn terminal_content() -> Node {
     div()
         .col()
         .bg(theme().editor_background)
-        .px(12.0)
-        .py(8.0)
-        .gap(4.0)
+        .px(Space::S12)
+        .py(Space::S8)
+        .gap(Space::S4)
         .child(
             label("TERMINAL")
                 .size(LabelSize::Small)

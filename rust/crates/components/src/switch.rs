@@ -1,4 +1,4 @@
-use ui::{div, theme, Node, Radius};
+use ui::{div, theme, Node, Radius, Space};
 
 /// An on/off switch: the knob slides right on the accent fill when on.
 pub fn switch(id: u64, on: bool) -> Node {
@@ -16,7 +16,7 @@ pub fn switch(id: u64, on: bool) -> Node {
         .row()
         .w_px(34.0)
         .h_px(20.0)
-        .px(3.0)
+        .px(Space::S4)
         .items_center()
         .rounded(Radius::XLarge)
         .on_click(id);

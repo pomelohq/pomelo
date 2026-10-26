@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use markdown::{Markdown, MarkdownLayout, DOCUMENT_STYLE};
 use terminal::Modifiers;
-use ui::{div, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, theme, IconKind, Node, Rect, Rgba, Space};
 use workspace::{Item, ItemTick};
 
 const REPARSE_DELAY: Duration = Duration::from_millis(200);
@@ -169,7 +169,7 @@ impl Item for MarkdownPreview {
         let mut content = div()
             .col()
             .w_px(full)
-            .px(((full - width) / 2.0).max(PAD))
+            .px(Space::Px(((full - width) / 2.0).max(PAD)))
             .child(div().h_px(PAD + skipped));
         if self.markdown.is_empty() {
             content = content.child(components::empty_state("Nothing to preview").compact());

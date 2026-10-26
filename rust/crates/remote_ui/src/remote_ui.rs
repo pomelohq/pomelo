@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::{
     CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
     WindowModal, WINDOW_MODAL_BASE,
@@ -150,9 +150,9 @@ impl ConnectHostModal {
         let mut row = div()
             .row()
             .items_center()
-            .gap(12.0)
+            .gap(Space::S12)
             .h_px(ROW_H)
-            .px(10.0)
+            .px(Space::S10)
             .rounded(Radius::Medium)
             .child(icon(kind).size(16.0).color(colors.icon_muted))
             .child(
@@ -200,7 +200,7 @@ impl ConnectHostModal {
         div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(icon(kind).size(14.0).color(tint))
             .child(
                 label(text.to_string())
@@ -215,8 +215,8 @@ impl ConnectHostModal {
         let colors = theme();
         div()
             .row()
-            .px(10.0)
-            .py(8.0)
+            .px(Space::S10)
+            .py(Space::S8)
             .rounded(Radius::Medium)
             .bg(colors.element_background)
             .child(
@@ -244,7 +244,7 @@ impl WindowModal for ConnectHostModal {
                     )));
                 } else if self.hosts.is_empty() {
                     section = section
-                        .gap(10.0)
+                        .gap(Space::S10)
                         .child(Self::line(
                             "No hosts yet. Add a machine you reach over SSH, then check it:",
                         ))
@@ -281,7 +281,7 @@ impl WindowModal for ConnectHostModal {
                             }
                         };
                         section = section
-                            .gap(10.0)
+                            .gap(Space::S10)
                             .child(Self::status(
                                 IconKind::XCircle,
                                 theme().error,
@@ -314,7 +314,7 @@ impl WindowModal for ConnectHostModal {
                 (format!("Projects on {name}"), "Pick a project", true)
             }
         };
-        let mut buttons = div().row().items_center().gap(8.0);
+        let mut buttons = div().row().items_center().gap(Space::S8);
         if back {
             buttons = buttons.child(
                 components::button(BACK, "Back")

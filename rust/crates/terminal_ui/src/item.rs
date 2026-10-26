@@ -8,7 +8,7 @@ use terminal::{
     GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition,
     SyncOutcome, Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
-use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba};
+use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba, Space};
 use workspace::search_bar::{SearchSupport, Searchable};
 use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
@@ -488,7 +488,7 @@ impl TerminalItem {
             .col()
             .flex(1.0)
             .bg(theme().terminal_background)
-            .pl(metrics.cell_width)
+            .pl(Space::Px(metrics.cell_width))
             .child(div().h_px(padding_top))
             .child(paint.node)
             .into();

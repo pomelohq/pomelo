@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use terminal::Waker;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Painted, Rect};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Painted, Rect, Space};
 use workspace::pane::{Pane, PaneCommand};
 use workspace::pane_group::SplitDirection;
 use workspace::pane_group_view::{
@@ -100,8 +100,8 @@ fn spawn_failure(error: String) -> Node {
     div()
         .col()
         .flex(1.0)
-        .p(16.0)
-        .gap(2.0)
+        .p(Space::S16)
+        .gap(Space::S2)
         .items_center()
         .justify_center()
         .bg(colors.editor_background)

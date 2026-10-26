@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, LabelSize, Node};
+use ui::{div, label, theme, Div, LabelSize, Node, Space};
 
 pub const TOOLBAR_HEIGHT: f32 = 32.0;
 
@@ -80,9 +80,9 @@ impl Toolbar {
         let mut bar = div()
             .row()
             .h_px(self.height)
-            .pl(12.0)
-            .pr(8.0)
-            .gap(8.0)
+            .pl(Space::S12)
+            .pr(Space::S8)
+            .gap(Space::S8)
             .items_center()
             .bg(theme().toolbar_background);
         for child in self.children {

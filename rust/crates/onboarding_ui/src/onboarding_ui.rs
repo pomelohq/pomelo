@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use terminal::{Keystroke, Modifiers};
-use ui::{div, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, theme, IconKind, Node, Rect, Rgba, Space};
 use workspace::text_field::TextField;
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -111,8 +111,8 @@ impl OnboardingPage {
             .col()
             .w_px(width)
             .bg(theme().editor_background)
-            .pt(view::PAGE_PAD_TOP)
-            .pb(view::PAGE_PAD_BOTTOM)
+            .pt(Space::Px(view::PAGE_PAD_TOP))
+            .pb(Space::Px(view::PAGE_PAD_BOTTOM))
             .items_center()
             .child(body)
             .into()

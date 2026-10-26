@@ -12,7 +12,7 @@ use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::WINDOW_MODAL_BASE;
 
@@ -246,12 +246,17 @@ impl BranchPicker {
                     .bg(colors.panel_background)
                     .child(div().h_px(8.0).bg(colors.panel_background))
                     .child(
-                        div().row().px(14.0).pb(8.0).items_center().child(
-                            label(note)
-                                .size(LabelSize::Small)
-                                .color(colors.text_placeholder)
-                                .truncate(),
-                        ),
+                        div()
+                            .row()
+                            .px(Space::S14)
+                            .pb(Space::S8)
+                            .items_center()
+                            .child(
+                                label(note)
+                                    .size(LabelSize::Small)
+                                    .color(colors.text_placeholder)
+                                    .truncate(),
+                            ),
                     ),
             );
         deferred(panel)
@@ -303,7 +308,7 @@ impl BranchPicker {
         );
         let mut column = div()
             .col()
-            .gap(16.0)
+            .gap(Space::S16)
             .on_click(PICKER_SURFACE)
             .child(self.query_box(true))
             .child(hint);
@@ -322,10 +327,10 @@ impl BranchPicker {
         div()
             .row()
             .items_center()
-            .gap(6.0)
-            .px(12.0)
-            .pt(10.0)
-            .pb(2.0)
+            .gap(Space::S6)
+            .px(Space::S12)
+            .pt(Space::S10)
+            .pb(Space::S2)
             .child(
                 div()
                     .row()
@@ -354,8 +359,8 @@ impl BranchPicker {
     fn query_row(&self) -> Node {
         div()
             .col()
-            .px(8.0)
-            .py(6.0)
+            .px(Space::S8)
+            .py(Space::S6)
             .child(self.query_box(false))
             .into()
     }
@@ -374,7 +379,7 @@ impl BranchPicker {
             .highlighted
             .saturating_sub(ROWS_SHOWN - 1)
             .min(entries.len().saturating_sub(ROWS_SHOWN));
-        let mut list = div().col().gap(1.0).px(6.0).pb(6.0);
+        let mut list = div().col().gap(Space::Px(1.0)).px(Space::S6).pb(Space::S6);
         for (index, entry) in entries.iter().enumerate().skip(first).take(ROWS_SHOWN) {
             list =
                 list.child(self.entry_row(entry, index, workspace_branch, branches, base, choice));
@@ -488,7 +493,7 @@ impl BranchPicker {
             .row()
             .h_px(20.0)
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(icon(kind).size(14.0).color(icon_color))
             .child(div().row().flex(1.0).items_center().child({
                 let title = label(title)
@@ -508,10 +513,10 @@ impl BranchPicker {
         if remote {
             title_row = title_row.child(components::pill("origin").color(colors.info));
         }
-        let mut text = div().col().gap(2.0).flex(1.0).child(title_row);
+        let mut text = div().col().gap(Space::S2).flex(1.0).child(title_row);
         if !subtitle.is_empty() {
             text = text.child(
-                div().row().h_px(16.0).pl(22.0).items_center().child(
+                div().row().h_px(16.0).pl(Space::S24).items_center().child(
                     label(subtitle)
                         .size(LabelSize::Small)
                         .color(colors.text_placeholder)
@@ -521,8 +526,8 @@ impl BranchPicker {
         }
         div()
             .row()
-            .px(8.0)
-            .py(6.0)
+            .px(Space::S8)
+            .py(Space::S6)
             .rounded(Radius::Medium)
             .on_click(ENTRY_BASE + index as u64)
             .bg(if index == self.highlighted {

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use settings::Settings;
-use ui::{div, label, theme, LabelSize, Node, Radius};
+use ui::{div, label, theme, LabelSize, Node, Radius, Space};
 
 use super::{
     control_value, is_default, jira_items, proxy_text, Control, IntegrationsPage, Page, PageItem,
@@ -609,9 +609,9 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
         |icon: ui::IconKind, ink: ui::Rgba, text: String, button: Option<(u64, &str)>| -> Node {
             let mut row = div()
                 .row()
-                .pt(14.0)
-                .pb(4.0)
-                .gap(8.0)
+                .pt(Space::S14)
+                .pb(Space::S4)
+                .gap(Space::S8)
                 .items_center()
                 .child(ui::icon(icon).size(14.0).color(ink))
                 .child(
@@ -654,10 +654,10 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
             };
             let banner = div()
                 .row()
-                .pl(14.0)
-                .pr(10.0)
-                .py(10.0)
-                .gap(10.0)
+                .pl(Space::S14)
+                .pr(Space::S10)
+                .py(Space::S10)
+                .gap(Space::S10)
                 .items_center()
                 .rounded(Radius::Large)
                 .bg(colors.element_background)
@@ -679,8 +679,8 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
             Some(
                 div()
                     .col()
-                    .pt(14.0)
-                    .gap(10.0)
+                    .pt(Space::S14)
+                    .gap(Space::S10)
                     .child(banner)
                     .child(
                         label(format!(
@@ -702,14 +702,14 @@ pub fn note(text: &str, under_header: bool) -> Node {
     let note = div()
         .row()
         .h_px(super::SMALL_LINE_HEIGHT)
-        .gap(6.0)
+        .gap(Space::S6)
         .items_center()
         .child(ui::icon(ui::IconKind::Info).size(12.0).color(ink))
         .child(label(text.to_string()).size(LabelSize::Small).color(ink));
     if under_header {
-        div().col().pb(4.0).child(note).into()
+        div().col().pb(Space::S4).child(note).into()
     } else {
-        div().col().pt(3.0).child(note).into()
+        div().col().pt(Space::S4).child(note).into()
     }
 }
 

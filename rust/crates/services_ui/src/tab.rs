@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -368,7 +368,7 @@ impl ServiceItem {
         }
         let query = self.filter.text().to_lowercase();
         let text_w = width - 28.0 - TIME_W;
-        let mut list = div().col().h_px(height).px(14.0).pt(4.0);
+        let mut list = div().col().h_px(height).px(Space::S14).pt(Space::S4);
         if shown.is_empty() {
             let note = if !query.is_empty() {
                 "No lines match"
@@ -461,8 +461,8 @@ impl ServiceItem {
         div()
             .col()
             .h_px(height)
-            .px(14.0)
-            .pt(4.0)
+            .px(Space::S14)
+            .pt(Space::S4)
             .child(div().row().child(times).child(clipped))
             .into()
     }
@@ -568,7 +568,7 @@ impl ServiceItem {
         };
         let node = div()
             .col()
-            .gap(6.0)
+            .gap(Space::S6)
             .child(
                 div().row().h_px(14.0).items_center().child(
                     label(title.to_uppercase())
@@ -628,7 +628,7 @@ impl ServiceItem {
         let busy = matches!(state, State::Busy(_));
         let mut title = div()
             .row()
-            .gap(8.0)
+            .gap(Space::S8)
             .items_center()
             .child(view::status_icon(state));
         title = if self.container.is_some() {
@@ -712,7 +712,7 @@ impl ServiceItem {
         }
         div()
             .col()
-            .px(14.0)
+            .px(Space::S14)
             .child(header.action(components::icon_button(
                 self.base + MORE,
                 IconKind::Ellipsis,
@@ -752,15 +752,15 @@ impl ServiceItem {
         let mut block = div()
             .col()
             .w_px(width - 28.0)
-            .p(10.0)
-            .gap(7.0)
+            .p(Space::S10)
+            .gap(Space::S8)
             .rounded(Radius::Medium)
             .border(1.0, tint.alpha(0.3))
             .bg(tint.alpha(0.06))
             .child(
                 div()
                     .row()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(
                         icon(if port.is_some() {
@@ -781,7 +781,7 @@ impl ServiceItem {
                 div()
                     .row()
                     .w_px(inner)
-                    .p(8.0)
+                    .p(Space::S8)
                     .rounded(Radius::Small)
                     .bg(ui::theme().scrim())
                     .child(
@@ -807,7 +807,14 @@ impl ServiceItem {
         }
         buttons.push(self.button(RESTART, IconKind::RotateCw, "Restart", Tone::Plain));
         block = block.child(view::pack(buttons, inner, 6.0));
-        Some(div().row().px(14.0).pt(10.0).child(block).into())
+        Some(
+            div()
+                .row()
+                .px(Space::S14)
+                .pt(Space::S10)
+                .child(block)
+                .into(),
+        )
     }
 
     fn facts(&self, state: &State, crash: Option<&Crash>, width: f32) -> Node {
@@ -848,7 +855,7 @@ impl ServiceItem {
                 "URL",
                 div()
                     .row()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(
                         label(url)
@@ -869,7 +876,7 @@ impl ServiceItem {
                     "Port",
                     div()
                         .row()
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .items_center()
                         .child(
                             label(format!(":{port}"))
@@ -918,7 +925,7 @@ impl ServiceItem {
                         "Env file",
                         div()
                             .row()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .items_center()
                             .child(
                                 label(shown)
@@ -951,8 +958,8 @@ impl ServiceItem {
             .row()
             .flex(1.0)
             .h_px(32.0)
-            .px(10.0)
-            .gap(6.0)
+            .px(Space::S10)
+            .gap(Space::S6)
             .rounded(Radius::Medium)
             .items_center()
             .bg(colors.background)
@@ -983,14 +990,14 @@ enum FactSpan {
 /// The facts as one card on a three-column grid: wide facts take two columns, the command a row of its own
 /// at the end.
 fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
-    const COL_GAP: f32 = 20.0;
+    const COL_GAP: Space = Space::S20;
     let inner = (width - 2.0 * 16.0 - 2.0 * 16.0).max(120.0);
-    let column = (inner - 2.0 * COL_GAP) / 3.0;
+    let column = (inner - 2.0 * COL_GAP.px()) / 3.0;
     let (mut command, mut cells): (Vec<_>, Vec<_>) = facts
         .into_iter()
         .partition(|(span, _)| *span == FactSpan::Row);
     cells.append(&mut command);
-    let mut grid = div().col().gap(14.0);
+    let mut grid = div().col().gap(Space::S14);
     let mut line = div().row().gap(COL_GAP);
     let mut used = 0;
     for (span, node) in cells {
@@ -1004,7 +1011,7 @@ fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
             line = div().row().gap(COL_GAP);
             used = 0;
         }
-        let w = column * columns as f32 + COL_GAP * (columns - 1) as f32;
+        let w = column * columns as f32 + COL_GAP.px() * (columns - 1) as f32;
         line = line.child(div().col().w_px(w).child(node));
         used += columns;
     }
@@ -1013,14 +1020,14 @@ fn fact_card(facts: Vec<(FactSpan, Node)>, width: f32) -> Node {
     }
     div()
         .col()
-        .px(16.0)
-        .pt(4.0)
-        .pb(14.0)
+        .px(Space::S16)
+        .pt(Space::S4)
+        .pb(Space::S14)
         .child(
             components::card()
                 .render()
                 .debug("fact-card")
-                .px(16.0)
+                .px(Space::S16)
                 .child(grid),
         )
         .into()
@@ -1082,7 +1089,7 @@ impl ServiceItem {
                 },
                 div()
                     .row()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(
                         label(connection)
@@ -1508,7 +1515,7 @@ impl ServiceItem {
     fn logs_bar(&self, state: &State, shown: usize) -> Node {
         let colors = theme();
         let live = *state == State::Running && self.paused_at.is_none();
-        let mut title = div().row().gap(6.0).items_center().child(
+        let mut title = div().row().gap(Space::S6).items_center().child(
             label("LOGS")
                 .size(LabelSize::Mini)
                 .weight(600)
@@ -1541,8 +1548,8 @@ impl ServiceItem {
             div()
                 .row()
                 .h_px(26.0)
-                .px(8.0)
-                .gap(5.0)
+                .px(Space::S8)
+                .gap(Space::S6)
                 .items_center()
                 .rounded(Radius::Small)
                 .on_click(self.base + id)
@@ -1588,8 +1595,8 @@ impl ServiceItem {
         let mut bar = div()
             .row()
             .h_px(40.0)
-            .px(14.0)
-            .gap(8.0)
+            .px(Space::S14)
+            .gap(Space::S8)
             .items_center()
             .child(title)
             .child(div().w_px(4.0))
@@ -1683,8 +1690,8 @@ fn log_row(line: &LogLine, query: &str, width: f32) -> Node {
     let body = log_text(line, query, Some(width));
     div()
         .row()
-        .gap(0.0)
-        .pb(LOG_ROW_H - LINE_H)
+        .gap(Space::Px(0.0))
+        .pb(Space::Px(LOG_ROW_H - LINE_H))
         .child(
             div().row().w_px(TIME_W).h_px(LINE_H).items_center().child(
                 label(line.time.clone().unwrap_or_default())

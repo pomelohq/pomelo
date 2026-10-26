@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Space};
 use workspace::text_field::TextField;
 use workspace::{EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
 
@@ -153,8 +153,8 @@ impl SecretsItem {
         let mut row = div()
             .row()
             .h_px(ROW_H - 1.0)
-            .px(14.0)
-            .gap(12.0)
+            .px(Space::S14)
+            .gap(Space::S12)
             .items_center()
             .on_click(base + ROW)
             .child(
@@ -174,7 +174,7 @@ impl SecretsItem {
                 div()
                     .row()
                     .h_px(20.0)
-                    .px(8.0)
+                    .px(Space::S8)
                     .items_center()
                     .rounded(Radius::Small)
                     .bg(colors.background)
@@ -196,7 +196,7 @@ impl SecretsItem {
         row = row.child(
             div()
                 .row()
-                .gap(9.0)
+                .gap(Space::S10)
                 .items_center()
                 .child(action_button(
                     base + REVEAL,
@@ -220,7 +220,7 @@ impl SecretsItem {
                 div()
                     .row()
                     .h_px(20.0)
-                    .px(8.0)
+                    .px(Space::S8)
                     .items_center()
                     .rounded(Radius::Small)
                     .bg(colors.error)
@@ -308,7 +308,7 @@ impl Item for SecretsItem {
             .bg(colors.panel_background);
         if self.names.is_empty() {
             list = list.child(
-                div().row().h_px(ROW_H).px(14.0).items_center().child(
+                div().row().h_px(ROW_H).px(Space::S14).items_center().child(
                     label("No secrets yet.")
                         .size(LabelSize::Small)
                         .color(colors.text_muted),
@@ -324,7 +324,7 @@ impl Item for SecretsItem {
         let typing = |which: Focus| self.focused && self.focus == Some(which);
         let form = div()
             .row()
-            .gap(8.0)
+            .gap(Space::S8)
             .items_center()
             .child(
                 div().col().w_px(NAME_W).child(self.name.render_input(
@@ -358,9 +358,9 @@ impl Item for SecretsItem {
         let doc = div()
             .col()
             .w_px(doc_w)
-            .px(24.0)
-            .py(18.0)
-            .gap(12.0)
+            .px(Space::S24)
+            .py(Space::S20)
+            .gap(Space::S12)
             .child(intro)
             .child(list)
             .child(form)

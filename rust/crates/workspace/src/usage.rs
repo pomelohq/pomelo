@@ -1,7 +1,7 @@
 //! The agents' usage where the window shows it: a chip at the right of the title bar (the signed-in
 //! account and its 5-hour and weekly limits) with a card under it, and today's total in the status bar.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 pub const USAGE_CHIP: u64 = 18;
 pub const APP_MENU: u64 = 19;
@@ -108,7 +108,7 @@ fn card(width: f32) -> ui::Div {
         .raised()
         .render()
         .w_px(width)
-        .gap(2.0)
+        .gap(Space::S2)
 }
 
 fn plan_chip(plan: &str) -> Node {
@@ -139,13 +139,13 @@ fn separator() -> Node {
 /// The card under the chip: the account, each window with its reset, and what to do next.
 pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
     let colors = theme();
-    let mut body = div().col().gap(6.0).p(8.0);
+    let mut body = div().col().gap(Space::S6).p(Space::S8);
     match &info.account {
         Some(account) => {
             let mut head = div()
                 .row()
                 .items_center()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(icon(IconKind::Sparkle).size(13.0).color(colors.icon_muted))
                 .child(
                     label(account.name.clone())
@@ -173,7 +173,7 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                         div()
                             .row()
                             .items_center()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .child(div().w_px(54.0).child(
                                 label(title).size(LabelSize::Small).color(colors.text_muted),
                             ))
@@ -224,7 +224,7 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
         .child(menu_row(USAGE_REFRESH, "Refresh Now", None, hovered))
         .child(separator())
         .child(
-            div().px(8.0).py(4.0).child(
+            div().px(Space::S8).py(Space::S4).child(
                 label(info.note.clone())
                     .size(LabelSize::Mini)
                     .color(colors.text_placeholder)
@@ -250,7 +250,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
     let Some(today) = &info.today else {
         return div().into();
     };
-    let mut body = div().col().gap(8.0).p(8.0).child(
+    let mut body = div().col().gap(Space::S8).p(Space::S8).child(
         div()
             .row()
             .items_center()
@@ -280,7 +280,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
         body = body.child(
             div()
                 .col()
-                .gap(4.0)
+                .gap(Space::S4)
                 .child(
                     div()
                         .row()
@@ -313,7 +313,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 .row()
                 .items_center()
                 .h_px(30.0)
-                .px(10.0)
+                .px(Space::S10)
                 .child(
                     label(workspace.clone())
                         .size(LabelSize::Medium)

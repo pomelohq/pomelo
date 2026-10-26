@@ -1,4 +1,4 @@
-use ui::{div, theme, Node, Rgba};
+use ui::{div, theme, Node, Rgba, Space};
 
 /// A determinate bar: an 8px track with a 2px inset, filled in the info color (never below 2%).
 pub struct ProgressBar {
@@ -57,7 +57,7 @@ impl From<ProgressBar> for Node {
         let mut node = div()
             .row()
             .h_px(track)
-            .p(inset)
+            .p(Space::Px(inset))
             .rounded_px(track / 2.0)
             .bg(if bar.thin {
                 colors.element_active

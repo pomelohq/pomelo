@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Space};
 
 /// What a pane or list says when it has nothing to show: why, and what fills it. Built with
 /// [`empty_state`].
@@ -45,14 +45,14 @@ impl EmptyState {
     pub fn render(self) -> Div {
         let colors = theme();
         if self.compact {
-            return div().row().h_px(28.0).px(10.0).items_center().child(
+            return div().row().h_px(28.0).px(Space::S10).items_center().child(
                 label(self.title)
                     .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .truncate(),
             );
         }
-        let mut column = div().col().items_center().gap(8.0);
+        let mut column = div().col().items_center().gap(Space::S8);
         if let Some(kind) = self.icon {
             column = column.child(icon(kind).size(20.0).color(colors.text_placeholder));
         }
@@ -66,14 +66,14 @@ impl EmptyState {
             column = column.child(crate::paragraph(body, width).centered());
         }
         if let Some(action) = self.action {
-            column = column.child(div().pt(4.0).child(action));
+            column = column.child(div().pt(Space::S4).child(action));
         }
         div()
             .col()
             .flex(1.0)
             .items_center()
             .justify_center()
-            .py(40.0)
+            .py(Space::Px(40.0))
             .child(column)
     }
 }

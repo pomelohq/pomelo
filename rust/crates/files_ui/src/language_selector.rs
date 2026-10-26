@@ -3,7 +3,7 @@
 //! file to the chosen language.
 
 use editor::highlight::Lang;
-use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node};
+use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node, Space};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
 use crate::command_palette::scroll_rows;
@@ -223,7 +223,7 @@ impl LanguageSelector {
             .row()
             .items_center()
             .h_px(HEAD_HEIGHT)
-            .px(10.0)
+            .px(Space::S10)
             .child(self.field.render(
                 PLACEHOLDER,
                 true,
@@ -233,7 +233,7 @@ impl LanguageSelector {
             ));
         let visible = Self::visible_rows();
         let end = (self.scroll_top + visible).min(self.matches.len());
-        let mut results = div().col().py(4.0);
+        let mut results = div().col().py(Space::S4);
         if self.matches.is_empty() {
             results = results.child(components::empty_state("No matches").compact());
         } else {

@@ -1,8 +1,56 @@
-//! Corner radius, elevation and motion steps every surface picks from.
+//! Spacing, corner radius, elevation and motion steps every surface picks from.
 
 use std::time::Duration;
 
 use crate::{theme, Appearance, Rect, Rgba};
+
+/// Spacing steps for gaps and padding (absolute px); `Px` is for space that follows something else, such as a
+/// hairline or a box's own size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Space {
+    S2,
+    S4,
+    S6,
+    S8,
+    S10,
+    S12,
+    S14,
+    S16,
+    S20,
+    S24,
+    Px(f32),
+}
+
+impl Space {
+    pub const STEPS: [Space; 10] = [
+        Space::S2,
+        Space::S4,
+        Space::S6,
+        Space::S8,
+        Space::S10,
+        Space::S12,
+        Space::S14,
+        Space::S16,
+        Space::S20,
+        Space::S24,
+    ];
+
+    pub const fn px(self) -> f32 {
+        match self {
+            Space::S2 => 2.0,
+            Space::S4 => 4.0,
+            Space::S6 => 6.0,
+            Space::S8 => 8.0,
+            Space::S10 => 10.0,
+            Space::S12 => 12.0,
+            Space::S14 => 14.0,
+            Space::S16 => 16.0,
+            Space::S20 => 20.0,
+            Space::S24 => 24.0,
+            Space::Px(px) => px,
+        }
+    }
+}
 
 /// Corner radius steps (absolute px).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

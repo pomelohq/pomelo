@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use pom_services::{ServiceExplain, ServiceTarget};
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::{Item, ItemTick};
 
 use crate::{action_button, hit_at, EnvironmentContext};
@@ -204,7 +204,7 @@ impl EnvItem {
     fn picker(&self, id: u64, title: &str, value: &str) -> Node {
         div()
             .col()
-            .gap(6.0)
+            .gap(Space::S6)
             .child(section_header(title))
             .child(
                 components::select(id, value)
@@ -248,7 +248,7 @@ impl EnvItem {
         let mut tools = div()
             .row()
             .w_px(ACTIONS_W)
-            .gap(7.0)
+            .gap(Space::S8)
             .items_center()
             .justify_end();
         for action in actions {
@@ -257,8 +257,8 @@ impl EnvItem {
         let row = div()
             .row()
             .h_px(ROW_H)
-            .px(8.0)
-            .gap(12.0)
+            .px(Space::S8)
+            .gap(Space::S12)
             .items_center()
             .rounded(Radius::Small)
             .child(
@@ -295,9 +295,9 @@ impl EnvItem {
     fn section(title: String) -> Node {
         div()
             .row()
-            .px(8.0)
-            .pt(14.0)
-            .pb(6.0)
+            .px(Space::S8)
+            .pt(Space::S14)
+            .pb(Space::S6)
             .child(section_header(&title))
             .into()
     }
@@ -307,13 +307,13 @@ impl EnvItem {
         let entry = |text: &str, color: Rgba, meaning: &str| {
             div()
                 .row()
-                .gap(6.0)
+                .gap(Space::S6)
                 .items_center()
                 .child(
                     div()
                         .row()
                         .h_px(18.0)
-                        .px(7.0)
+                        .px(Space::S8)
                         .items_center()
                         .rounded(Radius::Small)
                         .bg(color.alpha(0.14))
@@ -332,9 +332,9 @@ impl EnvItem {
         };
         div()
             .row()
-            .px(8.0)
-            .pt(16.0)
-            .gap(20.0)
+            .px(Space::S8)
+            .pt(Space::S16)
+            .gap(Space::S20)
             .items_center()
             .child(entry("own", colors.text_accent, "set in this repo's env"))
             .child(entry(preset, colors.success, "from a preset"))
@@ -385,10 +385,10 @@ impl Item for EnvItem {
         let (width, height) = (body.w / scale, body.h / scale);
         let pickers = div()
             .row()
-            .gap(14.0)
-            .px(20.0)
-            .pt(14.0)
-            .pb(10.0)
+            .gap(Space::S14)
+            .px(Space::S20)
+            .pt(Space::S14)
+            .pb(Space::S10)
             .child(self.picker(REPO, "Repo", &self.repo))
             .child(self.picker(SERVICE, "Service", &self.service))
             .child(self.picker(BRANCH, "Branch", &self.branch))
@@ -401,7 +401,7 @@ impl Item for EnvItem {
                     &self.profile
                 },
             ));
-        let mut table = div().col().px(12.0).pb(12.0);
+        let mut table = div().col().px(Space::S12).pb(Space::S12);
         match (&self.explain, &self.error) {
             (Some(explain), _) => {
                 if !explain.databases.is_empty() {
@@ -423,7 +423,7 @@ impl Item for EnvItem {
                 }));
                 if explain.env.is_empty() {
                     table = table.child(
-                        div().row().px(8.0).py(8.0).child(
+                        div().row().px(Space::S8).py(Space::S8).child(
                             label("no env for this service")
                                 .size(LabelSize::Small)
                                 .color(colors.text_muted),
@@ -482,7 +482,7 @@ impl Item for EnvItem {
             }
             (None, Some(error)) => {
                 table = table.child(
-                    div().row().p(8.0).child(
+                    div().row().p(Space::S8).child(
                         label(error.clone())
                             .size(LabelSize::Small)
                             .mono()
@@ -492,7 +492,7 @@ impl Item for EnvItem {
             }
             (None, None) => {
                 table = table.child(
-                    div().row().justify_center().pt(40.0).child(
+                    div().row().justify_center().pt(Space::Px(40.0)).child(
                         label("Pick a repo + service to inspect its resolved env")
                             .size(LabelSize::Small)
                             .color(colors.text_muted),

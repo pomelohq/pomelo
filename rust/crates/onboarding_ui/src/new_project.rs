@@ -2,7 +2,7 @@
 
 use components::{field, ButtonKind};
 use pom_agent::AgentCli;
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Space};
 use workspace::text_field::FieldFont;
 
 use crate::ids::*;
@@ -24,7 +24,7 @@ pub(crate) fn render(state: &Onboarding, width: f32, hovered: Option<u64>) -> No
     div()
         .col()
         .w_px(width)
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::steps(&titles, current, false))
         .child(body)
         .into()
@@ -115,7 +115,7 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
     let half = (width - view::PAGE_GAP) / 2.0;
     let names = div()
         .row()
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(
             div().col().w_px(half).child(field(
                 "Session name",
@@ -156,7 +156,7 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
         usize::from(form.add_mode == AddMode::Urls),
     )
     .size(components::ButtonSize::Medium);
-    let mut adder = div().row().items_center().gap(8.0).child(mode);
+    let mut adder = div().row().items_center().gap(Space::S8).child(mode);
     let adder_hint = match form.add_mode {
         AddMode::Folders => {
             adder = adder.child(
@@ -192,7 +192,7 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
             vec![div()
                 .row()
                 .h_px(36.0)
-                .px(10.0)
+                .px(Space::S10)
                 .items_center()
                 .child(view::muted(
                     "No repositories yet. Add the folders you already work in, or git URLs to clone.",
@@ -210,7 +210,7 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
     };
     let mut column = div()
         .col()
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::head(
             "New project",
             Some("Repos in, a runnable environment for every branch out"),
@@ -220,7 +220,7 @@ fn repositories(state: &Onboarding, width: f32, hovered: Option<u64>) -> Node {
         .child(list);
     let infra = form.infra();
     if !infra.is_empty() {
-        let mut chips = div().row().gap(6.0).items_center();
+        let mut chips = div().row().gap(Space::S6).items_center();
         for name in &infra {
             chips = chips.child(view::chip(name, true));
         }
@@ -294,7 +294,7 @@ fn repo_row(form: &Form, index: usize, remove_hot: bool) -> Node {
             }))
             .into()
     };
-    let mut chip_row = div().row().gap(6.0).items_center();
+    let mut chip_row = div().row().gap(Space::S6).items_center();
     for chip in chips {
         chip_row = chip_row.child(chip);
     }
@@ -319,7 +319,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         let mut body = div()
             .col()
             .flex(1.0)
-            .gap(8.0)
+            .gap(Space::S8)
             .child(title)
             .child(view::note_paragraph(text, text_w));
         if let Some(extra) = extra {
@@ -327,10 +327,10 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         }
         view::card_frame(on)
             .row()
-            .gap(12.0)
-            .p(14.0)
+            .gap(Space::S12)
+            .p(Space::S14)
             .on_click(id)
-            .child(div().col().pt(3.0).child(components::radio(on)))
+            .child(div().col().pt(Space::S4).child(components::radio(on)))
             .child(body)
             .into()
     };
@@ -338,7 +338,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         .row()
         .h_px(20.0)
         .items_center()
-        .gap(8.0)
+        .gap(Space::S8)
         .child(
             label("Set up with an agent CLI")
                 .size(LabelSize::Medium)
@@ -387,13 +387,13 @@ fn setup(state: &Onboarding, width: f32) -> Node {
     let option = |id: u64, on: bool, text: &str, detail: Node| -> Node {
         div()
             .col()
-            .gap(4.0)
+            .gap(Space::S4)
             .child(components::checkbox(id, on, text))
-            .child(div().col().pl(22.0).child(detail))
+            .child(div().col().pl(Space::S24).child(detail))
             .into()
     };
     let branch_error = state.workspace_branch_error();
-    let mut branch_row = div().row().items_center().gap(8.0).child(
+    let mut branch_row = div().row().items_center().gap(Space::S8).child(
         text_input(
             form,
             WORKSPACE_BRANCH,
@@ -409,7 +409,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
     }
     let options = div()
         .col()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(option(
             OPT_SECRETS,
             form.import_secrets,
@@ -434,7 +434,7 @@ fn setup(state: &Onboarding, width: f32) -> Node {
         ));
     div()
         .col()
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::head("Who writes pom.yml", None))
         .child(choice(
             SETUP_AGENT,
@@ -519,9 +519,9 @@ fn review(state: &Onboarding, width: f32) -> Node {
         .map(|(key, value)| {
             div()
                 .row()
-                .gap(12.0)
-                .px(10.0)
-                .py(8.0)
+                .gap(Space::S12)
+                .px(Space::S10)
+                .py(Space::S8)
                 .child(
                     div().w_px(120.0).child(components::text_line(
                         20.0,
@@ -540,7 +540,7 @@ fn review(state: &Onboarding, width: f32) -> Node {
         .collect();
     div()
         .col()
-        .gap(view::PAGE_GAP)
+        .gap(Space::Px(view::PAGE_GAP))
         .child(view::head(
             &format!("Create {}", form.name()),
             Some("Nothing in your repos changes: Pomelo works in its own worktrees under the session folder"),

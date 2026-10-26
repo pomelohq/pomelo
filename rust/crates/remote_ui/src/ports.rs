@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use pom_remote::{ForwardKind, ForwardState, PortForward, RemotePorts};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -116,7 +116,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
     let mut what = div()
         .row()
         .items_center()
-        .gap(6.0)
+        .gap(Space::S6)
         .flex(1.0)
         .child(small(forward.label.clone(), colors.text).truncate());
     if forward.kind == ForwardKind::Shared {
@@ -124,7 +124,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
             div()
                 .row()
                 .h_px(16.0)
-                .px(4.0)
+                .px(Space::S4)
                 .items_center()
                 .rounded(Radius::Small)
                 .border(1.0, colors.border_variant)
@@ -136,7 +136,12 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
                 ),
         );
     }
-    let mut actions = div().row().items_center().justify_end().gap(4.0).w_px(84.0);
+    let mut actions = div()
+        .row()
+        .items_center()
+        .justify_end()
+        .gap(Space::S4)
+        .w_px(84.0);
     if !failed {
         actions = actions
             .child(icon_button(base + OPEN, IconKind::ArrowUpRight, hovered))
@@ -154,10 +159,10 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
     let line = div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .h_px(ROW_H)
-        .pl(12.0)
-        .pr(6.0)
+        .pl(Space::S12)
+        .pr(Space::S6)
         .child(components::dot(dot, 8.0))
         .child(fixed(
             64.0,
@@ -175,13 +180,18 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
             colors.text_placeholder
         };
         column = column.child(
-            div().col().pl(30.0).pr(12.0).pb(8.0).child(
-                div()
-                    .row()
-                    .h_px(16.0)
-                    .items_center()
-                    .child(small(forward.message.clone(), note).truncate()),
-            ),
+            div()
+                .col()
+                .pl(Space::Px(30.0))
+                .pr(Space::S12)
+                .pb(Space::S8)
+                .child(
+                    div()
+                        .row()
+                        .h_px(16.0)
+                        .items_center()
+                        .child(small(forward.message.clone(), note).truncate()),
+                ),
         );
     }
     column.into()
@@ -191,10 +201,10 @@ fn head() -> Node {
     div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .h_px(HEAD_H)
-        .pl(12.0)
-        .pr(6.0)
+        .pl(Space::S12)
+        .pr(Space::S6)
         .child(div().w_px(8.0))
         .child(fixed(64.0, head_cell("On host")))
         .child(fixed(140.0, head_cell("Here")))
@@ -314,7 +324,7 @@ impl PortsPage {
                 div()
                     .row()
                     .items_center()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .child(components::dot(dot, 7.0))
                     .child(small(text, colors.text_muted)),
             )
@@ -490,7 +500,7 @@ impl Item for PortsPage {
             .row()
             .items_center()
             .h_px(FOOT_H)
-            .px(14.0)
+            .px(Space::S14)
             .child(small(
                 "Forwards run while this window is open and stop when the app closes.",
                 theme().text_placeholder,

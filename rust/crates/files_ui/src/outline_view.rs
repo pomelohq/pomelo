@@ -4,7 +4,7 @@
 
 use std::ops::Range;
 
-use ui::{div, label, theme, IconKind, Node, Radius, Rgba};
+use ui::{div, label, theme, IconKind, Node, Radius, Rgba, Space};
 
 use crate::fuzzy::fuzzy_match;
 use crate::text_field::{FieldFont, TextField, INPUT_FONT};
@@ -438,7 +438,7 @@ impl OutlineView {
             .row()
             .items_center()
             .h_px(HEAD_HEIGHT)
-            .px(10.0)
+            .px(Space::S10)
             .child(self.field.render(
                 PLACEHOLDER,
                 true,
@@ -449,7 +449,7 @@ impl OutlineView {
         let mut list = if self.entries.is_empty() {
             div()
                 .col()
-                .py(4.0)
+                .py(Space::S4)
                 .child(components::empty_state("No matches").compact())
         } else {
             let visible = self.visible_rows();
@@ -469,7 +469,7 @@ impl OutlineView {
             );
             div()
                 .col()
-                .py(4.0)
+                .py(Space::S4)
                 .children(scrollbar)
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)))
         };
@@ -496,7 +496,7 @@ impl OutlineView {
     fn render_footer(&self, id_base: u64) -> Node {
         let visible = self.preview != PreviewLayout::Hidden;
         let toggle = id_base + OutlineClick::TogglePreview.offset();
-        let mut controls = div().row().items_center().gap(4.0).child(
+        let mut controls = div().row().items_center().gap(Space::S4).child(
             components::button(toggle, "Preview")
                 .kind(if visible {
                     components::ButtonKind::Secondary
@@ -530,7 +530,7 @@ impl OutlineView {
             .row()
             .justify_between()
             .items_center()
-            .p(6.0)
+            .p(Space::S6)
             .child(controls)
             .into()
     }
@@ -546,7 +546,7 @@ impl OutlineView {
         let text = div()
             .row()
             .items_center()
-            .pl(symbol.depth as f32 * DEPTH_INDENT)
+            .pl(Space::Px(symbol.depth as f32 * DEPTH_INDENT))
             .children(label_segments(symbol, &entry.positions));
         components::list_row(id_base + OutlineClick::Row(row).offset())
             .selected(row == self.selected)
@@ -585,7 +585,7 @@ fn render_preview(content: Option<PreviewContent>) -> Node {
                     .items_center()
                     .justify_end()
                     .w_px(content.gutter_width)
-                    .pr(8.0)
+                    .pr(Space::S8)
                     .child(
                         label(row.number.to_string())
                             .size_px(crate::edit_font())

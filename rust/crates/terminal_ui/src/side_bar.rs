@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
@@ -54,7 +54,7 @@ impl ConsoleToolbar for SideAgentBar {
             div()
                 .row()
                 .h_px(20.0)
-                .px(6.0)
+                .px(Space::S6)
                 .items_center()
                 .rounded(Radius::Small)
                 .border(1.0, colors.border_variant)
@@ -67,7 +67,7 @@ impl ConsoleToolbar for SideAgentBar {
             div()
                 .row()
                 .h_px(20.0)
-                .px(6.0)
+                .px(Space::S6)
                 .items_center()
                 .rounded(Radius::Small)
                 .border(1.0, colors.warning.alpha(0.5))
@@ -80,8 +80,8 @@ impl ConsoleToolbar for SideAgentBar {
         let context = div()
             .row()
             .h_px(24.0)
-            .px(9.0)
-            .gap(5.0)
+            .px(Space::S10)
+            .gap(Space::S6)
             .items_center()
             .rounded_px(12.0)
             .border(1.0, colors.border_variant)
@@ -95,8 +95,8 @@ impl ConsoleToolbar for SideAgentBar {
             let mut send = div()
                 .row()
                 .h_px(26.0)
-                .px(if label_too { 10.0 } else { 7.0 })
-                .gap(6.0)
+                .px(if label_too { Space::S10 } else { Space::S8 })
+                .gap(Space::S6)
                 .items_center()
                 .rounded(Radius::Medium)
                 .border(1.0, colors.border_variant)
@@ -126,8 +126,8 @@ impl ConsoleToolbar for SideAgentBar {
             let mut row = div()
                 .row()
                 .h_px(38.0)
-                .px(10.0)
-                .gap(8.0)
+                .px(Space::S10)
+                .gap(Space::S8)
                 .items_center()
                 .bg(colors.toolbar_background)
                 .child(icon(self.role_icon).size(13.0).color(colors.icon_muted))

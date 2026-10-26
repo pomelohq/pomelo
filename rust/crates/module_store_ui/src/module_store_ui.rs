@@ -12,7 +12,7 @@ use module_store::{format_size, Holding, Overview, RepoState, User, Version};
 pub use module_store::{plan, Request, StoreUpdate};
 pub use remote::{refusal, RemoteStore};
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::{Item, ItemTick};
 
 pub const TAB_ID: &str = "module-store";
@@ -29,11 +29,11 @@ const LINE_BASE: u64 = 50_000;
 const MORE_BASE: u64 = 100_000;
 const CONTENT_MAX_W: f32 = 1004.0;
 const PAD_X: f32 = 28.0;
-const ROW_PAD_X: f32 = 14.0;
+const ROW_PAD_X: Space = Space::S14;
 const LABEL_W: f32 = 280.0;
 const SIZE_W: f32 = 76.0;
 const ACTION_W: f32 = 140.0;
-const CHIP_GAP: f32 = 4.0;
+const CHIP_GAP: Space = Space::S4;
 const TOP_BAR_H: f32 = 2.0;
 /// Seconds a finished action's note and highlight stay.
 const NOTE_FOR: f32 = 3.0;
@@ -286,14 +286,14 @@ fn popover_frame(width: f32) -> ui::Div {
         .raised()
         .render()
         .w_px(width)
-        .gap(8.0)
+        .gap(Space::S8)
 }
 
 fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>) -> Node {
     div()
         .row()
-        .gap(6.0)
-        .pt(4.0)
+        .gap(Space::S6)
+        .pt(Space::S4)
         .child(div().flex(1.0))
         .child(
             components::button(cancel, "Cancel")
@@ -501,8 +501,8 @@ fn chips(
     let toggle = |text: String| {
         let mut part = div()
             .row()
-            .px(7.0)
-            .py(1.0)
+            .px(Space::S8)
+            .py(Space::Px(1.0))
             .rounded(Radius::Medium)
             .on_click(more_id)
             .child(label(text).size(LabelSize::Small).color(colors.text_accent));
@@ -524,18 +524,18 @@ fn chips(
                 line = div().row().gap(CHIP_GAP);
                 used = 0.0;
             }
-            used += w + CHIP_GAP;
+            used += w + CHIP_GAP.px();
             line = line.child(part);
         }
         return wrap.child(line.child(toggle("Show less".into()))).into();
     }
     let more_text = format!("+{} more", names.len());
-    let reserve = width_of(&more_text, || toggle(more_text.clone()).into()) + CHIP_GAP;
+    let reserve = width_of(&more_text, || toggle(more_text.clone()).into()) + CHIP_GAP.px();
     let mut row = div().row().items_center().gap(CHIP_GAP);
     let mut used = 0.0;
     let mut shown = 0;
     for (index, name) in names.iter().enumerate() {
-        let w = width_of(name, || chip(name, false)) + CHIP_GAP;
+        let w = width_of(name, || chip(name, false)) + CHIP_GAP.px();
         let room = if index + 1 == names.len() {
             width
         } else {
@@ -576,8 +576,8 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
         return div()
             .row()
             .items_center()
-            .gap(6.0)
-            .px(10.0)
+            .gap(Space::S6)
+            .px(Space::S10)
             .h_px(24.0)
             .child(pulse(state.clock))
             .child(small(spec.working, colors.text_muted))
@@ -620,16 +620,16 @@ fn line(line: Line, state: &StoreState, hovered: Option<u64>) -> Node {
     let mut row = div()
         .row()
         .items_center()
-        .gap(10.0)
+        .gap(Space::S10)
         .px(ROW_PAD_X)
-        .pt(10.0)
-        .pb(9.0)
+        .pt(Space::S10)
+        .pb(Space::S10)
         .on_click(line.id)
         .child(
             div()
                 .col()
                 .w_px(LABEL_W)
-                .gap(2.0)
+                .gap(Space::S2)
                 .child(text_line(
                     20.0,
                     label(line.title)
@@ -896,7 +896,7 @@ fn group(head: Node, rows: Vec<Node>) -> Node {
         div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .px(ROW_PAD_X)
             .h_px(36.0)
             .child(head),
@@ -909,7 +909,7 @@ fn group(head: Node, rows: Vec<Node>) -> Node {
 
 fn group_head(name: &str, manager: &str, total: Option<u64>) -> Node {
     let colors = theme();
-    let mut head = div().row().items_center().gap(8.0).child(
+    let mut head = div().row().items_center().gap(Space::S8).child(
         label(name.to_string())
             .size(LabelSize::Medium)
             .weight(600)
@@ -931,8 +931,8 @@ fn note_row(text: String) -> Node {
     div()
         .row()
         .px(ROW_PAD_X)
-        .pt(9.0)
-        .pb(10.0)
+        .pt(Space::S10)
+        .pb(Space::S10)
         .items_center()
         .child(text_line(16.0, small(text, theme().text_muted)))
         .into()
@@ -1017,7 +1017,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
             div()
                 .row()
                 .items_center()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(pulse(state.clock))
                 .child(small(
                     match state.progress {
@@ -1080,11 +1080,11 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
     let colors = theme();
     let content_w = (width - PAD_X * 2.0).clamp(0.0, CONTENT_MAX_W);
     let users_w =
-        (content_w - LABEL_W - SIZE_W - ACTION_W - 3.0 * 10.0 - 2.0 * ROW_PAD_X).max(80.0);
+        (content_w - LABEL_W - SIZE_W - ACTION_W - 3.0 * 10.0 - 2.0 * ROW_PAD_X.px()).max(80.0);
     let mut column = div()
         .col()
         .w_px(content_w)
-        .gap(12.0)
+        .gap(Space::S12)
         .child(header(state, hovered));
     let Some(overview) = &state.overview else {
         return frame(column);
@@ -1092,7 +1092,7 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
     column = column.child(
         div()
             .row()
-            .gap(10.0)
+            .gap(Space::S10)
             .px(ROW_PAD_X)
             .child(
                 div()
@@ -1178,7 +1178,7 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
             vec![row],
         ));
     }
-    let mut notes = div().col().gap(4.0).pt(4.0);
+    let mut notes = div().col().gap(Space::S4).pt(Space::S4);
     for note in [
         "One copy per lockfile, patches/ folder, Node major version and platform.".to_string(),
         "A new workspace with a matching one gets it in seconds; otherwise it installs once and that install is kept.".to_string(),
@@ -1194,7 +1194,12 @@ pub fn render(state: &StoreState, root: &str, width: f32, hovered: Option<u64>) 
 }
 
 fn frame(column: ui::Div) -> Node {
-    div().col().items_center().py(18.0).child(column).into()
+    div()
+        .col()
+        .items_center()
+        .py(Space::S20)
+        .child(column)
+        .into()
 }
 
 fn click(state: &mut StoreState, id: u64) {

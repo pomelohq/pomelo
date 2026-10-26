@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use editor::snippet::{boundary_suffixes, SnippetDefinition};
-use ui::{div, label, theme, LabelSize, Node, Radius, Rgba};
+use ui::{div, label, theme, LabelSize, Node, Radius, Rgba, Space};
 
 use crate::fuzzy::fuzzy_match;
 use crate::list_scrollbar::{self, ScrollbarReveal};
@@ -380,7 +380,7 @@ impl CompletionsMenu {
     pub fn render_aside(&self, max_width: f32, max_height: f32) -> Option<(Node, f32, f32)> {
         let candidate = self.selected_candidate()?;
         let markdown = self.aside_markdown()?;
-        let text_width = (max_width - ASIDE_PADDING_X * 2.0 - 2.0).max(1.0);
+        let text_width = (max_width - ASIDE_PADDING_X.px() * 2.0 - 2.0).max(1.0);
         let key = text_width.round() as u32;
         let mut cache = self.aside_layout.try_borrow_mut().ok()?;
         let fresh = !matches!(cache.as_ref(), Some((c, k, _)) if *c == candidate && *k == key);
@@ -394,14 +394,14 @@ impl CompletionsMenu {
         let first = self.aside_scroll.min(layout.line_count().saturating_sub(1));
         let count = layout.lines_fitting(first, body_max);
         let body = layout.height_of(first, count);
-        let width = layout.width + ASIDE_PADDING_X * 2.0 + 2.0;
+        let width = layout.width + ASIDE_PADDING_X.px() * 2.0 + 2.0;
         let height = body + PADDING_Y + 2.0;
         let node = components::card()
             .padding(0.0)
             .raised()
             .render()
             .w_px(width)
-            .py(PADDING_Y / 2.0)
+            .py(Space::Px(PADDING_Y / 2.0))
             .px(ASIDE_PADDING_X)
             .child(layout.render(first, count, layout.width))
             .into();
@@ -479,7 +479,7 @@ impl CompletionsMenu {
                 .flex(1.0)
                 .items_center()
                 .h_px(crate::edit_line_h())
-                .px(6.0)
+                .px(Space::S6)
                 .rounded(Radius::Small)
                 .on_click(id_base + row as u64);
             if self.hovered == Some(id_base + row as u64) {
@@ -518,7 +518,7 @@ impl CompletionsMenu {
                 let doc_width = doc.as_ref().map_or(0.0, |text| {
                     ui::measure_text_width(text, LabelSize::Small.px(), false, 400)
                         / ui::ui_text_scale()
-                        + DOC_MARGIN
+                        + DOC_MARGIN.px()
                 });
                 for (text, color, bold) in
                     lsp_row_runs(lsp_item, &entry.positions, ROW_TEXT_WIDTH - doc_width)
@@ -533,7 +533,7 @@ impl CompletionsMenu {
                             .child(label(doc).size(LabelSize::Small).color(colors.text_muted)),
                     );
                 }
-                return Node::from(div().row().px(4.0).child(item));
+                return Node::from(div().row().px(Space::S4).child(item));
             }
             let (word, positions, detail) = (
                 completion.label.as_str(),
@@ -555,14 +555,14 @@ impl CompletionsMenu {
             }
             if let Some(detail) = detail.map(str::trim).filter(|d| !d.is_empty()) {
                 item = item.child(div().flex(1.0)).child(
-                    div().row().pl(16.0).child(
+                    div().row().pl(Space::S16).child(
                         label(detail.to_string())
                             .size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
                 );
             }
-            Node::from(div().row().px(4.0).child(item))
+            Node::from(div().row().px(Space::S4).child(item))
         });
         let scrollbar = list_scrollbar::render(
             WIDTH - 1.0,
@@ -577,7 +577,7 @@ impl CompletionsMenu {
             .raised()
             .render()
             .w_px(WIDTH)
-            .py(PADDING_Y / 2.0)
+            .py(Space::Px(PADDING_Y / 2.0))
             .children(scrollbar)
             .children(rows)
             .into()
@@ -640,9 +640,9 @@ const ROW_TEXT_WIDTH: f32 = WIDTH - 8.0 - 12.0;
 /// How much of its color a label keeps past the matched part: the reference's `fade_out`.
 const LABEL_TAIL_FADE: f32 = 0.35;
 /// Space before an item's one-line documentation.
-const DOC_MARGIN: f32 = 16.0;
+const DOC_MARGIN: Space = Space::S16;
 /// Horizontal padding of the documentation panel.
-const ASIDE_PADDING_X: f32 = 8.0;
+const ASIDE_PADDING_X: Space = Space::S8;
 pub const ASIDE_MIN_WIDTH: f32 = 260.0;
 pub const ASIDE_MAX_WIDTH: f32 = 500.0;
 /// Space between the menu and its documentation panel.

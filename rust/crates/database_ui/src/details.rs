@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use pom_db::TableStructure;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 use crate::json::{self, Json};
 
@@ -98,7 +98,7 @@ pub(crate) fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
     let colors = theme();
     let mut part = div()
         .row()
-        .px(4.0)
+        .px(Space::S4)
         .h_px(18.0)
         .items_center()
         .rounded(Radius::Small)
@@ -113,8 +113,8 @@ pub(crate) fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
 pub(crate) fn section(title: &str) -> Node {
     div()
         .row()
-        .pt(12.0)
-        .pb(4.0)
+        .pt(Space::S12)
+        .pb(Space::S4)
         .child(components::section_header(title).render().flex(1.0))
         .into()
 }
@@ -326,14 +326,14 @@ pub(crate) fn json_tree(
     };
     let mut tree = div()
         .col()
-        .py(6.0)
+        .py(Space::S6)
         .child(div().h_px(first as f32 * JSON_LINE_H));
     for line in &lines[first..last] {
         let mut row = div()
             .row()
             .h_px(JSON_LINE_H)
             .items_center()
-            .pl(line.depth as f32 * 14.0);
+            .pl(Space::Px(line.depth as f32 * 14.0));
         match (&line.toggle, line.depth) {
             (Some((path, open)), 0) => row = row.child(arrow(path, *open, targets)),
             _ => row = row.child(div().w_px(12.0)),
@@ -381,8 +381,8 @@ pub(crate) fn json_box(
     let mut bar = div()
         .row()
         .h_px(26.0)
-        .px(8.0)
-        .gap(4.0)
+        .px(Space::S8)
+        .gap(Space::S4)
         .items_center()
         .child(small(head, colors.text_placeholder))
         .child(div().row().flex(1.0));
@@ -396,7 +396,7 @@ pub(crate) fn json_box(
         .bg(colors.editor_background)
         .child(bar)
         .child(components::divider())
-        .child(div().col().pl(8.0).pr(6.0).child(tree))
+        .child(div().col().pl(Space::S8).pr(Space::S6).child(tree))
         .into()
 }
 
@@ -429,7 +429,7 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
     let colors = theme();
     let mut head = div()
         .row()
-        .gap(6.0)
+        .gap(Space::S6)
         .items_center()
         .child(
             label(cell.column.to_string())
@@ -460,7 +460,7 @@ pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -
     if let Some(editor) = editor {
         return div()
             .col()
-            .p(10.0)
+            .p(Space::S10)
             .rounded(Radius::Medium)
             .border(1.0, colors.border_focused)
             .bg(colors.editor_background)
@@ -487,7 +487,7 @@ pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -
     };
     div()
         .col()
-        .p(10.0)
+        .p(Space::S10)
         .rounded(Radius::Medium)
         .border(1.0, colors.border_variant)
         .bg(colors.editor_background)
@@ -511,7 +511,7 @@ pub(crate) fn value_actions(
     };
     let mut actions = div()
         .row()
-        .gap(2.0)
+        .gap(Space::S2)
         .items_center()
         .child(small(size, colors.text_placeholder));
     if cell.edited {
@@ -577,7 +577,7 @@ pub(crate) fn value_target(cell: &CellView<'_>, hovered: Option<u64>) -> Option<
             let mut open = div()
                 .row()
                 .h_px(26.0)
-                .px(4.0)
+                .px(Space::S4)
                 .items_center()
                 .rounded(Radius::Small)
                 .on_click(OPEN_TARGET)
@@ -626,7 +626,7 @@ fn field_line(
             } else {
                 colors.text
             };
-            let mut line = div().row().flex(1.0).gap(4.0).items_center().child(
+            let mut line = div().row().flex(1.0).gap(Space::S4).items_center().child(
                 label(text.lines().next().unwrap_or_default().to_string())
                     .size(TEXT)
                     .mono()
@@ -644,8 +644,8 @@ fn field_line(
     let mut row = div()
         .row()
         .h_px(26.0)
-        .pr(4.0)
-        .gap(8.0)
+        .pr(Space::S4)
+        .gap(Space::S8)
         .items_center()
         .rounded(Radius::Small)
         .child(div().w_px(2.0).h_px(26.0).bg(if focused {
@@ -695,7 +695,7 @@ pub(crate) fn row_view(
     hovered: Option<u64>,
 ) -> Node {
     let colors = theme();
-    let mut column = div().col().gap(2.0);
+    let mut column = div().col().gap(Space::S2);
     for (index, field) in fields.into_iter().enumerate() {
         let id = FIELD_BASE + index as u64;
         if let Some(tree) = field.json {
@@ -711,7 +711,7 @@ pub(crate) fn row_view(
                     Rgba::TRANSPARENT
                 }))
                 .child(
-                    div().row().pl(8.0).items_center().child(
+                    div().row().pl(Space::S8).items_center().child(
                         label(field.name.clone())
                             .size(TEXT)
                             .mono()
@@ -723,7 +723,7 @@ pub(crate) fn row_view(
             }
             column = column
                 .child(name)
-                .child(div().col().pl(10.0).pb(4.0).child(tree));
+                .child(div().col().pl(Space::S10).pb(Space::S4).child(tree));
             continue;
         }
         let linked = field.link.is_some();
@@ -749,8 +749,8 @@ pub(crate) fn row_view(
             let mut line = div()
                 .row()
                 .h_px(28.0)
-                .px(6.0)
-                .gap(8.0)
+                .px(Space::S6)
+                .gap(Space::S8)
                 .items_center()
                 .rounded(Radius::Small)
                 .on_click(id)
@@ -776,7 +776,7 @@ pub(crate) fn row_view(
         }
     }
     column
-        .child(div().row().pt(10.0).child(small(
+        .child(div().row().pt(Space::S10).child(small(
             "Double-click a value to edit it.",
             colors.text_placeholder,
         )))
@@ -785,7 +785,12 @@ pub(crate) fn row_view(
 
 fn table_head(columns: &[(&str, f32)]) -> Node {
     let colors = theme();
-    let mut row = div().row().h_px(26.0).items_center().px(8.0).gap(8.0);
+    let mut row = div()
+        .row()
+        .h_px(26.0)
+        .items_center()
+        .px(Space::S8)
+        .gap(Space::S8);
     for (name, width) in columns {
         let cell = div().row().items_center().child(
             label(name.to_uppercase())
@@ -804,7 +809,12 @@ fn table_head(columns: &[(&str, f32)]) -> Node {
 
 fn table_line(cells: Vec<(Node, f32)>, id: Option<u64>, hovered: Option<u64>) -> Node {
     let colors = theme();
-    let mut row = div().row().h_px(26.0).items_center().px(8.0).gap(8.0);
+    let mut row = div()
+        .row()
+        .h_px(26.0)
+        .items_center()
+        .px(Space::S8)
+        .gap(Space::S8);
     for (cell, width) in cells {
         let slot = div().row().items_center().child(cell);
         row = row.child(if width > 0.0 {
@@ -834,7 +844,7 @@ fn mono(text: impl Into<String>, color: Rgba) -> Node {
 /// Columns (type, NULL, default, key), indexes and the foreign keys that point at the table.
 pub(crate) fn structure_view(structure: &TableStructure, hovered: Option<u64>) -> Node {
     let colors = theme();
-    let mut view = div().col().p(12.0).gap(4.0).child(table_head(&[
+    let mut view = div().col().p(Space::S12).gap(Space::S4).child(table_head(&[
         ("Column", 180.0),
         ("Type", 160.0),
         ("Null", 50.0),
@@ -847,7 +857,7 @@ pub(crate) fn structure_view(structure: &TableStructure, hovered: Option<u64>) -
         } else if let Some((table, target)) = &column.references {
             div()
                 .row()
-                .gap(4.0)
+                .gap(Space::S4)
                 .items_center()
                 .child(
                     icon(IconKind::ArrowUpRight)
@@ -1047,7 +1057,7 @@ pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
     let syntax = |capture: &str| Rgba::rgb8(palette.syntax_color(capture).0);
     let mut code = div()
         .col()
-        .p(10.0)
+        .p(Space::S10)
         .rounded(Radius::Medium)
         .border(1.0, colors.border_variant)
         .bg(colors.panel_background);
@@ -1056,13 +1066,13 @@ pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
     }
     div()
         .col()
-        .p(12.0)
-        .gap(8.0)
+        .p(Space::S12)
+        .gap(Space::S8)
         .child(code)
         .child(
             div()
                 .row()
-                .gap(4.0)
+                .gap(Space::S4)
                 .items_center()
                 .child(link(COPY_DDL, "Copy", hovered)),
         )

@@ -6,7 +6,7 @@ use git::access::{GitAccess, GitOp, RemoteCommand, RepoSource};
 use git::working_copy::{
     CommandError, CommandOutput, CommitOptions, HeadState, PushMode, Staging, StatusEntry, Upstream,
 };
-use ui::{div, theme, Node, Radius};
+use ui::{div, theme, Node, Radius, Space};
 use workspace::text_field::TextArea;
 use workspace::PanelRequest;
 
@@ -14,8 +14,8 @@ use workspace::PanelRequest;
 const EDITOR_MIN_ROWS: usize = 3;
 const EDITOR_MAX_ROWS: usize = 6;
 const EDITOR_FONT: f32 = 13.0;
-const EDITOR_PAD: f32 = 8.0;
-const EDITOR_PAD_X: f32 = 10.0;
+const EDITOR_PAD: Space = Space::S8;
+const EDITOR_PAD_X: Space = Space::S10;
 const EDITOR_MIN_H: f32 = 80.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +169,8 @@ impl CommitArea {
     }
 
     pub fn editor_height(&self) -> f32 {
-        (2.0 * EDITOR_PAD + self.editor.line_height() * self.editor_rows() as f32).max(EDITOR_MIN_H)
+        (2.0 * EDITOR_PAD.px() + self.editor.line_height() * self.editor_rows() as f32)
+            .max(EDITOR_MIN_H)
     }
 
     /// `staged` lists every repo with staged files; `amend_target` is the repo whose last commit an amend
@@ -397,7 +398,7 @@ impl CommitArea {
         let text = self.editor.render(
             placeholder,
             self.focused,
-            (width - 2.0 * EDITOR_PAD_X).max(40.0),
+            (width - 2.0 * EDITOR_PAD_X.px()).max(40.0),
             rows,
         );
         let ring = if self.focused || !self.editor.text().is_empty() {

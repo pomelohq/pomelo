@@ -69,7 +69,7 @@ fn local_fs(root: &Path) -> SharedFs {
 }
 use ui::{
     div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Radius, Rect,
-    Rgba,
+    Rgba, Space,
 };
 use workspace::{
     ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, FunctionView, Item, ItemInput,
@@ -190,7 +190,7 @@ pub(crate) fn definition_scroll() -> DefinitionScroll {
 pub fn default_buffer_font_size() -> f32 {
     DEFAULT_EDIT_FONT
 }
-const MESSAGE_PAD: f32 = 8.0;
+const MESSAGE_PAD: Space = Space::S8;
 const CARET_W: f32 = 2.0;
 pub(crate) const VERTICAL_SCROLL_MARGIN: f32 = 3.0;
 const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
@@ -198,7 +198,7 @@ const HORIZONTAL_SCROLL_MARGIN: f32 = 5.0;
 const UNWRAPPED_MAX_COLUMNS: f32 = 512.0;
 /// Blank columns between a line's end and its blame annotation.
 const INLINE_BLAME_PADDING: f32 = 7.0;
-const FOLD_PILL_PAD: f32 = 4.0;
+const FOLD_PILL_PAD: Space = Space::S4;
 /// Line numbers reserve at least this many digits so the gutter doesn't resize as a file grows past 999 lines.
 const MIN_LINE_NUMBER_DIGITS: usize = 4;
 const FOLD_ICON: f32 = 14.0;
@@ -1352,7 +1352,7 @@ impl FileItem {
         }
         let node = div()
             .row()
-            .w_px((content.w - 2.0 * MESSAGE_PAD).max(0.0))
+            .w_px((content.w - 2.0 * MESSAGE_PAD.px()).max(0.0))
             .child(
                 components::banner(components::BannerTone::Warning, format!("{message}."))
                     .action(
@@ -1363,7 +1363,11 @@ impl FileItem {
                     .flex(1.0),
             )
             .into();
-        (node, content.x + MESSAGE_PAD, content.y + MESSAGE_PAD)
+        (
+            node,
+            content.x + MESSAGE_PAD.px(),
+            content.y + MESSAGE_PAD.px(),
+        )
     }
 
     /// Sends `text` to the other machine off the UI thread, expecting to find the file as `expect` there. The
@@ -2458,7 +2462,7 @@ impl FileItem {
         let skipped_columns = (scroll_x / advance).floor() as usize;
         let leftover = scroll_x - skipped_columns as f32 * advance;
         let mut numbers = div().col().w_px(gutter);
-        let mut text = div().col().flex(1.0).pl(advance - leftover);
+        let mut text = div().col().flex(1.0).pl(Space::Px(advance - leftover));
         let mut bands = Vec::new();
         let light = ui_colors.appearance == ui::Appearance::Light;
         let fill = if light { 0.16 } else { 0.12 };
@@ -2489,7 +2493,7 @@ impl FileItem {
                     .h_px(edit_line_h())
                     .items_center()
                     .justify_end()
-                    .pr(char_advance())
+                    .pr(Space::Px(char_advance()))
                     .child(
                         label((base_line + 1).to_string())
                             .size_px(edit_font())
@@ -2803,7 +2807,7 @@ impl FileItem {
     }
 
     fn fold_pill_w() -> f32 {
-        3.0 * char_advance() + 2.0 * FOLD_PILL_PAD
+        3.0 * char_advance() + 2.0 * FOLD_PILL_PAD.px()
     }
 
     /// x of display `index` on `line`, drawn in the tail of the folded `header` row.
@@ -4966,7 +4970,7 @@ impl Item for FileItem {
                         .row()
                         .flex(1.0)
                         .h_px(edit_line_h())
-                        .px(4.0)
+                        .px(Space::S4)
                         .items_center()
                         .rounded(Radius::XSmall)
                         .bg(color.alpha(0.05))
@@ -7191,8 +7195,8 @@ impl Item for ImageItem {
         div()
             .col()
             .flex(1.0)
-            .px(12.0)
-            .py(12.0)
+            .px(Space::S12)
+            .py(Space::S12)
             .image(self.id)
             .into()
     }
@@ -9773,10 +9777,10 @@ impl FunctionView for FilesView {
         let flat = &self.flat_cache;
         let mut tree_col = div()
             .col()
-            .gap(ROW_H - ROW_BOX_H)
-            .px(6.0)
-            .pt(notice_h)
-            .pb(8.0);
+            .gap(Space::Px(ROW_H - ROW_BOX_H))
+            .px(Space::S6)
+            .pt(Space::Px(notice_h))
+            .pb(Space::S8);
         let active_path = self.active_path();
         for (i, row) in flat.iter().enumerate().take(last).skip(first) {
             let id = FUNC_VIEW_BASE + i as u64;
@@ -9852,19 +9856,23 @@ impl FunctionView for FilesView {
                     let click_id = STICKY_BASE + self.sticky_paths.len() as u64;
                     self.sticky_paths.push(path);
                     sticky = sticky.child(
-                        div().row().px(6.0).bg(theme().panel_background).child(
-                            components::tree_row(click_id, k)
-                                .height(ROW_H)
-                                .expander(Some(true))
-                                .child(
-                                    icon(IconKind::FolderOpen)
-                                        .size(14.0)
-                                        .color(theme().icon_accent),
-                                )
-                                .child(label(name).color(theme().text))
-                                .render()
-                                .flex(1.0),
-                        ),
+                        div()
+                            .row()
+                            .px(Space::S6)
+                            .bg(theme().panel_background)
+                            .child(
+                                components::tree_row(click_id, k)
+                                    .height(ROW_H)
+                                    .expander(Some(true))
+                                    .child(
+                                        icon(IconKind::FolderOpen)
+                                            .size(14.0)
+                                            .color(theme().icon_accent),
+                                    )
+                                    .child(label(name).color(theme().text))
+                                    .render()
+                                    .flex(1.0),
+                            ),
                     );
                 }
                 // Separator under the pinned stack: a 1px border then a soft shadow fading into the content.

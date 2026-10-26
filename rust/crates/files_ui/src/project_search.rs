@@ -9,7 +9,7 @@ use editor::search::{SearchOptions, SearchQuery};
 use files::search::{FileResult, SearchRequest};
 use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -17,15 +17,15 @@ pub const ITEM_ID: &str = "project-search";
 const INPUT_H: f32 = 28.0;
 const BUTTON: f32 = 26.0;
 /// The case, word and regex toggles inside the query box.
-const PAD_X: f32 = 12.0;
-const PAD_Y: f32 = 8.0;
-const LINE_GAP: f32 = 6.0;
+const PAD_X: Space = Space::S12;
+const PAD_Y: Space = Space::S8;
+const LINE_GAP: Space = Space::S6;
 const HEADER_ROW_H: f32 = 30.0;
 const LINE_H: f32 = 22.0;
 const FIELD_FONT: f32 = 12.0;
 const SEPARATOR_H: f32 = 10.0;
 const CODE_FONT: LabelSize = LabelSize::Medium;
-const GUTTER_W: f32 = 56.0;
+const GUTTER_W: Space = Space::Px(56.0);
 const TYPE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 const QUERY: u64 = 1;
@@ -595,9 +595,9 @@ impl ProjectSearch {
         div()
             .row()
             .h_px(INPUT_H)
-            .pl(10.0)
-            .pr(4.0)
-            .gap(8.0)
+            .pl(Space::S10)
+            .pr(Space::S4)
+            .gap(Space::S8)
             .items_center()
             .rounded(Radius::Medium)
             .bg(colors.background)
@@ -615,15 +615,15 @@ impl ProjectSearch {
     fn bar(&self, width: f32) -> Node {
         let colors = theme();
         let mode_w = 256.0_f32.min(width * 0.45);
-        let query_w = (width - 2.0 * PAD_X - LINE_GAP - mode_w).max(160.0);
+        let query_w = (width - 2.0 * PAD_X.px() - LINE_GAP.px() - mode_w).max(160.0);
         let query_row = self
             .input(QUERY, Field::Query, &self.query, "Search all files...")
             .w_px(query_w)
             .child(
                 div()
                     .row()
-                    .pr(4.0)
-                    .gap(6.0)
+                    .pr(Space::S4)
+                    .gap(Space::S6)
                     .items_center()
                     .child(self.option_button(
                         CASE,
@@ -642,19 +642,19 @@ impl ProjectSearch {
         let mut mode = div()
             .row()
             .w_px(mode_w)
-            .gap(4.0)
+            .gap(Space::S4)
             .items_center()
             .child(self.icon_button(FILTERS, IconKind::Filter, self.filters_enabled, true))
             .child(self.icon_button(REPLACE, IconKind::Replace, self.replace_enabled, true))
             .child(
                 div()
                     .row()
-                    .px(2.0)
+                    .px(Space::S2)
                     .child(components::vertical_divider(18.0)),
             )
             .child(self.icon_button(PREVIOUS, IconKind::ChevronLeft, false, has_match))
             .child(self.icon_button(NEXT, IconKind::ChevronRight, false, has_match))
-            .child(div().row().h_px(BUTTON).items_center().pl(6.0).child(
+            .child(div().row().h_px(BUTTON).items_center().pl(Space::S6).child(
                 label(count).size(LabelSize::Small).color(if has_match {
                     colors.text_muted
                 } else {
@@ -678,14 +678,14 @@ impl ProjectSearch {
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP + 2.0)
+                    .gap(Space::Px(LINE_GAP.px() + 2.0))
                     .items_center()
                     .child(query_row)
                     .child(mode),
             );
         if let Some(error) = &self.error {
             bar = bar.child(
-                div().row().pl(10.0).child(
+                div().row().pl(Space::S10).child(
                     label(error.clone())
                         .size(LabelSize::Small)
                         .color(colors.error),
@@ -698,7 +698,7 @@ impl ProjectSearch {
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP + 2.0)
+                    .gap(Space::Px(LINE_GAP.px() + 2.0))
                     .items_center()
                     .child(
                         self.input(
@@ -713,7 +713,7 @@ impl ProjectSearch {
                         div()
                             .row()
                             .w_px(mode_w)
-                            .gap(4.0)
+                            .gap(Space::S4)
                             .items_center()
                             .child(self.icon_button(
                                 REPLACE_ALL,
@@ -724,8 +724,8 @@ impl ProjectSearch {
                             .child(
                                 div()
                                     .row()
-                                    .pl(6.0)
-                                    .gap(6.0)
+                                    .pl(Space::S6)
+                                    .gap(Space::S6)
                                     .items_center()
                                     .child(
                                         label("Replace all")
@@ -742,7 +742,7 @@ impl ProjectSearch {
                 div()
                     .row()
                     .h_px(INPUT_H)
-                    .gap(LINE_GAP + 2.0)
+                    .gap(Space::Px(LINE_GAP.px() + 2.0))
                     .items_center()
                     .child(
                         self.input(
@@ -787,7 +787,7 @@ impl ProjectSearch {
             state = state.action(
                 div()
                     .row()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .items_center()
                     .child(key_chip("enter", false))
                     .child(
@@ -855,12 +855,17 @@ impl ProjectSearch {
             .items_center()
             .on_click(id)
             .child(
-                div().row().w_px(GUTTER_W).pr(12.0).justify_end().child(
-                    label((line.number + 1).to_string())
-                        .size(CODE_FONT)
-                        .mono()
-                        .color(colors.editor_line_number),
-                ),
+                div()
+                    .row()
+                    .w_px(GUTTER_W.px())
+                    .pr(Space::S12)
+                    .justify_end()
+                    .child(
+                        label((line.number + 1).to_string())
+                            .size(CODE_FONT)
+                            .mono()
+                            .color(colors.editor_line_number),
+                    ),
             )
             .child(text_row);
         if active.is_some() || self.hovered == Some(id) {
@@ -895,8 +900,8 @@ impl ProjectSearch {
                     let mut header = div()
                         .row()
                         .h_px(HEADER_ROW_H)
-                        .px(12.0)
-                        .gap(6.0)
+                        .px(Space::S12)
+                        .gap(Space::S6)
                         .items_center()
                         .bg(colors.panel_background)
                         .on_click(id)
@@ -1004,20 +1009,20 @@ impl Item for ProjectSearch {
         self.body_h = height;
         let bar = self.bar(width);
         let bar_h = INPUT_H
-            + 2.0 * PAD_Y
+            + 2.0 * PAD_Y.px()
             + 1.0
             + if self.error.is_some() {
-                LINE_GAP + 16.0
+                LINE_GAP.px() + 16.0
             } else {
                 0.0
             }
             + if self.replace_enabled {
-                LINE_GAP + INPUT_H
+                LINE_GAP.px() + INPUT_H
             } else {
                 0.0
             }
             + if self.filters_enabled {
-                LINE_GAP + INPUT_H
+                LINE_GAP.px() + INPUT_H
             } else {
                 0.0
             };

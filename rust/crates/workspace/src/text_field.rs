@@ -5,7 +5,7 @@ use std::ops::Range;
 use crate::EditKey;
 use editor::buffer::{Deletion, LineRows, Motion};
 use editor::EditorBuffer;
-use ui::{div, label, theme, Node};
+use ui::{div, label, theme, Node, Space};
 
 pub const INPUT_FONT: f32 = 14.0;
 
@@ -617,15 +617,20 @@ impl TextArea {
                 } else {
                     String::new()
                 };
-                line = line.child(div().row().w_px(gutter_w).pr(12.0).justify_end().child(
-                    label(number).size_px(size).mono().color(
-                        if line_index == current_line && focused {
-                            theme().text_muted
-                        } else {
-                            theme().text_placeholder
-                        },
-                    ),
-                ));
+                line = line.child(
+                    div()
+                        .row()
+                        .w_px(gutter_w)
+                        .pr(Space::S12)
+                        .justify_end()
+                        .child(label(number).size_px(size).mono().color(
+                            if line_index == current_line && focused {
+                                theme().text_muted
+                            } else {
+                                theme().text_placeholder
+                            },
+                        )),
+                );
             }
             let caret_here = head >= row.start
                 && (head < row.end || (head == row.end && (!row.soft || index == last_row)));

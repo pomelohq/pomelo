@@ -1,6 +1,6 @@
 use git::working_copy::Staging;
 use git::ChangeStatus;
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
@@ -39,7 +39,7 @@ pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: LabelSiz
     let (Some(added), Some(deleted)) = (added, deleted) else {
         return label("binary").size(size).color(colors.text_muted).into();
     };
-    let mut row = div().row().gap(6.0).items_center();
+    let mut row = div().row().gap(Space::S6).items_center();
     if added > 0 {
         row = row.child(
             label(format!("+{added}"))
@@ -92,7 +92,7 @@ pub(crate) fn ghost_button(id: u64, leading: Option<IconKind>, text: &str, hot: 
 pub(crate) fn arrow_count(kind: IconKind, count: usize, color: Rgba) -> Node {
     div()
         .row()
-        .gap(1.0)
+        .gap(Space::Px(1.0))
         .items_center()
         .child(icon(kind).size(10.0).color(color))
         .child(label(count.to_string()).size(LabelSize::Mini).color(color))

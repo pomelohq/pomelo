@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Space};
 
 /// What a banner reports, which sets its icon and color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +117,7 @@ impl Banner {
             Some(width) => text.wrap(width),
             None => text.truncate(),
         };
-        let mut words = div().col().flex(1.0).gap(2.0).child(text);
+        let mut words = div().col().flex(1.0).gap(Space::S2).child(text);
         if let Some(detail) = self.detail {
             words = words.child(
                 label(detail)
@@ -129,10 +129,10 @@ impl Banner {
         let mut line = div()
             .row()
             .items_center()
-            .gap(10.0)
+            .gap(Space::S10)
             .child(div().row().h_px(24.0).items_center().child(lead))
             .child(words);
-        let mut actions = div().row().gap(6.0).items_center();
+        let mut actions = div().row().gap(Space::S6).items_center();
         let has_actions = !self.actions.is_empty();
         for action in self.actions {
             actions = actions.child(action);
@@ -141,7 +141,13 @@ impl Banner {
             line = line.child(actions);
             actions = div();
         }
-        let mut card = div().col().gap(8.0).py(10.0).pl(14.0).pr(10.0).child(line);
+        let mut card = div()
+            .col()
+            .gap(Space::S8)
+            .py(Space::S10)
+            .pl(Space::S14)
+            .pr(Space::S10)
+            .child(line);
         if has_actions && self.stack_actions {
             card = card.child(div().row().justify_end().child(actions));
         }
@@ -154,9 +160,9 @@ impl Banner {
             let mut block = div()
                 .col()
                 .flex(1.0)
-                .gap(4.0)
-                .px(10.0)
-                .py(8.0)
+                .gap(Space::S4)
+                .px(Space::S10)
+                .py(Space::S8)
                 .rounded(Radius::Medium)
                 .bg(colors.editor_background);
             for command in self.commands {
@@ -170,7 +176,7 @@ impl Banner {
                     ),
                 );
             }
-            card = card.child(div().row().pl(26.0).child(block));
+            card = card.child(div().row().pl(Space::Px(26.0)).child(block));
         }
         if self.flush {
             div().col().child(card).child(crate::edge_divider())
