@@ -25,7 +25,7 @@ use crate::server_api::{
 };
 use crate::server_api::{
     JiraParams, ServiceChoiceParams, ServiceRunParams, ServicesFacts, SharedLogsParams,
-    SharedRunParams, UsageParams, UsageReport, GIT, GIT_REMOTE, JIRA,
+    SharedRunParams, UsageParams, UsageReport, GIT, GIT_EDITOR, GIT_REMOTE, JIRA,
 };
 use crate::server_transport::{self, ProxyFailure, ProxyProcess, SERVER_GONE};
 use crate::source::{last_turn, ACT_TIMEOUT, READ_TIMEOUT};
@@ -401,6 +401,7 @@ impl Inner {
             module_store: offers(&[MODULE_STORE]) && offers(JOBS),
             paste: offers(&[method::PASTE_PUT]),
             git: offers(GIT) && offers(&[GIT_REMOTE]) && offers(JOBS),
+            git_editor: offers(GIT) && offers(&[GIT_EDITOR]),
             host_settings: offers(&[method::SETTINGS_GET, method::SETTINGS_SET]),
         });
         let server_id = server.server_id.unwrap_or_default();

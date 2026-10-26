@@ -1,11 +1,7 @@
 //! Scratch repositories holding the files the Git boards show, put in the state a board draws.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-
-fn root() -> PathBuf {
-    crate::fixture_dir().join("git")
-}
 
 const CONTROLLER: &str = "class UsersController < ApplicationController
   before_action :authenticate_user!
@@ -120,8 +116,8 @@ struct Repo {
 }
 
 impl Repo {
-    fn create(name: &str) -> anyhow::Result<Repo> {
-        let root = root().join(name);
+    fn create(root: &Path, name: &str) -> anyhow::Result<Repo> {
+        let root = root.join(name);
         std::fs::create_dir_all(&root)?;
         let repo = Repo {
             root,
@@ -184,15 +180,13 @@ impl Repo {
     }
 }
 
-/// Writes the api and web repositories on feat-login in `state` and returns their roots.
-pub fn create(state: State) -> anyhow::Result<Vec<PathBuf>> {
-    let root = root();
-    let root = root.as_path();
+/// Writes the api and web repositories on feat-login in `state` under `root` and returns their roots.
+pub fn create(root: &Path, state: State) -> anyhow::Result<Vec<PathBuf>> {
     if root.exists() {
         std::fs::remove_dir_all(root)?;
     }
 
-    let mut api = Repo::create("api")?;
+    let mut api = Repo::create(root, "api")?;
     api.write("app/controllers/users_controller.rb", CONTROLLER)?;
     api.write("db/schema.rb", schema(false))?;
     api.git(&["add", "-A"])?;
@@ -202,7 +196,7 @@ pub fn create(state: State) -> anyhow::Result<Vec<PathBuf>> {
     api.git(&["add", "-A"])?;
     api.commit("Seed 30 users for request specs", 5)?;
 
-    let mut web = Repo::create("web")?;
+    let mut web = Repo::create(root, "web")?;
     web.write("src/users/UserList.tsx", user_list(false))?;
     web.write("src/users/legacyTable.css", numbered(".legacy-row", 57))?;
     web.write("public/logo.png", logo(false))?;
@@ -281,8 +275,8 @@ impl RemoteState {
 }
 
 /// A bare origin next to the scratch repos, with `repo`'s branches pushed to it.
-fn origin(repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
-    let bare = root().join("origin").join(format!("{name}.git"));
+fn origin(root: &Path, repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
+    let bare = root.join("origin").join(format!("{name}.git"));
     std::fs::create_dir_all(&bare)?;
     let status = Command::new("git")
         .args(["init", "-q", "--bare", "-b", "main"])
@@ -298,22 +292,20 @@ fn origin(repo: &Repo, name: &str) -> anyhow::Result<PathBuf> {
 /// worker two behind; or, `InSync`, every one matching origin. Each has edits left uncommitted.
 pub const NARROW_BRANCH: &str = "proj-101-paginate-the-users-index-and-cache-pages";
 
-pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
-    let root = root();
-    let root = root.as_path();
+pub fn create_remote(root: &Path, state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
     if root.exists() {
         std::fs::remove_dir_all(root)?;
     }
     if state == RemoteState::Narrow {
-        return create_narrow();
+        return create_narrow(root);
     }
 
-    let mut api = Repo::create("api")?;
+    let mut api = Repo::create(root, "api")?;
     api.write("app/controllers/users_controller.rb", CONTROLLER)?;
     api.write("db/schema.rb", schema(false))?;
     api.git(&["add", "-A"])?;
     api.commit("Initial api", 1)?;
-    origin(&api, "api")?;
+    origin(root, &api, "api")?;
     api.git(&["checkout", "-q", "-b", "feat-login"])?;
     api.write("db/schema.rb", schema(true))?;
     api.commit_as("Seed 30 users for request specs", "bea", 3 * DAY)?;
@@ -333,12 +325,12 @@ pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
     api.write("spec/requests/users_spec.rb", numbered("# users spec", 42))?;
     api.commit_as("Paginate the users index", "alex", 4 * MINUTE)?;
 
-    let mut web = Repo::create("web")?;
+    let mut web = Repo::create(root, "web")?;
     web.write("src/users/UserList.tsx", user_list(false))?;
     web.write("src/users/legacyTable.css", numbered(".legacy-row", 57))?;
     web.git(&["add", "-A"])?;
     web.commit("Initial web", 1)?;
-    origin(&web, "web")?;
+    origin(root, &web, "web")?;
     web.git(&["checkout", "-q", "-b", "feat-login"])?;
     web.write(
         "src/users/usePagination.ts",
@@ -350,15 +342,15 @@ pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
     std::fs::remove_file(web.root.join("src/users/legacyTable.css"))?;
     web.commit_as("Users list pagination controls", "alex", HOUR)?;
 
-    let mut worker = Repo::create("worker")?;
+    let mut worker = Repo::create(root, "worker")?;
     worker.write("app/jobs/retry_job.rb", numbered("# retry", 12))?;
     worker.git(&["add", "-A"])?;
     worker.commit("Initial worker", 1)?;
-    let worker_origin = origin(&worker, "worker")?;
+    let worker_origin = origin(root, &worker, "worker")?;
     worker.git(&["checkout", "-q", "-b", "feat-login"])?;
     worker.git(&["push", "-q", "-u", "origin", "feat-login"])?;
     // Someone else pushes two commits to worker's branch; the local checkout only fetches them.
-    let mut other = Repo::create("worker-other")?;
+    let mut other = Repo::create(root, "worker-other")?;
     other.git(&[
         "remote",
         "add",
@@ -407,12 +399,12 @@ pub fn create_remote(state: RemoteState) -> anyhow::Result<Vec<PathBuf>> {
     Ok(vec![api.root, web.root, worker.root])
 }
 
-fn create_narrow() -> anyhow::Result<Vec<PathBuf>> {
-    let mut api = Repo::create("myproject-api-service")?;
+fn create_narrow(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut api = Repo::create(root, "myproject-api-service")?;
     api.write("app/controllers/users_controller.rb", CONTROLLER)?;
     api.git(&["add", "-A"])?;
     api.commit("Initial api", 1)?;
-    origin(&api, "myproject-api-service")?;
+    origin(root, &api, "myproject-api-service")?;
     api.git(&["checkout", "-q", "-b", NARROW_BRANCH])?;
     api.write(
         "app/services/applications/delete_application_stage_service.rb",
@@ -434,8 +426,8 @@ fn create_narrow() -> anyhow::Result<Vec<PathBuf>> {
 }
 
 /// The Changes boards' repos with web left on another branch.
-pub fn create_drift() -> anyhow::Result<Vec<PathBuf>> {
-    let roots = create(State::Unstaged)?;
+pub fn create_drift(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let roots = create(root, State::Unstaged)?;
     let web = Repo {
         root: roots[1].clone(),
         clock: 0,
@@ -444,4 +436,114 @@ pub fn create_drift() -> anyhow::Result<Vec<PathBuf>> {
     };
     web.git(&["checkout", "-q", "-b", "ana/checkout-ui"])?;
     Ok(roots)
+}
+
+/// Local git whose scans and answers go through JSON, as a remote window receives them.
+pub struct WireGit;
+
+fn over_wire<T: serde::Serialize + serde::de::DeserializeOwned>(value: T) -> T {
+    serde_json::to_value(&value)
+        .and_then(serde_json::from_value)
+        .unwrap_or(value)
+}
+
+impl git::access::GitAccess for WireGit {
+    fn scan(&self, repo: &git::access::RepoSource) -> git::scan::RepoScan {
+        over_wire(git::access::LocalGit.scan(repo))
+    }
+
+    fn act(
+        &self,
+        repo: &git::access::RepoSource,
+        op: git::access::GitOp,
+    ) -> Result<(), git::working_copy::CommandError> {
+        git::access::LocalGit.act(repo, over_wire(op))
+    }
+
+    fn read(
+        &self,
+        repo: &git::access::RepoSource,
+        query: git::access::GitRead,
+    ) -> Result<git::access::GitAnswer, String> {
+        git::access::LocalGit
+            .read(repo, over_wire(query))
+            .map(over_wire)
+    }
+
+    fn remote(
+        &self,
+        repo: &git::access::RepoSource,
+        command: git::access::RemoteCommand,
+        progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
+        git::access::LocalGit.remote(repo, over_wire(command), progress)
+    }
+}
+
+/// The pull requests the Remote and History boards show for `roots` on `branch`, kept under `state`.
+pub fn pull_requests(
+    roots: &[PathBuf],
+    branch: &str,
+    state: &Path,
+) -> anyhow::Result<pull_request_ui::PullRequests> {
+    if state.exists() {
+        std::fs::remove_dir_all(state)?;
+    }
+    let prs = pull_request_ui::PullRequests::new(
+        pom_paths::StateDir::new(state.to_path_buf()),
+        "myproject",
+        std::sync::Arc::new(|| {}),
+    );
+    let pr = |repo: &str, number: u64, title: &str, checks: &str, review: &str| {
+        let target = pom_forge::PrTarget {
+            repo: repo.into(),
+            owner: "myorg".into(),
+            name: repo.into(),
+            head: branch.into(),
+        };
+        let pull = pom_forge::PullRequest {
+            number,
+            title: title.into(),
+            state: "OPEN".into(),
+            head_ref_name: branch.into(),
+            base_ref_name: "main".into(),
+            checks: checks.into(),
+            review: review.into(),
+            ..Default::default()
+        };
+        (target, pull)
+    };
+    let mut shown = Vec::new();
+    if branch != "feat-login" {
+        let (target, mut pull) = pr(
+            "myproject-api-service",
+            512,
+            "Paginate the users index and cache every page of results",
+            "fail",
+            "approved",
+        );
+        pull.conflict = true;
+        shown.push((roots[0].clone(), target, pull));
+        prs.show(branch, shown);
+        return Ok(prs);
+    }
+    for (root, (target, pull)) in roots
+        .iter()
+        .zip([
+            Some(pr(
+                "api",
+                482,
+                "Paginate the users index",
+                "fail",
+                "changes",
+            )),
+            None,
+            Some(pr("worker", 318, "Retry failed mail", "pass", "approved")),
+        ])
+        .filter_map(|(root, pr)| pr.map(|pr| (root, pr)))
+    {
+        shown.push((root.clone(), target, pull));
+    }
+    prs.show("feat-login", shown);
+    Ok(prs)
 }

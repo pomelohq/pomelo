@@ -585,6 +585,10 @@ impl WorkspaceView {
         })
     }
 
+    pub fn files_view_mut(&mut self) -> Option<&mut (dyn crate::FunctionView + 'static)> {
+        self.layout.files_view.as_deref_mut()
+    }
+
     /// Puts in the editor area and its file tree alone, keeping the rest of the project's views.
     pub fn set_files_view(&mut self, files_view: Option<Box<dyn crate::FunctionView>>) {
         self.persist_panes(true);

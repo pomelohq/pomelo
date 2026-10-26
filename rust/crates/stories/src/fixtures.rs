@@ -1,7 +1,38 @@
 //! The data stories and scenes draw: scratch projects on disk, a stand-in host, and the window's fixed facts.
 
 pub mod editor;
+pub mod git;
 pub mod host;
+pub mod settings;
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
+
+/// A folder of its own for one story's files, removed with the story.
+pub struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    pub fn new(kind: &str) -> anyhow::Result<Scratch> {
+        let dir = std::env::temp_dir().join(format!(
+            "pom-story-{kind}-{}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(Scratch(dir))
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// Scratch files of this process; removed by whoever owns the run.
 pub fn fixture_dir() -> std::path::PathBuf {

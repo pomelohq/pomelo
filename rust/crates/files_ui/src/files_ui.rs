@@ -746,6 +746,10 @@ struct FileItem {
     /// Buffer lines (first, last) previewed by a modal.
     highlighted_rows: Option<(usize, usize)>,
     git: git_diff::GitDiff,
+    /// The repos another machine runs git for, when the file is on one.
+    repo_files: Option<git::access::RepoFiles>,
+    /// Its git was set up from `repo_files` once its text had come.
+    repo_git_loaded: bool,
     /// A branch diff: compared with the file where the branch started, every change expanded.
     branch_diff: bool,
     /// The diff shows two columns when it is wide enough; `split_active` is whether it does now.
@@ -1317,6 +1321,7 @@ impl FileItem {
             }
         }
         self.saved_stat = Some(stat);
+        self.git.reload_bases();
         self.refresh();
         self.ensure_visible();
         true
@@ -1408,6 +1413,7 @@ impl FileItem {
                 self.saved_stat = Some(stat);
                 self.conflict = false;
                 self.save_conflict = None;
+                self.git.reload_bases();
                 if again && self.is_dirty() {
                     if let Err(error) = workspace::Item::save(self) {
                         self.panel_requests
@@ -1463,8 +1469,36 @@ impl FileItem {
         self.name = path.rsplit('/').next().unwrap_or(path).to_string();
         self.saved_stat = self.local_stat();
         self.diagnostics.clear();
-        if self.buffer.is_some() && self.is_local() {
-            self.git = git_diff::GitDiff::load(self.root.join(path));
+        if self.buffer.is_some() {
+            self.load_git();
+        }
+    }
+
+    /// Where the file's git runs: here for a local file, on its machine for one a server reads.
+    fn file_git(&self) -> Option<std::sync::Arc<dyn git::FileGit>> {
+        let full = self.root.join(&self.path);
+        if self.is_local() {
+            return Some(std::sync::Arc::new(git::LocalFile(full)));
+        }
+        let b = self.buffer.as_ref()?;
+        if b.rope.len_bytes() > git::access::MAX_EDITOR_TEXT {
+            return None;
+        }
+        self.repo_files.as_ref()?.file(&full)
+    }
+
+    fn load_git(&mut self) {
+        self.git = match self.file_git() {
+            Some(file) => git_diff::GitDiff::over(file),
+            None => git_diff::GitDiff::default(),
+        };
+    }
+
+    fn set_repo_files(&mut self, repo_files: Option<git::access::RepoFiles>) {
+        self.repo_files = repo_files;
+        self.repo_git_loaded = self.buffer.is_some();
+        if !self.is_local() && !self.branch_diff && self.buffer.is_some() {
+            self.load_git();
         }
     }
 
@@ -1538,6 +1572,8 @@ impl FileItem {
             active_search_highlight: None,
             highlighted_rows: None,
             git,
+            repo_files: None,
+            repo_git_loaded: false,
             branch_diff: false,
             split: SPLIT_DIFF_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
             split_active: false,
@@ -3964,8 +4000,7 @@ impl FileItem {
             return;
         };
         if let Some(index) = git::index_with_lines(&bases, &b.text(), rows, stage) {
-            self.git
-                .write_index(self.root.join(&self.path), Some(index));
+            self.git.write_index(Some(index));
         }
     }
 
@@ -3981,7 +4016,7 @@ impl FileItem {
             return;
         };
         if let Some(index) = git::index_after(&bases, &b.text(), hunks, stage) {
-            self.git.write_index(self.root.join(&self.path), index);
+            self.git.write_index(index);
         }
     }
 
@@ -5204,7 +5239,7 @@ impl Item for FileItem {
         self.saved_stat = Some(stat);
         self.conflict = false;
         self.saved_unannounced = true;
-        self.git.reload_bases(self.root.join(&self.path));
+        self.git.reload_bases();
         Ok(())
     }
 
@@ -5260,7 +5295,7 @@ impl Item for FileItem {
                 b.place_cursor(cursor.min(b.rope.len_chars()));
             }
         }
-        self.git.reload_bases(self.root.join(&self.path));
+        self.git.reload_bases();
         self.saved_stat = Some(disk);
         self.refresh();
         self.ensure_visible();
@@ -7249,6 +7284,8 @@ pub struct FilesView {
         String,
         std::sync::mpsc::Receiver<std::io::Result<files::FileResult>>,
     )>,
+    /// The repos another machine runs git for, handed to each file opened from it.
+    repo_files: Option<git::access::RepoFiles>,
     expanded: HashSet<String>,
     /// Gitignored folders whose contents the other machine sends only once they are opened.
     lazy_dirs: HashSet<String>,
@@ -7357,6 +7394,35 @@ impl FilesView {
     pub fn writable(mut self, paths: Vec<PathBuf>) -> Self {
         self.writable = paths;
         self
+    }
+
+    /// Runs the git of the open files on the machine that serves them: gutter, staging and blame.
+    pub fn set_repo_files(&mut self, repo_files: Option<git::access::RepoFiles>) {
+        self.repo_files = repo_files.clone();
+        self.panes.for_each_item_mut(&mut |item| {
+            if let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+            {
+                file.set_repo_files(repo_files.clone());
+            }
+        });
+    }
+
+    /// Files opened since the repos were set get them too.
+    fn hand_out_repo_files(&mut self) {
+        let Some(repo_files) = self.repo_files.as_ref() else {
+            return;
+        };
+        self.panes.for_each_item_mut(&mut |item| {
+            if let Some(file) = item
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<FileItem>())
+                .filter(|file| !file.repo_git_loaded && !file.is_local())
+            {
+                file.set_repo_files(Some(repo_files.clone()));
+            }
+        });
     }
 
     pub fn save_check(mut self, check: SaveCheck) -> Self {
@@ -7663,6 +7729,7 @@ impl FilesView {
             interrupted: None,
             entries: Vec::new(),
             pending_reloads: Vec::new(),
+            repo_files: None,
             expanded: HashSet::new(),
             lazy_dirs: HashSet::new(),
             expanding: HashSet::new(),
@@ -9503,6 +9570,10 @@ impl ItemInput for FilesView {
 }
 
 impl FunctionView for FilesView {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_extra_commands(&mut self, commands: Vec<workspace::ExtraCommand>) {
         self.extra_commands = commands;
     }
@@ -10293,6 +10364,7 @@ impl FunctionView for FilesView {
         outcome.changed |= self.serve_server_logs();
         outcome.changed |= self.poll_tree();
         outcome.changed |= self.poll_reloads();
+        self.hand_out_repo_files();
         outcome.changed |= self.poll_tree_jobs();
         outcome.changed |= self.follow_saves();
         outcome.changed |= self.serve_project_search();
@@ -14177,5 +14249,65 @@ mod remote_files_tests {
             view.root_dir().is_none(),
             "no folder here for another machine's files"
         );
+    }
+    #[test]
+    fn a_file_on_another_machine_gets_its_gutter_from_the_repos_there() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().to_path_buf();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        };
+        assert!(git(&["init", "-q"]));
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "one\n").expect("write");
+        assert!(git(&["add", "a.txt"]));
+        assert!(git(&["commit", "-q", "-m", "init"]));
+        std::fs::write(root.join("a.txt"), "one\ntwo\n").expect("write");
+
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("a.txt", "one\ntwo\n", 10);
+        let fs: SharedFs = elsewhere.clone();
+        let mut view = FilesView::new(fs, root.clone());
+        let repo = git::access::RepoSource {
+            name: "api".into(),
+            root: root.clone(),
+            ..git::access::RepoSource::default()
+        };
+        view.set_repo_files(Some(git::access::RepoFiles::new(
+            Arc::new(git::access::LocalGit),
+            vec![repo],
+        )));
+        let hunks = |view: &FilesView| {
+            view.panes
+                .active_item()
+                .and_then(|item| item.as_any())
+                .and_then(|any| any.downcast_ref::<FileItem>())
+                .map_or(0, |file| file.git.hunks().len())
+        };
+        view.open_file("a.txt");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while hunks(&view) == 0 && std::time::Instant::now() < deadline {
+            view.tick_items(&|| None);
+            if let Some(file) = view
+                .panes
+                .active_item_mut()
+                .and_then(|item| item.as_any_mut())
+                .and_then(|any| any.downcast_mut::<FileItem>())
+            {
+                if let Some(b) = file.buffer.as_ref() {
+                    file.git.poll(&b.rope, b.version());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(hunks(&view), 1, "the added line shows in the gutter");
     }
 }

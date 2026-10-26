@@ -11,9 +11,16 @@ path = "src/stories.rs"
 [dependencies]
 components = { path = "../components" }
 anyhow.workspace = true
+serde.workspace = true
 png = "0.17"
 serde_json.workspace = true
 files = { path = "../files" }
+git = { path = "../git" }
+git_ui = { path = "../git_ui" }
+pull_request_ui = { path = "../pull_request_ui" }
+pom_forge = { path = "../pom_forge" }
+settings = { path = "../settings" }
+settings_ui = { path = "../settings_ui" }
 files_ui = { path = "../files_ui" }
 pom_agent = { path = "../pom_agent" }
 pom_config = { path = "../pom_config" }

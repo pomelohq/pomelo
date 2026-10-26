@@ -6,7 +6,7 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use git::{BlameEntry, DiffBases, DiffHunk};
+use git::{BlameEntry, DiffBases, DiffHunk, FileGit, LocalFile};
 
 /// Blame reruns this long after the last edit, not on every keystroke.
 const BLAME_DEBOUNCE: Duration = Duration::from_secs(2);
@@ -20,7 +20,7 @@ pub struct GitDiff {
     /// Buffer version `hunks` were computed for.
     hunks_version: Option<u64>,
     computing: Option<Receiver<(u64, Vec<DiffHunk>)>>,
-    path: Option<PathBuf>,
+    file: Option<Arc<dyn FileGit>>,
     blame: Vec<BlameEntry>,
     /// Buffer version `blame` reflects, and when the buffer last moved past it.
     blame_version: Option<u64>,
@@ -32,18 +32,22 @@ pub struct GitDiff {
 
 impl GitDiff {
     pub fn load(path: PathBuf) -> Self {
+        Self::over(Arc::new(LocalFile(path)))
+    }
+
+    pub fn over(file: Arc<dyn FileGit>) -> Self {
         let mut diff = Self {
-            path: Some(path.clone()),
+            file: Some(file),
             ..Self::default()
         };
-        diff.reload_bases(path);
+        diff.reload_bases();
         diff
     }
 
     /// Compares against `bases` for good instead of HEAD and the index.
     pub fn with_bases(path: PathBuf, bases: DiffBases) -> Self {
         Self {
-            path: Some(path),
+            file: Some(Arc::new(LocalFile(path))),
             bases: Some(Arc::new(bases)),
             fixed: true,
             ..Self::default()
@@ -51,14 +55,14 @@ impl GitDiff {
     }
 
     /// Re-read HEAD and the index, e.g. after a save may have been followed by staging.
-    pub fn reload_bases(&mut self, path: PathBuf) {
-        if self.fixed {
+    pub fn reload_bases(&mut self) {
+        let Some(file) = self.file.clone().filter(|_| !self.fixed) else {
             return;
-        }
+        };
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
             // The receiver is gone only if the file was closed; nothing to report then.
-            let _ = sender.send(git::load_bases(&path));
+            let _ = sender.send(file.bases());
         });
         self.loading_bases = Some(receiver);
     }
@@ -68,14 +72,17 @@ impl GitDiff {
     }
 
     /// Stage `text` for the file (or drop it from the index), then re-read the bases.
-    pub fn write_index(&mut self, path: PathBuf, text: Option<String>) {
+    pub fn write_index(&mut self, text: Option<String>) {
+        let Some(file) = self.file.clone() else {
+            return;
+        };
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
-            if let Err(error) = git::write_index(&path, text.as_deref()) {
+            if let Err(error) = file.write_index(text.as_deref()) {
                 eprintln!("git: {error}");
             }
             // The receiver is gone only if the file was closed; nothing to report then.
-            let _ = sender.send(git::load_bases(&path));
+            let _ = sender.send(file.bases());
         });
         self.loading_bases = Some(receiver);
     }
@@ -123,11 +130,11 @@ impl GitDiff {
                 self.blame_version.is_none()
             }
         };
-        if let (true, Some(path)) = (due, self.path.clone()) {
+        if let (true, Some(file)) = (due, self.file.clone()) {
             let rope = rope.clone();
             let (sender, receiver) = channel();
             std::thread::spawn(move || {
-                let entries = git::blame(&path, &rope.to_string());
+                let entries = file.blame(&rope.to_string());
                 // The receiver is gone only if the file was closed; nothing to report then.
                 let _ = sender.send((version, entries));
             });

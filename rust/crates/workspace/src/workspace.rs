@@ -2116,6 +2116,9 @@ pub struct SwitcherEntry {
 }
 
 pub trait FunctionView: ItemInput + 'static {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
     /// The window's own commands, listed in the command palette next to the editor's.
     fn set_extra_commands(&mut self, _commands: Vec<ExtraCommand>) {}
     /// The editor font changed; open files lay out again.

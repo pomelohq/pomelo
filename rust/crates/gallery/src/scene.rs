@@ -236,22 +236,13 @@ impl Rasterizer {
         let Some(story) = board.story() else {
             return Ok(());
         };
-        let painted = stories::paint(story.as_mut(), w, h);
+        let painted = stories::paint_layers(story.as_mut(), w, h);
         let Some(renderer) = self.renderer.as_mut() else {
             return Ok(());
         };
         renderer.set_scale(scale);
         renderer.resize(pw.max(1), ph.max(1));
-        renderer.render_frame(
-            ui::theme().panel_background,
-            &[(
-                painted.rects.as_slice(),
-                painted.tris.as_slice(),
-                painted.texts.as_slice(),
-                painted.icons.as_slice(),
-                None,
-            )],
-        )?;
+        renderer.render_frame(ui::theme().panel_background, &stories::layers(&painted))?;
         let (iw, ih, rgba) = renderer.read_rgba()?;
         let id = self.next_id;
         self.next_id += 1;

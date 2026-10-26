@@ -156,6 +156,7 @@ pub const FEATURES: &[&str] = &[
     FILES_SEARCH,
     MODULE_STORE,
     GIT_REMOTE,
+    GIT_EDITOR,
 ];
 
 /// The server runs a repo's pre-written command as a job (`job_op::TASK`).
@@ -171,6 +172,9 @@ pub const MODULE_STORE: &str = "module_store";
 
 /// The server runs the Git panel's fetch, pull and push as jobs (`job_op::GIT_REMOTE`).
 pub const GIT_REMOTE: &str = "git.remote";
+
+/// `git.read` and `git.act` take the editor's requests: a file's bases and blame, and writing its index.
+pub const GIT_EDITOR: &str = "git.editor";
 
 /// The server searches a workspace's files and pushes what it finds.
 pub const FILES_SEARCH: &str = "files.search";

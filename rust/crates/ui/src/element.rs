@@ -493,6 +493,7 @@ pub struct Div {
     click: Option<u64>,
     debug: Option<&'static str>,
     image: Option<u64>,
+    painted: Option<std::sync::Arc<Painted>>,
     children: Vec<Node>,
     pinned: Vec<Pinned>,
 }
@@ -559,6 +560,7 @@ pub fn div() -> Div {
         click: None,
         debug: None,
         image: None,
+        painted: None,
         children: Vec::new(),
         pinned: Vec::new(),
     }
@@ -790,6 +792,12 @@ impl Div {
         self.image = Some(id);
         self
     }
+    /// Draws what a screen that paints itself in layers laid out, its origin at this div's top-left, under the
+    /// div's children; its click regions come along.
+    pub fn painted(mut self, painted: Painted) -> Self {
+        self.painted = Some(std::sync::Arc::new(painted));
+        self
+    }
     /// Tag this div's laid-out bounds under `name` so tests can assert layout headlessly (the framework's
     /// `debug_selector`). No effect on drawing.
     /// Pin `node` at `size`, offset by `(dx, dy)` from `corner` (positive moves right/down); it takes no room in the
@@ -961,6 +969,31 @@ pub fn measure(node: &Node) -> (f32, f32) {
     let (w, h) = intrinsic(node);
     let scale = crate::ui_text_scale();
     (w / scale, h / scale)
+}
+
+fn append_shifted(out: &mut Painted, painted: &Painted, dx: f32, dy: f32) {
+    let shift = |rect: &Rect| Rect {
+        x: rect.x + dx,
+        y: rect.y + dy,
+        ..*rect
+    };
+    out.rects.extend(painted.rects.iter().map(shift));
+    out.tris.extend(painted.tris.iter().map(|tri| Tri {
+        p: tri.p.map(|[x, y]| [x + dx, y + dy]),
+        color: tri.color,
+    }));
+    out.texts.extend(painted.texts.iter().map(|text| Text {
+        x: text.x + dx,
+        y: text.y + dy,
+        ..text.clone()
+    }));
+    out.icons.extend(painted.icons.iter().map(|icon| IconQuad {
+        x: icon.x + dx,
+        y: icon.y + dy,
+        ..*icon
+    }));
+    out.hits
+        .extend(painted.hits.iter().map(|(rect, id)| (shift(rect), *id)));
 }
 
 fn intrinsic(node: &Node) -> (f32, f32) {
@@ -1356,6 +1389,9 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     stretch: false,
                 });
             }
+            if let Some(painted) = &d.painted {
+                append_shifted(out, painted, area.x, area.y);
+            }
             if let Some(name) = d.debug {
                 out.debug_bounds.push((name, area));
             }
@@ -1509,7 +1545,14 @@ fn layout_children(
             Len::Auto => {
                 if is_leaf(c) || (d.items_center && d.axis == Axis::Row) {
                     let (iw, ih) = intrinsic(c);
-                    let ic = if d.axis == Axis::Row { ih } else { iw };
+                    let ic = match (d.axis, c) {
+                        (Axis::Row, _) => ih,
+                        // A label that cuts itself short gets no wider than its column, so the cut applies.
+                        (Axis::Col, Node::Label(l)) if l.truncate || l.truncate_start => {
+                            iw.min(inner_cross)
+                        }
+                        (Axis::Col, _) => iw,
+                    };
                     (ic, align_off(inner_cross, ic, d.items_center))
                 } else {
                     (inner_cross, 0.0) // stretch containers to fill the cross axis
@@ -1886,6 +1929,41 @@ mod tests {
             .find(|(_, id)| *id == 1)
             .map(|(area, _)| area.w);
         assert_eq!(flow, Some(rem(40.0)));
+    }
+
+    #[test]
+    fn a_truncating_label_in_a_column_cuts_at_the_column_edge() {
+        let tree: Node = div()
+            .col()
+            .w_px(60.0)
+            .child(label("a label far wider than its column").truncate())
+            .into();
+        let p = render(&tree, Rect::new(0.0, 0.0, 60.0, 40.0, Rgba::TRANSPARENT));
+        let text = p.texts.first().map(|text| text.text.clone());
+        assert!(text.is_some_and(|text| text.ends_with("...")));
+    }
+
+    #[test]
+    fn painted_content_moves_with_its_div() {
+        let inner = render(
+            &div().w_px(10.0).h_px(10.0).on_click(7).into(),
+            Rect::new(0.0, 0.0, 10.0, 10.0, Rgba::TRANSPARENT),
+        );
+        let tree: Node = div()
+            .row()
+            .child(div().w_px(30.0).h_px(10.0))
+            .child(div().w_px(10.0).h_px(10.0).painted(inner))
+            .into();
+        let p = render(&tree, Rect::new(5.0, 5.0, 40.0, 10.0, Rgba::TRANSPARENT));
+        let hit = p
+            .hits
+            .iter()
+            .find(|(_, id)| *id == 7)
+            .map(|(area, _)| *area);
+        assert_eq!(
+            hit.map(|area| (area.x, area.y)),
+            Some((5.0 + rem(30.0), 5.0))
+        );
     }
 
     #[test]
