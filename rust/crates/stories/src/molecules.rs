@@ -519,6 +519,71 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|_, _| card_board(components::card().raised())),
         ),
         story(
+            "popover-list",
+            "Popover",
+            "Rows, with a title",
+            (300.0, 160.0),
+            || {
+                still(|_, _| {
+                    div()
+                        .col()
+                        .p(INSET)
+                        .child(
+                            components::popover(260.0)
+                                .title("Archived side agents")
+                                .aside("3")
+                                .render()
+                                .child(components::menu_row(&item(0, "Review feat-login"), None))
+                                .child(components::menu_row(
+                                    &item(1, "Fix flaky test"),
+                                    Some(ID + 1),
+                                ))
+                                .child(components::menu_row(&item(2, "Second opinion"), None)),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
+            "popover-content",
+            "Popover",
+            "Content, with buttons",
+            (380.0, 160.0),
+            || {
+                still(|_, _| {
+                    let colors = theme();
+                    div()
+                        .col()
+                        .p(INSET)
+                        .child(
+                            components::popover(340.0)
+                                .content()
+                                .title("Swap node_modules?")
+                                .render()
+                                .child(
+                                    label("The branch takes its own copy; the shared one stays for the others.")
+                                        .size(LabelSize::Medium)
+                                        .color(colors.text_muted)
+                                        .wrap(316.0),
+                                )
+                                .child(
+                                    div()
+                                        .row()
+                                        .gap(Space::S6)
+                                        .child(div().flex(1.0))
+                                        .child(components::button(ID, "Cancel").keystroke(Some("escape")))
+                                        .child(
+                                            components::button(ID + 1, "Swap")
+                                                .kind(ButtonKind::Primary)
+                                                .keystroke(Some("enter")),
+                                        ),
+                                ),
+                        )
+                        .into()
+                })
+            },
+        ),
+        story(
             "page-header-full",
             "Page header",
             "A ticket",

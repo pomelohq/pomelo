@@ -103,12 +103,7 @@ pub fn chip(info: &UsageInfo, hot: bool) -> Node {
 }
 
 fn card(width: f32) -> ui::Div {
-    components::card()
-        .padding(6.0)
-        .raised()
-        .render()
-        .w_px(width)
-        .gap(Space::S2)
+    components::popover(width).render().gap(Space::S2)
 }
 
 fn plan_chip(plan: &str) -> Node {

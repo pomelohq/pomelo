@@ -279,14 +279,8 @@ fn plan_frees(overview: &Overview, steps: &[Request]) -> u64 {
 const SWAP_POPOVER_W: f32 = 340.0;
 const OPTIMIZE_POPOVER_W: f32 = 404.0;
 
-/// The floating card a confirmation sits in, styled like the app's other popovers.
 fn popover_frame(width: f32) -> ui::Div {
-    components::card()
-        .padding(12.0)
-        .raised()
-        .render()
-        .w_px(width)
-        .gap(Space::S8)
+    components::popover(width).content().render()
 }
 
 fn confirm_buttons(cancel: u64, confirm: u64, action: &str, hovered: Option<u64>) -> Node {
