@@ -1,11 +1,14 @@
 //! Named ways to build real UI from fixture data. The app's own code draws each one, so the gallery, snapshot
 //! tests and the design canvas show exactly what a release shows.
 
+pub mod agents;
 pub mod atoms;
 pub mod fixtures;
 pub mod foundations;
+pub mod git;
 pub mod molecules;
 pub mod services;
+pub mod settings;
 
 use std::io::BufWriter;
 use std::path::Path;
@@ -26,6 +29,17 @@ pub trait Story {
     fn key(&mut self, _key: workspace::EditKey, _shift: bool) -> bool {
         false
     }
+    /// True while the story still fills in off the main thread; the gallery keeps redrawing it until then.
+    fn pending(&mut self) -> bool {
+        false
+    }
+}
+
+/// Waits for a story to fill in, for a still that must show it whole.
+pub fn settle(story: &mut dyn Story) {
+    while story.pending() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -44,6 +58,9 @@ pub fn all() -> Vec<StoryDef> {
     all.extend(atoms::stories());
     all.extend(molecules::stories());
     all.extend(services::stories());
+    all.extend(git::stories());
+    all.extend(settings::stories());
+    all.extend(agents::stories());
     all
 }
 
@@ -116,6 +133,9 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     ("Molecules", "Surfaces", &["Card", "Modal"]),
     ("Molecules", "Messages", &["Banner", "Toast"]),
     ("Organisms", "Services", &["Services panel", "Service tab"]),
+    ("Organisms", "Git", &["Git panel"]),
+    ("Organisms", "Settings", &["Settings window"]),
+    ("Organisms", "Agents", &["Agent dock"]),
 ];
 
 /// What a group is for, so someone picking a control knows which one fits.
@@ -168,6 +188,9 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Select menu" => "A select with its menu open, as wide as the select. It opens below; near the right edge it lines up with the select's right side; near the bottom it opens above with its search line at the bottom.",
         "Services panel" => "The Services panel in the side dock: every service of the workspace, what needs attention, and the shared services.",
         "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
+        "Git panel" => "The Git panel in the side dock over every repo of the workspace: what changed and what is staged, the branch against origin with its pull request, the history, and the same panel in the window of a project on a host.",
+        "Settings window" => "The Settings window: a page per category, a search across them, and the host tab a remote window adds beside This Mac, with the host's settings read, being read or out of reach.",
+        "Agent dock" => "The agent dock: the workspace's Main agent pinned first in its tab bar, and the strip over an agent someone else drives, with Take over and the tool call waiting for Allow or Deny.",
         _ => return None,
     })
 }
@@ -191,6 +214,7 @@ pub fn paint(story: &mut dyn Story, width: f32, height: f32) -> ui::Painted {
 pub fn write_png(def: &StoryDef, scale: f32, out: &Path) -> anyhow::Result<(u32, u32)> {
     let (width, height) = def.size;
     let mut story = (def.build)()?;
+    settle(story.as_mut());
     let painted = paint(story.as_mut(), width, height);
     let mut renderer =
         ui::UiRenderer::new_headless((width * scale) as u32, (height * scale) as u32, scale)?;
@@ -289,6 +313,7 @@ mod tests {
     fn every_story_paints() {
         for def in super::all() {
             let mut story = (def.build)().unwrap_or_else(|error| panic!("{}: {error}", def.id));
+            super::settle(story.as_mut());
             let painted = super::paint(story.as_mut(), def.size.0, def.size.1);
             // The first rect is the background every story sits on.
             let drew =

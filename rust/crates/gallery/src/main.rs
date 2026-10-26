@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use scene::{Board, Camera, Group, Rasterizer};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
@@ -24,6 +24,7 @@ const MAX_RASTER: f32 = 4.0;
 // The renderer draws no finer than half a device pixel per point.
 const MIN_RASTER: f32 = 0.5;
 const GRID: f32 = 24.0;
+const MIN_WINDOW: (f64, f64) = (640.0, 400.0);
 // Rasterizing past this in one frame would drop it; the rest wait for the next.
 const RASTER_BUDGET: Duration = Duration::from_millis(10);
 
@@ -33,6 +34,16 @@ struct Saved {
     theme: String,
     camera: Option<Camera>,
     focused: Option<String>,
+    window: Option<WindowFrame>,
+}
+
+/// The window's place and size in points, so the gallery opens where it was left.
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+struct WindowFrame {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
 }
 
 fn saved_path() -> Option<std::path::PathBuf> {
@@ -71,6 +82,9 @@ struct Gallery {
     themes: Vec<(&'static str, ui::Appearance)>,
     theme: &'static str,
     pending_focus: Option<String>,
+    saved_frame: Option<WindowFrame>,
+    /// The camera or window changed since the last save; saved once they settle, so a killed gallery keeps them.
+    unsaved: bool,
     collapsed: Vec<&'static str>,
     menu: Option<Menu>,
     chrome_hovered: Option<u64>,
@@ -125,6 +139,8 @@ impl Gallery {
             themes,
             theme,
             pending_focus: saved.focused,
+            saved_frame: saved.window,
+            unsaved: false,
             collapsed: Vec::new(),
             menu: None,
             chrome_hovered: None,
@@ -135,7 +151,24 @@ impl Gallery {
         gallery
     }
 
-    fn save(&self) {
+    fn window_frame(&self) -> Option<WindowFrame> {
+        let window = self.window.as_ref()?;
+        let scale = window.scale_factor();
+        let size = window.inner_size().to_logical::<f64>(scale);
+        let position = window.outer_position().ok()?.to_logical::<f64>(scale);
+        Some(WindowFrame {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn save(&mut self) {
+        self.unsaved = false;
+        if let Some(frame) = self.window_frame() {
+            self.saved_frame = Some(frame);
+        }
         let saved = Saved {
             page: self
                 .pages
@@ -149,6 +182,7 @@ impl Gallery {
                 .focused
                 .and_then(|index| self.boards.get(index))
                 .map(|board| board.def.id.into()),
+            window: self.saved_frame,
         };
         let Some(path) = saved_path() else {
             return;
@@ -214,6 +248,7 @@ impl Gallery {
 
     fn moved(&mut self) {
         self.moved_at = Instant::now();
+        self.unsaved = true;
     }
 
     fn settled(&self) -> bool {
@@ -294,9 +329,10 @@ impl Gallery {
         let needed = self.raster_scale();
         let wanted = self.raster_target();
         let settled = self.settled();
+        let mut filling = false;
         let mut waiting: Vec<(f32, usize)> = self
             .boards
-            .iter()
+            .iter_mut()
             .enumerate()
             .filter(|(index, _)| Some(*index) != self.focused)
             .filter_map(|(index, board)| {
@@ -305,6 +341,13 @@ impl Gallery {
                 let visible = sx + w >= 0.0 && sy + h >= 0.0 && sx <= canvas.w && sy <= canvas.h;
                 if !visible || board.error.is_some() {
                     return None;
+                }
+                if board.story.as_mut().is_some_and(|story| story.pending()) {
+                    filling = true;
+                    board.stale = true;
+                    if board.image.is_some() {
+                        return None;
+                    }
                 }
                 let off_scale = board.image.as_ref().is_none_or(|raster| {
                     raster.scale < needed * 0.95 || raster.scale > wanted * 2.0
@@ -330,7 +373,7 @@ impl Gallery {
             }
             drawn += 1;
         }
-        waiting.len() > drawn
+        filling || waiting.len() > drawn
     }
 
     fn draw(&mut self) {
@@ -710,6 +753,8 @@ impl Gallery {
         }
         if more || !self.settled() {
             self.redraw();
+        } else if self.unsaved {
+            self.save();
         }
     }
 
@@ -1014,9 +1059,16 @@ impl ApplicationHandler for Gallery {
         }
         #[cfg(target_os = "macos")]
         set_dock_icon();
-        let attributes = Window::default_attributes()
-            .with_title("Pomelo Gallery")
-            .with_inner_size(LogicalSize::new(1440.0, 900.0));
+        let mut attributes = Window::default_attributes().with_title("Pomelo Gallery");
+        attributes = match self.saved_frame {
+            Some(frame) => attributes
+                .with_inner_size(LogicalSize::new(
+                    frame.width.max(MIN_WINDOW.0),
+                    frame.height.max(MIN_WINDOW.1),
+                ))
+                .with_position(LogicalPosition::new(frame.x, frame.y)),
+            None => attributes.with_inner_size(LogicalSize::new(1440.0, 900.0)),
+        };
         let window = Arc::new(
             event_loop
                 .create_window(attributes)
@@ -1039,6 +1091,10 @@ impl ApplicationHandler for Gallery {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let scale = self.scale();
         match event {
+            WindowEvent::Moved(_) => {
+                self.moved();
+                self.redraw();
+            }
             WindowEvent::CloseRequested => {
                 self.save();
                 event_loop.exit();
@@ -1047,6 +1103,7 @@ impl ApplicationHandler for Gallery {
                 if let Some(renderer) = self.renderer.as_mut() {
                     renderer.resize(size.width, size.height);
                 }
+                self.moved();
                 self.redraw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {

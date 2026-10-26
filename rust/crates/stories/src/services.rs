@@ -1,23 +1,12 @@
 //! The Services panel and its tabs over one project, on this machine and on a host.
 
-use std::sync::atomic::AtomicUsize;
-
 use workspace::SidePanelView;
 
+use crate::fixtures::Scratch;
 use crate::{Story, StoryDef};
 
 /// The project the services stories draw, local and remote alike.
 pub const SERVICES_YML: &str = "session: myproject\nshared_services:\n  postgres:\n    image: postgres:16\n  redis:\n    image: redis:7\n  files:\n    image: minio/minio\n  mail:\n    image: axllent/mailpit\n  mock-as:\n    cmd: node scripts/mock-as.js\n    repo: api\nworkspace_services:\n  gateway:\n    cmd: caddy run\n    port: 8080\nrepos:\n  api:\n    env:\n      .env.development:\n        RAILS_ENV: development\n    shared_services: [postgres, redis, files, mock-as]\n    services:\n      server:\n        type: backend\n        port: true\n        mode: dev\n        modes:\n          dev: bin/rails server -p $PORT\n      jobs:\n        mode: dev\n        modes:\n          dev: bundle exec sidekiq\n      mailer: bin/mailer\n  web:\n    services:\n      app:\n        type: frontend\n        port: true\n        mode: hmr\n        modes:\n          hmr: npm run dev -- --port $PORT\n      storybook:\n        type: frontend\n        cmd: npm run storybook -- -p $PORT\n";
-
-static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
-
-struct Scratch(std::path::PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 /// A panel over the services project; its scratch folder goes when it does.
 pub struct ServicesFixture {
@@ -34,13 +23,9 @@ pub fn fixture(on_host: bool, stopped: Option<&str>) -> anyhow::Result<ServicesF
             _scratch: None,
         });
     }
-    let dir = std::env::temp_dir().join(format!(
-        "pom-story-svc-{}-{}",
-        std::process::id(),
-        NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
+    let scratch = Scratch::new("svc")?;
+    let dir = scratch.path().to_path_buf();
     std::fs::create_dir_all(dir.join("workspace--feat-login"))?;
-    let scratch = Scratch(dir.clone());
     std::fs::write(dir.join("pom.yml"), SERVICES_YML)?;
     let config = pom_config::Config::load(&dir.join("pom.yml"))?;
     let runner = std::sync::Arc::new(pom_services::ServiceRunner::new(

@@ -10,57 +10,14 @@ use std::io::BufWriter;
 mod e2e;
 
 use stories::fixtures::{
-    crop_rgba, editor as editor_fixture, fixture_dir, host as remote_fixture, scene_lights,
-    window_usage,
+    crop_rgba, editor as editor_fixture, fixture_dir, git as git_fixture, host as remote_fixture,
+    scene_lights, window_usage,
 };
-mod git_fixture;
 mod modal_fixture;
 
 mod terminal_fixture;
 
 /// A design board's screen: the settings category it shows and the switches that put it in the board's state.
-/// Local git whose scans and answers go through JSON, as a remote window receives them.
-struct WireGit;
-
-fn over_wire<T: serde::Serialize + serde::de::DeserializeOwned>(value: T) -> T {
-    serde_json::to_value(&value)
-        .and_then(serde_json::from_value)
-        .unwrap_or(value)
-}
-
-impl git::access::GitAccess for WireGit {
-    fn scan(&self, repo: &git::access::RepoSource) -> git::scan::RepoScan {
-        over_wire(git::access::LocalGit.scan(repo))
-    }
-
-    fn act(
-        &self,
-        repo: &git::access::RepoSource,
-        op: git::access::GitOp,
-    ) -> Result<(), git::working_copy::CommandError> {
-        git::access::LocalGit.act(repo, over_wire(op))
-    }
-
-    fn read(
-        &self,
-        repo: &git::access::RepoSource,
-        query: git::access::GitRead,
-    ) -> Result<git::access::GitAnswer, String> {
-        git::access::LocalGit
-            .read(repo, over_wire(query))
-            .map(over_wire)
-    }
-
-    fn remote(
-        &self,
-        repo: &git::access::RepoSource,
-        command: git::access::RemoteCommand,
-        progress: &(dyn Fn(&str) + Sync),
-    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
-        git::access::LocalGit.remote(repo, over_wire(command), progress)
-    }
-}
-
 fn scene(id: &str) -> Option<(usize, &'static [(&'static str, &'static str)])> {
     Some(match id {
         "settings-appearance" => (settings_ui::APPEARANCE, &[]),
@@ -658,14 +615,14 @@ fn scene_args(args: &[String]) -> anyhow::Result<Option<(String, usize)>> {
             let Some(remote) = git_fixture::RemoteState::parse(remote) else {
                 anyhow::bail!("unknown git fixture state {state}");
             };
-            git_fixture::create_remote(remote)?
+            git_fixture::create_remote(&fixture_dir().join("git"), remote)?
         } else if *state == "drift" {
-            git_fixture::create_drift()?
+            git_fixture::create_drift(&fixture_dir().join("git"))?
         } else {
             let Some(state) = git_fixture::State::parse(state) else {
                 anyhow::bail!("unknown git fixture state {state}");
             };
-            git_fixture::create(state)?
+            git_fixture::create(&fixture_dir().join("git"), state)?
         };
         let roots: Vec<String> = roots
             .iter()
@@ -2858,11 +2815,15 @@ fn main() -> anyhow::Result<()> {
         if let Ok(reason) = std::env::var("GITUNSERVED") {
             panel = panel.with_access(std::sync::Arc::new(git::access::UnservedGit::new(reason)));
         } else if std::env::var("GITWIRE").is_ok() {
-            panel = panel.with_access(std::sync::Arc::new(WireGit));
+            panel = panel.with_access(std::sync::Arc::new(git_fixture::WireGit));
         }
         if std::env::var("GITPRS").is_ok() {
             let branch = std::env::var("WSBRANCH").unwrap_or_else(|_| "feat-login".into());
-            panel = panel.with_pull_requests(board_pull_requests(&roots, &branch)?);
+            panel = panel.with_pull_requests(git_fixture::pull_requests(
+                &roots,
+                &branch,
+                &fixture_dir().join("pr-state"),
+            )?);
         }
         panel.render(width, height);
         panel.wait_for_scan();
@@ -5048,28 +5009,7 @@ fn main() -> anyhow::Result<()> {
     let live = std::env::var("LIVE").is_ok();
     let state = settings_ui::PageState {
         jira,
-        project: settings_ui::ProjectPage {
-            session: "myproject".into(),
-            repos: vec![
-                settings_ui::RepoSummary {
-                    name: "api".into(),
-                    alias: "be".into(),
-                    services: 2,
-                    cloned: true,
-                    present: 3,
-                    workspaces: 4,
-                },
-                settings_ui::RepoSummary {
-                    name: "web".into(),
-                    alias: "web".into(),
-                    services: 1,
-                    cloned: false,
-                    present: 0,
-                    workspaces: 4,
-                },
-            ],
-            host: remote.then(|| "dev".to_string()),
-        },
+        project: stories::fixtures::settings::project_page(remote),
         agent: if live {
             settings_ui::AgentPage {
                 mcp: settings_ui::Registration::Done,
@@ -5271,48 +5211,10 @@ fn main() -> anyhow::Result<()> {
 /// unreachable or outdated puts the host's settings in that state instead of read.
 fn host_tab_fixture() -> Option<settings_ui::HostPage> {
     let tab = std::env::var("HOSTTAB").ok()?;
-    let mut host = settings_ui::HostPage::new("dev", env!("CARGO_PKG_VERSION"));
-    host.shown = tab == "host";
-    let mut values = settings::Settings::default();
-    values.workspaces.idle_sleep_minutes = 60;
-    values.workspaces.max_running = 3;
-    values.agent_command = "claude --model opus".into();
-    values.terminal_shell = "/usr/bin/zsh".into();
-    values.modules_size_limit_gb = 40;
-    let answer = settings_ui::HostAnswer {
-        values: serde_json::to_value(values).unwrap_or_default(),
-        keys: settings::HOST_KEYS
-            .iter()
-            .map(|key| key.to_string())
-            .collect(),
-        path: "/home/dev/.config/pomelo/settings.json".into(),
-    };
-    match std::env::var("HOSTSTATE").unwrap_or_default().as_str() {
-        "reading" => {}
-        "unreachable" => {
-            host.load = settings_ui::HostLoad::Unreachable(
-                "ssh: connect to host dev.example.net port 22: Operation timed out".into(),
-            );
-            host.link = settings_ui::HostLink::Disconnected;
-        }
-        "outdated" => {
-            host.version = "0.9.7".into();
-            host.load = settings_ui::HostLoad::Outdated(
-                "Changing the settings of dev needs a newer pom on dev; update it there".into(),
-            );
-        }
-        "refused" => {
-            host.take_answer(answer);
-            host.errors.push((
-                "proxy.bind".into(),
-                "10.0.0.300 is not an IP address (like 127.0.0.1 or 100.64.0.10)".into(),
-            ));
-        }
-        _ => {
-            host.take_answer(answer);
-        }
-    }
-    Some(host)
+    Some(stories::fixtures::settings::host_page(
+        tab == "host",
+        &std::env::var("HOSTSTATE").unwrap_or_default(),
+    ))
 }
 
 /// A tab with nothing behind it, for the tab bar scenes.
@@ -5662,72 +5564,6 @@ fn window_project() -> workspace::ProjectInfo {
 }
 
 /// The pull requests the Remote boards draw: api's with CI failing and changes requested, worker's passing.
-fn board_pull_requests(
-    roots: &[std::path::PathBuf],
-    branch: &str,
-) -> anyhow::Result<pull_request_ui::PullRequests> {
-    let state = fixture_dir().join("pr-state");
-    let state = state.as_path();
-    let _ = std::fs::remove_dir_all(state);
-    let prs = pull_request_ui::PullRequests::new(
-        pom_paths::StateDir::new(state.to_path_buf()),
-        "myproject",
-        std::sync::Arc::new(|| {}),
-    );
-    let pr = |repo: &str, number: u64, title: &str, checks: &str, review: &str| {
-        let target = pom_forge::PrTarget {
-            repo: repo.into(),
-            owner: "myorg".into(),
-            name: repo.into(),
-            head: branch.into(),
-        };
-        let pull = pom_forge::PullRequest {
-            number,
-            title: title.into(),
-            state: "OPEN".into(),
-            head_ref_name: branch.into(),
-            base_ref_name: "main".into(),
-            checks: checks.into(),
-            review: review.into(),
-            ..Default::default()
-        };
-        (target, pull)
-    };
-    let mut shown = Vec::new();
-    if branch != "feat-login" {
-        let (target, mut pull) = pr(
-            "myproject-api-service",
-            512,
-            "Paginate the users index and cache every page of results",
-            "fail",
-            "approved",
-        );
-        pull.conflict = true;
-        shown.push((roots[0].clone(), target, pull));
-        prs.show(branch, shown);
-        return Ok(prs);
-    }
-    for (root, (target, pull)) in roots
-        .iter()
-        .zip([
-            Some(pr(
-                "api",
-                482,
-                "Paginate the users index",
-                "fail",
-                "changes",
-            )),
-            None,
-            Some(pr("worker", 318, "Retry failed mail", "pass", "approved")),
-        ])
-        .filter_map(|(root, pr)| pr.map(|pr| (root, pr)))
-    {
-        shown.push((root.clone(), target, pull));
-    }
-    prs.show("feat-login", shown);
-    Ok(prs)
-}
-
 #[cfg(test)]
 mod tests {
     use workspace::SidePanelView;
@@ -5760,8 +5596,11 @@ mod tests {
 
     #[test]
     fn a_narrow_git_panel_truncates_instead_of_overlapping() {
-        let roots = crate::git_fixture::create_remote(crate::git_fixture::RemoteState::Narrow)
-            .expect("fixture");
+        let roots = crate::git_fixture::create_remote(
+            &crate::fixture_dir().join("git"),
+            crate::git_fixture::RemoteState::Narrow,
+        )
+        .expect("fixture");
         let sources: Vec<git_ui::RepoSource> = roots
             .iter()
             .map(|root| git_ui::RepoSource {
@@ -5775,8 +5614,12 @@ mod tests {
             .collect();
         let mut panel = git_ui::GitPanel::new(sources, None, std::sync::Arc::new(|| {}))
             .with_pull_requests(
-                crate::board_pull_requests(&roots, crate::git_fixture::NARROW_BRANCH)
-                    .expect("pull requests"),
+                crate::git_fixture::pull_requests(
+                    &roots,
+                    crate::git_fixture::NARROW_BRANCH,
+                    &crate::fixture_dir().join("pr-state"),
+                )
+                .expect("pull requests"),
             );
         let width = 300.0;
         panel.render(width, 832.0);
