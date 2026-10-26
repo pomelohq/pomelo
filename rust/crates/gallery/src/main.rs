@@ -87,10 +87,21 @@ struct Gallery {
     unsaved: bool,
     collapsed: Vec<&'static str>,
     menu: Option<Menu>,
+    story_menu: Option<StoryMenu>,
     chrome_hovered: Option<u64>,
     layers_scroll: f32,
     /// Where the layer list sits, top to bottom, so the wheel over it scrolls it instead of the canvas.
     layers_area: (f32, f32),
+}
+
+/// A focused story's context menu, opened at the pointer by a right click.
+struct StoryMenu {
+    x: f32,
+    y: f32,
+    items: Vec<components::MenuItem>,
+    submenu: Option<(u64, Vec<components::MenuItem>)>,
+    hovered: Option<u64>,
+    hits: Vec<(ui::Rect, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -143,6 +154,7 @@ impl Gallery {
             unsaved: false,
             collapsed: Vec::new(),
             menu: None,
+            story_menu: None,
             chrome_hovered: None,
             layers_scroll: 0.0,
             layers_area: (0.0, 0.0),
@@ -704,6 +716,46 @@ impl Gallery {
                 overlay.append(tip);
             }
         }
+        if let Some(menu) = self.story_menu.as_mut() {
+            let (card, menu_w, menu_h) = workspace::context_menu_card(&menu.items, menu.hovered);
+            let x = menu.x.min(w - menu_w - 6.0).max(6.0);
+            let y = menu.y.min(h - menu_h - 6.0).max(6.0);
+            let main = ui::render_interactive(
+                &card,
+                ui::Rect::new(x, y, menu_w, menu_h, ui::Rgba::TRANSPARENT),
+                ui::Interaction {
+                    hovered: menu.hovered,
+                    pressed: None,
+                },
+            );
+            menu.hits = main.hits.clone();
+            let anchor = menu.submenu.as_ref().and_then(|(id, _)| {
+                main.hits
+                    .iter()
+                    .find(|(_, hit)| hit == id)
+                    .map(|(rect, _)| *rect)
+            });
+            overlay.append(main);
+            if let (Some((_, items)), Some(row)) = (&menu.submenu, anchor) {
+                let (card, sub_w, sub_h) = workspace::context_menu_card(items, menu.hovered);
+                let sub_x = if x + menu_w + sub_w + 8.0 <= w {
+                    x + menu_w + 2.0
+                } else {
+                    (x - sub_w - 2.0).max(6.0)
+                };
+                let sub_y = (row.y - 4.0).min(h - sub_h - 6.0).max(6.0);
+                let sub = ui::render_interactive(
+                    &card,
+                    ui::Rect::new(sub_x, sub_y, sub_w, sub_h, ui::Rgba::TRANSPARENT),
+                    ui::Interaction {
+                        hovered: menu.hovered,
+                        pressed: None,
+                    },
+                );
+                menu.hits.extend(sub.hits.iter().copied());
+                overlay.append(sub);
+            }
+        }
         self.chrome_hits = side.hits.clone();
         self.chrome_hits.extend(list.hits.iter().copied());
         self.chrome_hits.extend(overlay.hits.iter().copied());
@@ -760,6 +812,24 @@ impl Gallery {
 
     fn click(&mut self) {
         let (x, y) = self.cursor;
+        if let Some(menu) = self.story_menu.as_ref() {
+            let hit = ui::topmost_hit(&menu.hits, x, y);
+            if let Some(id) = hit.filter(|id| workspace::is_submenu(*id)) {
+                self.open_submenu(id);
+                return;
+            }
+            self.story_menu = None;
+            if let (Some(id), Some(story)) = (
+                hit,
+                self.focused
+                    .and_then(|index| self.boards.get_mut(index))
+                    .and_then(Board::story),
+            ) {
+                story.menu_action(id);
+            }
+            self.redraw();
+            return;
+        }
         if let Some(id) = ui::topmost_hit(&self.chrome_hits, x, y) {
             self.chrome_click(id);
             return;
@@ -792,6 +862,50 @@ impl Gallery {
         self.last_click = Some((now, index));
         if double {
             self.focus(index);
+        }
+    }
+
+    fn right_click(&mut self) {
+        let (x, y) = self.cursor;
+        self.story_menu = None;
+        let canvas = self.canvas();
+        let Some(index) = self.focused else {
+            // A board takes clicks only once focused, so a right click on one focuses it first.
+            if let Some(index) = self.board_at(x - canvas.x, y) {
+                self.focus(index);
+            }
+            return;
+        };
+        let Some(id) = ui::topmost_hit(&self.focused_hits, x, y) else {
+            return;
+        };
+        let Some(story) = self.boards.get_mut(index).and_then(Board::story) else {
+            return;
+        };
+        let items = story.context_menu(id);
+        if !items.is_empty() {
+            self.story_menu = Some(StoryMenu {
+                x,
+                y,
+                items,
+                submenu: None,
+                hovered: None,
+                hits: Vec::new(),
+            });
+        }
+    }
+
+    fn open_submenu(&mut self, id: u64) {
+        let items = self
+            .focused
+            .and_then(|index| self.boards.get_mut(index))
+            .and_then(Board::story)
+            .map(|story| story.submenu(id))
+            .unwrap_or_default();
+        if let Some(menu) = self.story_menu.as_mut() {
+            if menu.submenu.as_ref().map(|(open, _)| *open) != Some(id) {
+                menu.submenu = (!items.is_empty()).then_some((id, items));
+            }
         }
     }
 
@@ -844,6 +958,20 @@ impl Gallery {
 
     fn hover(&mut self) {
         let (x, y) = self.cursor;
+        if let Some(menu) = self.story_menu.as_mut() {
+            let hovered = ui::topmost_hit(&menu.hits, x, y);
+            if hovered != menu.hovered {
+                menu.hovered = hovered;
+                if let Some(id) = hovered.filter(|id| workspace::is_submenu(*id)) {
+                    self.open_submenu(id);
+                }
+                self.redraw();
+            }
+            if let Some(window) = &self.window {
+                window.set_cursor(CursorIcon::Default);
+            }
+            return;
+        }
         let chrome_hovered = ui::topmost_hit(&self.chrome_hits, x, y);
         let mut pointer = chrome_hovered.is_some();
         if chrome_hovered != self.chrome_hovered {
@@ -966,6 +1094,9 @@ impl Gallery {
             }
         }
         if !pressed {
+            return;
+        }
+        if event.logical_key == Key::Named(NamedKey::Escape) && self.story_menu.take().is_some() {
             return;
         }
         let command = self.modifiers.super_key() || self.modifiers.control_key();
@@ -1150,6 +1281,9 @@ impl ApplicationHandler for Gallery {
                         self.save();
                     }
                     (ElementState::Pressed, false) if button == MouseButton::Left => self.click(),
+                    (ElementState::Pressed, false) if button == MouseButton::Right => {
+                        self.right_click()
+                    }
                     _ => {}
                 }
                 self.hover();

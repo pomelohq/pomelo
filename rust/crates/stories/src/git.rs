@@ -140,6 +140,32 @@ impl Story for GitStory {
         self.panel.as_mut().is_some_and(|panel| panel.set_hover(id))
     }
 
+    fn context_menu(&mut self, id: u64) -> Vec<components::MenuItem> {
+        match self.panel.as_mut() {
+            Some(panel) => {
+                if panel.open_menu(id) {
+                    panel.menu_items()
+                } else {
+                    Vec::new()
+                }
+            }
+            None => Vec::new(),
+        }
+    }
+
+    fn submenu(&self, id: u64) -> Vec<components::MenuItem> {
+        self.panel
+            .as_ref()
+            .map(|panel| panel.submenu_items(id))
+            .unwrap_or_default()
+    }
+
+    fn menu_action(&mut self, item: u64) {
+        if let Some(panel) = self.panel.as_mut() {
+            panel.menu_action(item);
+        }
+    }
+
     fn scroll(&mut self, dy: f32) -> bool {
         self.panel.as_mut().is_some_and(|panel| panel.scroll(dy))
     }

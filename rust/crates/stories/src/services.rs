@@ -160,6 +160,23 @@ impl Story for ServicesStory {
         matches!(self.view, View::Panel) && self.fixture.panel.scroll(dy)
     }
 
+    fn context_menu(&mut self, id: u64) -> Vec<components::MenuItem> {
+        let panel = &mut self.fixture.panel;
+        if matches!(self.view, View::Panel) && panel.open_menu(id) {
+            panel.menu_items()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn submenu(&self, id: u64) -> Vec<components::MenuItem> {
+        self.fixture.panel.submenu_items(id)
+    }
+
+    fn menu_action(&mut self, item: u64) {
+        self.fixture.panel.menu_action(item);
+    }
+
     fn text(&mut self, text: &str) -> bool {
         matches!(self.view, View::Panel) && self.fixture.panel.text(text)
     }

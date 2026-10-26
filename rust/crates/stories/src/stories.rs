@@ -29,6 +29,14 @@ pub trait Story {
     fn key(&mut self, _key: workspace::EditKey, _shift: bool) -> bool {
         false
     }
+    /// The context menu a right click on `id` opens; empty when it opens none.
+    fn context_menu(&mut self, _id: u64) -> Vec<components::MenuItem> {
+        Vec::new()
+    }
+    fn submenu(&self, _id: u64) -> Vec<components::MenuItem> {
+        Vec::new()
+    }
+    fn menu_action(&mut self, _item: u64) {}
     /// True while the story still fills in off the main thread; the gallery keeps redrawing it until then.
     fn pending(&mut self) -> bool {
         false
