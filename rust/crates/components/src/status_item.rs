@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 pub const STATUS_ITEM_HEIGHT: f32 = 20.0;
 
@@ -31,7 +31,7 @@ impl StatusItem {
     pub fn badged_icon(mut self, kind: IconKind, color: Rgba, badge: Option<Rgba>) -> Self {
         let mut glyph = div()
             .row()
-            .gap(1.0)
+            .gap(Space::Px(1.0))
             .child(icon(kind).size(14.0).color(color));
         if let Some(badge) = badge {
             glyph = glyph.child(
@@ -92,14 +92,14 @@ impl StatusItem {
             .row()
             .h_px(self.height)
             .px(if self.height > STATUS_ITEM_HEIGHT {
-                6.0
+                Space::S6
             } else {
-                4.0
+                Space::S4
             })
             .gap(if self.height > STATUS_ITEM_HEIGHT {
-                6.0
+                Space::S6
             } else {
-                4.0
+                Space::S4
             })
             .rounded(if self.height > STATUS_ITEM_HEIGHT {
                 Radius::Medium

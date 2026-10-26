@@ -1,4 +1,4 @@
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::icon_button;
 
@@ -19,9 +19,9 @@ pub fn toast(message: &str, action: Option<(&str, u64)>, close_id: u64) -> (Node
         .row()
         .items_center()
         .h_px(TOAST_HEIGHT)
-        .pl(pad_left)
-        .pr(pad_right)
-        .gap(gap)
+        .pl(Space::Px(pad_left))
+        .pr(Space::Px(pad_right))
+        .gap(Space::Px(gap))
         .rounded(Radius::Large)
         .bg(colors.elevated_surface_background)
         .border(1.0, colors.border)
@@ -35,7 +35,7 @@ pub fn toast(message: &str, action: Option<(&str, u64)>, close_id: u64) -> (Node
             div()
                 .row()
                 .h_px(24.0)
-                .px(8.0)
+                .px(Space::S8)
                 .rounded(Radius::Medium)
                 .items_center()
                 .hover_bg(colors.ghost_element_hover)

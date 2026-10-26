@@ -7,7 +7,7 @@ use markdown::{MarkdownBody, MarkdownStyle, DOCUMENT_STYLE};
 use pom_forge::{MergeMethod, PrTarget, PullRequest, TimelineItem, TimelineKind};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{TextArea, TextField};
 use workspace::{Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -226,7 +226,7 @@ impl PrItem {
         let meta = div()
             .row()
             .h_px(14.0)
-            .gap(12.0)
+            .gap(Space::S12)
             .items_center()
             .child(
                 label(author.to_string())
@@ -268,7 +268,7 @@ impl PrItem {
                 },
             ))
             .meta(meta);
-        let mut column = div().col().gap(10.0).child(header);
+        let mut column = div().col().gap(Space::S10).child(header);
         if let Some(error) = &self.error {
             column = column.child(
                 label(error.clone())
@@ -327,7 +327,7 @@ impl PrItem {
         if chips.is_empty() {
             return None;
         }
-        let mut row = div().row().gap(8.0);
+        let mut row = div().row().gap(Space::S8);
         for (kind, color, text) in chips {
             row = row.child(components::pill(text).icon(kind).color(color));
         }
@@ -355,10 +355,10 @@ impl PrItem {
     fn state_card(&self, width: f32) -> Node {
         let colors = theme();
         if self.loading.is_some() {
-            let column = div().col().gap(12.0).child(
+            let column = div().col().gap(Space::S12).child(
                 div()
                     .row()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .items_center()
                     .child(
                         icon(IconKind::LoadCircle)
@@ -371,7 +371,7 @@ impl PrItem {
                             .color(colors.text_muted),
                     ),
             );
-            let mut lines = div().col().gap(10.0).w_px(420.0).py(4.0);
+            let mut lines = div().col().gap(Space::S10).w_px(420.0).py(Space::S4);
             for share in [0.6, 0.9, 0.4, 0.75, 0.55] {
                 lines = lines.child(
                     div()
@@ -398,7 +398,7 @@ impl PrItem {
                 "Open one on GitHub; it shows up here on the next refresh.".to_string(),
             ),
         };
-        let mut actions = div().row().gap(8.0).items_center();
+        let mut actions = div().row().gap(Space::S8).items_center();
         if self.error.is_none() {
             actions = actions.child(
                 components::button(CREATE_PR, "Create Pull Request")
@@ -415,7 +415,7 @@ impl PrItem {
                     .padding(18.0)
                     .render()
                     .w_px(card_width)
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(icon(kind).size(20.0).color(color))
                     .child(
                         label(title)
@@ -503,7 +503,7 @@ impl PrItem {
                 })
                 .unwrap_or_else(|| div().into())
         };
-        let mut column = div().col().gap(8.0);
+        let mut column = div().col().gap(Space::S8);
         for item in &timeline {
             let (verb, color) = match (item.kind, item.state.as_str()) {
                 (TimelineKind::Review, "APPROVED") => ("approved", colors.success),
@@ -516,13 +516,13 @@ impl PrItem {
             let mut card = components::card()
                 .padding(12.0)
                 .render()
-                .gap(6.0)
-                .py(10.0)
+                .gap(Space::S6)
+                .py(Space::S10)
                 .child(
                     div()
                         .row()
                         .h_px(16.0)
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .items_center()
                         .child(
                             label(item.author.clone())
@@ -545,7 +545,7 @@ impl PrItem {
                     Some(line) => format!("{}:{line}", thread.path),
                     None => thread.path.clone(),
                 };
-                let mut head = div().row().h_px(16.0).gap(10.0).items_center().child(
+                let mut head = div().row().h_px(16.0).gap(Space::S10).items_center().child(
                     label(place)
                         .size(LabelSize::Small)
                         .mono()
@@ -562,9 +562,9 @@ impl PrItem {
                 }
                 let mut thread_box = div()
                     .col()
-                    .gap(6.0)
-                    .px(8.0)
-                    .py(6.0)
+                    .gap(Space::S6)
+                    .px(Space::S8)
+                    .py(Space::S6)
                     .rounded(Radius::Small)
                     .bg(colors.editor_background)
                     .child(head);
@@ -572,11 +572,11 @@ impl PrItem {
                     thread_box = thread_box.child(
                         div()
                             .col()
-                            .gap(4.0)
+                            .gap(Space::S4)
                             .child(
                                 div()
                                     .row()
-                                    .gap(8.0)
+                                    .gap(Space::S8)
                                     .items_center()
                                     .child(
                                         label(comment.author.clone())
@@ -616,7 +616,7 @@ impl PrItem {
         let section = |title: &str, body: Node| -> Node {
             div()
                 .col()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(Self::section(title))
                 .child(body)
                 .into()
@@ -627,14 +627,14 @@ impl PrItem {
                 .color(colors.text_placeholder)
                 .into()
         };
-        let mut column = div().col().gap(14.0);
+        let mut column = div().col().gap(Space::S14);
         if let Some(merge) = merge {
             column = column.child(section("Merge", merge));
         }
         let reviewers: Node = if pr.reviewers.is_empty() {
             muted("No reviewers")
         } else {
-            let mut list = div().col().gap(6.0);
+            let mut list = div().col().gap(Space::S6);
             for reviewer in &pr.reviewers {
                 let (text, color) = match reviewer.state.as_str() {
                     "approved" => ("approved", colors.success),
@@ -645,7 +645,7 @@ impl PrItem {
                 list = list.child(
                     div()
                         .row()
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .items_center()
                         .child(components::avatar(&reviewer.name))
                         .child(
@@ -660,7 +660,7 @@ impl PrItem {
         };
         column = column.child(section("Reviewers", reviewers));
         if !pr.labels.is_empty() {
-            let mut chips = div().row().gap(4.0);
+            let mut chips = div().row().gap(Space::S4);
             for tag in &pr.labels {
                 let color = hex_color(&tag.color).unwrap_or(colors.text_muted);
                 chips = chips.child(
@@ -689,7 +689,7 @@ impl PrItem {
 
     fn checks(pr: &PullRequest) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(2.0);
+        let mut column = div().col().gap(Space::S2);
         if pr.status_check_rollup.is_empty() {
             return column
                 .child(
@@ -709,8 +709,8 @@ impl PrItem {
             let mut row = div()
                 .row()
                 .h_px(38.0)
-                .px(12.0)
-                .gap(10.0)
+                .px(Space::S12)
+                .gap(Space::S10)
                 .items_center()
                 .rounded(Radius::Medium)
                 .bg(colors.panel_background)
@@ -900,7 +900,12 @@ impl Item for PrItem {
             .as_ref()
             .map_or(0, |pr| pr.status_check_rollup.len());
         let content_w = width.min(MAX_CONTENT_W);
-        let mut column = div().col().w_px(body.w / scale).px(24.0).py(18.0).gap(12.0);
+        let mut column = div()
+            .col()
+            .w_px(body.w / scale)
+            .px(Space::S24)
+            .py(Space::S20)
+            .gap(Space::S12);
         if self.pr.is_none() {
             column = column.child(self.state_card(width));
         } else {

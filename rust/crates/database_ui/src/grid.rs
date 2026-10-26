@@ -6,11 +6,11 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 
 const HEADER_H: f32 = 30.0;
 pub const ROW_H: f32 = 26.0;
-const CELL_PAD: f32 = 4.0;
+const CELL_PAD: Space = Space::S4;
 const FONT: LabelSize = LabelSize::Small;
 const MIN_WIDTH: f32 = 40.0;
 /// Content-sized columns stay between these widths until resized by hand.
@@ -216,7 +216,7 @@ impl Grid {
                     .filter_map(|row| row.get(column).cloned().flatten())
                     .map(|text| text_width(text.lines().next().unwrap_or_default()))
                     .fold(self.header_width(column), f32::max);
-                (widest + 2.0 * CELL_PAD + 12.0).clamp(AUTO_MIN, AUTO_MAX)
+                (widest + 2.0 * CELL_PAD.px() + 12.0).clamp(AUTO_MIN, AUTO_MAX)
             })
             .collect()
     }
@@ -509,7 +509,7 @@ impl Grid {
                     .bg(header_background),
             );
         for (column, _, width) in &columns {
-            let mut title = div().row().flex(1.0).gap(5.0).items_center();
+            let mut title = div().row().flex(1.0).gap(Space::S6).items_center();
             if self.primary.get(*column).copied().unwrap_or(false) {
                 title = title.child(icon(IconKind::Key).size(10.0).color(colors.warning));
             } else if self.links.get(*column).copied().unwrap_or(false) {
@@ -527,7 +527,7 @@ impl Grid {
                     .truncate(),
             );
             // The type goes first when the column is too narrow for both, so the name stays readable.
-            let room = width - 2.0 * CELL_PAD - 14.0 - text_width(&self.columns[*column]);
+            let room = width - 2.0 * CELL_PAD.px() - 14.0 - text_width(&self.columns[*column]);
             if let Some(kind) = self
                 .types
                 .get(*column)
@@ -547,7 +547,7 @@ impl Grid {
             let mut name = div()
                 .row()
                 .items_center()
-                .gap(4.0)
+                .gap(Space::S4)
                 .w_px((width - 1.0).max(0.0))
                 .h_px(HEADER_H)
                 .px(CELL_PAD)
@@ -601,7 +601,7 @@ impl Grid {
                         .row()
                         .w_px(number_width)
                         .h_px(ROW_H - 1.0)
-                        .pr(8.0)
+                        .pr(Space::S8)
                         .items_center()
                         .justify_end()
                         .child(
@@ -617,8 +617,8 @@ impl Grid {
                     .row()
                     .w_px(width)
                     .h_px(ROW_H - 1.0)
-                    .px(CELL_PAD + 4.0)
-                    .gap(6.0)
+                    .px(Space::Px(CELL_PAD.px() + 4.0))
+                    .gap(Space::S6)
                     .items_center();
                 if self.editing == Some((row, column)) {
                     if let Some(editor) = editor.take() {
@@ -672,7 +672,12 @@ impl Grid {
                         })
                         .truncate(),
                 };
-                let mut content = div().row().flex(1.0).gap(6.0).items_center().child(text);
+                let mut content = div()
+                    .row()
+                    .flex(1.0)
+                    .gap(Space::S6)
+                    .items_center()
+                    .child(text);
                 if let Some(name) = value
                     .as_ref()
                     .and_then(|value| self.labels.get(column)?.get(value))

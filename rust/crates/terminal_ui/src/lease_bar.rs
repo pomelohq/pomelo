@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use pom_agent::PendingApproval;
 use pom_paths::StateDir;
 use pom_ptyhost::SocketDir;
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Space};
 use workspace::keymap::{key_hint, Action};
 
 const TAKE_OVER: u64 = 0;
@@ -179,7 +179,7 @@ pub fn strip(
     if let Some(pending) = pending {
         let lead = div()
             .row()
-            .gap(8.0)
+            .gap(Space::S8)
             .items_center()
             .child(components::pill("Waiting for approval").attention())
             .child(
@@ -213,7 +213,13 @@ pub fn strip(
     if cards.is_empty() {
         return None;
     }
-    let mut tray = div().col().w_px(width).px(7.0).pt(7.0).pb(5.0).gap(3.0);
+    let mut tray = div()
+        .col()
+        .w_px(width)
+        .px(Space::S8)
+        .pt(Space::S8)
+        .pb(Space::S6)
+        .gap(Space::S4);
     for card in cards {
         tray = tray.child(card);
     }

@@ -1266,7 +1266,7 @@ fn main() -> anyhow::Result<()> {
         };
         let (width, height) = (420.0_f32, 760.0_f32);
         let painted = ui::render(
-            &ui::div().p(20.0).child(node).into(),
+            &ui::div().p(ui::Space::S20).child(node).into(),
             ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
         );
         let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
@@ -2522,7 +2522,7 @@ fn main() -> anyhow::Result<()> {
         let node = files_ui::file_finder_preview(paths, recent, &query);
         let (width, height) = (560.0_f32, 460.0_f32);
         let painted = ui::render(
-            &ui::div().p(8.0).child(node).into(),
+            &ui::div().p(ui::Space::S8).child(node).into(),
             ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT),
         );
         let mut r = ui::UiRenderer::new_headless((width * 2.0) as u32, (height * 2.0) as u32, 2.0)?;
@@ -2958,7 +2958,7 @@ fn main() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("the fixture pull request cannot merge"))?;
             ui::div()
                 .col()
-                .p(8.0)
+                .p(ui::Space::S8)
                 .bg(ui::theme().editor_background)
                 .child(section)
                 .into()
@@ -3247,15 +3247,15 @@ fn main() -> anyhow::Result<()> {
         let mut sheet = ui::div()
             .col()
             .w_px(lw)
-            .px(12.0)
-            .py(8.0)
+            .px(ui::Space::S12)
+            .py(ui::Space::S8)
             .bg(colors.title_bar_background);
         for (link, meta) in states {
             sheet = sheet.child(
                 ui::div()
                     .row()
                     .items_center()
-                    .gap(2.0)
+                    .gap(ui::Space::S2)
                     .h_px(40.0)
                     .child(workspace::host_indicator(
                         "dev",
@@ -3264,11 +3264,16 @@ fn main() -> anyhow::Result<()> {
                         colors.title_bar_background,
                     ))
                     .child(
-                        ui::div().row().items_center().h_px(24.0).px(8.0).child(
-                            ui::label("myproject")
-                                .size(ui::LabelSize::Medium)
-                                .color(colors.text),
-                        ),
+                        ui::div()
+                            .row()
+                            .items_center()
+                            .h_px(24.0)
+                            .px(ui::Space::S8)
+                            .child(
+                                ui::label("myproject")
+                                    .size(ui::LabelSize::Medium)
+                                    .color(colors.text),
+                            ),
                     )
                     .child(ui::div().row().flex(1.0))
                     .child(
@@ -3385,7 +3390,7 @@ fn main() -> anyhow::Result<()> {
             ui::set_theme(ui::by_name(&name));
         }
         let node = ui::div()
-            .p(8.0)
+            .p(ui::Space::S8)
             .child(database_ui::missing_database_preview(
                 lw - 16.0,
                 "myproject_api_feat-login",
@@ -3494,7 +3499,7 @@ fn main() -> anyhow::Result<()> {
                         true,
                     ),
                 ];
-                let mut sheet = ui::div().col().gap(8.0);
+                let mut sheet = ui::div().col().gap(ui::Space::S8);
                 for (label, icon, tone, progress, dismissable) in states {
                     let button = workspace::UpdateButton {
                         label: label.into(),
@@ -3530,7 +3535,7 @@ fn main() -> anyhow::Result<()> {
             0.0
         };
         let content = ui::render(
-            &ui::div().row().p(frame).child(node).into(),
+            &ui::div().row().p(ui::Space::Px(frame)).child(node).into(),
             ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
         );
         let mut painted = ui::Painted::default();
@@ -3627,7 +3632,7 @@ fn main() -> anyhow::Result<()> {
                     "finder" => files_ui::file_finder_preview(finder_fixture(), Vec::new(), query),
                     "goto-states" => ui::div()
                         .col()
-                        .gap(8.0)
+                        .gap(ui::Space::S8)
                         .children(
                             ["", "26:5", "-2"]
                                 .map(|query| files_ui::go_to_line_preview(5, 4, 31, query)),

@@ -1,4 +1,4 @@
-use ui::{div, theme, LabelSize, Node, Radius};
+use ui::{div, theme, LabelSize, Node, Radius, Space};
 
 /// A key binding in a small cap, for buttons and footers; `on_accent` when it sits on an accent fill.
 pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
@@ -15,7 +15,7 @@ pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
     div()
         .row()
         .h_px(18.0)
-        .px(5.0)
+        .px(Space::S6)
         .items_center()
         .rounded(Radius::Small)
         .bg(fill)

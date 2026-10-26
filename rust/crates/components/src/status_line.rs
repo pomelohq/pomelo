@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba, Space};
 
 /// A small status line: a leading icon in its color, then truncated muted text.
 pub struct StatusLine {
@@ -36,7 +36,7 @@ impl From<StatusLine> for Node {
             .row()
             .flex(1.0)
             .items_center()
-            .gap(4.0)
+            .gap(Space::S4)
             .child(icon(line.kind).size(12.0).color(line.color))
             .child(
                 div().row().flex(1.0).items_center().child(

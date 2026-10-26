@@ -1,4 +1,4 @@
-use ui::{div, icon, theme, Div, Icon, IconKind, Node, Radius, Rgba};
+use ui::{div, icon, theme, Div, Icon, IconKind, Node, Radius, Rgba, Space};
 
 pub const TREE_INDENT: f32 = 16.0;
 const PAD_LEFT: f32 = 8.0;
@@ -97,9 +97,9 @@ impl TreeRow {
         let mut row = div()
             .row()
             .h_px(self.height)
-            .pl(PAD_LEFT + self.depth as f32 * TREE_INDENT)
-            .pr(8.0)
-            .gap(6.0)
+            .pl(Space::Px(PAD_LEFT + self.depth as f32 * TREE_INDENT))
+            .pr(Space::S8)
+            .gap(Space::S6)
             .items_center()
             .on_click(self.id);
         if self.rounded {

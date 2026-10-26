@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, Node, Radius, Rgba};
+use ui::{div, theme, Div, Node, Radius, Rgba, Space};
 
 pub const CARD_RADIUS: Radius = Radius::XLarge;
 
@@ -68,7 +68,7 @@ impl Card {
         };
         div()
             .col()
-            .p(self.padding)
+            .p(Space::Px(self.padding))
             .rounded(if self.raised {
                 Radius::Large
             } else {

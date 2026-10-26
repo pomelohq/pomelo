@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::{Item, ItemTick, UsageInfo};
 
 pub const TAB_ID: &str = "agent-usage";
@@ -199,14 +199,14 @@ impl UsageState {
 
 /// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
 fn pack(nodes: Vec<Node>, width: f32, gap: f32, line_gap: f32) -> Node {
-    let mut column = div().col().gap(line_gap);
-    let mut line = div().row().gap(gap).items_center();
+    let mut column = div().col().gap(Space::Px(line_gap));
+    let mut line = div().row().gap(Space::Px(gap)).items_center();
     let mut used = 0.0;
     for node in nodes {
         let node_width = ui::measure(&node).0;
         if used > 0.0 && used + gap + node_width > width {
             column = column.child(line);
-            line = div().row().gap(gap).items_center();
+            line = div().row().gap(Space::Px(gap)).items_center();
             used = 0.0;
         }
         used += if used > 0.0 {
@@ -248,7 +248,7 @@ fn section(title: &str, trailing: Option<Node>, body: Node) -> Node {
     if let Some(trailing) = trailing {
         header = header.trailing(trailing);
     }
-    div().col().gap(10.0).child(header).child(body).into()
+    div().col().gap(Space::S10).child(header).child(body).into()
 }
 
 fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
@@ -256,8 +256,8 @@ fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
     div()
         .col()
         .w_px(width)
-        .p(12.0)
-        .gap(2.0)
+        .p(Space::S12)
+        .gap(Space::S2)
         .rounded(Radius::Large)
         .border(1.0, colors.border_variant)
         .child(label(value).size_px(22.0).weight(600).color(colors.text))
@@ -266,7 +266,7 @@ fn stat(value: String, title: &str, detail: Node, width: f32) -> Node {
                 .size(LabelSize::Small)
                 .color(colors.text_muted),
         )
-        .child(div().pt(4.0).child(detail))
+        .child(div().pt(Space::S4).child(detail))
         .into()
 }
 
@@ -340,7 +340,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             div()
                 .col()
                 .flex(1.0)
-                .gap(2.0)
+                .gap(Space::S2)
                 .child(
                     label("Agent usage")
                         .size_px(20.0)
@@ -396,7 +396,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .color(colors.text_placeholder)
             .into()
     };
-    let mut stats = div().row().gap(10.0);
+    let mut stats = div().row().gap(Space::S10);
     if state.show_costs {
         stats = stats.child(stat(
             format_cost(cost),
@@ -438,7 +438,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     let mut column = div()
         .col()
         .w_px(content_w)
-        .gap(22.0)
+        .gap(Space::S24)
         .child(header)
         .child(components::divider())
         .child(stats);
@@ -450,15 +450,15 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     ) {
         let card = div()
             .col()
-            .gap(6.0)
-            .p(12.0)
+            .gap(Space::S6)
+            .p(Space::S12)
             .rounded(Radius::Large)
             .border(1.0, colors.border_variant)
             .child(
                 div()
                     .row()
                     .items_center()
-                    .gap(6.0)
+                    .gap(Space::S6)
                     .child(
                         label(account.name.clone())
                             .size(LabelSize::Medium)
@@ -538,7 +538,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     )
     .hovered(hovered)
     .into();
-    let mut chart_body = div().col().gap(6.0);
+    let mut chart_body = div().col().gap(Space::S6);
     if state.period > 1 {
         let days: Vec<i64> = (0..state.period)
             .rev()
@@ -561,8 +561,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .max(f64::MIN_POSITIVE);
         let gap = 6.0;
         let bar_w = ((content_w - gap * (days.len() as f32 - 1.0)) / days.len() as f32).max(2.0);
-        let mut bars = div().row().gap(gap).h_px(CHART_H);
-        let mut axis = div().row().gap(gap);
+        let mut bars = div().row().gap(Space::Px(gap)).h_px(CHART_H);
+        let mut axis = div().row().gap(Space::Px(gap));
         for (index, day) in days.iter().enumerate() {
             let height = (totals[index] / max) as f32 * CHART_H;
             let mut bar = div()
@@ -620,7 +620,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             div()
                 .row()
                 .items_center()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(components::dot(color_of(&group.key), 8.0))
                 .child(
                     label(group.label.clone())
@@ -647,8 +647,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         .row()
         .items_center()
         .h_px(30.0)
-        .px(12.0)
-        .gap(10.0)
+        .px(Space::S12)
+        .gap(Space::S10)
         .bg(theme().recess())
         .child(div().w_px(200.0).child(hint(group_name.into())))
         .child(div().flex(1.0).child(hint("Share".into())))
@@ -681,14 +681,14 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             .row()
             .items_center()
             .h_px(38.0)
-            .px(12.0)
-            .gap(10.0)
+            .px(Space::S12)
+            .gap(Space::S10)
             .child(
                 div()
                     .row()
                     .w_px(200.0)
                     .items_center()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(components::dot(color_of(&group.key), 8.0))
                     .child(
                         label(group.label.clone())
@@ -731,8 +731,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     let clear: Option<Node> = state.filter.as_ref().map(|_| {
         div()
             .row()
-            .px(8.0)
-            .py(2.0)
+            .px(Space::S8)
+            .py(Space::S2)
             .rounded(Radius::Small)
             .on_click(CLEAR_FILTER)
             .bg(if hovered == Some(CLEAR_FILTER) {
@@ -787,7 +787,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         div()
             .row()
             .h_px(18.0)
-            .px(6.0)
+            .px(Space::S6)
             .items_center()
             .rounded(Radius::Small)
             .border(1.0, colors.border_variant)
@@ -826,8 +826,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                     .row()
                     .items_center()
                     .h_px(40.0)
-                    .px(12.0)
-                    .gap(10.0)
+                    .px(Space::S12)
+                    .gap(Space::S10)
                     .child(
                         icon(match kind {
                             AgentKind::Main => IconKind::Sparkle,
@@ -865,7 +865,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                         div()
                             .row()
                             .h_px(26.0)
-                            .px(10.0)
+                            .px(Space::S10)
                             .items_center()
                             .rounded(Radius::Medium)
                             .border(1.0, colors.border)
@@ -887,7 +887,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
             None,
             div()
                 .col()
-                .gap(8.0)
+                .gap(Space::S8)
                 .child(rows(heavy))
                 .child(
                     label("Most of a long session's tokens are its context read again each reply; a side agent that starts compacted or fresh costs a fraction of one forked from it.")
@@ -903,8 +903,8 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
     div()
         .col()
         .w_px(width)
-        .pt(36.0)
-        .pb(60.0)
+        .pt(Space::Px(36.0))
+        .pb(Space::Px(60.0))
         .items_center()
         .bg(colors.editor_background)
         .child(column)

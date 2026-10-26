@@ -1,7 +1,9 @@
 //! Drawing pieces of the onboarding page that carry no state of their own.
 
 use components::text_line;
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Radius};
+use ui::{
+    div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Radius, Space,
+};
 use workspace::text_field::{FieldFont, TextField};
 
 pub const COLUMN_W: f32 = 640.0;
@@ -15,7 +17,7 @@ pub const FOOTER_H: f32 = 52.0;
 /// The wizard's place along Repositories, Setup, Review; `done` marks every step finished.
 pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
     let colors = theme();
-    let mut row = div().row().items_center().gap(18.0);
+    let mut row = div().row().items_center().gap(Space::S20);
     for (index, title) in titles.iter().enumerate() {
         let finished = done || index < current;
         let active = !done && index == current;
@@ -55,7 +57,7 @@ pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
             div()
                 .row()
                 .items_center()
-                .gap(8.0)
+                .gap(Space::S8)
                 .on_click(crate::ids::STEP_BASE + index as u64)
                 .child(mark)
                 .child(label(title.to_string()).size(LabelSize::Small).color(ink)),
@@ -67,7 +69,7 @@ pub fn steps(titles: &[&str], current: usize, done: bool) -> Node {
 /// A page title with the muted line under it.
 pub fn head(title: &str, sub: Option<&str>) -> Node {
     let colors = theme();
-    let mut column = div().col().gap(4.0).child(text_line(
+    let mut column = div().col().gap(Space::S4).child(text_line(
         28.0,
         label(title.to_string())
             .size_px(20.0)
@@ -91,8 +93,8 @@ pub fn head(title: &str, sub: Option<&str>) -> Node {
 pub fn panel_list(items: Vec<Node>, inset: f32) -> Node {
     let mut column = div()
         .col()
-        .gap(2.0)
-        .p(inset)
+        .gap(Space::S2)
+        .p(Space::Px(inset))
         .rounded(Radius::Medium)
         .bg(theme().panel_background);
     for item in items {
@@ -154,7 +156,7 @@ pub fn input(
 
 /// The footer bar: an optional muted note or quiet actions at the left, the buttons right-aligned.
 pub fn footer(note: Option<&str>, leading: Vec<Node>, buttons: Vec<Node>) -> Node {
-    let mut start = div().row().flex(1.0).items_center().gap(8.0);
+    let mut start = div().row().flex(1.0).items_center().gap(Space::S8);
     if let Some(note) = note {
         start = start.child(muted(note).truncate());
     }
@@ -164,8 +166,8 @@ pub fn footer(note: Option<&str>, leading: Vec<Node>, buttons: Vec<Node>) -> Nod
     let mut row = div()
         .row()
         .h_px(FOOTER_H)
-        .px(16.0)
-        .gap(8.0)
+        .px(Space::S16)
+        .gap(Space::S8)
         .items_center()
         .bg(theme().panel_background)
         .child(start);
@@ -236,10 +238,10 @@ pub fn repo_row(lead: Node, name: Node, second: &str, trailing: Vec<Node>) -> No
     let mut row = div()
         .row()
         .items_center()
-        .gap(12.0)
-        .pl(10.0)
-        .pr(6.0)
-        .py(8.0)
+        .gap(Space::S12)
+        .pl(Space::S10)
+        .pr(Space::S6)
+        .py(Space::S8)
         .rounded(Radius::Small)
         .child(lead)
         .child(

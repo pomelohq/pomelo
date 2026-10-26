@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use components::{modal_footer, modal_frame, modal_header, modal_section};
-use ui::{div, label, theme, IconKind, LabelSize, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Space};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 460.0;
@@ -86,7 +86,7 @@ impl WindowModal for RenameAliasModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -198,7 +198,7 @@ impl WindowModal for RemoveRepoModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -313,7 +313,7 @@ impl WindowModal for PickReposModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -510,7 +510,7 @@ impl WindowModal for UseBranchModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)

@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Label, LabelSize, Node};
+use ui::{div, label, theme, Label, LabelSize, Node, Space};
 
 pub const KEY_WIDTH: f32 = 96.0;
 
@@ -7,7 +7,7 @@ pub fn key_value(key: Label, value: Label, detail: Option<&str>) -> Node {
     let mut row = div()
         .row()
         .items_center()
-        .gap(12.0)
+        .gap(Space::S12)
         .h_px(20.0)
         .child(div().row().w_px(KEY_WIDTH).child(key.truncate()));
     match detail.filter(|detail| !detail.is_empty()) {

@@ -2,7 +2,7 @@
 //! next or previous change. It sits at the change's top-right and sticks to the top while the change scrolls past.
 
 use git::DiffHunk;
-use ui::{div, theme, IconKind, Node, Radius, Rect};
+use ui::{div, theme, IconKind, Node, Radius, Rect, Space};
 
 use crate::{edit_line_h, FileItem, HUNK_CONTROL_BASE};
 
@@ -16,7 +16,7 @@ pub(crate) const CONTROL_COUNT: u64 = 5;
 /// Keeps the strip clear of the editor's right edge and its scrollbar.
 const RIGHT_MARGIN: f32 = 18.0;
 const BUTTON_PAD_X: f32 = 4.0;
-const BUTTON_GAP: f32 = 4.0;
+const BUTTON_GAP: Space = Space::S4;
 const ARROW_W: f32 = 18.0;
 const TEXT_SIZE: f32 = 11.0;
 
@@ -88,7 +88,7 @@ impl FileItem {
             buttons.push(self.hunk_arrow(PREVIOUS, IconKind::ArrowUp));
             width += 2.0 * ARROW_W;
         }
-        width += BUTTON_GAP * (buttons.len() as f32 - 1.0) + 2.0 * BUTTON_GAP + 2.0;
+        width += BUTTON_GAP.px() * (buttons.len() as f32 - 1.0) + 2.0 * BUTTON_GAP.px() + 2.0;
         let x = content.x + content.w - RIGHT_MARGIN * scale - width * scale;
         if x < content.x {
             return None;

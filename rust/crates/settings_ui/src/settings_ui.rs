@@ -17,7 +17,7 @@ pub use host_tab::{
 pub use settings_view::{RemoteJira, SettingsView, SideEffects};
 
 use settings::Settings;
-use ui::{div, label, render, theme, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, label, render, theme, LabelSize, Node, Radius, Rect, Rgba, Space};
 
 const ROUND: Radius = Radius::Medium;
 const SMALL_LINE_HEIGHT: f32 = 16.0;
@@ -1409,7 +1409,7 @@ fn truncate_to_width(text: &str, size: f32, mono: bool, max_w: f32) -> String {
 
 const POPOVER_BOTTOM_MARGIN: f32 = 8.0; // keep the menu this far from the window edge
 const POPOVER_MAX_H: f32 = 342.0; // the menu is this tall, not window-fit
-const POPOVER_CHROME: f32 = components::MENU_SEARCH_ROW + 5.0 + 2.0 * components::MENU_PAD;
+const POPOVER_CHROME: f32 = components::MENU_SEARCH_ROW + 5.0 + 2.0 * components::MENU_PAD.px();
 
 /// The fixed number of item rows the popover shows; the list scrolls within it rather than the menu shrinking.
 fn popover_row_cap() -> usize {
@@ -1508,7 +1508,7 @@ pub fn popover(
     layered.extend(out.rects);
     out.rects = layered;
 
-    let pad = components::MENU_PAD * s;
+    let pad = components::MENU_PAD.px() * s;
     let search_h = components::MENU_SEARCH_ROW * s;
     let search_y = if opens_above {
         y + h - pad - search_h
@@ -1519,7 +1519,7 @@ pub fn popover(
     if ui::caret_phase() {
         let caret_x = x
             + pad
-            + components::MENU_SEARCH_INSET * s
+            + components::MENU_SEARCH_INSET.px() * s
             + ui::measure_text_width(query, 12.0, false, ui::ui_font_weight()) * s;
         out.rects.push(Rect {
             x: caret_x,
@@ -1563,8 +1563,8 @@ const GAP: f32 = 6.0;
 const NAV_W: f32 = 260.0;
 const PANEL_RADIUS: f32 = 10.0;
 const SIDEBAR_W: f32 = GAP + NAV_W + GAP;
-const CONTENT_PAD: f32 = 28.0;
-const HIT_BLEED: f32 = 12.0;
+const CONTENT_PAD: Space = Space::Px(28.0);
+const HIT_BLEED: Space = Space::S12;
 const TOOLBAR_H: f32 = 52.0;
 const PAGE_TOP: f32 = TITLE_H + TOOLBAR_H;
 const NAV_FOOT_H: f32 = 26.0;
@@ -1667,7 +1667,7 @@ pub fn chrome(
         &div()
             .row()
             .h_px(TITLE_H)
-            .pl(86.0)
+            .pl(Space::Px(86.0))
             .items_center()
             .child(
                 label("Settings")
@@ -1728,8 +1728,8 @@ pub fn chrome(
         &div()
             .col()
             .h_px(NAV_FOOT_H)
-            .px(14.0)
-            .pt(4.0)
+            .px(Space::S14)
+            .pt(Space::S4)
             .child(
                 label(format!("Pomelo {}", env!("CARGO_PKG_VERSION")))
                     .size(LabelSize::Small)
@@ -1852,7 +1852,7 @@ pub fn page(
 ) -> (ui::Painted, f32) {
     let cl = rem(SIDEBAR_W);
     let top = rem(PAGE_TOP);
-    let pad = rem(CONTENT_PAD);
+    let pad = rem(CONTENT_PAD.px());
     let mut out = ui::Painted {
         rects: vec![Rect {
             radius: rem(PANEL_RADIUS),
@@ -1920,7 +1920,7 @@ pub fn page(
     } else if selected == PROJECT {
         div()
             .col()
-            .gap(16.0)
+            .gap(Space::S16)
             .child(label("Project").size(LabelSize::Large).color(theme().text))
             .child(
                 label("Open a project first: its repositories and config are edited here.")
@@ -1932,7 +1932,7 @@ pub fn page(
     } else if selected == INTEGRATIONS {
         div()
             .col()
-            .gap(16.0)
+            .gap(Space::S16)
             .child(
                 label("Integrations")
                     .size(LabelSize::Large)
@@ -1949,7 +1949,7 @@ pub fn page(
     let bleed = if search.is_empty() {
         0.0
     } else {
-        rem(HIT_BLEED)
+        rem(HIT_BLEED.px())
     };
     let area = Rect::new(
         cl + pad - bleed,
@@ -2045,8 +2045,8 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
     div()
         .col()
         .w_px(NAV_W)
-        .px(8.0)
-        .pt(8.0)
+        .px(Space::S8)
+        .pt(Space::S8)
         .child(search_box)
         .into()
 }
@@ -2060,7 +2060,7 @@ fn sidebar_nav(
     search: &str,
     host: Option<&HostPage>,
 ) -> Node {
-    let mut col = div().col().w_px(NAV_W).px(6.0).gap(1.0);
+    let mut col = div().col().w_px(NAV_W).px(Space::S6).gap(Space::Px(1.0));
     let searching = !search.is_empty();
     let q = search.to_lowercase();
     let shown: Vec<usize> = match host {
@@ -2256,7 +2256,7 @@ fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
         .h_px(30.0)
         .items_center()
         .justify_between()
-        .child(div().row().gap(8.0).items_center().child(chip))
+        .child(div().row().gap(Space::S8).items_center().child(chip))
         .child(match file {
             Some((id, text)) => Node::from(
                 components::button(id, text)
@@ -2271,7 +2271,7 @@ fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
 fn stub_body(name: &str) -> Node {
     div()
         .col()
-        .gap(10.0)
+        .gap(Space::S10)
         .child(label(name).size_px(20.0).color(theme().text))
         .child(
             label("No settings here yet.")
@@ -3164,7 +3164,7 @@ fn language_page(s: &Settings, index: usize, name: &str) -> Page {
 
 /// The header over a page opened from another: a back button, then where it sits, muted.
 fn sub_page_header(trail: &[&str]) -> Node {
-    let mut crumbs = div().row().items_center().gap(4.0);
+    let mut crumbs = div().row().items_center().gap(Space::S4);
     for (index, part) in trail.iter().enumerate() {
         if index > 0 {
             crumbs = crumbs.child(label("/").color(theme().text_muted));
@@ -3180,7 +3180,7 @@ fn sub_page_header(trail: &[&str]) -> Node {
             div()
                 .row()
                 .items_center()
-                .gap(4.0)
+                .gap(Space::S4)
                 .child(
                     div()
                         .w_px(22.0)
@@ -4142,8 +4142,8 @@ fn host_body(
 fn page_title(text: &str) -> Node {
     div()
         .col()
-        .pt(6.0)
-        .pb(4.0)
+        .pt(Space::S6)
+        .pb(Space::S4)
         .child(
             label(text.to_string())
                 .size_px(20.0)
@@ -4163,7 +4163,7 @@ fn render_page_under(
 ) -> Node {
     // Widths are in design px (the element builders re-apply the UI scale).
     let scale = ui::ui_text_scale();
-    let row_w = (w / scale - SIDEBAR_W - GAP - 2.0 * CONTENT_PAD).max(200.0);
+    let row_w = (w / scale - SIDEBAR_W - GAP - 2.0 * CONTENT_PAD.px()).max(200.0);
     let q = query.to_lowercase();
     let n = page.items.len();
     let mut visible = vec![false; n];
@@ -4298,9 +4298,12 @@ fn render_page_under(
                     }
                     Control::Buttons(buttons) => buttons
                         .iter()
-                        .fold(div().row().gap(6.0).items_center(), |row, (id, label)| {
-                            row.child(components::button(*id, label.to_string()))
-                        })
+                        .fold(
+                            div().row().gap(Space::S6).items_center(),
+                            |row, (id, label)| {
+                                row.child(components::button(*id, label.to_string()))
+                            },
+                        )
                         .into(),
                     Control::Status { running } => status_chip(*running),
                     Control::Value { text } => value_text(text),
@@ -4377,14 +4380,14 @@ fn render_page_under(
 }
 
 fn keys(binding: &str) -> Node {
-    let mut row = div().row().items_center().gap(4.0);
+    let mut row = div().row().items_center().gap(Space::S4);
     for stroke in binding.split_whitespace() {
         row = row.child(
             div()
                 .row()
                 .items_center()
                 .h_px(18.0)
-                .px(5.0)
+                .px(Space::S6)
                 .rounded(Radius::Small)
                 .bg(theme().element_hover)
                 .child(ui::render_keystroke(stroke, LabelSize::Mini)),
@@ -4396,8 +4399,8 @@ fn keys(binding: &str) -> Node {
 fn section_header(name: &str, anchor: u64, noted: bool) -> Node {
     div()
         .col()
-        .pt(22.0)
-        .pb(if noted { 6.0 } else { 8.0 })
+        .pt(Space::S24)
+        .pb(if noted { Space::S6 } else { Space::S8 })
         .on_click(anchor) // geometry marker only: lets the app read this section's y to scroll the navbar to it
         .child(components::section_header(name))
         .into()
@@ -4407,7 +4410,7 @@ fn binding_row(action: Node, name: Node, keys: Node, height: f32, last: bool) ->
     let row = div()
         .row()
         .h_px(height - 1.0)
-        .gap(16.0)
+        .gap(Space::S16)
         .items_center()
         .child(div().row().flex(1.0).child(action))
         .child(div().row().w_px(260.0).child(name))
@@ -4445,7 +4448,7 @@ fn row_frame(
     last: bool,
     error: Option<&str>,
 ) -> Node {
-    let mut right = div().row().gap(6.0).items_center();
+    let mut right = div().row().gap(Space::S6).items_center();
     if let Some(primary) = reset {
         right = right.child(
             components::icon_button(primary + RESET_OFFSET, ui::IconKind::Undo)
@@ -4456,7 +4459,7 @@ fn row_frame(
     let right: Node = right.child(control).into();
     let inner_w = if hit { row_w - 24.0 } else { row_w };
     let left_col_w = (inner_w - 48.0 - ui::measure(&right).0).max(160.0);
-    let mut left = div().col().w_px(left_col_w).gap(3.0).child(
+    let mut left = div().col().w_px(left_col_w).gap(Space::S4).child(
         div().row().h_px(20.0).items_center().child(
             label(title)
                 .size(LabelSize::Medium)
@@ -4474,7 +4477,7 @@ fn row_frame(
     let row = div()
         .row()
         .items_center()
-        .gap(24.0)
+        .gap(Space::S24)
         .child(left)
         .child(div().flex(1.0).h_px(if hit { 58.0 } else { 57.0 }))
         .child(right);
@@ -4482,9 +4485,9 @@ fn row_frame(
         let accent = theme().text_accent;
         return div()
             .col()
-            .pb(if last { 0.0 } else { 8.0 })
+            .pb(if last { Space::Px(0.0) } else { Space::S8 })
             .child(
-                row.p(12.0)
+                row.p(Space::S12)
                     .rounded(ROUND)
                     .bg(accent.alpha(0.06))
                     .border(1.0, accent.alpha(0.16)),
@@ -4493,7 +4496,7 @@ fn row_frame(
     }
     div()
         .col()
-        .child(div().col().py(10.0).child(row))
+        .child(div().col().py(Space::S10).child(row))
         .child(if last {
             div().h_px(1.0)
         } else {
@@ -4519,7 +4522,7 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
         if i % 2 == 1 {
             row = row.child(
                 div()
-                    .px(4.0)
+                    .px(Space::S4)
                     .rounded(Radius::Small)
                     .bg(theme().element_background)
                     .child(
@@ -4567,7 +4570,7 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
     } else {
         shown.to_string()
     };
-    let mut row = div().row().items_center().gap(1.0).flex(1.0);
+    let mut row = div().row().items_center().gap(Space::Px(1.0)).flex(1.0);
     row = if text.is_empty() && !editing {
         row.child(
             label(placeholder)
@@ -4602,8 +4605,8 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
     div()
         .row()
         .h_px(32.0)
-        .px(8.0)
-        .gap(8.0)
+        .px(Space::S8)
+        .gap(Space::S8)
         .items_center()
         .rounded(ROUND)
         .bg(theme().element_background)
@@ -4638,7 +4641,7 @@ fn sub_page_button(id: u64) -> Node {
     div()
         .row()
         .h_px(24.0)
-        .gap(6.0)
+        .gap(Space::S6)
         .items_center()
         .on_click(id)
         .child(

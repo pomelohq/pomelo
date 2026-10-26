@@ -1,7 +1,7 @@
 //! Drawing pieces of the Services panel that carry no state of their own.
 
 use components::{ButtonKind, ButtonSize};
-use ui::{div, icon, measure, theme, IconKind, Node, Rgba};
+use ui::{div, icon, measure, theme, IconKind, Node, Rgba, Space};
 
 /// A row's standing, as its icon and trailing text show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,14 +96,14 @@ pub(crate) fn icon_button(id: u64, kind: IconKind) -> Node {
 
 /// Lays `nodes` out left to right, starting a new line when the next would pass `width`.
 pub(crate) fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Node {
-    let mut column = div().col().gap(gap);
-    let mut line = div().row().gap(gap).items_center();
+    let mut column = div().col().gap(Space::Px(gap));
+    let mut line = div().row().gap(Space::Px(gap)).items_center();
     let mut used = 0.0;
     for node in nodes {
         let node_width = measure(&node).0;
         if used > 0.0 && used + gap + node_width > width {
             column = column.child(line);
-            line = div().row().gap(gap).items_center();
+            line = div().row().gap(Space::Px(gap)).items_center();
             used = 0.0;
         }
         used += if used > 0.0 {
@@ -128,7 +128,7 @@ pub(crate) fn section(title: &str, count: Option<usize>) -> Node {
     div()
         .row()
         .h_px(26.0)
-        .px(10.0)
+        .px(Space::S10)
         .items_center()
         .child(header.render().flex(1.0))
         .into()

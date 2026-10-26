@@ -1,4 +1,4 @@
-use ui::{div, theme, Appearance, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, theme, Appearance, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 use crate::dot;
 
@@ -71,9 +71,9 @@ impl Pill {
         let mut node = div()
             .row()
             .items_center()
-            .gap(5.0)
+            .gap(Space::S6)
             .h_px(20.0)
-            .px(7.0)
+            .px(Space::S8)
             .rounded(Radius::XLarge)
             .bg(fill)
             .child(match pill.icon {

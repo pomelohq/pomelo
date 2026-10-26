@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use ui::{theme, Node, Rect, Rgba};
+use ui::{theme, Node, Rect, Rgba, Space};
 
 use crate::{char_advance, edit_line_h, DiagnosticEntry, FileItem};
 use markdown::{Markdown, MarkdownLayout, MarkdownStyle};
@@ -24,9 +24,9 @@ const MIN_POPOVER_LINES: f32 = 4.0;
 /// Moving away by less than this still counts as heading toward a popover.
 const CLOSER_TOLERANCE: f32 = 4.0;
 const INFO_PADDING: f32 = 8.0;
-const DIAGNOSTIC_PADDING_LEFT: f32 = 8.0;
-const DIAGNOSTIC_PADDING_RIGHT: f32 = 32.0;
-const DIAGNOSTIC_PADDING_Y: f32 = 4.0;
+const DIAGNOSTIC_PADDING_LEFT: Space = Space::S8;
+const DIAGNOSTIC_PADDING_RIGHT: Space = Space::Px(32.0);
+const DIAGNOSTIC_PADDING_Y: Space = Space::S4;
 const BORDER: f32 = 1.0;
 
 /// A laid-out document kept for the width it was laid out at.
@@ -586,9 +586,11 @@ impl FileItem {
         let first = popover.scroll.min(layout.line_count().saturating_sub(1));
         let count = layout.lines_fitting(first, max_height);
         let body_height = layout.height_of(first, count);
-        let width =
-            layout.width + DIAGNOSTIC_PADDING_LEFT + DIAGNOSTIC_PADDING_RIGHT + BORDER * 2.0;
-        let height = body_height + DIAGNOSTIC_PADDING_Y * 2.0 + BORDER * 2.0;
+        let width = layout.width
+            + DIAGNOSTIC_PADDING_LEFT.px()
+            + DIAGNOSTIC_PADDING_RIGHT.px()
+            + BORDER * 2.0;
+        let height = body_height + DIAGNOSTIC_PADDING_Y.px() * 2.0 + BORDER * 2.0;
         let node = components::card()
             .padding(0.0)
             .tint(severity_color(popover.severity))

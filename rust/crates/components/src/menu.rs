@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 /// One row of a menu: click `id`, a `label`, a `checked` mark, and a `sep`arator line above it.
 #[derive(Clone, Debug)]
@@ -38,9 +38,9 @@ impl MenuItem {
 }
 
 pub const MENU_ROW: f32 = 26.0;
-pub const MENU_PAD: f32 = 4.0;
+pub const MENU_PAD: Space = Space::S4;
 pub const MENU_SEARCH_ROW: f32 = 32.0;
-pub const MENU_SEARCH_INSET: f32 = 8.0;
+pub const MENU_SEARCH_INSET: Space = Space::S8;
 const MENU_SEPARATOR: f32 = 5.0;
 const MENU_MIN_WIDTH: f32 = 200.0;
 
@@ -127,7 +127,7 @@ impl<'a> Menu<'a> {
             };
             content_width = content_width.max(label_width + right);
         }
-        let width = (16.0 + mark_width + content_width + 2.0 * MENU_PAD).max(self.min_width);
+        let width = (16.0 + mark_width + content_width + 2.0 * MENU_PAD.px()).max(self.min_width);
         // A leading separator is not drawn, so it takes no height.
         let separators = self
             .items
@@ -140,15 +140,15 @@ impl<'a> Menu<'a> {
         } else {
             0.0
         };
-        let height = MENU_PAD * 2.0
+        let height = MENU_PAD.px() * 2.0
             + search_height
             + MENU_ROW * self.items.len() as f32
             + MENU_SEPARATOR * separators;
         let separator = || {
-            div().h_px(MENU_SEPARATOR).py(2.0).child(
+            div().h_px(MENU_SEPARATOR).py(Space::S2).child(
                 div()
                     .h_px(1.0)
-                    .w_px(width - 2.0 * MENU_PAD)
+                    .w_px(width - 2.0 * MENU_PAD.px())
                     .bg(colors.border),
             )
         };
@@ -186,11 +186,16 @@ impl<'a> Menu<'a> {
             }
             if item.header {
                 card = card.child(
-                    div().row().h_px(MENU_ROW).px(8.0).items_center().child(
-                        ui::label(item.label.to_string())
-                            .size(LabelSize::Small)
-                            .color(colors.text_muted),
-                    ),
+                    div()
+                        .row()
+                        .h_px(MENU_ROW)
+                        .px(Space::S8)
+                        .items_center()
+                        .child(
+                            ui::label(item.label.to_string())
+                                .size(LabelSize::Small)
+                                .color(colors.text_muted),
+                        ),
                 );
                 continue;
             }
@@ -207,8 +212,8 @@ impl<'a> Menu<'a> {
         let mut row = div()
             .row()
             .h_px(MENU_ROW)
-            .px(8.0)
-            .gap(6.0)
+            .px(Space::S8)
+            .gap(Space::S6)
             .items_center()
             .rounded(Radius::Medium)
             .on_click(item.id);

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use pom_db::{Database, RedisKey, RedisValue, Table, VALUE_ITEMS};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -18,8 +18,8 @@ use crate::{DatabaseContext, Pending};
 const TOOLBAR_H: f32 = 40.0;
 const STATUS_H: f32 = 32.0;
 const FIELD_H: f32 = 28.0;
-const CARD_INSET: f32 = 8.0;
-const CARD_GAP: f32 = 6.0;
+const CARD_INSET: Space = Space::S8;
+const CARD_GAP: Space = Space::S6;
 const CARD_RADIUS: Radius = Radius::Medium;
 const ROW_H: f32 = 26.0;
 const TREE_W: f32 = 300.0;
@@ -461,7 +461,7 @@ impl KeyspaceItem {
         let colors = theme();
         let stem = self.stem();
         let names = self.group_names();
-        let mut tree = div().col().py(4.0);
+        let mut tree = div().col().py(Space::S4);
         if self.keys.is_empty() {
             let text = if self.loading.busy() {
                 "Loading..."
@@ -472,7 +472,7 @@ impl KeyspaceItem {
                 .child(
                     div()
                         .row()
-                        .px(12.0)
+                        .px(Space::S12)
                         .h_px(ROW_H)
                         .items_center()
                         .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
@@ -487,8 +487,8 @@ impl KeyspaceItem {
                     let mut row = div()
                         .row()
                         .h_px(ROW_H)
-                        .px(8.0)
-                        .gap(6.0)
+                        .px(Space::S8)
+                        .gap(Space::S6)
                         .items_center()
                         .on_click(id)
                         .child(components::disclosure(open).size(10.0))
@@ -530,9 +530,9 @@ impl KeyspaceItem {
                     let mut row = div()
                         .row()
                         .h_px(ROW_H)
-                        .pl(if grouped { 24.0 } else { 10.0 })
-                        .pr(10.0)
-                        .gap(8.0)
+                        .pl(if grouped { Space::S24 } else { Space::S10 })
+                        .pr(Space::S10)
+                        .gap(Space::S8)
                         .items_center()
                         .on_click(id)
                         .child(badge(&key.kind))
@@ -563,7 +563,7 @@ impl KeyspaceItem {
         }
         if self.truncated {
             tree = tree.child(
-                div().row().px(12.0).h_px(ROW_H).items_center().child(
+                div().row().px(Space::S12).h_px(ROW_H).items_center().child(
                     label(format!(
                         "The first {KEYS_MAX}; narrow the pattern for the rest"
                     ))
@@ -581,8 +581,8 @@ impl KeyspaceItem {
             div()
                 .row()
                 .h_px(26.0)
-                .px(8.0)
-                .gap(8.0)
+                .px(Space::S8)
+                .gap(Space::S8)
                 .items_center()
                 .child(
                     div().row().w_px(if numbered { 50.0 } else { 160.0 }).child(
@@ -612,8 +612,8 @@ impl KeyspaceItem {
                 div()
                     .row()
                     .h_px(26.0)
-                    .px(8.0)
-                    .gap(8.0)
+                    .px(Space::S8)
+                    .gap(Space::S8)
                     .items_center()
                     .child(
                         div()
@@ -653,7 +653,7 @@ impl KeyspaceItem {
         let Some(index) = self.selected_index() else {
             return div()
                 .col()
-                .p(14.0)
+                .p(Space::S14)
                 .child(
                     label("Select a key to see its value")
                         .size(LabelSize::Small)
@@ -664,7 +664,7 @@ impl KeyspaceItem {
         let key = self.keys[index].clone();
         let mut head = div()
             .row()
-            .gap(8.0)
+            .gap(Space::S8)
             .items_center()
             .child(badge(&key.kind))
             .child(
@@ -695,7 +695,7 @@ impl KeyspaceItem {
         } else {
             head.child(self.text_button(DELETE_KEY, "Delete key", true))
         };
-        let mut content = div().col().p(14.0).gap(10.0).child(head);
+        let mut content = div().col().p(Space::S14).gap(Space::S10).child(head);
         let value = match &self.value {
             Some((shown, value)) if *shown == key.key => value.clone(),
             _ => {
@@ -749,7 +749,7 @@ impl KeyspaceItem {
                         .child(
                             div()
                                 .col()
-                                .p(10.0)
+                                .p(Space::S10)
                                 .rounded(Radius::Medium)
                                 .border(1.0, colors.border_variant)
                                 .bg(colors.editor_background)
@@ -795,14 +795,14 @@ impl KeyspaceItem {
             }
             RedisValue::Set(members) => {
                 let count = members.len();
-                let mut lines = div().col().gap(6.0);
-                let mut line = div().row().gap(6.0);
+                let mut lines = div().col().gap(Space::S6);
+                let mut line = div().row().gap(Space::S6);
                 let mut used = 0.0;
                 for member in members {
                     let chip_w = ui::measure_text_width(&member, TEXT.px(), true, 400) + 18.0;
                     if used + chip_w > width - 40.0 && used > 0.0 {
                         lines = lines.child(line);
-                        line = div().row().gap(6.0);
+                        line = div().row().gap(Space::S6);
                         used = 0.0;
                     }
                     used += chip_w + 6.0;
@@ -810,7 +810,7 @@ impl KeyspaceItem {
                         div()
                             .row()
                             .h_px(22.0)
-                            .px(8.0)
+                            .px(Space::S8)
                             .items_center()
                             .rounded(Radius::Small)
                             .bg(colors.element_background)
@@ -968,8 +968,8 @@ impl Item for KeyspaceItem {
         let colors = theme();
         let width = body.w / scale;
         let tree_w = TREE_W.min(width * 0.42);
-        let middle_h = (body.h / scale - TOOLBAR_H - CARD_GAP - STATUS_H).max(0.0);
-        let detail_w = (width - 2.0 * CARD_INSET - CARD_GAP - tree_w).max(0.0);
+        let middle_h = (body.h / scale - TOOLBAR_H - CARD_GAP.px() - STATUS_H).max(0.0);
+        let detail_w = (width - 2.0 * CARD_INSET.px() - CARD_GAP.px() - tree_w).max(0.0);
         let card = |w: f32| {
             div()
                 .w_px(w)
@@ -986,7 +986,7 @@ impl Item for KeyspaceItem {
             .child(
                 div()
                     .row()
-                    .h_px(middle_h + CARD_GAP)
+                    .h_px(middle_h + CARD_GAP.px())
                     .px(CARD_INSET)
                     .pb(CARD_GAP)
                     .gap(CARD_GAP)
@@ -1005,12 +1005,12 @@ impl Item for KeyspaceItem {
                 Rgba::TRANSPARENT,
             )
         };
-        let tree_area = at(CARD_INSET, tree_w);
+        let tree_area = at(CARD_INSET.px(), tree_w);
         let tree = self.tree_view();
         let mut tree = self.tree.paint(&tree, tree_area);
         details::clip_right(&mut tree, tree_area.x + tree_area.w);
         details::merge(&mut painted, tree);
-        let detail_area = at(CARD_INSET + tree_w + CARD_GAP, detail_w);
+        let detail_area = at(CARD_INSET.px() + tree_w + CARD_GAP.px(), detail_w);
         let detail = self.detail_view(detail_w, middle_h);
         let mut detail = self.detail.paint(&detail, detail_area);
         details::clip_right(&mut detail, detail_area.x + detail_area.w - 2.0);

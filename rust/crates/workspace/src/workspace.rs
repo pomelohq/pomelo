@@ -90,7 +90,8 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
 
 use components::{button, key_chip, ButtonKind, MenuItem};
 use ui::{
-    div, folder_icon, label, render, theme, LabelSize, Node, Painted, Radius, Rect, Rgba, Text,
+    div, folder_icon, label, render, theme, LabelSize, Node, Painted, Radius, Rect, Rgba, Space,
+    Text,
 };
 
 pub const TOP_BAR_H: f32 = 40.0;
@@ -2979,7 +2980,7 @@ impl Layout {
         let mut trigger = div()
             .row()
             .items_center()
-            .px(8.0)
+            .px(Space::S8)
             .h_px(24.0)
             .rounded(Radius::Medium)
             .on_click(SESSION_TRIGGER)
@@ -2987,7 +2988,7 @@ impl Layout {
         if active {
             trigger = trigger.bg(theme().ghost_element_hover);
         }
-        let mut bar_row = div().row().items_center().gap(2.0).h_px(TOP_BAR_H);
+        let mut bar_row = div().row().items_center().gap(Space::S2).h_px(TOP_BAR_H);
         if let Some(host) = self
             .project
             .as_ref()
@@ -3008,7 +3009,7 @@ impl Layout {
                 div()
                     .row()
                     .items_center()
-                    .gap(4.0)
+                    .gap(Space::S4)
                     .child(
                         ui::icon(ui::IconKind::Branch)
                             .size(12.0)
@@ -3049,7 +3050,7 @@ impl Layout {
         if chevron_hot {
             chevron = chevron.bg(theme().ghost_element_hover);
         }
-        let mut right = div().row().items_center().gap(8.0).h_px(TOP_BAR_H);
+        let mut right = div().row().items_center().gap(Space::S8).h_px(TOP_BAR_H);
         if let Some(waiting) = self.waiting_workspace() {
             right = right.child(
                 components::pill(format!("{waiting} needs you"))
@@ -3063,7 +3064,7 @@ impl Layout {
                         .row()
                         .items_center()
                         .h_px(18.0)
-                        .px(5.0)
+                        .px(Space::S6)
                         .rounded(Radius::Small)
                         .bg(theme().element_hover)
                         .child(ui::render_keystroke(keys, LabelSize::Mini)),
@@ -3133,8 +3134,8 @@ impl Layout {
         div()
             .row()
             .items_center()
-            .gap(12.0)
-            .pl(12.0)
+            .gap(Space::S12)
+            .pl(Space::S12)
             .child(button(WINDOW_MINIMIZE, ui::IconKind::WindowMinimize))
             .child(button(WINDOW_MAXIMIZE, maximize))
             .child(button(WINDOW_CLOSE, ui::IconKind::Close))
@@ -3270,8 +3271,8 @@ impl Layout {
         let mut search = div()
             .row()
             .items_center()
-            .gap(6.0)
-            .px(8.0)
+            .gap(Space::S6)
+            .px(Space::S8)
             .h_px(MENU_SEARCH_H)
             .on_click(SESSION_SEARCH)
             .child(ui::search_icon().size(13.0).color(text_dim_c()));
@@ -3315,7 +3316,7 @@ impl Layout {
         );
         let mut footer = div()
             .col()
-            .gap(2.0)
+            .gap(Space::S2)
             .child(action_row(
                 ui::icon(ui::IconKind::Plus)
                     .size(14.0)
@@ -3364,12 +3365,12 @@ impl Layout {
             ),
         );
         // ---- Scrolling list (clipped): section headers + session rows, offset by the pixel scroll. ----
-        let mut col = div().col().gap(2.0);
+        let mut col = div().col().gap(Space::S2);
         for &(header, item) in &entries {
             if let Some(h) = header {
                 col = col.child(
                     div()
-                        .px(8.0)
+                        .px(Space::S8)
                         .h_px(MENU_HEADER_H)
                         .items_center()
                         .child(label(h).size(LabelSize::Small).color(text_dim_c())),
@@ -3428,7 +3429,7 @@ fn push_into(out: &mut Painted, node: &Node, area: Rect) {
 }
 
 fn menu_divider() -> Node {
-    div().py(4.0).child(components::divider()).into()
+    div().py(Space::S4).child(components::divider()).into()
 }
 
 fn caret(visible: bool) -> Node {
@@ -3447,8 +3448,8 @@ fn action_row(icon: Node, text: &str, id: u64, hovered: Option<u64>) -> Node {
     let mut r = div()
         .row()
         .items_center()
-        .gap(8.0)
-        .px(8.0)
+        .gap(Space::S8)
+        .px(Space::S8)
         .h_px(28.0)
         .rounded(Radius::Medium)
         .on_click(id)
@@ -3474,7 +3475,7 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
     let mut left = div()
         .row()
         .items_center()
-        .gap(8.0)
+        .gap(Space::S8)
         .child(ui::monitor_icon().size(16.0).color(text_dim_c()))
         .child(label(&s.name).size(LabelSize::Medium).color(if current {
             text_c()
@@ -3501,14 +3502,14 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
     let mut r = div()
         .row()
         .items_center()
-        .px(8.0)
+        .px(Space::S8)
         .h_px(28.0)
         .rounded(Radius::Medium)
         .on_click(id);
     if row_hover {
         // Hover: row action buttons pinned to the right (open in new window, open in this window, reveal,
         // delete) -- mirroring the reference's on-hover row actions.
-        let mut actions = div().row().items_center().gap(2.0);
+        let mut actions = div().row().items_center().gap(Space::S2);
         if !s.missing {
             actions = actions
                 .child(icon_button(
@@ -3571,7 +3572,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     // the terminal if it lives here, and the agent (right dock's default). No dividers between the buttons;
     // the active/visible panel's icon is accented. Returns None when the dock has no buttons.
     let dock_group = |side: DockPosition| -> Option<Node> {
-        let mut row = div().row().gap(4.0).items_center();
+        let mut row = div().row().gap(Space::S4).items_center();
         let mut has = false;
         let active_ticket = layout.project.as_ref().is_some_and(|project| {
             project
@@ -3625,14 +3626,14 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
     // footer (drawn in `WorkspaceView`), and the status strip never covers it.
     div()
         .row()
-        .px(8.0)
-        .gap(6.0)
+        .px(Space::S8)
+        .gap(Space::S6)
         .items_center()
         .justify_between()
         // Left tools: the sidebar toggle (docked left), the left dock's buttons, then diagnostics. Each group is
         // followed by a divider (editor's Left-dock rule: divider after the buttons).
         .child({
-            let mut row = div().row().gap(6.0).items_center();
+            let mut row = div().row().gap(Space::S6).items_center();
             if let Some(g) = dock_group(DockPosition::Left) {
                 row = row.child(g).child(vsep());
             }
@@ -3652,7 +3653,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
                     .and_then(|v| v.diagnostic_summary())
                     .unwrap_or_default();
                 let colors = ui::theme();
-                let mut indicator = div().row().gap(4.0).items_center();
+                let mut indicator = div().row().gap(Space::S4).items_center();
                 if summary.errors == 0 && summary.warnings == 0 {
                     indicator = indicator
                         .child(ui::icon(ui::IconKind::Check).size(14.0).color(colors.text));
@@ -3717,7 +3718,7 @@ pub fn status_bar(layout: &Layout, hovered: Option<u64>) -> Node {
         })
         .child({
             let ch = ui::chrome();
-            let mut row = div().row().gap(6.0).items_center();
+            let mut row = div().row().gap(Space::S6).items_center();
             let position = layout
                 .files_view
                 .as_ref()

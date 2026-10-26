@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use pom_db::object_storage::{format_size, Listing, ObjectEntry, PrefixStats};
 use pom_db::Database;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -20,8 +20,8 @@ const STATUS_H: f32 = 32.0;
 const HEAD_H: f32 = 28.0;
 const ROW_H: f32 = 30.0;
 const FIELD_H: f32 = 28.0;
-const CARD_INSET: f32 = 8.0;
-const CARD_GAP: f32 = 6.0;
+const CARD_INSET: Space = Space::S8;
+const CARD_GAP: Space = Space::S6;
 const CARD_RADIUS: Radius = Radius::Medium;
 const SIDE_W: f32 = 340.0;
 const SIDE_NEEDS: f32 = 640.0;
@@ -390,8 +390,8 @@ impl BucketItem {
         let mut row = div()
             .row()
             .h_px(ROW_H)
-            .px(12.0)
-            .gap(10.0)
+            .px(Space::S12)
+            .gap(Space::S10)
             .items_center()
             .on_click(id)
             .child(div().row().w_px(16.0).items_center().child(glyph))
@@ -436,7 +436,7 @@ impl BucketItem {
                 .child(
                     div()
                         .row()
-                        .px(12.0)
+                        .px(Space::S12)
                         .h_px(ROW_H)
                         .items_center()
                         .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
@@ -504,7 +504,7 @@ impl BucketItem {
             list = list.child(
                 div()
                     .row()
-                    .px(38.0)
+                    .px(Space::Px(38.0))
                     .h_px(ROW_H)
                     .items_center()
                     .child(details::link(MORE, text, self.hovered)),
@@ -636,17 +636,22 @@ impl Item for BucketItem {
         let colors = theme();
         let width = body.w / scale;
         let side_w = if width >= SIDE_NEEDS { SIDE_W } else { 0.0 };
-        let main_w =
-            (width - 2.0 * CARD_INSET - if side_w > 0.0 { side_w + CARD_GAP } else { 0.0 })
-                .max(0.0);
+        let main_w = (width
+            - 2.0 * CARD_INSET.px()
+            - if side_w > 0.0 {
+                side_w + CARD_GAP.px()
+            } else {
+                0.0
+            })
+        .max(0.0);
         let height = body.h / scale;
-        let card_h = (height - TOOLBAR_H - CARD_GAP - STATUS_H).max(0.0);
+        let card_h = (height - TOOLBAR_H - CARD_GAP.px() - STATUS_H).max(0.0);
         let list_h = (card_h - HEAD_H - 1.0).max(0.0);
         let head = div()
             .row()
             .h_px(HEAD_H)
-            .px(12.0)
-            .gap(10.0)
+            .px(Space::S12)
+            .gap(Space::S10)
             .items_center()
             .child(div().w_px(16.0))
             .child(
@@ -677,7 +682,7 @@ impl Item for BucketItem {
         };
         let mut cards = div()
             .row()
-            .h_px(card_h + CARD_GAP)
+            .h_px(card_h + CARD_GAP.px())
             .px(CARD_INSET)
             .pb(CARD_GAP)
             .gap(CARD_GAP)
@@ -690,13 +695,20 @@ impl Item for BucketItem {
             .w_px(width)
             .h_px(height)
             .bg(colors.editor_background)
-            .child(self.toolbar(width - if side_w > 0.0 { side_w + CARD_GAP } else { 0.0 }))
+            .child(self.toolbar(
+                width
+                    - if side_w > 0.0 {
+                        side_w + CARD_GAP.px()
+                    } else {
+                        0.0
+                    },
+            ))
             .child(cards)
             .child(self.status_bar())
             .into();
         let mut painted = ui::render(&frame, body);
         let list_area = Rect::new(
-            body.x + CARD_INSET * scale,
+            body.x + CARD_INSET.px() * scale,
             body.y + (TOOLBAR_H + HEAD_H + 1.0) * scale,
             main_w * scale,
             list_h * scale,
@@ -709,7 +721,7 @@ impl Item for BucketItem {
         self.side_area = None;
         if side_w > 0.0 {
             let area = Rect::new(
-                body.x + (CARD_INSET + main_w + CARD_GAP) * scale,
+                body.x + (CARD_INSET.px() + main_w + CARD_GAP.px()) * scale,
                 body.y + TOOLBAR_H * scale,
                 side_w * scale,
                 card_h * scale,
@@ -719,7 +731,7 @@ impl Item for BucketItem {
                 Some(preview) => preview.side(side_w, card_h),
                 None => div()
                     .col()
-                    .p(12.0)
+                    .p(Space::S12)
                     .child(
                         label("Select a file to preview it.")
                             .size(LabelSize::Small)

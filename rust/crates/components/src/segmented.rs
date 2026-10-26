@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, Node, Radius, Rgba};
+use ui::{div, theme, Div, IconKind, Node, Radius, Rgba, Space};
 
 use crate::ButtonSize;
 
@@ -102,9 +102,9 @@ impl Segmented {
             };
             let mut cell = div()
                 .row()
-                .h_px(size.height() - 2.0 * SEGMENT_INSET)
-                .px(size.pad_x())
-                .gap(6.0)
+                .h_px(size.height() - 2.0 * SEGMENT_INSET.px())
+                .px(Space::Px(size.pad_x()))
+                .gap(Space::S6)
                 .items_center()
                 .rounded(Radius::Small);
             if segment.enabled {
@@ -155,5 +155,5 @@ impl From<Segmented> for Node {
     }
 }
 
-const SEGMENT_INSET: f32 = 2.0;
+const SEGMENT_INSET: Space = Space::S2;
 const HOVER_TINT: f32 = 0.025;

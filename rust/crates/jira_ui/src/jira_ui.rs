@@ -9,11 +9,11 @@ use markdown::{MarkdownBody as Body, DOCUMENT_STYLE};
 use pom_jira::{IssueCache, IssueDetail};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::{Item, ItemTick};
 
-const PAD_X: f32 = 28.0;
-const PAD_Y: f32 = 20.0;
+const PAD_X: Space = Space::Px(28.0);
+const PAD_Y: Space = Space::S20;
 const DOC_W: f32 = 820.0;
 const OPEN_IN_JIRA: u64 = 1;
 const RELOAD: u64 = 2;
@@ -223,7 +223,7 @@ impl TicketItem {
                 "Reload"
             },
         ));
-        let mut column = div().col().gap(12.0).child(header);
+        let mut column = div().col().gap(Space::S12).child(header);
         if let Some(error) = &self.error {
             column = column.child(Self::callout(error, width));
         }
@@ -231,7 +231,11 @@ impl TicketItem {
     }
 
     fn section(title: String) -> Node {
-        div().row().pt(6.0).child(section_header(&title)).into()
+        div()
+            .row()
+            .pt(Space::S6)
+            .child(section_header(&title))
+            .into()
     }
 
     fn callout(text: &str, width: f32) -> Node {
@@ -244,7 +248,7 @@ impl TicketItem {
 
     fn content(&mut self, width: f32) -> Node {
         let colors = theme();
-        let mut column = div().col().gap(12.0).child(self.header(width));
+        let mut column = div().col().gap(Space::S12).child(self.header(width));
         let Some(detail) = self.detail.clone() else {
             return column.into();
         };
@@ -259,7 +263,7 @@ impl TicketItem {
             .child(Self::section("Description".into()))
             .child(description);
         if !detail.web_links.is_empty() {
-            let mut links = div().col().gap(6.0);
+            let mut links = div().col().gap(Space::S6);
             for (index, link) in detail.web_links.iter().enumerate() {
                 let title = if link.title.is_empty() {
                     link.url.clone()
@@ -270,7 +274,7 @@ impl TicketItem {
                     div()
                         .row()
                         .h_px(20.0)
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .items_center()
                         .on_click(WEB_LINK_BASE + index as u64)
                         .child(
@@ -311,15 +315,15 @@ impl TicketItem {
             column = column.child(
                 div()
                     .col()
-                    .gap(4.0)
-                    .px(12.0)
-                    .py(10.0)
+                    .gap(Space::S4)
+                    .px(Space::S12)
+                    .py(Space::S10)
                     .rounded(Radius::Medium)
                     .bg(colors.panel_background)
                     .child(
                         div()
                             .row()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .items_center()
                             .child(
                                 label(comment.author.clone())
@@ -417,7 +421,7 @@ impl Item for TicketItem {
         self.body_h = body.h / scale;
         let full = body.w / scale;
         let doc = full.min(DOC_W);
-        let width = (doc - 2.0 * PAD_X).max(120.0);
+        let width = (doc - 2.0 * PAD_X.px()).max(120.0);
         let content = self.content(width);
         let tree: Node = div()
             .col()
@@ -465,7 +469,7 @@ impl Item for TicketItem {
     }
 
     fn pointer_scroll(&mut self, _x: f32, _y: f32, delta_y: f32, _modifiers: Modifiers) -> bool {
-        let max = (self.content_h + PAD_Y - self.body_h).max(0.0);
+        let max = (self.content_h + PAD_Y.px() - self.body_h).max(0.0);
         let next = (self.scroll - delta_y).clamp(0.0, max);
         let moved = (next - self.scroll).abs() > 0.01;
         self.scroll = next;

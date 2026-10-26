@@ -16,7 +16,8 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 use ui::{
-    Context, Frame, IconKind, LabelSize, Overlay, Painted, Radius, RawView, Rect, Rgba, Window,
+    Context, Frame, IconKind, LabelSize, Overlay, Painted, Radius, RawView, Rect, Rgba, Space,
+    Window,
 };
 
 use crate::{
@@ -8481,8 +8482,8 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
         let mut line = ui::div()
             .row()
             .h_px(28.0)
-            .px(8.0)
-            .gap(8.0)
+            .px(Space::S8)
+            .gap(Space::S8)
             .items_center()
             .rounded(Radius::Medium)
             .on_click(id)
@@ -8745,7 +8746,7 @@ fn push_pane_group(
 
 const NOTIFICATION_W: f32 = 448.0;
 const NOTIFICATION_MARGIN: f32 = 12.0;
-const NOTIFICATION_PAD: f32 = 12.0;
+const NOTIFICATION_PAD: Space = Space::S12;
 const NOTIFICATION_MAX_LINES: usize = 12;
 
 fn server_notification(notice: crate::ServerNotice) -> Notification {
@@ -8929,8 +8930,9 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         }));
     let controls_w = control_w * if notification.copy { 2.0 } else { 1.0 };
     let icon_w = if icon.is_some() { 16.0 + 10.0 } else { 0.0 };
-    let text_w = (card_w / scale - NOTIFICATION_PAD - 8.0 - icon_w - controls_w - 10.0).max(40.0);
-    let mut message = ui::div().col().gap(2.0);
+    let text_w =
+        (card_w / scale - NOTIFICATION_PAD.px() - 8.0 - icon_w - controls_w - 10.0).max(40.0);
+    let mut message = ui::div().col().gap(Space::S2);
     let lines: Vec<&str> = notification.message.lines().collect();
     for line in lines.iter().take(NOTIFICATION_MAX_LINES) {
         message = message.child(
@@ -8950,7 +8952,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
     let mut text = ui::div()
         .col()
         .flex(1.0)
-        .gap(4.0)
+        .gap(Space::S4)
         .child(
             ui::label(notification.title.clone())
                 .size(LabelSize::Medium)
@@ -8958,7 +8960,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
                 .color(colors.text),
         )
         .child(message);
-    let mut actions = ui::div().row().gap(6.0).pt(6.0);
+    let mut actions = ui::div().row().gap(Space::S6).pt(Space::S6);
     let mut has_actions = false;
     if let Some(primary) = &notification.primary {
         has_actions = true;
@@ -9010,12 +9012,12 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         .pt(NOTIFICATION_PAD)
         .pb(NOTIFICATION_PAD)
         .pl(NOTIFICATION_PAD)
-        .pr(8.0)
-        .gap(10.0);
+        .pr(Space::S8)
+        .gap(Space::S10);
     if let Some((kind, color)) = icon {
         card = card.child(
             ui::div()
-                .pt(1.0)
+                .pt(Space::Px(1.0))
                 .child(ui::icon(kind).size(16.0).color(color)),
         );
     }

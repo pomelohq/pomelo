@@ -1,7 +1,7 @@
 //! The shared controls screens are built from, one state per board.
 
 use components::{ButtonKind, ButtonSize};
-use ui::{div, theme, Corner, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, theme, Corner, IconKind, LabelSize, Node, Radius, Rgba, Space};
 use workspace::InputField;
 
 use crate::{still, Story, StoryDef};
@@ -16,7 +16,7 @@ const ID: u64 = 1;
 /// A control on its own, centered with room around it.
 fn alone(control: impl Into<Node>) -> Node {
     div()
-        .p(16.0)
+        .p(Space::S16)
         .items_center()
         .justify_center()
         .child(control.into())
@@ -28,7 +28,7 @@ fn sized(kind: ButtonKind) -> Node {
     alone(
         div()
             .items_center()
-            .gap(12.0)
+            .gap(Space::S12)
             .child(components::button(ID, "Small").kind(kind))
             .child(
                 components::button(ID + 1, "Medium")
@@ -45,7 +45,7 @@ fn input(field: InputField, text: &str, focused: bool, error: bool) -> Node {
     div()
         .col()
         .w_px(INPUT.0)
-        .p(16.0)
+        .p(Space::S16)
         .child(field.render_input(ID, focused, error))
         .into()
 }
@@ -112,7 +112,7 @@ pub fn stories() -> Vec<StoryDef> {
                     div()
                         .row()
                         .items_center()
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .child(components::icon_button(ID, IconKind::Copy).size(ButtonSize::XSmall))
                         .child(components::icon_button(ID + 1, IconKind::RotateCw))
                         .child(
@@ -133,7 +133,7 @@ pub fn stories() -> Vec<StoryDef> {
                         div()
                             .row()
                             .items_center()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .child(
                                 components::icon_button(ID, IconKind::RotateCw).hovered(Some(ID)),
                             )
@@ -154,7 +154,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .items_center()
-                        .gap(12.0)
+                        .gap(Space::S12)
                         .child(components::button(ID, "Restart").enabled(false))
                         .child(
                             components::button(ID + 1, "Create")
@@ -356,7 +356,7 @@ pub fn stories() -> Vec<StoryDef> {
             still(|_, _| {
                 alone(
                     div()
-                        .p(8.0)
+                        .p(Space::S8)
                         .rounded(Radius::Medium)
                         .bg(theme().accent_fill)
                         .child(components::key_chip("cmd-enter", true)),
@@ -404,7 +404,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .items_center()
-                        .gap(12.0)
+                        .gap(Space::S12)
                         .child(components::dot(colors.success, 7.0))
                         .child(components::dot(colors.warning, 7.0))
                         .child(components::dot(colors.error, 7.0))
@@ -419,7 +419,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .items_center()
-                        .gap(12.0)
+                        .gap(Space::S12)
                         .child(components::dot(color, 6.0))
                         .child(components::dot(color, 7.0))
                         .child(components::dot(color, 8.0)),
@@ -496,7 +496,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .row()
-                        .gap(16.0)
+                        .gap(Space::S16)
                         .items_center()
                         .child(components::radio(true))
                         .child(components::radio(false)),
@@ -596,7 +596,7 @@ pub fn stories() -> Vec<StoryDef> {
                     alone(
                         div()
                             .row()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .items_center()
                             .child(
                                 ui::label("Ln 12, Col 4")
@@ -624,7 +624,7 @@ pub fn stories() -> Vec<StoryDef> {
                     alone(
                         div()
                             .row()
-                            .gap(6.0)
+                            .gap(Space::S6)
                             .items_center()
                             .child(
                                 components::status_item(Some(ID))
@@ -711,7 +711,7 @@ pub fn stories() -> Vec<StoryDef> {
                     alone(
                         div()
                             .row()
-                            .gap(4.0)
+                            .gap(Space::S4)
                             .child(tab("pom.yml").pinned(true))
                             .child(tab("README.md").preview(true)),
                     )
@@ -755,7 +755,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .row()
-                        .gap(8.0)
+                        .gap(Space::S8)
                         .items_center()
                         .child(components::avatar("Ada Lovelace"))
                         .child(components::avatar("grace"))
@@ -773,7 +773,7 @@ pub fn stories() -> Vec<StoryDef> {
                     alone(
                         div()
                             .col()
-                            .gap(8.0)
+                            .gap(Space::S8)
                             .child(components::skeleton(240.0, 1.4, 0.0))
                             .child(components::skeleton(180.0, 1.4, 0.15))
                             .child(components::skeleton(210.0, 1.4, 0.3)),
@@ -786,7 +786,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .col()
-                        .gap(4.0)
+                        .gap(Space::S4)
                         .w_px(320.0)
                         .child(components::key_value(
                             components::key_label("Branch"),
@@ -882,8 +882,8 @@ fn hovered_with_tooltip(kind: IconKind, text: &str, keys: Option<&str>) -> Node 
         .pin(Corner::TopLeft, 11.0, 9.0, POINTER, POINTER, pointer);
     div()
         .col()
-        .p(16.0)
-        .gap(4.0)
+        .p(Space::S16)
+        .gap(Space::S4)
         .child(target)
         .child(div().row().child(components::tooltip_bubble(text, keys)))
         .into()

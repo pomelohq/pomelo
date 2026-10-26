@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 pub const TAB_HEIGHT: f32 = 26.0;
 
@@ -95,8 +95,8 @@ impl Tab {
         let mut row = div()
             .row()
             .h_px(TAB_HEIGHT)
-            .px(10.0)
-            .gap(6.0)
+            .px(Space::S10)
+            .gap(Space::S6)
             .rounded(Radius::Medium)
             .items_center();
         match self.content {
@@ -144,13 +144,13 @@ impl Tab {
             row = row.bg(colors.element_hover);
         }
         // The active tab sits on a one-pixel shadow edge below it, the way a raised card casts its shadow.
-        let cell = div().col().h_px(TAB_HEIGHT + 2.0).pt(1.0);
+        let cell = div().col().h_px(TAB_HEIGHT + 2.0).pt(Space::Px(1.0));
         if self.active {
             cell.child(
                 div()
                     .col()
                     .h_px(TAB_HEIGHT + 1.0)
-                    .pb(1.0)
+                    .pb(Space::Px(1.0))
                     .rounded(Radius::Large)
                     .bg(theme().edge_shadow())
                     .child(row),

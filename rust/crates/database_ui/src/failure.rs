@@ -1,9 +1,9 @@
 use components::ButtonKind;
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
-use ui::{div, icon, label, measure, theme, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, icon, label, measure, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
-const PAD: f32 = 10.0;
-const GAP: f32 = 6.0;
+const PAD: Space = Space::S10;
+const GAP: Space = Space::S6;
 const FACT_LABEL_W: f32 = 62.0;
 const ICON_SLOT: f32 = 19.0;
 
@@ -226,10 +226,10 @@ impl Failure {
         } else {
             (colors.error, colors.error_background, colors.error_border)
         };
-        let inner = (width - 2.0 * PAD - 2.0).max(40.0);
+        let inner = (width - 2.0 * PAD.px() - 2.0).max(40.0);
         let title = div()
             .row()
-            .gap(6.0)
+            .gap(Space::S6)
             .child(
                 div()
                     .w_px(13.0)
@@ -248,7 +248,7 @@ impl Failure {
             .col()
             .w_px(width)
             .p(PAD)
-            .py(8.0)
+            .py(Space::S8)
             .gap(GAP)
             .rounded(Radius::Medium)
             .bg(background)
@@ -260,12 +260,12 @@ impl Failure {
                     .color(colors.text_muted)
                     .wrap(inner),
             );
-        let mut facts = div().col().gap(2.0);
+        let mut facts = div().col().gap(Space::S2);
         for (name, value) in self.facts() {
             facts = facts.child(
                 div()
                     .row()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .items_center()
                     .child(
                         div().w_px(FACT_LABEL_W).child(
@@ -291,8 +291,8 @@ impl Failure {
                 div()
                     .col()
                     .w_px(inner)
-                    .px(8.0)
-                    .py(6.0)
+                    .px(Space::S8)
+                    .py(Space::S6)
                     .rounded(Radius::Medium)
                     .bg(colors.editor_background)
                     .border(1.0, colors.border_variant)
@@ -317,8 +317,8 @@ impl Failure {
                     div()
                         .col()
                         .w_px(inner)
-                        .px(8.0)
-                        .py(6.0)
+                        .px(Space::S8)
+                        .py(Space::S6)
                         .rounded(Radius::Medium)
                         .bg(colors.editor_background)
                         .border(1.0, colors.border_variant)
@@ -338,7 +338,7 @@ impl Failure {
                     div()
                         .row()
                         .h_px(22.0)
-                        .gap(6.0)
+                        .gap(Space::S6)
                         .items_center()
                         .child(icon(IconKind::RotateCw).size(11.0).color(colors.icon_muted))
                         .child(
@@ -373,7 +373,7 @@ impl Failure {
                         .hovered(hover)
                         .into(),
                 );
-                for line in pack(buttons, inner, GAP) {
+                for line in pack(buttons, inner, GAP.px()) {
                     block = block.child(line);
                 }
                 if self.main_absent {
@@ -477,13 +477,13 @@ fn output_tail(error: &str) -> String {
 /// Lays `nodes` out left to right, starting a new line when the next one would pass `width`.
 fn pack(nodes: Vec<Node>, width: f32, gap: f32) -> Vec<Node> {
     let mut lines = Vec::new();
-    let mut line = div().row().gap(gap).items_center();
+    let mut line = div().row().gap(Space::Px(gap)).items_center();
     let mut used = 0.0;
     for node in nodes {
         let node_width = measure(&node).0;
         if used > 0.0 && used + gap + node_width > width {
             lines.push(line.into());
-            line = div().row().gap(gap).items_center();
+            line = div().row().gap(Space::Px(gap)).items_center();
             used = 0.0;
         }
         used += if used > 0.0 {

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use pom_db::{Database, Engine, QueryResult, Table, TableKind, TableStructure};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba, Space};
 use workspace::text_field::{FieldFont, TextArea, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -30,8 +30,8 @@ use crate::{DatabaseContext, Pending};
 const TOOLBAR_H: f32 = 40.0;
 const QUERY_H: f32 = 36.0;
 const QUERY_FIELD_H: f32 = 28.0;
-const CARD_INSET: f32 = 8.0;
-const CARD_GAP: f32 = 6.0;
+const CARD_INSET: Space = Space::S8;
+const CARD_GAP: Space = Space::S6;
 const CARD_RADIUS: Radius = Radius::Medium;
 /// Narrower than this (design px), the tab gives the whole width to the grid and hides the Details side.
 const SIDE_NEEDS: f32 = 620.0;
@@ -1307,9 +1307,9 @@ impl TableItem {
             div()
                 .row()
                 .h_px(QUERY_H)
-                .px(10.0)
-                .pb(8.0)
-                .gap(8.0)
+                .px(Space::S10)
+                .pb(Space::S8)
+                .gap(Space::S8)
                 .items_center()
         };
         if width < QUERY_STACK_BELOW {
@@ -1362,14 +1362,14 @@ impl TableItem {
                     .row()
                     .w_px(width)
                     .h_px(FILTER_H)
-                    .px(2.0)
+                    .px(Space::S2)
                     .items_center()
                     .child(
                         div()
                             .row()
                             .flex(1.0)
                             .h_px(FIELD_H - 4.0)
-                            .px(6.0)
+                            .px(Space::S6)
                             .items_center()
                             .rounded(Radius::Small)
                             .border(
@@ -1471,9 +1471,9 @@ impl TableItem {
         div()
             .row()
             .h_px(SIDE_HEAD_H)
-            .pl(12.0)
-            .pr(8.0)
-            .gap(8.0)
+            .pl(Space::S12)
+            .pr(Space::S8)
+            .gap(Space::S8)
             .items_center()
             .child(
                 components::segmented(modes, usize::from(self.side == Side::Row))
@@ -1505,7 +1505,7 @@ impl TableItem {
         let Some((row, column)) = self.grid.selected() else {
             return div()
                 .col()
-                .p(12.0)
+                .p(Space::S12)
                 .child(
                     label("Select a cell to see its whole value")
                         .size(LabelSize::Small)
@@ -1557,7 +1557,7 @@ impl TableItem {
         };
         let title = details::value_title(&cell);
         let head_h = ui::measure(&title).1 + 10.0 + 8.0 + 27.0;
-        let mut content = div().col().p(10.0).gap(8.0).child(title);
+        let mut content = div().col().p(Space::S10).gap(Space::S8).child(title);
         let json = self.shown_json.is_some() && !editing;
         match (&self.shown_json, editing) {
             (Some(parsed), false) => {
@@ -1676,7 +1676,7 @@ impl TableItem {
             .collect();
         div()
             .col()
-            .p(10.0)
+            .p(Space::S10)
             .child(details::row_view(
                 fields,
                 Some(column),
@@ -2091,14 +2091,14 @@ impl Item for TableItem {
         let side_open = self.view == View::Data && self.details && self.side_fits;
         let width = body.w / scale;
         let side_w = if side_open {
-            SIDE_W.min((width - 2.0 * CARD_INSET - CARD_GAP) * 0.5)
+            SIDE_W.min((width - 2.0 * CARD_INSET.px() - CARD_GAP.px()) * 0.5)
         } else {
             0.0
         };
         let pending_h = if self.edits.is_empty() {
             0.0
         } else {
-            ui::measure(&self.pending_bar()).1 + CARD_GAP
+            ui::measure(&self.pending_bar()).1 + CARD_GAP.px()
         };
         let querying = self.view == View::Data && !self.is_redis();
         let query_h = if querying {
@@ -2109,7 +2109,7 @@ impl Item for TableItem {
         self.grid.below_header = if querying { FILTER_H + 1.0 } else { 0.0 };
         self.grid.header_fill = false;
         let above = TOOLBAR_H + query_h;
-        let split_h = (body.h / scale - above - CARD_GAP - pending_h - STATUS_H).max(0.0);
+        let split_h = (body.h / scale - above - CARD_GAP.px() - pending_h - STATUS_H).max(0.0);
         let at = |x: f32, y: f32, w: f32, h: f32| {
             Rect::new(
                 body.x + x * scale,
@@ -2119,9 +2119,15 @@ impl Item for TableItem {
                 Rgba::TRANSPARENT,
             )
         };
-        let grid_w =
-            (width - 2.0 * CARD_INSET - if side_open { side_w + CARD_GAP } else { 0.0 }).max(0.0);
-        let middle_area = at(CARD_INSET, above, grid_w, split_h);
+        let grid_w = (width
+            - 2.0 * CARD_INSET.px()
+            - if side_open {
+                side_w + CARD_GAP.px()
+            } else {
+                0.0
+            })
+        .max(0.0);
+        let middle_area = at(CARD_INSET.px(), above, grid_w, split_h);
         let mut tree = div()
             .col()
             .w_px(width)
@@ -2134,7 +2140,7 @@ impl Item for TableItem {
         tree = tree.child(
             div()
                 .row()
-                .h_px(split_h + CARD_GAP)
+                .h_px(split_h + CARD_GAP.px())
                 .px(CARD_INSET)
                 .pb(CARD_GAP)
                 .child(
@@ -2170,7 +2176,7 @@ impl Item for TableItem {
                     &div()
                         .row()
                         .justify_center()
-                        .pt(24.0)
+                        .pt(Space::S24)
                         .child(label(text).color(colors.text_muted))
                         .into(),
                     middle_area,
@@ -2205,7 +2211,7 @@ impl Item for TableItem {
                 (View::Ddl, _, Some(Ok(ddl))) => details::ddl_view(ddl, self.hovered),
                 (View::Ddl, _, Some(Err(error))) => div()
                     .col()
-                    .p(12.0)
+                    .p(Space::S12)
                     .child(
                         label(error.clone())
                             .size(LabelSize::Small)
@@ -2214,7 +2220,7 @@ impl Item for TableItem {
                     .into(),
                 _ => div()
                     .col()
-                    .p(12.0)
+                    .p(Space::S12)
                     .child(
                         label("Loading...")
                             .size(LabelSize::Small)
@@ -2226,7 +2232,7 @@ impl Item for TableItem {
             details::merge(&mut painted, view);
         }
         if side_open {
-            let side = at(width - CARD_INSET - side_w, above, side_w, split_h);
+            let side = at(width - CARD_INSET.px() - side_w, above, side_w, split_h);
             let background = ui::render(
                 &div()
                     .rounded(CARD_RADIUS)

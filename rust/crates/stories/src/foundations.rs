@@ -1,6 +1,6 @@
 //! What every screen is built from: the active theme's color tokens, the text styles and the icons.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, TextColor};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space, TextColor};
 
 use crate::{still, Story, StoryDef};
 
@@ -116,7 +116,7 @@ fn hex(color: Rgba) -> String {
 
 fn swatches(tokens: &[&str]) -> Node {
     let colors = theme();
-    let mut column = div().col().p(16.0);
+    let mut column = div().col().p(Space::S16);
     for name in tokens {
         let Some(color) = ui::theme_file::token(&colors, name) else {
             continue;
@@ -125,7 +125,7 @@ fn swatches(tokens: &[&str]) -> Node {
             div()
                 .h_px(SWATCH_ROW)
                 .items_center()
-                .gap(12.0)
+                .gap(Space::S12)
                 .child(
                     div()
                         .w_px(40.0)
@@ -163,7 +163,7 @@ fn colors_height(group: usize) -> f32 {
 }
 
 fn sizes() -> Node {
-    let mut column = div().col().gap(14.0).p(16.0);
+    let mut column = div().col().gap(Space::S14).p(Space::S16);
     for (name, size) in [
         ("Large 16", LabelSize::Large),
         ("Default 14", LabelSize::Default),
@@ -175,7 +175,7 @@ fn sizes() -> Node {
         column = column.child(
             div()
                 .items_center()
-                .gap(16.0)
+                .gap(Space::S16)
                 .child(
                     div()
                         .w_px(90.0)
@@ -188,7 +188,7 @@ fn sizes() -> Node {
 }
 
 fn weights() -> Node {
-    let mut column = div().col().gap(14.0).p(16.0);
+    let mut column = div().col().gap(Space::S14).p(Space::S16);
     for (name, weight) in [
         ("Regular 400", 400),
         ("Medium 500", 500),
@@ -197,7 +197,7 @@ fn weights() -> Node {
         column = column.child(
             div()
                 .items_center()
-                .gap(16.0)
+                .gap(Space::S16)
                 .child(
                     div()
                         .w_px(90.0)
@@ -214,7 +214,7 @@ fn weights() -> Node {
         .child(
             div()
                 .items_center()
-                .gap(16.0)
+                .gap(Space::S16)
                 .child(
                     div().w_px(90.0).child(
                         label("Mono")
@@ -232,7 +232,7 @@ fn weights() -> Node {
 }
 
 fn text_colors() -> Node {
-    let mut column = div().col().gap(12.0).p(16.0);
+    let mut column = div().col().gap(Space::S12).p(Space::S16);
     for (name, color) in [
         ("Default", TextColor::Default),
         ("Muted", TextColor::Muted),
@@ -251,7 +251,7 @@ fn text_colors() -> Node {
 
 fn icons() -> Node {
     let colors = theme();
-    let mut grid = div().col().p(12.0);
+    let mut grid = div().col().p(Space::S12);
     for chunk in IconKind::ALL.chunks(ICON_COLUMNS) {
         let mut row = div();
         for kind in chunk {
@@ -262,7 +262,7 @@ fn icons() -> Node {
                     .h_px(ICON_CELL.1)
                     .items_center()
                     .justify_center()
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .child(icon(*kind).size(18.0).color(colors.icon))
                     .child(
                         label(format!("{kind:?}"))
@@ -277,14 +277,39 @@ fn icons() -> Node {
     grid.into()
 }
 
+fn spacings() -> Node {
+    let colors = theme();
+    let mut column = div().col().gap(Space::S8).p(Space::S16);
+    for space in Space::STEPS {
+        column = column.child(
+            div()
+                .row()
+                .gap(Space::S12)
+                .items_center()
+                .child(
+                    div()
+                        .w_px(44.0)
+                        .child(label(format!("{}", space.px())).size(LabelSize::Small)),
+                )
+                .child(
+                    div()
+                        .w_px(space.px())
+                        .h_px(12.0)
+                        .bg(colors.text_accent.alpha(0.6)),
+                ),
+        );
+    }
+    column.into()
+}
+
 fn radii() -> Node {
     let colors = theme();
-    let mut row = div().row().gap(20.0).p(16.0);
+    let mut row = div().row().gap(Space::S20).p(Space::S16);
     for radius in Radius::ALL {
         row = row.child(
             div()
                 .col()
-                .gap(8.0)
+                .gap(Space::S8)
                 .items_center()
                 .child(
                     div()
@@ -331,7 +356,7 @@ impl Story for Elevations {
             let card: Node = div()
                 .w_px(rect.w)
                 .h_px(rect.h)
-                .p(12.0)
+                .p(Space::S12)
                 .rounded(Radius::Large)
                 .bg(colors.elevated_surface_background)
                 .border(1.0, colors.border)
@@ -347,13 +372,13 @@ impl Story for Elevations {
 
 fn motions() -> Node {
     let colors = theme();
-    let mut column = div().col().gap(12.0).p(16.0);
+    let mut column = div().col().gap(Space::S12).p(Space::S16);
     for motion in ui::Motion::ALL {
         let millis = motion.duration().as_millis() as f32;
         column = column.child(
             div()
                 .row()
-                .gap(12.0)
+                .gap(Space::S12)
                 .items_center()
                 .child(
                     div()
@@ -413,6 +438,9 @@ pub fn stories() -> Vec<StoryDef> {
         }),
         story("type-colors", "Type", "Colors", (240.0, 176.0), || {
             still(|_, _| text_colors())
+        }),
+        story("spacing", "Spacing", "Steps", (220.0, 262.0), || {
+            still(|_, _| spacings())
         }),
         story("radius", "Radius", "Steps", (480.0, 112.0), || {
             still(|_, _| radii())

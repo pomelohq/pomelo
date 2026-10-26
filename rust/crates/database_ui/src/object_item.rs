@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pom_db::object_storage::{format_size, HttpTransport, ObjectEntry, ObjectRead};
 use pom_db::Database;
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect, Space};
 use workspace::{Item, ItemTick};
 
 use crate::{DatabaseContext, Pending};
@@ -18,7 +18,7 @@ const IMAGE_PREVIEW_MAX: u64 = 20 * 1024 * 1024;
 const PRESIGNED_SECONDS: u64 = 3600;
 const PREVIEW_LINES: usize = 400;
 const LINE_H: f32 = 18.0;
-const PAD: f32 = 16.0;
+const PAD: Space = Space::S16;
 
 const DOWNLOAD: u64 = 1;
 const COPY_URL: u64 = 2;
@@ -307,7 +307,7 @@ impl ObjectItem {
         if self.confirming {
             return div()
                 .row()
-                .gap(8.0)
+                .gap(Space::S8)
                 .items_center()
                 .child(
                     label(format!(
@@ -322,7 +322,7 @@ impl ObjectItem {
                 .child(components::button(CANCEL_DELETE, "Cancel").kind(ButtonKind::Ghost))
                 .into();
         }
-        let mut row = div().row().gap(8.0).items_center();
+        let mut row = div().row().gap(Space::S8).items_center();
         if !self.deleted {
             row = row
                 .child(components::button(DOWNLOAD, "Download"))
@@ -362,8 +362,8 @@ impl ObjectItem {
                 let mut text = div()
                     .col()
                     .w_px(inner)
-                    .px(8.0)
-                    .py(6.0)
+                    .px(Space::S8)
+                    .py(Space::S6)
                     .rounded(Radius::Medium)
                     .bg(colors.editor_background)
                     .border(1.0, colors.border_variant);
@@ -385,13 +385,13 @@ impl ObjectItem {
                 text.into()
             }
         };
-        let mut facts = div().col().gap(2.0);
+        let mut facts = div().col().gap(Space::S2);
         for (name, value) in self.facts().into_iter().filter(|(name, _)| *name != "path") {
             facts = facts.child(
                 div()
                     .row()
                     .h_px(22.0)
-                    .gap(8.0)
+                    .gap(Space::S8)
                     .items_center()
                     .child(
                         div().w_px(90.0).child(
@@ -414,7 +414,7 @@ impl ObjectItem {
         let actions: Node = if self.confirming {
             div()
                 .col()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(
                     label("Delete it from the bucket? It cannot be recovered.")
                         .size(LabelSize::Small)
@@ -424,7 +424,7 @@ impl ObjectItem {
                 .child(
                     div()
                         .row()
-                        .gap(6.0)
+                        .gap(Space::S6)
                         .child(action(CONFIRM_DELETE, None, "Delete", ButtonKind::Danger))
                         .child(action(CANCEL_DELETE, None, "Cancel", ButtonKind::Ghost)),
                 )
@@ -434,11 +434,11 @@ impl ObjectItem {
         } else {
             div()
                 .col()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(
                     div()
                         .row()
-                        .gap(6.0)
+                        .gap(Space::S6)
                         .child(action(
                             DOWNLOAD,
                             Some(IconKind::Download),
@@ -455,7 +455,7 @@ impl ObjectItem {
                 .child(
                     div()
                         .row()
-                        .gap(6.0)
+                        .gap(Space::S6)
                         .child(action(COPY_PATH, None, "Copy Path", ButtonKind::Secondary))
                         .child(action(DELETE, None, "Delete...", ButtonKind::Danger)),
                 )
@@ -463,8 +463,8 @@ impl ObjectItem {
         };
         let mut side = div()
             .col()
-            .p(12.0)
-            .gap(8.0)
+            .p(Space::S12)
+            .gap(Space::S8)
             .child(
                 label(self.object.name().to_string())
                     .size(LabelSize::Medium)
@@ -552,12 +552,12 @@ impl Item for ObjectItem {
         let scale = ui::ui_text_scale();
         let colors = theme();
         let width = body.w / scale;
-        let mut facts = div().col().gap(4.0);
+        let mut facts = div().col().gap(Space::S4);
         for (name, value) in self.facts() {
             facts = facts.child(
                 div()
                     .row()
-                    .gap(12.0)
+                    .gap(Space::S12)
                     .items_center()
                     .child(
                         div().w_px(96.0).child(
@@ -585,11 +585,11 @@ impl Item for ObjectItem {
             Preview::None(text) => label(text.clone())
                 .size(LabelSize::Medium)
                 .color(colors.text_placeholder)
-                .wrap(width - 2.0 * PAD)
+                .wrap(width - 2.0 * PAD.px())
                 .into(),
             Preview::Image { id } => div()
                 .col()
-                .w_px(width - 2.0 * PAD)
+                .w_px(width - 2.0 * PAD.px())
                 .h_px((body.h / scale - 200.0).max(120.0))
                 .image(*id)
                 .into(),
@@ -598,9 +598,9 @@ impl Item for ObjectItem {
                 let visible = ((body.h / scale) / LINE_H) as usize + 1;
                 let mut text = div()
                     .col()
-                    .w_px(width - 2.0 * PAD)
-                    .px(12.0)
-                    .py(10.0)
+                    .w_px(width - 2.0 * PAD.px())
+                    .px(Space::S12)
+                    .py(Space::S10)
                     .rounded(Radius::Medium)
                     .bg(colors.surface_background)
                     .border(1.0, colors.border_variant);
@@ -623,7 +623,7 @@ impl Item for ObjectItem {
             .w_px(width)
             .h_px(body.h / scale)
             .p(PAD)
-            .gap(14.0)
+            .gap(Space::S14)
             .bg(colors.editor_background)
             .child(self.toolbar());
         if let Some((text, error)) = &self.status {

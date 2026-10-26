@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Space};
 
 const TEXT: LabelSize = LabelSize::Medium;
 
@@ -87,11 +87,11 @@ impl Breadcrumb {
 
     pub fn render(self) -> Div {
         let colors = theme();
-        let mut row = div().row().gap(6.0).items_center();
+        let mut row = div().row().gap(Space::S6).items_center();
         if let Some(id) = self.click {
             row = row
                 .h_px(22.0)
-                .px(4.0)
+                .px(Space::S4)
                 .rounded(Radius::Small)
                 .on_click(id)
                 .hover_bg(colors.ghost_element_hover);

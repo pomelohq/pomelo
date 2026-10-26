@@ -1,8 +1,8 @@
-use ui::{div, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 pub const MODAL_RADIUS: Radius = Radius::XLarge;
 /// Horizontal inset of the header title and the body.
-pub const MODAL_INSET: f32 = 18.0;
+pub const MODAL_INSET: Space = Space::S20;
 
 pub fn overlay_ring() -> Rgba {
     theme().overlay_ring()
@@ -26,10 +26,10 @@ pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
         .items_center()
         .justify_between()
         .pl(MODAL_INSET)
-        .pr(12.0)
-        .pt(14.0)
-        .pb(6.0)
-        .gap(8.0)
+        .pr(Space::S12)
+        .pt(Space::S14)
+        .pb(Space::S6)
+        .gap(Space::S8)
         .child(
             div().row().flex(1.0).items_center().child(
                 label(title.to_string())
@@ -47,7 +47,12 @@ pub fn modal_header(title: &str, close_id: Option<u64>) -> Node {
 
 /// The form body: the modal's inset at the sides, groups `gap` apart.
 pub fn modal_section(gap: f32) -> Div {
-    div().col().px(MODAL_INSET).pt(10.0).pb(18.0).gap(gap)
+    div()
+        .col()
+        .px(MODAL_INSET)
+        .pt(Space::S10)
+        .pb(Space::S20)
+        .gap(Space::Px(gap))
 }
 
 /// The footer bar on the panel layer: `start` (a note) on the left, `end` (the buttons) on the right.
@@ -56,10 +61,10 @@ pub fn modal_footer(start: Option<Node>, end: Node) -> Node {
     let row = div()
         .row()
         .items_center()
-        .gap(8.0)
-        .px(14.0)
-        .pt(2.0)
-        .pb(12.0)
+        .gap(Space::S8)
+        .px(Space::S14)
+        .pt(Space::S2)
+        .pb(Space::S12)
         .child(
             div()
                 .row()

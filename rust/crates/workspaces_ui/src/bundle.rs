@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use components::{modal_footer, modal_frame, modal_header, modal_section};
 use pom_bundle::Contents;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 const WIDTH: f32 = 480.0;
@@ -89,7 +89,7 @@ impl WindowModal for ExportConfigModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -264,7 +264,7 @@ impl ImportConfigModal {
         div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 div().row().items_center().flex(1.0).child(
                     label(name)
@@ -291,8 +291,8 @@ impl ImportConfigModal {
         let lines: Vec<&str> = contents.config.lines().collect();
         let mut column = div()
             .col()
-            .px(8.0)
-            .py(6.0)
+            .px(Space::S8)
+            .py(Space::S6)
             .rounded(Radius::Medium)
             .bg(colors.editor_background)
             .border(1.0, colors.border_variant);
@@ -328,7 +328,7 @@ impl WindowModal for ImportConfigModal {
         let colors = theme();
         let width = self.width();
         let mut section = modal_section(16.0).child(self.file_row());
-        let mut buttons = div().row().items_center().gap(8.0).child(
+        let mut buttons = div().row().items_center().gap(Space::S8).child(
             components::button(CANCEL, "Cancel")
                 .size(components::ButtonSize::Medium)
                 .keystroke(Some("escape")),

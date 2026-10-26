@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::Session;
 
@@ -22,7 +22,7 @@ const WELCOME_FIX_END: u64 = 620;
 
 const CONTENT_MAX_W: f32 = 640.0;
 const PAD_X: f32 = 40.0;
-const GAP: f32 = 24.0;
+const GAP: Space = Space::S24;
 
 /// One thing the Mac needs before a project can run (Docker, git, an agent CLI), as the welcome page shows it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -75,11 +75,11 @@ fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot
         .hovered(hot)
         .render()
         .w_px(width)
-        .gap(6.0)
+        .gap(Space::S6)
         .on_click(id)
         .child(
             div()
-                .pb(4.0)
+                .pb(Space::S4)
                 .child(icon(kind).size(18.0).color(colors.text_accent)),
         )
         .child(
@@ -129,26 +129,31 @@ pub fn welcome_page(
             .bg(colors.text_accent)
             .into(),
     };
-    let hero = div().row().items_center().gap(16.0).child(mark).child(
-        div()
-            .col()
-            .gap(4.0)
-            .child(
-                label("Welcome to Pomelo")
-                    .size_px(20.0)
-                    .weight(600)
-                    .color(colors.text),
-            )
-            .child(
-                label("Every branch a full, running dev environment")
-                    .size(LabelSize::Small)
-                    .color(colors.text_muted),
-            ),
-    );
+    let hero = div()
+        .row()
+        .items_center()
+        .gap(Space::S16)
+        .child(mark)
+        .child(
+            div()
+                .col()
+                .gap(Space::S4)
+                .child(
+                    label("Welcome to Pomelo")
+                        .size_px(20.0)
+                        .weight(600)
+                        .color(colors.text),
+                )
+                .child(
+                    label("Every branch a full, running dev environment")
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted),
+                ),
+        );
     let card_w = (width - 12.0) / 2.0;
     let first_row = div()
         .row()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(action_card(
             WELCOME_NEW_PROJECT_CARD,
             IconKind::Plus,
@@ -167,7 +172,7 @@ pub fn welcome_page(
         ));
     let second_row = div()
         .row()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(action_card(
             WELCOME_CONNECT_HOST,
             IconKind::Server,
@@ -184,7 +189,11 @@ pub fn welcome_page(
             card_w,
             hovered == Some(WELCOME_IMPORT_BUNDLE),
         ));
-    let cards = div().col().gap(12.0).child(first_row).child(second_row);
+    let cards = div()
+        .col()
+        .gap(Space::S12)
+        .child(first_row)
+        .child(second_row);
     let recent: Vec<Node> = sessions
         .iter()
         .enumerate()
@@ -202,9 +211,9 @@ pub fn welcome_page(
             let mut line = div()
                 .row()
                 .items_center()
-                .gap(12.0)
+                .gap(Space::S12)
                 .h_px(44.0)
-                .px(8.0)
+                .px(Space::S8)
                 .rounded(Radius::Medium)
                 .on_click(id)
                 .child(icon(kind).size(16.0).color(colors.icon_muted))
@@ -235,8 +244,8 @@ pub fn welcome_page(
         .row()
         .items_center()
         .justify_between()
-        .px(8.0)
-        .pb(6.0)
+        .px(Space::S8)
+        .pb(Space::S6)
         .child(
             label("RECENT")
                 .size(LabelSize::Mini)
@@ -247,15 +256,15 @@ pub fn welcome_page(
         head = head.child(crate::key_chip(&keys, false));
     }
     let list = if recent.is_empty() {
-        div().col().gap(2.0).child(head).child(
-            div().row().px(8.0).py(6.0).child(
+        div().col().gap(Space::S2).child(head).child(
+            div().row().px(Space::S8).py(Space::S6).child(
                 label("No projects yet. Created and opened projects show here.")
                     .size(LabelSize::Small)
                     .color(colors.text_placeholder),
             ),
         )
     } else {
-        div().col().gap(2.0).child(head).children(recent)
+        div().col().gap(Space::S2).child(head).children(recent)
     };
     let mut column = div().col().w_px(width).gap(GAP).child(hero);
     for (index, check) in checks.iter().enumerate().filter(|(_, check)| !check.ok) {
@@ -264,8 +273,8 @@ pub fn welcome_page(
     column = column.child(cards).child(list);
     div()
         .col()
-        .pt(72.0)
-        .pb(60.0)
+        .pt(Space::Px(72.0))
+        .pb(Space::Px(60.0))
         .items_center()
         .bg(colors.editor_background)
         .child(column)
@@ -370,8 +379,8 @@ fn notice_facts(facts: &[NoticeFact]) -> Node {
     let colors = theme();
     let mut card = div()
         .col()
-        .py(6.0)
-        .px(14.0)
+        .py(Space::S6)
+        .px(Space::S14)
         .rounded(NOTICE_CARD_RADIUS)
         .bg(colors.element_background);
     for fact in facts {
@@ -406,7 +415,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
         .iter()
         .filter_map(|banner| banner.action)
         .collect();
-    let mut buttons = div().row().items_center().gap(8.0);
+    let mut buttons = div().row().items_center().gap(Space::S8);
     for index in (0..notice.actions.len()).filter(|index| !held.contains(index)) {
         if let Some(button) = notice_button(notice, index, hovered) {
             buttons = buttons.child(button);
@@ -424,7 +433,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
     let text = div()
         .col()
         .flex(1.0)
-        .gap(4.0)
+        .gap(Space::S4)
         .child(
             div().row().h_px(20.0).items_center().child(
                 label(notice.title.clone())
@@ -439,7 +448,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
                 .row()
                 .h_px(16.0)
                 .items_center()
-                .gap(6.0)
+                .gap(Space::S6)
                 .child(components::dot(dot, 8.0))
                 .child(
                     div().row().flex(1.0).child(
@@ -453,16 +462,16 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
     let head = div()
         .row()
         .items_center()
-        .gap(12.0)
+        .gap(Space::S12)
         .child(tile)
         .child(text)
         .child(buttons);
     let mut column = div()
         .col()
         .w_px(width)
-        .pt(28.0)
-        .pb(16.0)
-        .gap(16.0)
+        .pt(Space::Px(28.0))
+        .pb(Space::S16)
+        .gap(Space::S16)
         .child(head);
     for banner in &notice.banners {
         column = column.child(notice_banner(notice, banner, hovered));

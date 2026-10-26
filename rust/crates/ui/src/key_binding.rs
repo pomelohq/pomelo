@@ -153,7 +153,10 @@ pub fn render_keystroke_in(keystroke: &str, text: LabelSize, muted: Rgba) -> Nod
         return label(words.join(", ")).size(text).color(muted).into();
     }
     if keystroke.trim().contains(' ') {
-        let mut chord = div().row().items_center().gap(size * 0.45);
+        let mut chord = div()
+            .row()
+            .items_center()
+            .gap(crate::Space::Px(size * 0.45));
         for stroke in keystroke.split_whitespace() {
             chord = chord.child(render_keystroke_in(stroke, text, muted));
         }
@@ -170,7 +173,7 @@ pub fn render_keystroke_in(keystroke: &str, text: LabelSize, muted: Rgba) -> Nod
             .child(icon(kind).size(size).color(muted))
             .into()
     };
-    let mut row = div().row().items_center().gap(1.0);
+    let mut row = div().row().items_center().gap(crate::Space::Px(1.0));
     for (name, kind) in [
         ("ctrl", IconKind::Control),
         ("alt", IconKind::Option),

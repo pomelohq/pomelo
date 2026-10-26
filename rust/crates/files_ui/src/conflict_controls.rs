@@ -2,7 +2,7 @@
 //! other, or both, or to hand the file to a side agent to merge.
 
 use git::conflict::{self, Conflict, Side};
-use ui::{div, theme, IconKind, Node, Radius, Rect};
+use ui::{div, theme, IconKind, Node, Radius, Rect, Space};
 use workspace::{AgentFix, PanelRequest};
 
 use crate::{edit_line_h, FileItem, CONFLICT_CONTROL_BASE};
@@ -17,7 +17,7 @@ pub(crate) const MAX_CONFLICTS: u64 = 20_000;
 
 const RIGHT_MARGIN: f32 = 18.0;
 const BUTTON_PAD_X: f32 = 4.0;
-const BUTTON_GAP: f32 = 4.0;
+const BUTTON_GAP: Space = Space::S4;
 const TEXT_SIZE: f32 = 11.0;
 const ASK_LABEL: &str = "Ask Claude to merge";
 
@@ -117,7 +117,7 @@ impl FileItem {
                 + 11.0
                 + 6.0
                 + 4.0 * 2.0 * BUTTON_PAD_X
-                + 5.0 * BUTTON_GAP
+                + 5.0 * BUTTON_GAP.px()
                 + 2.0;
             width = width.ceil();
             let x = content.x + content.w - RIGHT_MARGIN * scale - width * scale;

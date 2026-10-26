@@ -10,7 +10,7 @@ use components::{modal_footer, modal_frame, modal_header, modal_note, modal_sect
 use indexmap::IndexMap;
 use module_store::Outlook;
 use pom_agent::NameSuggestion;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 use crate::repo_branch_picker::{
@@ -31,7 +31,7 @@ const WIDTH: f32 = 460.0;
 /// The create form also lays out each repo's node_modules and the environment and data choices.
 const CREATE_WIDTH: f32 = 620.0;
 const SECTION_PADDING: f32 = 18.0;
-const GROUP_GAP: f32 = 16.0;
+const GROUP_GAP: Space = Space::S16;
 /// Up to this many environment profiles show side by side; more go in a dropdown.
 const ENVIRONMENT_CHOICES: usize = 3;
 
@@ -572,7 +572,7 @@ impl CreateWorkspaceModal {
                 .collect();
             let content = CREATE_WIDTH - 2.0 * SECTION_PADDING;
             let available = if self.offers_data_choice() {
-                (content - GROUP_GAP) / 2.0
+                (content - GROUP_GAP.px()) / 2.0
             } else {
                 content
             };
@@ -705,8 +705,8 @@ impl CreateWorkspaceModal {
         let name_width = self.repo_name_width();
         let mut list = div()
             .col()
-            .gap(2.0)
-            .p(4.0)
+            .gap(Space::S2)
+            .p(Space::S4)
             .rounded(Radius::Medium)
             .bg(theme().editor_background);
         for (index, row) in self.repos.iter().enumerate() {
@@ -760,9 +760,9 @@ impl CreateWorkspaceModal {
         let mut branch_box = div()
             .row()
             .items_center()
-            .gap(6.0)
+            .gap(Space::S6)
             .h_px(TRIGGER_HEIGHT)
-            .px(6.0)
+            .px(Space::S6)
             .rounded(Radius::Small)
             .on_click(BRANCH_BOX_BASE + index as u64)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
@@ -797,7 +797,7 @@ impl CreateWorkspaceModal {
             .row()
             .items_center()
             .h_px(34.0)
-            .px(8.0)
+            .px(Space::S8)
             .rounded(Radius::Small)
             .child(checkbox(REPO_BASE + index as u64, row.picked, ""))
             .child(div().w_px(10.0))
@@ -858,7 +858,7 @@ impl WindowModal for CreateWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let branch_error = self.branch_error();
-        let mut refine_row = div().row().items_center().gap(12.0).child(link(
+        let mut refine_row = div().row().items_center().gap(Space::S12).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine name & branch with Claude",
@@ -878,7 +878,7 @@ impl WindowModal for CreateWorkspaceModal {
             (false, true) => Some(format!("Branch from {ticket}")),
             (false, false) => None,
         };
-        let mut section = modal_section(GROUP_GAP);
+        let mut section = modal_section(GROUP_GAP.px());
         if let Some(tickets) = &self.tickets {
             section = section.child(tickets.render(
                 self.picker.is_none() && self.focus == CreateFocus::Ticket,
@@ -915,7 +915,7 @@ impl WindowModal for CreateWorkspaceModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -1208,7 +1208,7 @@ impl WindowModal for RenameWorkspaceModal {
 
     fn render(&mut self) -> Node {
         let colors = theme();
-        let mut refine_row = div().row().items_center().gap(12.0).child(link(
+        let mut refine_row = div().row().items_center().gap(Space::S12).child(link(
             REFINE,
             Some(IconKind::Sparkle),
             "Refine with Claude",
@@ -1220,7 +1220,7 @@ impl WindowModal for RenameWorkspaceModal {
         let branch = div()
             .row()
             .items_center()
-            .gap(6.0)
+            .gap(Space::S6)
             .h_px(16.0)
             .child(ui::material_icon(ui::MaterialIcon::Git).size(12.0))
             .child(
@@ -1232,7 +1232,7 @@ impl WindowModal for RenameWorkspaceModal {
         let buttons = div()
             .row()
             .items_center()
-            .gap(8.0)
+            .gap(Space::S8)
             .child(
                 components::button(CANCEL, "Cancel")
                     .size(components::ButtonSize::Medium)
@@ -1247,7 +1247,7 @@ impl WindowModal for RenameWorkspaceModal {
         modal_frame(WIDTH)
             .child(modal_header("Rename Workspace", Some(CLOSE)))
             .child(
-                modal_section(GROUP_GAP)
+                modal_section(GROUP_GAP.px())
                     .child(self.name.render(
                         NAME_FIELD,
                         true,

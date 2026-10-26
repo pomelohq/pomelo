@@ -5,7 +5,7 @@
 
 use editor::{EditorBuffer, Lang, Syntax};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ui::{div, icon, label, theme, IconKind, Node, Radius, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node, Radius, Rgba, Space};
 
 const BOLD_WEIGHT: u16 = 700;
 const HEADING_WEIGHT: u16 = 600;
@@ -16,9 +16,9 @@ const RULE_THICKNESS: f32 = 1.0;
 const TAB_COLUMNS: usize = 4;
 const TASK_BOX: f32 = 12.0;
 const MARKER_GAP: f32 = 6.0;
-const TABLE_CELL_PAD_X: f32 = 10.0;
-const TABLE_CELL_PAD_Y: f32 = 4.0;
-const CODE_BLOCK_PAD: f32 = 12.0;
+const TABLE_CELL_PAD_X: Space = Space::S10;
+const TABLE_CELL_PAD_Y: Space = Space::S4;
+const CODE_BLOCK_PAD: Space = Space::S12;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpanStyle {
@@ -1004,7 +1004,7 @@ impl Markdown {
                         ui::measure_text_width("M", style.code_size, true, ui::ui_font_weight())
                             / ui::ui_text_scale();
                     let pad = if style.code_block_box {
-                        CODE_BLOCK_PAD
+                        CODE_BLOCK_PAD.px()
                     } else {
                         0.0
                     };
@@ -1067,7 +1067,7 @@ impl Markdown {
                         for (column, cell) in row.iter().enumerate() {
                             let (narrowest, widest_line) =
                                 content_widths(&one_line(cell), cell_font);
-                            let chrome = 2.0 * TABLE_CELL_PAD_X + RULE_THICKNESS;
+                            let chrome = 2.0 * TABLE_CELL_PAD_X.px() + RULE_THICKNESS;
                             least[column] = least[column].max(narrowest + chrome);
                             most[column] = most[column].max(widest_line + chrome);
                         }
@@ -1082,7 +1082,7 @@ impl Markdown {
                             .enumerate()
                             .map(|(column, cell)| {
                                 let inner =
-                                    (widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X)
+                                    (widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X.px())
                                         .max(1.0);
                                 wrap_spans(&one_line(cell), inner, cell_font)
                             })
@@ -1097,7 +1097,8 @@ impl Markdown {
                                 header: row_index == 0,
                                 odd: row_index > 0 && row_index % 2 == 0,
                             },
-                            height: tallest as f32 * style.line_height + 2.0 * TABLE_CELL_PAD_Y,
+                            height: tallest as f32 * style.line_height
+                                + 2.0 * TABLE_CELL_PAD_Y.px(),
                             block: 0,
                         });
                     }
@@ -1665,7 +1666,7 @@ mod tests {
                 ..Font::of(&DOCUMENT_STYLE, None)
             };
             for (column, rows) in cells.iter().enumerate() {
-                let inner = widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X;
+                let inner = widths[column] - RULE_THICKNESS - 2.0 * TABLE_CELL_PAD_X.px();
                 for runs in rows {
                     let used: f32 = runs
                         .iter()

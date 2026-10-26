@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Label, LabelSize, Node, Radius};
+use ui::{div, label, theme, Div, Label, LabelSize, Node, Radius, Space};
 
 pub const INPUT_HEIGHT: f32 = 30.0;
 
@@ -14,9 +14,9 @@ pub fn input_box(click_id: u64, focused: bool, error: bool) -> Div {
     let frame = div()
         .row()
         .items_center()
-        .gap(8.0)
+        .gap(Space::S8)
         .h_px(INPUT_HEIGHT)
-        .px(10.0)
+        .px(Space::S10)
         .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(1.0, border)
@@ -59,7 +59,7 @@ fn field_note(hint: Option<&str>, error: Option<&str>) -> Option<Node> {
 pub fn field(title: &str, control: Node, hint: Option<&str>, error: Option<&str>) -> Node {
     let mut column = div()
         .col()
-        .gap(6.0)
+        .gap(Space::S6)
         .child(crate::section_header(title))
         .child(control);
     if let Some(note) = field_note(hint, error) {
@@ -76,9 +76,9 @@ pub fn search_box(click_id: u64, focused: bool) -> Div {
     div()
         .row()
         .items_center()
-        .gap(6.0)
+        .gap(Space::S6)
         .h_px(SEARCH_HEIGHT)
-        .px(8.0)
+        .px(Space::S8)
         .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(

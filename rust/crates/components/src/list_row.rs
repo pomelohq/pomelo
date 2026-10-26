@@ -1,4 +1,4 @@
-use ui::{div, theme, Node, Radius};
+use ui::{div, theme, Node, Radius, Space};
 
 /// One row of a picker or list: what it shows left to right, lit while hovered, tinted while selected.
 pub struct ListRow {
@@ -41,9 +41,9 @@ impl From<ListRow> for Node {
         let mut item = div()
             .row()
             .flex(1.0)
-            .px(6.0)
-            .py(4.0)
-            .gap(6.0)
+            .px(Space::S6)
+            .py(Space::S4)
+            .gap(Space::S6)
             .items_center()
             .rounded(Radius::Small)
             .on_click(row.id);
@@ -57,7 +57,7 @@ impl From<ListRow> for Node {
         }
         div()
             .row()
-            .px(4.0)
+            .px(Space::S4)
             .child(item.children(row.children))
             .into()
     }

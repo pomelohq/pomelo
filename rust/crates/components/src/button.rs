@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
+use ui::{div, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
 use crate::key_chip;
 
@@ -141,9 +141,13 @@ impl Button {
         let mut node = div()
             .row()
             .items_center()
-            .gap(if button.leading.is_some() { 6.0 } else { 4.0 })
+            .gap(if button.leading.is_some() {
+                Space::S6
+            } else {
+                Space::S4
+            })
             .h_px(button.size.height())
-            .px(button.size.pad_x())
+            .px(Space::Px(button.size.pad_x()))
             .rounded(Radius::Medium);
         node = match button.kind {
             ButtonKind::Primary => node.bg(dim(colors.accent_fill)),

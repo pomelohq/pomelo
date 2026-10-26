@@ -6,7 +6,7 @@ use pom_db::object_storage::format_size;
 use pom_db::{Engine, TableKind};
 use ui::{
     div, icon, label, material_icon, theme, Div, IconKind, LabelSize, MaterialIcon, Node, Radius,
-    Rgba,
+    Rgba, Space,
 };
 use workspace::text_field::FieldFont;
 
@@ -183,8 +183,8 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             let mut line = div()
                 .row()
                 .h_px(ROW_H + 4.0)
-                .pt(4.0)
-                .px(8.0)
+                .pt(Space::S4)
+                .px(Space::S8)
                 .items_center()
                 .child(header.render().flex(1.0));
             if *section == Section::Consoles {
@@ -237,7 +237,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             if *failed {
                 line = line.child(dot(Status::Failed { warning: false }));
             }
-            let mut logos = div().row().gap(4.0).items_center();
+            let mut logos = div().row().gap(Space::S4).items_center();
             for engine in engines {
                 let (kind, color) = engine_logo(*engine);
                 logos = logos.child(icon(kind).size(12.0).color(color));
@@ -423,8 +423,8 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             div()
                 .row()
                 .h_px(ROW_H)
-                .pl(8.0 + *depth as f32 * INDENT + 18.0)
-                .pr(8.0)
+                .pl(Space::Px(8.0 + *depth as f32 * INDENT + 18.0))
+                .pr(Space::S8)
                 .items_center(),
             *depth,
         )
@@ -448,7 +448,7 @@ pub(crate) fn render_row(panel: &DatabasePanel, index: usize, row: &Row) -> Node
             else {
                 return div().into();
             };
-            let block_width = panel.width - FAILURE_BLOCK_LEFT - FAILURE_BLOCK_RIGHT;
+            let block_width = panel.width - FAILURE_BLOCK_LEFT.px() - FAILURE_BLOCK_RIGHT.px();
             let owner = *database;
             components::indent_guides(
                 div()
@@ -504,8 +504,8 @@ fn filter_box(panel: &DatabasePanel) -> Node {
     div()
         .row()
         .h_px(FILTER_H)
-        .px(8.0)
-        .pb(6.0)
+        .px(Space::S8)
+        .pb(Space::S6)
         .items_center()
         .child(field)
         .into()
@@ -521,9 +521,9 @@ pub(crate) fn render_panel(
     let header = div()
         .row()
         .h_px(HEADER_H)
-        .pl(12.0)
-        .pr(6.0)
-        .gap(4.0)
+        .pl(Space::S12)
+        .pr(Space::S6)
+        .gap(Space::S4)
         .items_center()
         .child(
             label("Database")
@@ -532,7 +532,7 @@ pub(crate) fn render_panel(
                 .color(colors.text),
         )
         .child(
-            div().row().flex(1.0).pl(4.0).items_center().child(
+            div().row().flex(1.0).pl(Space::S4).items_center().child(
                 label(panel.context.branch.clone())
                     .size(LabelSize::Small)
                     .color(colors.text_placeholder)
@@ -555,7 +555,7 @@ pub(crate) fn render_panel(
             IconKind::ChevronUp,
             "Collapse All",
         ));
-    let mut list = div().col().pb(8.0);
+    let mut list = div().col().pb(Space::S8);
     if panel.model.databases.is_empty() {
         list = list.child(components::empty_state("No databases in pom.yml").compact());
     }

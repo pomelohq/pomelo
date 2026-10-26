@@ -1,7 +1,7 @@
 //! Atoms put together into one control: a menu of choices, and a select with its menu open.
 
 use components::{BannerTone, ButtonKind, MenuItem};
-use ui::{div, label, theme, IconKind, LabelSize, Node, Radius};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::InputField;
 
@@ -9,8 +9,8 @@ use crate::{still, Story, StoryDef};
 
 const PAGE: &str = "Molecules";
 const ID: u64 = 1;
-const INSET: f32 = 16.0;
-const SELECT_GAP: f32 = 4.0;
+const INSET: Space = Space::S16;
+const SELECT_GAP: Space = Space::S4;
 const SELECT_HEIGHT: f32 = 28.0;
 const SELECT_WIDTH: f32 = 160.0;
 
@@ -107,7 +107,7 @@ fn submenu_open() -> Node {
     div()
         .row()
         .p(INSET)
-        .gap(2.0)
+        .gap(Space::S2)
         .child(menu(&submenus(), true).hovered(Some(ID)))
         .child(components::menu(&choices).hovered(Some(ID + 1)))
         .into()
@@ -117,8 +117,8 @@ fn submenu_open_size() -> (f32, f32) {
     let (_, parent_width, parent_height) = menu(&submenus(), true).render();
     let (_, child_width, child_height) = components::menu(&chosen()).render();
     (
-        parent_width + 2.0 + child_width + 2.0 * INSET,
-        parent_height.max(child_height) + 2.0 * INSET,
+        parent_width + 2.0 + child_width + 2.0 * INSET.px(),
+        parent_height.max(child_height) + 2.0 * INSET.px(),
     )
 }
 
@@ -131,7 +131,7 @@ fn card(items: &[MenuItem], hovered: Option<u64>, nested: bool) -> Node {
 
 fn card_size(items: &[MenuItem], nested: bool) -> (f32, f32) {
     let (_, width, height) = menu(items, nested).render();
-    (width + 2.0 * INSET, height + 2.0 * INSET)
+    (width + 2.0 * INSET.px(), height + 2.0 * INSET.px())
 }
 
 const THEMES: [&str; 5] = [
@@ -167,7 +167,7 @@ fn searchable(query: &'static str, hovered: Option<u64>) -> Node {
 fn searchable_size(query: &str) -> (f32, f32) {
     let items = themes(query);
     let (_, width, height) = components::menu(&items).search(query).render();
-    (width + 2.0 * INSET, height + 2.0 * INSET)
+    (width + 2.0 * INSET.px(), height + 2.0 * INSET.px())
 }
 
 fn select_open() -> Node {
@@ -188,8 +188,8 @@ fn select_open() -> Node {
 fn select_open_size() -> (f32, f32) {
     let (_, width, height) = components::menu(&chosen()).min_width(SELECT_WIDTH).render();
     (
-        width + 2.0 * INSET,
-        height + SELECT_HEIGHT + SELECT_GAP + 2.0 * INSET,
+        width + 2.0 * INSET.px(),
+        height + SELECT_HEIGHT + SELECT_GAP.px() + 2.0 * INSET.px(),
     )
 }
 
@@ -218,24 +218,29 @@ fn at_edge(select_at: (f32, f32), searchable: bool) -> Node {
         SELECT_HEIGHT,
         ui::Rgba::TRANSPARENT,
     );
-    let (x, y) =
-        components::place_menu(anchor, (width, height), EDGE_BOARD, SELECT_GAP, EDGE_MARGIN);
+    let (x, y) = components::place_menu(
+        anchor,
+        (width, height),
+        EDGE_BOARD,
+        SELECT_GAP.px(),
+        EDGE_MARGIN,
+    );
     let select = div()
-        .pl(anchor.x)
+        .pl(Space::Px(anchor.x))
         .child(components::select(ID + 10, "Pomelo Dark").width(SELECT_WIDTH));
     let menu = div()
-        .pl(x)
+        .pl(Space::Px(x))
         .child(edge_menu().search_at_bottom(y < anchor.y));
     let column = div().col().w_px(EDGE_BOARD.0).h_px(EDGE_BOARD.1);
     if y > anchor.y {
         column
-            .child(select.pt(anchor.y))
-            .child(menu.pt(y - anchor.y - SELECT_HEIGHT))
+            .child(select.pt(Space::Px(anchor.y)))
+            .child(menu.pt(Space::Px(y - anchor.y - SELECT_HEIGHT)))
             .into()
     } else {
         column
-            .child(menu.pt(y))
-            .child(select.pt(anchor.y - y - height))
+            .child(menu.pt(Space::Px(y)))
+            .child(select.pt(Space::Px(anchor.y - y - height)))
             .into()
     }
 }
@@ -278,7 +283,7 @@ fn list(rows: &[(&str, IconKind)], selected: usize, hovered: Option<u64>) -> Nod
     let mut column = div()
         .col()
         .w_px(280.0)
-        .py(4.0)
+        .py(Space::S4)
         .rounded(Radius::Large)
         .bg(theme().elevated_surface_background);
     for (index, (text, kind)) in rows.iter().enumerate() {
@@ -467,14 +472,28 @@ pub fn stories() -> Vec<StoryDef> {
             "Select menu",
             "Near the right edge",
             EDGE_BOARD,
-            || still(|_, _| at_edge((EDGE_BOARD.0 - EDGE_MARGIN - SELECT_WIDTH, INSET), false)),
+            || {
+                still(|_, _| {
+                    at_edge(
+                        (EDGE_BOARD.0 - EDGE_MARGIN - SELECT_WIDTH, INSET.px()),
+                        false,
+                    )
+                })
+            },
         ),
         story(
             "select-bottom-search",
             "Select menu",
             "Near the bottom: opens above",
             EDGE_BOARD,
-            || still(|_, _| at_edge((INSET, EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT), true)),
+            || {
+                still(|_, _| {
+                    at_edge(
+                        (INSET.px(), EDGE_BOARD.1 - EDGE_MARGIN - SELECT_HEIGHT),
+                        true,
+                    )
+                })
+            },
         ),
         story("card-plain", "Card", "Plain", (320.0, 120.0), || {
             still(|_, _| card_board(components::card()))
@@ -553,7 +572,7 @@ pub fn stories() -> Vec<StoryDef> {
                             components::page_header(
                                 div()
                                     .row()
-                                    .gap(8.0)
+                                    .gap(Space::S8)
                                     .items_center()
                                     .child(components::dot(colors.success, 7.0))
                                     .child(
@@ -771,7 +790,7 @@ pub fn stories() -> Vec<StoryDef> {
                                 Some(components::modal_note("The branch keeps its name.")),
                                 div()
                                     .row()
-                                    .gap(8.0)
+                                    .gap(Space::S8)
                                     .child(
                                         components::button(ID + 1, "Cancel")
                                             .size(components::ButtonSize::Medium),
@@ -933,7 +952,7 @@ fn card_board(card: components::Card) -> Node {
         .p(INSET)
         .child(
             card.render()
-                .gap(4.0)
+                .gap(Space::S4)
                 .child(label("web crashed").medium().color(colors.text))
                 .child(
                     label("Stopped with exit code 1.")
