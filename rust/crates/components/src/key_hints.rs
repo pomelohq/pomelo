@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Node};
+use ui::{div, label, theme, Div, LabelSize, Node};
 
 /// The strip at the foot of a picker that says what the keys do: Enter opens, arrows move, Escape closes.
 /// A hint with an id is also a button. Built with [`key_hints`].
@@ -38,7 +38,7 @@ impl KeyHints {
             )
             .child(
                 label(text.to_string())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder),
             );
         if let Some(id) = id {

@@ -1714,7 +1714,12 @@ pub fn chrome(
             .h_px(TITLE_H)
             .pl(86.0)
             .items_center()
-            .child(label("Settings").size(13.0).medium().color(title_c()))
+            .child(
+                label("Settings")
+                    .size(LabelSize::Medium)
+                    .medium()
+                    .color(title_c()),
+            )
             .into(),
         Rect::new(0.0, 0.0, w, rem(TITLE_H), Rgba::TRANSPARENT),
     );
@@ -1766,7 +1771,7 @@ pub fn chrome(
             .pt(4.0)
             .child(
                 label(format!("Pomelo {}", env!("CARGO_PKG_VERSION")))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(theme().text_placeholder),
             )
             .into(),
@@ -1949,11 +1954,7 @@ pub fn page(
         div()
             .col()
             .gap(16.0)
-            .child(
-                label("Project")
-                    .label_size(LabelSize::Large)
-                    .color(title_c()),
-            )
+            .child(label("Project").size(LabelSize::Large).color(title_c()))
             .child(
                 label("Open a project first: its repositories and config are edited here.")
                     .color(dim_c()),
@@ -1967,7 +1968,7 @@ pub fn page(
             .gap(16.0)
             .child(
                 label("Integrations")
-                    .label_size(LabelSize::Large)
+                    .size(LabelSize::Large)
                     .color(title_c()),
             )
             .child(label("Open a project first: Jira is set up per project.").color(dim_c()))
@@ -2053,7 +2054,7 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
             .child(caret(show_caret))
             .child(
                 label("Search settings...")
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .color(theme().text_placeholder),
             )
     } else {
@@ -2061,7 +2062,7 @@ fn sidebar_head(search: &str, search_active: bool) -> Node {
             .row()
             .flex(1.0)
             .items_center()
-            .child(label(search).size(13.0).color(title_c()))
+            .child(label(search).size(LabelSize::Medium).color(title_c()))
             .child(caret(show_caret))
     };
     let mut search_box = components::search_box(CTRL_SEARCH, search_active).child(text_area);
@@ -2121,11 +2122,14 @@ fn sidebar_nav(
         // Single navbar highlight: a category shows its box only when selected AND no sub-section is active
         // (for a page with sections the active section carries the highlight instead), like the reference.
         let cat_active = is_selected && !searching;
-        let mut name_label = label(*name).size(13.0).color(if cat_active || searching {
-            title_c()
-        } else {
-            dim_c()
-        });
+        let mut name_label =
+            label(*name)
+                .size(LabelSize::Medium)
+                .color(if cat_active || searching {
+                    title_c()
+                } else {
+                    dim_c()
+                });
         if cat_active {
             name_label = name_label.medium();
         }
@@ -2148,7 +2152,7 @@ fn sidebar_nav(
                         .rounded()
                         .flush_leaf()
                         .hovered(hovered == Some(id))
-                        .child(label(sub).size(12.0).color(if is_active {
+                        .child(label(sub).size(LabelSize::Small).color(if is_active {
                             theme().text_accent
                         } else {
                             dim_c()
@@ -2298,8 +2302,12 @@ fn stub_body(name: &str) -> Node {
     div()
         .col()
         .gap(10.0)
-        .child(label(name).size(20.0).color(title_c()))
-        .child(label("No settings here yet.").size(13.0).color(dim_c()))
+        .child(label(name).size_px(20.0).color(title_c()))
+        .child(
+            label("No settings here yet.")
+                .size(LabelSize::Medium)
+                .color(dim_c()),
+        )
         .into()
 }
 
@@ -4168,7 +4176,7 @@ fn page_title(text: &str) -> Node {
         .pb(4.0)
         .child(
             label(text.to_string())
-                .size(20.0)
+                .size_px(20.0)
                 .weight(600)
                 .color(title_c()),
         )
@@ -4340,7 +4348,7 @@ fn render_page_under(
                     if !table_open {
                         let head = |text: &str| -> Node {
                             label(text.to_uppercase())
-                                .size(11.0)
+                                .size(LabelSize::Mini)
                                 .weight(600)
                                 .color(theme().text_placeholder)
                                 .into()
@@ -4356,18 +4364,18 @@ fn render_page_under(
                     }
                     let keys_cell = match &row.control {
                         Control::Value { text } => label(text.clone())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(theme().text_placeholder)
                             .into(),
                         _ => control,
                     };
                     col = col.child(inset(binding_row(
                         label(row.title.to_string())
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .color(title_c())
                             .into(),
                         label(row.description.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(theme().text_placeholder)
                             .truncate()
@@ -4405,7 +4413,7 @@ fn keys(binding: &str) -> Node {
                 .px(5.0)
                 .rounded(4.0)
                 .bg(hover_c())
-                .child(ui::render_keystroke(stroke, 11.0)),
+                .child(ui::render_keystroke(stroke, LabelSize::Mini)),
         );
     }
     row.into()
@@ -4475,11 +4483,12 @@ fn row_frame(
     let inner_w = if hit { row_w - 24.0 } else { row_w };
     let left_col_w = (inner_w - 48.0 - ui::measure(&right).0).max(160.0);
     let mut left = div().col().w_px(left_col_w).gap(3.0).child(
-        div()
-            .row()
-            .h_px(20.0)
-            .items_center()
-            .child(label(title).size(13.0).medium().color(title_c())),
+        div().row().h_px(20.0).items_center().child(
+            label(title)
+                .size(LabelSize::Medium)
+                .medium()
+                .color(title_c()),
+        ),
     );
     if !desc.is_empty() {
         left = left.child(description_node(desc, left_col_w));
@@ -4522,7 +4531,7 @@ fn row_frame(
 fn description_node(desc: &str, wrap_w: f32) -> Node {
     if !desc.contains('`') {
         return label(desc)
-            .size(12.0)
+            .size(LabelSize::Small)
             .line_height(SMALL_LINE_HEIGHT)
             .color(dim_c())
             .wrap(wrap_w)
@@ -4535,15 +4544,14 @@ fn description_node(desc: &str, wrap_w: f32) -> Node {
         }
         if i % 2 == 1 {
             row = row.child(
-                div().px(4.0).rounded(3.0).bg(chip_c()).child(
-                    label(part)
-                        .label_size(LabelSize::Small)
-                        .mono()
-                        .color(title_c()),
-                ),
+                div()
+                    .px(4.0)
+                    .rounded(3.0)
+                    .bg(chip_c())
+                    .child(label(part).size(LabelSize::Small).mono().color(title_c())),
             );
         } else {
-            row = row.child(label(part).label_size(LabelSize::Small).color(dim_c()));
+            row = row.child(label(part).size(LabelSize::Small).color(dim_c()));
         }
     }
     row.into()
@@ -4584,12 +4592,18 @@ fn text_input(value: &str, placeholder: &str, masked: bool, id: u64, edit: Optio
     row = if text.is_empty() && !editing {
         row.child(
             label(placeholder)
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .mono()
                 .color(theme().text_placeholder),
         )
     } else {
-        row.child(label(text).size(13.0).mono().color(title_c()).truncate())
+        row.child(
+            label(text)
+                .size(LabelSize::Medium)
+                .mono()
+                .color(title_c())
+                .truncate(),
+        )
     };
     if editing {
         row = row.child(caret(ui::caret_phase()));
@@ -4620,7 +4634,7 @@ fn configured_card(text: &str, button: u64, button_label: &str, enabled: bool) -
                 .size(12.0)
                 .color(theme().success),
         )
-        .child(label(text).size(12.0).color(title_c()))
+        .child(label(text).size(LabelSize::Small).color(title_c()))
         .child(clear)
         .into()
 }
@@ -4634,7 +4648,11 @@ fn status_chip(running: bool) -> Node {
 }
 
 fn value_text(text: &str) -> Node {
-    label(text).size(12.0).mono().color(title_c()).into()
+    label(text)
+        .size(LabelSize::Small)
+        .mono()
+        .color(title_c())
+        .into()
 }
 
 fn sub_page_button(id: u64) -> Node {
@@ -4644,7 +4662,7 @@ fn sub_page_button(id: u64) -> Node {
         .gap(6.0)
         .items_center()
         .on_click(id)
-        .child(label("Configure").size(13.0).color(dim_c()))
+        .child(label("Configure").size(LabelSize::Medium).color(dim_c()))
         .child(
             ui::icon(ui::IconKind::ChevronRight)
                 .size(12.0)

@@ -1285,7 +1285,7 @@ impl MarkdownLayout {
                     for (text, color) in segments {
                         row = row.child(
                             label(text.clone())
-                                .size(self.style.code_size)
+                                .size_px(self.style.code_size)
                                 .mono()
                                 .color(*color),
                         );
@@ -1403,9 +1403,9 @@ fn render_run(
         .color(color)
         .weight(font.weight(style));
     run = if style.code {
-        run.size(font.code_size).mono()
+        run.size_px(font.code_size).mono()
     } else {
-        run.size(font.size)
+        run.size_px(font.size)
     };
     if style.italic {
         run = run.italic();

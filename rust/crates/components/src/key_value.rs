@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Label, Node};
+use ui::{div, label, theme, Label, LabelSize, Node};
 
 pub const KEY_WIDTH: f32 = 96.0;
 
@@ -26,5 +26,7 @@ pub fn key_value(key: Label, value: Label, detail: Option<&str>) -> Node {
 
 /// Key text as a [`key_value`] row sets it: small and muted.
 pub fn key_label(text: impl Into<String>) -> Label {
-    label(text.into()).size(12.0).color(theme().text_muted)
+    label(text.into())
+        .size(LabelSize::Small)
+        .color(theme().text_muted)
 }

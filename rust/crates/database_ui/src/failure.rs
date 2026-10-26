@@ -1,6 +1,6 @@
 use components::ButtonKind;
 use pom_db::{ConnectError, ConnectErrorKind, Engine};
-use ui::{div, icon, label, measure, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, measure, theme, IconKind, LabelSize, Node, Rgba};
 
 const PAD: f32 = 10.0;
 const GAP: f32 = 6.0;
@@ -240,7 +240,7 @@ impl Failure {
             )
             .child(
                 label(self.title())
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .color(tone)
                     .wrap(inner - ICON_SLOT),
             );
@@ -256,7 +256,7 @@ impl Failure {
             .child(title)
             .child(
                 label(self.why())
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .wrap(inner),
             );
@@ -268,15 +268,20 @@ impl Failure {
                     .gap(8.0)
                     .items_center()
                     .child(
-                        div()
-                            .w_px(FACT_LABEL_W)
-                            .child(label(name).size(11.5).color(colors.text_placeholder)),
+                        div().w_px(FACT_LABEL_W).child(
+                            label(name)
+                                .size(LabelSize::Small)
+                                .color(colors.text_placeholder),
+                        ),
                     )
                     .child(
-                        div()
-                            .row()
-                            .flex(1.0)
-                            .child(label(value).size(11.5).mono().color(colors.text).truncate()),
+                        div().row().flex(1.0).child(
+                            label(value)
+                                .size(LabelSize::Small)
+                                .mono()
+                                .color(colors.text)
+                                .truncate(),
+                        ),
                     ),
             );
         }
@@ -293,7 +298,7 @@ impl Failure {
                     .border(1.0, colors.border_variant)
                     .child(
                         label(self.error.raw.clone())
-                            .size(10.5)
+                            .size(LabelSize::Mini)
                             .mono()
                             .color(colors.text)
                             .wrap(inner - 18.0),
@@ -303,7 +308,7 @@ impl Failure {
         if let Some(error) = &self.action_error {
             block = block.child(
                 label(fix_summary(error))
-                    .size(11.5)
+                    .size(LabelSize::Small)
                     .color(colors.error)
                     .wrap(inner),
             );
@@ -319,7 +324,7 @@ impl Failure {
                         .border(1.0, colors.border_variant)
                         .child(
                             label(output_tail(error))
-                                .size(10.5)
+                                .size(LabelSize::Mini)
                                 .mono()
                                 .color(colors.text)
                                 .wrap(inner - 18.0),
@@ -338,7 +343,7 @@ impl Failure {
                         .child(icon(IconKind::RotateCw).size(11.0).color(colors.icon_muted))
                         .child(
                             label(busy.clone())
-                                .size(11.5)
+                                .size(LabelSize::Small)
                                 .color(colors.text_muted)
                                 .truncate(),
                         ),
@@ -374,7 +379,7 @@ impl Failure {
                 if self.main_absent {
                     block = block.child(
                         label("Nothing to copy from main: main has no such database either.")
-                            .size(11.5)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder)
                             .wrap(inner),
                     );
@@ -393,7 +398,7 @@ impl Failure {
                 } else {
                     "Show full error"
                 })
-                .size(11.5)
+                .size(LabelSize::Small)
                 .color(if hover == Some(toggle_id) {
                     colors.text
                 } else {

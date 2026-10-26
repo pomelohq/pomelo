@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use ui::{div, label, theme, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -729,7 +729,7 @@ impl ServicesPanel {
                 if key == SHARED_GROUP {
                     name = name.child(
                         label(text.to_uppercase())
-                            .size(11.0)
+                            .size(LabelSize::Mini)
                             .weight(600)
                             .color(colors.text_placeholder)
                             .truncate(),
@@ -748,7 +748,7 @@ impl ServicesPanel {
                 } else {
                     let failed = states.iter().any(State::needs_attention);
                     label(format!("{running}/{total}"))
-                        .size(11.0)
+                        .size(LabelSize::Mini)
                         .color(if failed {
                             colors.error
                         } else {
@@ -761,9 +761,10 @@ impl ServicesPanel {
             Row::Service { target, holder } => {
                 let state = self.state(holder);
                 let trailing: Node = match (&state, hovered) {
-                    (State::Busy(text), _) => {
-                        label(*text).size(11.0).color(colors.text_muted).into()
-                    }
+                    (State::Busy(text), _) => label(*text)
+                        .size(LabelSize::Mini)
+                        .color(colors.text_muted)
+                        .into(),
                     (State::Running, true) => {
                         let mut buttons = div().row().gap(2.0).child(
                             self.button(self.id(index, Control::Restart), IconKind::RotateCw),
@@ -790,14 +791,14 @@ impl ServicesPanel {
                         .into(),
                     (_, false) => match self.port(target) {
                         Some(port) => label(format!(":{port}"))
-                            .size(11.0)
+                            .size(LabelSize::Mini)
                             .mono()
                             .color(colors.text_placeholder)
                             .into(),
                         None if state == State::Running => {
                             match self.model.context.access.uptime(holder) {
                                 Some(uptime) => label(format!("up {uptime}"))
-                                    .size(11.0)
+                                    .size(LabelSize::Mini)
                                     .color(colors.text_placeholder)
                                     .into(),
                                 None => div().into(),
@@ -837,9 +838,10 @@ impl ServicesPanel {
                     .map(|config| pom_db::service_users(&config, name))
                     .unwrap_or_default();
                 let trailing: Node = match (&state, hovered) {
-                    (State::Busy(text), _) => {
-                        label(*text).size(11.0).color(colors.text_accent).into()
-                    }
+                    (State::Busy(text), _) => label(*text)
+                        .size(LabelSize::Mini)
+                        .color(colors.text_accent)
+                        .into(),
                     (_, true) if !self.offers(access::ServiceControl::Shared) => div()
                         .row()
                         .gap(2.0)
@@ -881,7 +883,7 @@ impl ServicesPanel {
                                     ":{}",
                                     self.model.context.access.shared_host_port(name)
                                 ))
-                                .size(11.0)
+                                .size(LabelSize::Mini)
                                 .mono()
                                 .color(colors.text_placeholder),
                             ),
@@ -918,10 +920,19 @@ impl ServicesPanel {
                         .medium()
                         .color(colors.text),
                 )
-                .child(label(what).size(11.5).color(colors.text_muted).truncate()),
+                .child(
+                    label(what)
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ),
         );
         if let Some(when) = when {
-            title = title.child(label(when).size(11.0).color(colors.text_placeholder));
+            title = title.child(
+                label(when)
+                    .size(LabelSize::Mini)
+                    .color(colors.text_placeholder),
+            );
         }
         title = title.child(self.button(self.card_id(index, CardAction::Logs), IconKind::Terminal));
         if !port_conflict {
@@ -937,7 +948,7 @@ impl ServicesPanel {
             body = body.child(
                 div().row().child(
                     label(detail)
-                        .size(11.0)
+                        .size(LabelSize::Mini)
                         .mono()
                         .color(colors.text_muted)
                         .truncate(),
@@ -1034,7 +1045,7 @@ impl ServicesPanel {
                     .h_px(ROW_H)
                     .px(12.0)
                     .items_center()
-                    .child(label(text).size(12.0).color(theme().text_muted))
+                    .child(label(text).size(LabelSize::Small).color(theme().text_muted))
                     .into(),
             );
         }
@@ -1881,7 +1892,12 @@ impl SidePanelView for ServicesPanel {
             .pr(6.0)
             .gap(6.0)
             .items_center()
-            .child(label("Services").size(13.0).medium().color(colors.text))
+            .child(
+                label("Services")
+                    .size(LabelSize::Medium)
+                    .medium()
+                    .color(colors.text),
+            )
             .child(
                 div()
                     .row()
@@ -1890,7 +1906,7 @@ impl SidePanelView for ServicesPanel {
                     .items_center()
                     .child(
                         label(self.model.context.branch.clone())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(colors.text_placeholder)
                             .truncate(),
@@ -1917,7 +1933,7 @@ impl SidePanelView for ServicesPanel {
                 )
             };
             header = header
-                .child(label(status).size(11.0).color(ink))
+                .child(label(status).size(LabelSize::Mini).color(ink))
                 .child(self.button(self.base + START_ALL, IconKind::Play))
                 .child(self.button(self.base + STOP_ALL, IconKind::Stop));
         }

@@ -67,7 +67,9 @@ pub(crate) type SharedFs = std::sync::Arc<dyn ProjectFs>;
 fn local_fs(root: &Path) -> SharedFs {
     std::sync::Arc::new(LocalFs::new(root.to_path_buf()))
 }
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node, Rect, Rgba};
+use ui::{
+    div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node, Rect, Rgba,
+};
 use workspace::{
     ClipboardSlice, CopiedText, DividerAxis, EditKey, EditorLayout, Elevation, FunctionView, Item,
     ItemInput, ModalView, FUNC_VIEW_BASE,
@@ -283,7 +285,12 @@ fn path_crumbs(path: &str) -> Vec<PathCrumb> {
 }
 
 /// `text` in the buffer font with its syntax colors over `plain`.
-fn colored_label(text: &str, colors: &[(Range<usize>, Rgba)], size: f32, plain: Rgba) -> Node {
+fn colored_label(
+    text: &str,
+    colors: &[(Range<usize>, Rgba)],
+    size: LabelSize,
+    plain: Rgba,
+) -> Node {
     let mut row = div().row().items_center();
     let mut at = 0;
     let mut runs: Vec<&(Range<usize>, Rgba)> = colors.iter().collect();
@@ -2484,7 +2491,7 @@ impl FileItem {
                     .pr(char_advance())
                     .child(
                         label((base_line + 1).to_string())
-                            .size(edit_font())
+                            .size_px(edit_font())
                             .mono()
                             .color(ui_colors.editor_line_number),
                     ),
@@ -2493,10 +2500,10 @@ impl FileItem {
             let segments =
                 skip_columns(self.base_line_segments(base_line, &colors), skipped_columns);
             if segments.is_empty() {
-                row = row.child(label(" ").size(edit_font()).mono());
+                row = row.child(label(" ").size_px(edit_font()).mono());
             }
             for (segment, color) in segments {
-                row = row.child(label(segment).size(edit_font()).mono().color(color));
+                row = row.child(label(segment).size_px(edit_font()).mono().color(color));
             }
             text = text.child(row);
         }
@@ -4870,7 +4877,11 @@ impl Item for FileItem {
                 .flex(1.0)
                 .px(MESSAGE_PAD)
                 .py(MESSAGE_PAD)
-                .child(label(message).size(13.0).color(theme().text_muted))
+                .child(
+                    label(message)
+                        .size(LabelSize::Medium)
+                        .color(theme().text_muted),
+                )
                 .into();
         }
         self.refresh();
@@ -4906,16 +4917,16 @@ impl Item for FileItem {
             if let Some(base_line) = row.deleted {
                 let segments = self.base_line_segments(base_line, &colors);
                 if segments.is_empty() {
-                    r = r.child(label(" ").size(edit_font()).mono());
+                    r = r.child(label(" ").size_px(edit_font()).mono());
                 }
                 for (text, color) in segments {
-                    r = r.child(label(text).size(edit_font()).mono().color(color));
+                    r = r.child(label(text).size_px(edit_font()).mono().color(color));
                 }
                 body = body.child(r);
                 continue;
             }
             if row.indent > 0 {
-                r = r.child(label(" ".repeat(row.indent)).size(edit_font()).mono());
+                r = r.child(label(" ".repeat(row.indent)).size_px(edit_font()).mono());
             }
             let mut byte = 0usize;
             let mut empty = true;
@@ -4929,7 +4940,7 @@ impl Item for FileItem {
                     empty = false;
                     r = r.child(
                         label(segment[from..to].to_string())
-                            .size(edit_font())
+                            .size_px(edit_font())
                             .mono()
                             .color(color),
                     );
@@ -4937,7 +4948,7 @@ impl Item for FileItem {
                 byte = segment_end;
             }
             if empty && row.indent == 0 {
-                r = r.child(label(" ").size(edit_font()).mono());
+                r = r.child(label(" ").size_px(edit_font()).mono());
             }
             let inline_block = matches!(
                 &inline_diagnostic,
@@ -4966,7 +4977,7 @@ impl Item for FileItem {
                         .bg(color.alpha(0.05))
                         .child(
                             label(message)
-                                .size(edit_font() * 0.875)
+                                .size_px(edit_font() * 0.875)
                                 .mono()
                                 .color(color)
                                 .truncate(),
@@ -4979,7 +4990,7 @@ impl Item for FileItem {
                         .child(div().w_px(INLINE_BLAME_PADDING * char_advance()))
                         .child(icon(IconKind::FileGit).size(16.0).color(hint))
                         .child(div().w_px(8.0))
-                        .child(label(text).size(edit_font()).mono().color(hint));
+                        .child(label(text).size_px(edit_font()).mono().color(hint));
                 }
             }
             // The row resumes after the placeholder with the text following the fold's end, so a block reads `{...}`.
@@ -4992,13 +5003,13 @@ impl Item for FileItem {
                             .bg(theme().element_hover)
                             .child(
                                 label("...".to_string())
-                                    .size(edit_font())
+                                    .size_px(edit_font())
                                     .mono()
                                     .color(theme().text_muted),
                             ),
                     );
                     for (text, color) in tail {
-                        r = r.child(label(text).size(edit_font()).mono().color(color));
+                        r = r.child(label(text).size_px(edit_font()).mono().color(color));
                     }
                 }
             }
@@ -5091,7 +5102,7 @@ impl Item for FileItem {
                     .child({
                         let number: Node = if self.line_numbers {
                             label((line + 1).to_string())
-                                .size(edit_font())
+                                .size_px(edit_font())
                                 .mono()
                                 .color(number_color)
                                 .into()
@@ -6062,7 +6073,7 @@ impl Item for FileItem {
                         .items_center()
                         .child(
                             label(letter.to_string())
-                                .size(edit_font())
+                                .size_px(edit_font())
                                 .mono()
                                 .color(colors.editor_background),
                         )
@@ -6247,7 +6258,7 @@ impl Item for FileItem {
             crumbs = crumbs.node(colored_label(
                 &symbol.text,
                 &symbol.colors,
-                12.0,
+                LabelSize::Small,
                 colors.text_muted,
             ));
         }
@@ -7174,7 +7185,11 @@ impl Item for ImageItem {
                 .flex(1.0)
                 .px(MESSAGE_PAD)
                 .py(MESSAGE_PAD)
-                .child(label(message).size(13.0).color(theme().text_muted))
+                .child(
+                    label(message)
+                        .size(LabelSize::Medium)
+                        .color(theme().text_muted),
+                )
                 .into();
         }
         // Fill the body; the renderer aspect-fits the picture centered within it.

@@ -1,19 +1,19 @@
-use ui::{div, theme, Div};
+use ui::{div, theme, Div, LabelSize};
 
 const TOOLTIP_HEIGHT: f32 = 24.0;
 
 /// The bubble a tooltip shows: its text, then the keys that run the action when there are any.
 pub fn tooltip_bubble(text: &str, keys: Option<&str>) -> Div {
     let colors = theme();
-    let mut content = div()
-        .row()
-        .gap(8.0)
-        .items_center()
-        .child(ui::label(text.to_string()).size(12.0).color(colors.text));
+    let mut content = div().row().gap(8.0).items_center().child(
+        ui::label(text.to_string())
+            .size(LabelSize::Small)
+            .color(colors.text),
+    );
     if let Some(keys) = keys.filter(|keys| !keys.is_empty()) {
         let mut strokes = div().row().gap(4.0).items_center();
         for stroke in keys.split_whitespace() {
-            strokes = strokes.child(ui::render_keystroke(stroke, 12.0));
+            strokes = strokes.child(ui::render_keystroke(stroke, LabelSize::Small));
         }
         content = content.child(strokes);
     }

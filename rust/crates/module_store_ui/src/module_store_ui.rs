@@ -391,7 +391,7 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
                 format!("Optimize: {}", parts.join(", ")),
                 OPTIMIZE_POPOVER_W - 24.0,
             )
-            .size(13.0, 20.0)
+            .size(LabelSize::Medium, 20.0)
             .color(colors.text),
         ))
         .child(Node::from(
@@ -402,7 +402,7 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
                 ),
                 OPTIMIZE_POPOVER_W - 24.0,
             )
-            .size(12.0, 16.0)
+            .size(LabelSize::Small, 16.0)
             .color(colors.text_muted),
         ));
     if !restarted.is_empty() {
@@ -414,7 +414,7 @@ fn optimize_strip(state: &StoreState, overview: &Overview, hovered: Option<u64>)
                 ),
                 OPTIMIZE_POPOVER_W - 24.0,
             )
-            .size(12.0, 16.0)
+            .size(LabelSize::Small, 16.0)
             .color(colors.warning),
         ));
     }
@@ -451,7 +451,7 @@ fn more_key(state: &StoreState, index: usize) -> Option<String> {
 }
 
 fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
-    label(text.into()).label_size(LabelSize::Small).color(color)
+    label(text.into()).size(LabelSize::Small).color(color)
 }
 
 /// 0..1, repeating every `period` seconds.
@@ -505,7 +505,7 @@ fn chips(
             .py(1.0)
             .rounded(5.0)
             .on_click(more_id)
-            .child(label(text).size(11.5).color(colors.text_accent));
+            .child(label(text).size(LabelSize::Small).color(colors.text_accent));
         if hovered == Some(more_id) {
             part = part.bg(colors.ghost_element_hover);
         }
@@ -632,7 +632,10 @@ fn line(line: Line, state: &StoreState, hovered: Option<u64>) -> Node {
                 .gap(2.0)
                 .child(text_line(
                     20.0,
-                    label(line.title).size(13.0).color(title).truncate(),
+                    label(line.title)
+                        .size(LabelSize::Medium)
+                        .color(title)
+                        .truncate(),
                 ))
                 .child(text_line(16.0, small(line.detail, detail).truncate())),
         )
@@ -721,18 +724,18 @@ fn confirm_strip(
     });
     let mut column = popover_frame(SWAP_POPOVER_W)
         .child(
-            Node::from(components::paragraph(format!("Use the shared copy in {workspace}?"), SWAP_POPOVER_W - 24.0).size(13.0, 20.0).color(colors.text)),
+            Node::from(components::paragraph(format!("Use the shared copy in {workspace}?"), SWAP_POPOVER_W - 24.0).size(LabelSize::Medium, 20.0).color(colors.text)),
         )
         .child(Node::from(components::paragraph(format!(
                 "Its node_modules is replaced by a clone of the stored copy; the old folder is kept until the new one is in place.{freed}"
-            ), SWAP_POPOVER_W - 24.0).size(12.0, 16.0).color(colors.text_muted)));
+            ), SWAP_POPOVER_W - 24.0).size(LabelSize::Small, 16.0).color(colors.text_muted)));
     if running {
         column = column.child(Node::from(
             components::paragraph(
                 "Its services are running: they are stopped first and started again after.",
                 SWAP_POPOVER_W - 24.0,
             )
-            .size(12.0, 16.0)
+            .size(LabelSize::Small, 16.0)
             .color(colors.warning),
         ));
     }
@@ -908,7 +911,7 @@ fn group_head(name: &str, manager: &str, total: Option<u64>) -> Node {
     let colors = theme();
     let mut head = div().row().items_center().gap(8.0).child(
         label(name.to_string())
-            .size(13.0)
+            .size(LabelSize::Medium)
             .weight(600)
             .color(colors.text),
     );
@@ -1003,7 +1006,7 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
     };
     let mut head = components::page_header(
         label("node_modules Store")
-            .size(15.0)
+            .size(LabelSize::Large)
             .weight(600)
             .color(colors.text),
     )

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use pom_db::object_storage::{format_size, Listing, ObjectEntry, PrefixStats};
 use pom_db::Database;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -397,16 +397,17 @@ impl BucketItem {
             .child(div().row().w_px(16.0).items_center().child(glyph))
             .child(div().row().flex(1.0).items_center().child(name))
             .child(
-                div()
-                    .row()
-                    .w_px(110.0)
-                    .items_center()
-                    .child(label(size).size(12.0).color(colors.text_muted).truncate()),
+                div().row().w_px(110.0).items_center().child(
+                    label(size)
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ),
             )
             .child(
                 div().row().w_px(130.0).items_center().child(
                     label(modified)
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 ),
@@ -438,7 +439,7 @@ impl BucketItem {
                         .px(12.0)
                         .h_px(ROW_H)
                         .items_center()
-                        .child(label(text).size(12.0).color(colors.text_muted)),
+                        .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
                 )
                 .into();
         }
@@ -464,7 +465,7 @@ impl BucketItem {
                         .color(colors.text_accent)
                         .into(),
                     label(folder_name(folder))
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .color(colors.text)
                         .truncate()
                         .into(),
@@ -483,7 +484,7 @@ impl BucketItem {
                         .color(colors.icon_muted)
                         .into(),
                     label(object.name().to_string())
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .mono()
                         .color(colors.text)
                         .truncate()
@@ -721,7 +722,7 @@ impl Item for BucketItem {
                     .p(12.0)
                     .child(
                         label("Select a file to preview it.")
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder),
                     )
                     .into(),

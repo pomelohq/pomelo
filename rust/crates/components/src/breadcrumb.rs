@@ -1,6 +1,6 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
 
-const TEXT: f32 = 12.5;
+const TEXT: LabelSize = LabelSize::Medium;
 
 enum Part {
     Text {
@@ -127,9 +127,18 @@ impl Breadcrumb {
         if let Some(branch) = self.branch {
             row = row
                 .child(div().w_px(2.0))
-                .child(label("on").size(12.0).color(colors.text_placeholder))
+                .child(
+                    label("on")
+                        .size(LabelSize::Small)
+                        .color(colors.text_placeholder),
+                )
                 .child(icon(IconKind::Branch).size(11.0).color(colors.text_accent))
-                .child(label(branch).size(12.0).mono().color(colors.text_accent));
+                .child(
+                    label(branch)
+                        .size(LabelSize::Small)
+                        .mono()
+                        .color(colors.text_accent),
+                );
         }
         row
     }

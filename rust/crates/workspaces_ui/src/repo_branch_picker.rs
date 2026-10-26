@@ -12,7 +12,7 @@ use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::WINDOW_MODAL_BASE;
 
@@ -248,7 +248,7 @@ impl BranchPicker {
                     .child(
                         div().row().px(14.0).pb(8.0).items_center().child(
                             label(note)
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_placeholder)
                                 .truncate(),
                         ),
@@ -297,7 +297,7 @@ impl BranchPicker {
         let hint = text_line(
             16.0,
             label(text)
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder)
                 .truncate(),
         );
@@ -311,7 +311,7 @@ impl BranchPicker {
         if color == colors.warning {
             column = column.child(text_line(
                 16.0,
-                label(status).size(12.0).color(color).truncate(),
+                label(status).size(LabelSize::Small).color(color).truncate(),
             ));
         }
         column.into()
@@ -391,13 +391,16 @@ impl BranchPicker {
             .h_px(14.0)
             .items_center()
             .on_click(PICKER_REFRESH)
-            .child(label(text.to_uppercase()).size(11.0).weight(600).color(
-                if color == colors.warning {
-                    color
-                } else {
-                    colors.text_placeholder
-                },
-            ))
+            .child(
+                label(text.to_uppercase())
+                    .size(LabelSize::Mini)
+                    .weight(600)
+                    .color(if color == colors.warning {
+                        color
+                    } else {
+                        colors.text_placeholder
+                    }),
+            )
             .into()
     }
 
@@ -488,7 +491,10 @@ impl BranchPicker {
             .gap(8.0)
             .child(icon(kind).size(14.0).color(icon_color))
             .child(div().row().flex(1.0).items_center().child({
-                let title = label(title).size(13.0).color(colors.text).truncate();
+                let title = label(title)
+                    .size(LabelSize::Medium)
+                    .color(colors.text)
+                    .truncate();
                 // A branch name reads as code; the create row is a sentence.
                 if matches!(entry, Entry::Create(_)) {
                     title
@@ -507,7 +513,7 @@ impl BranchPicker {
             text = text.child(
                 div().row().h_px(16.0).pl(22.0).items_center().child(
                     label(subtitle)
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 ),

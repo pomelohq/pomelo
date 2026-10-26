@@ -9,7 +9,7 @@ use editor::search::{SearchOptions, SearchQuery};
 use files::search::{FileResult, SearchRequest};
 use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, material_icon, theme, IconKind, Node, Rect};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Rect};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -24,7 +24,7 @@ const HEADER_ROW_H: f32 = 30.0;
 const LINE_H: f32 = 22.0;
 const FIELD_FONT: f32 = 12.0;
 const SEPARATOR_H: f32 = 10.0;
-const CODE_FONT: f32 = 13.0;
+const CODE_FONT: LabelSize = LabelSize::Medium;
 const GUTTER_W: f32 = 56.0;
 const TYPE_DEBOUNCE: Duration = Duration::from_millis(250);
 
@@ -655,7 +655,7 @@ impl ProjectSearch {
             .child(self.icon_button(PREVIOUS, IconKind::ChevronLeft, false, has_match))
             .child(self.icon_button(NEXT, IconKind::ChevronRight, false, has_match))
             .child(div().row().h_px(BUTTON).items_center().pl(6.0).child(
-                label(count).size(12.0).color(if has_match {
+                label(count).size(LabelSize::Small).color(if has_match {
                     colors.text_muted
                 } else {
                     colors.text_placeholder
@@ -685,10 +685,11 @@ impl ProjectSearch {
             );
         if let Some(error) = &self.error {
             bar = bar.child(
-                div()
-                    .row()
-                    .pl(10.0)
-                    .child(label(error.clone()).size(12.0).color(colors.error)),
+                div().row().pl(10.0).child(
+                    label(error.clone())
+                        .size(LabelSize::Small)
+                        .color(colors.error),
+                ),
             );
         }
         if self.replace_enabled {
@@ -728,7 +729,7 @@ impl ProjectSearch {
                                     .items_center()
                                     .child(
                                         label("Replace all")
-                                            .size(12.0)
+                                            .size(LabelSize::Small)
                                             .color(colors.text_placeholder),
                                     )
                                     .child(key_chip("cmd-enter", false)),
@@ -789,7 +790,11 @@ impl ProjectSearch {
                     .gap(6.0)
                     .items_center()
                     .child(key_chip("enter", false))
-                    .child(label("Search").size(12.0).color(theme().text_placeholder)),
+                    .child(
+                        label("Search")
+                            .size(LabelSize::Small)
+                            .color(theme().text_placeholder),
+                    ),
             );
         }
         state.into()
@@ -896,17 +901,17 @@ impl ProjectSearch {
                         .bg(colors.panel_background)
                         .on_click(id)
                         .child(material_icon(crate::file_icon(&name)).size(14.0))
-                        .child(label(name).size(13.0).color(colors.text))
+                        .child(label(name).size(LabelSize::Medium).color(colors.text))
                         .child(
                             label(folder)
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_muted)
                                 .truncate_start(),
                         )
                         .child(div().row().flex(1.0))
                         .child(
                             label(result.match_count.to_string())
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_muted),
                         );
                     if self.hovered == Some(id) {

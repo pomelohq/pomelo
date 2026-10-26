@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Node};
+use ui::{div, label, theme, Div, LabelSize, Node};
 
 /// The title over a group of rows or fields: small, uppercase and muted, with what the group counts or one
 /// quiet action at the right.
@@ -47,7 +47,7 @@ impl SectionHeader {
         row = row.child(
             div().row().flex(1.0).items_center().child(
                 label(self.title.to_uppercase())
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .weight(600)
                     .color(colors.text_placeholder)
                     .truncate(),
@@ -56,7 +56,7 @@ impl SectionHeader {
         if let Some(count) = self.count {
             row = row.child(
                 label(count.to_string())
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .color(colors.text_placeholder),
             );
         }

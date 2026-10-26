@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 use crate::Session;
 
@@ -84,13 +84,13 @@ fn action_card(id: u64, kind: IconKind, title: &str, text: &str, width: f32, hot
         )
         .child(
             label(title.to_string())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .medium()
                 .color(colors.text),
         )
         .child(
             label(text.to_string())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_muted)
                 .wrap(width - 28.0),
         )
@@ -135,13 +135,13 @@ pub fn welcome_page(
             .gap(4.0)
             .child(
                 label("Welcome to Pomelo")
-                    .size(20.0)
+                    .size_px(20.0)
                     .weight(600)
                     .color(colors.text),
             )
             .child(
                 label("Every branch a full, running dev environment")
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted),
             ),
     );
@@ -214,13 +214,13 @@ pub fn welcome_page(
                         .flex(1.0)
                         .child(
                             label(session.name.clone())
-                                .size(13.0)
+                                .size(LabelSize::Medium)
                                 .medium()
                                 .color(colors.text),
                         )
                         .child(
                             label(place)
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_placeholder)
                                 .truncate_start(),
                         ),
@@ -239,7 +239,7 @@ pub fn welcome_page(
         .pb(6.0)
         .child(
             label("RECENT")
-                .size(11.0)
+                .size(LabelSize::Mini)
                 .weight(600)
                 .color(colors.text_placeholder),
         );
@@ -250,7 +250,7 @@ pub fn welcome_page(
         div().col().gap(2.0).child(head).child(
             div().row().px(8.0).py(6.0).child(
                 label("No projects yet. Created and opened projects show here.")
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder),
             ),
         )
@@ -381,7 +381,9 @@ fn notice_facts(facts: &[NoticeFact]) -> Node {
             .justify_center()
             .child(components::key_value(
                 components::key_label(fact.label.clone()),
-                label(fact.value.clone()).size(12.0).color(colors.text),
+                label(fact.value.clone())
+                    .size(LabelSize::Small)
+                    .color(colors.text),
                 Some(&fact.detail),
             ));
         card = card.child(row);
@@ -426,7 +428,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
         .child(
             div().row().h_px(20.0).items_center().child(
                 label(notice.title.clone())
-                    .size(16.0)
+                    .size(LabelSize::Large)
                     .weight(600)
                     .color(colors.text)
                     .truncate(),
@@ -442,7 +444,7 @@ pub fn notice_page(notice: &CenterNotice, width: f32, hovered: Option<u64>) -> N
                 .child(
                     div().row().flex(1.0).child(
                         label(notice.status.clone())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted)
                             .truncate(),
                     ),

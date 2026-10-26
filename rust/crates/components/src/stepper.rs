@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 
 /// A number with a minus and a plus beside it; clicking the number edits it in place.
 pub struct Stepper {
@@ -40,7 +40,12 @@ impl From<Stepper> for Node {
             .items_center()
             .justify_center()
             .on_click(stepper.edit)
-            .child(label(shown).size(13.0).mono().color(colors.text));
+            .child(
+                label(shown)
+                    .size(LabelSize::Medium)
+                    .mono()
+                    .color(colors.text),
+            );
         if editing {
             // The caret keeps its slot while it blinks so the number does not shift.
             value_box = value_box.child(caret(ui::caret_phase()));

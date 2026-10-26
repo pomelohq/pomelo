@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 use workspace::{
     CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
     WindowModal, WINDOW_MODAL_BASE,
@@ -161,7 +161,7 @@ impl ConnectHostModal {
                     .flex(1.0)
                     .child(
                         label(title.to_string())
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .medium()
                             .color(if enabled {
                                 colors.text
@@ -172,7 +172,7 @@ impl ConnectHostModal {
                     )
                     .child(
                         label(detail.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder)
                             .truncate_start(),
                     ),
@@ -190,7 +190,7 @@ impl ConnectHostModal {
 
     fn line(text: &str) -> Node {
         label(text.to_string())
-            .size(12.5)
+            .size(LabelSize::Medium)
             .color(theme().text_muted)
             .wrap(WIDTH - 40.0)
             .into()
@@ -204,7 +204,7 @@ impl ConnectHostModal {
             .child(icon(kind).size(14.0).color(tint))
             .child(
                 label(text.to_string())
-                    .size(12.5)
+                    .size(LabelSize::Medium)
                     .color(theme().text_muted)
                     .wrap(WIDTH - 62.0),
             )
@@ -219,7 +219,12 @@ impl ConnectHostModal {
             .py(8.0)
             .rounded(6.0)
             .bg(colors.element_background)
-            .child(label(text.to_string()).size(12.0).mono().color(colors.text))
+            .child(
+                label(text.to_string())
+                    .size(LabelSize::Small)
+                    .mono()
+                    .color(colors.text),
+            )
             .into()
     }
 }

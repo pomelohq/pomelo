@@ -268,7 +268,7 @@ impl ImportConfigModal {
             .child(
                 div().row().items_center().flex(1.0).child(
                     label(name)
-                        .label_size(LabelSize::Small)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(if self.file_name.is_empty() {
                             colors.text_muted
@@ -299,7 +299,7 @@ impl ImportConfigModal {
         for line in lines.iter().take(PREVIEW_LINES) {
             column = column.child(
                 label(line.to_string())
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(colors.text_muted)
                     .truncate(),
@@ -308,7 +308,7 @@ impl ImportConfigModal {
         if lines.len() > PREVIEW_LINES {
             column = column.child(
                 label(format!("... {} more lines", lines.len() - PREVIEW_LINES))
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder),
             );
         }
@@ -364,7 +364,7 @@ impl WindowModal for ImportConfigModal {
                     section = section
                         .child(
                             label(format!("Secrets: {}", names.join(", ")))
-                                .label_size(LabelSize::Small)
+                                .size(LabelSize::Small)
                                 .color(colors.text_muted)
                                 .truncate(),
                         )
@@ -398,7 +398,7 @@ impl WindowModal for ImportConfigModal {
         if let Some(error) = &self.error {
             section = section.child(
                 label(error.clone())
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .color(colors.error),
             );
         }

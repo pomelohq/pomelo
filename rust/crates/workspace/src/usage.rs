@@ -1,7 +1,7 @@
 //! The agents' usage where the window shows it: a chip at the right of the title bar (the signed-in
 //! account and its 5-hour and weekly limits) with a card under it, and today's total in the status bar.
 
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
 
 pub const USAGE_CHIP: u64 = 18;
 pub const APP_MENU: u64 = 19;
@@ -79,7 +79,7 @@ fn percent(used: f32) -> String {
 /// The title bar chip: the account, a bar of its 5-hour window, and both windows' use.
 pub fn chip(info: &UsageInfo, hot: bool) -> Node {
     let colors = theme();
-    let mono = |text: String, color: Rgba| label(text).size(12.0).mono().color(color);
+    let mono = |text: String, color: Rgba| label(text).size(LabelSize::Small).mono().color(color);
     let mut row = components::status_item(Some(USAGE_CHIP))
         .height(24.0)
         .hovered(hot)
@@ -149,13 +149,13 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 .child(icon(IconKind::Sparkle).size(13.0).color(colors.icon_muted))
                 .child(
                     label(account.name.clone())
-                        .size(13.0)
+                        .size(LabelSize::Medium)
                         .weight(500)
                         .color(colors.text),
                 )
                 .child(
                     label(account.email.clone())
-                        .size(11.5)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 )
@@ -168,38 +168,37 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 let Some(window) = window else {
                     continue;
                 };
-                body = body.child(
-                    div()
-                        .row()
-                        .items_center()
-                        .gap(8.0)
-                        .child(
-                            div()
-                                .w_px(54.0)
-                                .child(label(title).size(12.0).color(colors.text_muted)),
-                        )
-                        .child(meter(window.used, None, 5.0))
-                        .child(
-                            div().row().w_px(36.0).justify_end().child(
-                                label(percent(window.used))
-                                    .size(12.0)
-                                    .mono()
-                                    .color(colors.text),
+                body =
+                    body.child(
+                        div()
+                            .row()
+                            .items_center()
+                            .gap(8.0)
+                            .child(div().w_px(54.0).child(
+                                label(title).size(LabelSize::Small).color(colors.text_muted),
+                            ))
+                            .child(meter(window.used, None, 5.0))
+                            .child(
+                                div().row().w_px(36.0).justify_end().child(
+                                    label(percent(window.used))
+                                        .size(LabelSize::Small)
+                                        .mono()
+                                        .color(colors.text),
+                                ),
+                            )
+                            .child(
+                                div().row().w_px(72.0).justify_end().child(
+                                    label(window.resets.clone())
+                                        .size(LabelSize::Mini)
+                                        .color(colors.text_placeholder),
+                                ),
                             ),
-                        )
-                        .child(
-                            div().row().w_px(72.0).justify_end().child(
-                                label(window.resets.clone())
-                                    .size(11.0)
-                                    .color(colors.text_placeholder),
-                            ),
-                        ),
-                );
+                    );
             }
             if !account.organization.is_empty() {
                 body = body.child(
                     label(account.organization.clone())
-                        .size(11.0)
+                        .size(LabelSize::Mini)
                         .color(colors.text_placeholder),
                 );
             }
@@ -207,7 +206,7 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
         None => {
             body = body.child(
                 label(format!("No Claude Code sign-in on {}. Run claude and /login; Pomelo reads what it saved, never asks for it.", desktop::THIS_MACHINE))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted)
                     .wrap(CARD_WIDTH - 28.0),
             );
@@ -227,7 +226,7 @@ pub fn chip_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
         .child(
             div().px(8.0).py(4.0).child(
                 label(info.note.clone())
-                    .size(11.0)
+                    .size(LabelSize::Mini)
                     .color(colors.text_placeholder)
                     .wrap(CARD_WIDTH - 28.0),
             ),
@@ -257,7 +256,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
             .items_center()
             .child(
                 label("Agents today")
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .weight(500)
                     .color(colors.text),
             )
@@ -267,7 +266,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                     1 => "1 session".to_string(),
                     count => format!("{count} sessions"),
                 })
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(colors.text_placeholder),
             ),
     );
@@ -285,7 +284,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 .child(
                     div()
                         .row()
-                        .child(label(title).size(12.0).color(colors.text_muted))
+                        .child(label(title).size(LabelSize::Small).color(colors.text_muted))
                         .child(div().flex(1.0))
                         .child(
                             label(format!(
@@ -293,7 +292,7 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                                 percent(window.used),
                                 window.resets
                             ))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(tone(window.used)),
                         ),
@@ -314,12 +313,17 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 .px(10.0)
                 .child(
                     label(workspace.clone())
-                        .size(12.5)
+                        .size(LabelSize::Medium)
                         .color(colors.text)
                         .truncate(),
                 )
                 .child(div().flex(1.0))
-                .child(label(value.clone()).size(12.5).mono().color(colors.text)),
+                .child(
+                    label(value.clone())
+                        .size(LabelSize::Medium)
+                        .mono()
+                        .color(colors.text),
+                ),
         );
     }
     if !today.by_workspace.is_empty() {

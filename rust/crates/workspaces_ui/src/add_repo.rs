@@ -124,7 +124,7 @@ impl AddRepoModal {
         if self.workspaces.is_empty() {
             list = list.child(
                 label("No other workspaces yet")
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .color(colors.text_muted),
             );
         }
@@ -357,13 +357,13 @@ impl WindowModal for CloneReposModal {
     fn render(&mut self) -> Node {
         let mut section = modal_section(16.0).child(
             label("These repos are in the config but not cloned into main yet.")
-                .label_size(LabelSize::Small)
+                .size(LabelSize::Small)
                 .color(theme().text_muted),
         );
         for (index, (name, field)) in self.rows.iter().enumerate() {
             section = section.child(
                 label(name.clone())
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .color(theme().text),
             );
             section = section.child(

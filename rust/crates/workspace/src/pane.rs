@@ -2,7 +2,7 @@
 //! plus the tab bar every pane draws. Owners (the editor center, the terminal panel, later other features)
 //! configure which controls the tab bar shows and hand in the click ids for this pane.
 
-use ui::{div, icon, label, material_icon, theme, IconKind, MaterialIcon, Node};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, MaterialIcon, Node};
 
 use crate::pane_group::{PaneId, SplitDirection};
 use crate::search_bar::{SearchBar, Searchable};
@@ -605,13 +605,13 @@ fn diff_toolbar(buttons: &[TabBarButton], stat: Option<(usize, usize)>) -> Node 
         bar = bar
             .child(
                 label(format!("+{added}"))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(colors.version_control_added),
             )
             .child(
                 label(format!("-{removed}"))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(colors.version_control_deleted),
             );

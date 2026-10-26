@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
 
 /// What a banner reports, which sets its icon and color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,7 +109,7 @@ impl Banner {
         } else {
             colors.text_muted
         };
-        let mut text = label(self.text).size(12.0).color(ink);
+        let mut text = label(self.text).size(LabelSize::Small).color(ink);
         if self.mono {
             text = text.mono();
         }
@@ -119,7 +119,12 @@ impl Banner {
         };
         let mut words = div().col().flex(1.0).gap(2.0).child(text);
         if let Some(detail) = self.detail {
-            words = words.child(label(detail).size(12.0).color(colors.text_muted).truncate());
+            words = words.child(
+                label(detail)
+                    .size(LabelSize::Small)
+                    .color(colors.text_muted)
+                    .truncate(),
+            );
         }
         let mut line = div()
             .row()
@@ -158,7 +163,7 @@ impl Banner {
                 block = block.child(
                     div().row().h_px(16.0).items_center().child(
                         label(command)
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(colors.text)
                             .truncate(),

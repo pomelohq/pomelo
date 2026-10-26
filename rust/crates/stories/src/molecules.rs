@@ -1,7 +1,7 @@
 //! Atoms put together into one control: a menu of choices, and a select with its menu open.
 
 use components::{BannerTone, ButtonKind, MenuItem};
-use ui::{div, label, theme, IconKind, Node};
+use ui::{div, label, theme, IconKind, LabelSize, Node};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::InputField;
 
@@ -288,7 +288,11 @@ fn list(rows: &[(&str, IconKind)], selected: usize, hovered: Option<u64>) -> Nod
                 .selected(index == selected)
                 .hovered(hovered)
                 .child(ui::icon(*kind).size(14.0).color(theme().icon_muted))
-                .child(label(text.to_string()).size(13.0).color(theme().text)),
+                .child(
+                    label(text.to_string())
+                        .size(LabelSize::Medium)
+                        .color(theme().text),
+                ),
         );
     }
     div().p(INSET).child(column).into()
@@ -512,13 +516,22 @@ pub fn stories() -> Vec<StoryDef> {
                                 "Let people sign in with a magic link",
                                 528.0,
                             ))
-                            .lead(label("PROJ-101").size(13.0).mono().color(colors.text_muted))
+                            .lead(
+                                label("PROJ-101")
+                                    .size(LabelSize::Medium)
+                                    .mono()
+                                    .color(colors.text_muted),
+                            )
                             .lead(components::pill("In progress").color(colors.text_accent))
                             .action(components::button(ID, "Copy Link").icon(Some(IconKind::Copy)))
                             .action(
                                 components::button(ID + 1, "Reload").icon(Some(IconKind::RotateCw)),
                             )
-                            .meta(label("Assigned to you").size(12.0).color(colors.text_muted)),
+                            .meta(
+                                label("Assigned to you")
+                                    .size(LabelSize::Small)
+                                    .color(colors.text_muted),
+                            ),
                         )
                         .into()
                 })
@@ -543,9 +556,22 @@ pub fn stories() -> Vec<StoryDef> {
                                     .gap(8.0)
                                     .items_center()
                                     .child(components::dot(colors.success, 7.0))
-                                    .child(label("api").size(14.0).color(colors.text_muted))
-                                    .child(label(">").size(14.0).color(colors.text_placeholder))
-                                    .child(label("web").size(14.0).medium().color(colors.text)),
+                                    .child(
+                                        label("api")
+                                            .size(LabelSize::Default)
+                                            .color(colors.text_muted),
+                                    )
+                                    .child(
+                                        label(">")
+                                            .size(LabelSize::Default)
+                                            .color(colors.text_placeholder),
+                                    )
+                                    .child(
+                                        label("web")
+                                            .size(LabelSize::Default)
+                                            .medium()
+                                            .color(colors.text),
+                                    ),
                             )
                             .compact()
                             .action(components::button(ID, "Stop").icon(Some(IconKind::Stop)))
@@ -735,8 +761,11 @@ pub fn stories() -> Vec<StoryDef> {
                         components::modal_frame(440.0)
                             .child(components::modal_header("Rename Workspace", Some(ID)))
                             .child(
-                                components::modal_section(8.0)
-                                    .child(ui::label("feat-login").size(13.0).color(theme().text)),
+                                components::modal_section(8.0).child(
+                                    ui::label("feat-login")
+                                        .size(LabelSize::Medium)
+                                        .color(theme().text),
+                                ),
                             )
                             .child(components::modal_footer(
                                 Some(components::modal_note("The branch keeps its name.")),
@@ -908,7 +937,7 @@ fn card_board(card: components::Card) -> Node {
                 .child(label("web crashed").medium().color(colors.text))
                 .child(
                     label("Stopped with exit code 1.")
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_muted),
                 ),
         )

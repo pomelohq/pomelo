@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
@@ -58,7 +58,11 @@ impl ConsoleToolbar for SideAgentBar {
                 .items_center()
                 .rounded(4.0)
                 .border(1.0, colors.border_variant)
-                .child(label("read-only").size(12.0).color(colors.text_muted))
+                .child(
+                    label("read-only")
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted),
+                )
         } else {
             div()
                 .row()
@@ -67,7 +71,11 @@ impl ConsoleToolbar for SideAgentBar {
                 .items_center()
                 .rounded(4.0)
                 .border(1.0, colors.warning.alpha(0.5))
-                .child(label("can edit").size(12.0).color(colors.warning))
+                .child(
+                    label("can edit")
+                        .size(LabelSize::Small)
+                        .color(colors.warning),
+                )
         };
         let context = div()
             .row()
@@ -78,7 +86,11 @@ impl ConsoleToolbar for SideAgentBar {
             .rounded(12.0)
             .border(1.0, colors.border_variant)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
-            .child(label(self.context.clone()).size(12.5).color(colors.text));
+            .child(
+                label(self.context.clone())
+                    .size(LabelSize::Medium)
+                    .color(colors.text),
+            );
         let send = |label_too: bool| {
             let mut send = div()
                 .row()
@@ -91,7 +103,11 @@ impl ConsoleToolbar for SideAgentBar {
                 .on_click(self.base + SEND)
                 .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted));
             if label_too {
-                send = send.child(label("Send to main").size(12.5).color(colors.text));
+                send = send.child(
+                    label("Send to main")
+                        .size(LabelSize::Medium)
+                        .color(colors.text),
+                );
             }
             send
         };
@@ -115,7 +131,11 @@ impl ConsoleToolbar for SideAgentBar {
                 .items_center()
                 .bg(colors.toolbar_background)
                 .child(icon(self.role_icon).size(13.0).color(colors.icon_muted))
-                .child(label(self.role.clone()).size(13.0).color(colors.text));
+                .child(
+                    label(self.role.clone())
+                        .size(LabelSize::Medium)
+                        .color(colors.text),
+                );
             if let Some(tag) = tag {
                 row = row.child(tag.clone());
             }

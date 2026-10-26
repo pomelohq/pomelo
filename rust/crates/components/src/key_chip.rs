@@ -1,4 +1,4 @@
-use ui::{div, theme, Node, Rgba};
+use ui::{div, theme, LabelSize, Node, Rgba};
 
 /// A key binding in a small cap, for buttons and footers; `on_accent` when it sits on an accent fill.
 pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
@@ -19,6 +19,6 @@ pub fn key_chip(keystroke: &str, on_accent: bool) -> Node {
         .items_center()
         .rounded(4.0)
         .bg(fill)
-        .child(ui::render_keystroke_in(keystroke, 11.0, ink))
+        .child(ui::render_keystroke_in(keystroke, LabelSize::Mini, ink))
         .into()
 }

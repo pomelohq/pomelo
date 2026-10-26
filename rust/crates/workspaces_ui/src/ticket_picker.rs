@@ -380,7 +380,7 @@ impl TicketPicker {
             column = column.child(text_line(
                 16.0,
                 label(hint)
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .truncate(),
             ));
@@ -422,7 +422,7 @@ impl TicketPicker {
                 list.child(
                     div().row().h_px(28.0).px(8.0).items_center().child(
                         label(note)
-                            .label_size(LabelSize::Small)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted)
                             .truncate(),
                     ),
@@ -526,7 +526,7 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
         .child(
             div().row().w_px(KEY_W).items_center().child(
                 label(issue.key.clone())
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .mono()
                     .color(colors.text_accent)
                     .truncate(),
@@ -535,7 +535,7 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
         .child(
             div().row().flex(1.0).items_center().child(
                 label(issue.summary.clone())
-                    .label_size(LabelSize::Small)
+                    .size(LabelSize::Small)
                     .color(colors.text)
                     .truncate(),
             ),
@@ -548,7 +548,7 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
                 .items_center()
                 .child(if issue.mine {
                     label("Mine")
-                        .label_size(LabelSize::XSmall)
+                        .size(LabelSize::XSmall)
                         .color(colors.text_placeholder)
                         .into()
                 } else {

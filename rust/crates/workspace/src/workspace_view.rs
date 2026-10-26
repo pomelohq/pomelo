@@ -15,7 +15,7 @@ use crate::{
     SESSION_TRIGGER, SIDEBAR_TOGGLE, TREE_MENU_TARGET,
 };
 use std::time::{Duration, Instant};
-use ui::{Context, Frame, IconKind, Overlay, Painted, RawView, Rect, Rgba, Window};
+use ui::{Context, Frame, IconKind, LabelSize, Overlay, Painted, RawView, Rect, Rgba, Window};
 
 use crate::{
     TreeAction, MENU_EDIT_COPY_TRIM, MENU_EDIT_GO_TO_DECLARATION, MENU_EDIT_GO_TO_DEFINITION,
@@ -9008,7 +9008,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
     for line in lines.iter().take(NOTIFICATION_MAX_LINES) {
         message = message.child(
             ui::label(line.to_string())
-                .label_size(ui::LabelSize::Small)
+                .size(LabelSize::Small)
                 .color(colors.text_muted)
                 .wrap(text_w),
         );
@@ -9016,7 +9016,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
     if lines.len() > NOTIFICATION_MAX_LINES {
         message = message.child(
             ui::label("...")
-                .label_size(ui::LabelSize::Small)
+                .size(LabelSize::Small)
                 .color(colors.text_muted),
         );
     }
@@ -9026,7 +9026,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         .gap(4.0)
         .child(
             ui::label(notification.title.clone())
-                .size(13.0)
+                .size(LabelSize::Medium)
                 .medium()
                 .color(colors.text),
         )

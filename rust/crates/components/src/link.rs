@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
 
 /// A text-only action in the accent color, beside the value it acts on, with an optional leading icon.
 pub fn link(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> Node {
@@ -16,6 +16,6 @@ pub fn link(id: u64, leading: Option<IconKind>, text: &str, enabled: bool) -> No
         action = action.child(icon(kind).size(12.0).color(color));
     }
     action
-        .child(label(text.to_string()).size(12.0).color(color))
+        .child(label(text.to_string()).size(LabelSize::Small).color(color))
         .into()
 }

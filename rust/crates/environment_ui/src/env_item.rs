@@ -3,7 +3,7 @@ use std::collections::HashSet;
 
 use pom_services::{ServiceExplain, ServiceTarget};
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, Node, Rect, Rgba};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 use crate::{action_button, hit_at, EnvironmentContext};
@@ -264,7 +264,7 @@ impl EnvItem {
             .child(
                 div().row().w_px(KEY_W).child(
                     label(key.to_string())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(colors.text)
                         .truncate(),
@@ -273,7 +273,7 @@ impl EnvItem {
             .child(
                 div().row().flex(1.0).items_center().child(
                     label(shown)
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .mono()
                         .color(if masked {
                             colors.text_placeholder
@@ -317,11 +317,16 @@ impl EnvItem {
                         .items_center()
                         .rounded(4.0)
                         .bg(color.alpha(0.14))
-                        .child(label(text.to_string()).size(12.0).medium().color(color)),
+                        .child(
+                            label(text.to_string())
+                                .size(LabelSize::Small)
+                                .medium()
+                                .color(color),
+                        ),
                 )
                 .child(
                     label(meaning.to_string())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder),
                 )
         };
@@ -420,7 +425,7 @@ impl Item for EnvItem {
                     table = table.child(
                         div().row().px(8.0).py(8.0).child(
                             label("no env for this service")
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_muted),
                         ),
                     );
@@ -477,17 +482,19 @@ impl Item for EnvItem {
             }
             (None, Some(error)) => {
                 table = table.child(
-                    div()
-                        .row()
-                        .p(8.0)
-                        .child(label(error.clone()).size(12.0).mono().color(colors.error)),
+                    div().row().p(8.0).child(
+                        label(error.clone())
+                            .size(LabelSize::Small)
+                            .mono()
+                            .color(colors.error),
+                    ),
                 );
             }
             (None, None) => {
                 table = table.child(
                     div().row().justify_center().pt(40.0).child(
                         label("Pick a repo + service to inspect its resolved env")
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted),
                     ),
                 );

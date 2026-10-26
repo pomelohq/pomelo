@@ -584,8 +584,13 @@ pub fn label(text: impl Into<String>) -> Label {
 }
 
 impl Label {
-    pub fn size(mut self, s: f32) -> Self {
-        self.size = s;
+    pub fn size(mut self, size: crate::LabelSize) -> Self {
+        self.size = size.px();
+        self
+    }
+    /// Text off the UI scale: editor and terminal fonts, display headings.
+    pub fn size_px(mut self, px: f32) -> Self {
+        self.size = px;
         self
     }
     pub fn color(mut self, c: Rgba) -> Self {

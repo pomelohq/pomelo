@@ -1,4 +1,4 @@
-use ui::{div, label, theme, Div, Node};
+use ui::{div, label, theme, Div, LabelSize, Node};
 
 pub const TOOLBAR_HEIGHT: f32 = 32.0;
 
@@ -47,7 +47,7 @@ impl Toolbar {
         let colors = theme();
         self.lead(
             label(text.into())
-                .size(12.0)
+                .size(LabelSize::Small)
                 .color(if error {
                     colors.error
                 } else {
@@ -59,7 +59,11 @@ impl Toolbar {
 
     /// Quiet text that counts what is shown: 24 items, 3 changes.
     pub fn note(self, text: impl Into<String>) -> Self {
-        self.child(label(text.into()).size(12.0).color(theme().text_muted))
+        self.child(
+            label(text.into())
+                .size(LabelSize::Small)
+                .color(theme().text_muted),
+        )
     }
 
     pub fn spacer(mut self) -> Self {

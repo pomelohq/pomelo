@@ -126,7 +126,7 @@ impl TextField {
         let size = self.font_size.unwrap_or(INPUT_FONT);
         let mut row = div().row().items_center().flex(1.0).h_px(height);
         let styled = |text: String| {
-            let label = label(text).size(size);
+            let label = label(text).size_px(size);
             if font == FieldFont::Mono {
                 label.mono()
             } else {
@@ -580,7 +580,7 @@ impl TextArea {
                 .child(caret(show_caret))
                 .child(
                     self.styled(label(placeholder.to_string()))
-                        .size(size)
+                        .size_px(size)
                         .color(theme().text_placeholder),
                 );
             return column.child(placeholder_row).into();
@@ -633,7 +633,7 @@ impl TextArea {
                     String::new()
                 };
                 line = line.child(div().row().w_px(gutter_w).pr(12.0).justify_end().child(
-                    label(number).size(size).mono().color(
+                    label(number).size_px(size).mono().color(
                         if line_index == current_line && focused {
                             theme().text_muted
                         } else {
@@ -667,7 +667,7 @@ impl TextArea {
                     }
                     runs = runs.child(
                         self.styled(label(piece(run_start, run_end)))
-                            .size(size)
+                            .size_px(size)
                             .color(capture_color(capture)),
                     );
                     run_start = run_end;

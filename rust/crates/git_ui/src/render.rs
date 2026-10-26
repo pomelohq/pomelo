@@ -1,6 +1,6 @@
 use git::working_copy::{Staging, Upstream};
 use git::ChangeStatus;
-use ui::{deferred, div, icon, label, theme, Corner, Div, IconKind, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Rgba};
 
 use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
@@ -105,7 +105,7 @@ impl GitPanel {
                 .bg(color.alpha(0.14))
                 .child(
                     label(format!("on {branch}"))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(color)
                         .truncate(),
                 )
@@ -125,7 +125,7 @@ impl GitPanel {
                 .child(
                     div().col().w_px(width).p(12.0).child(Node::from(
                         components::paragraph(reason, (width - 24.0).max(40.0))
-                            .size(12.0, 18.0)
+                            .size(LabelSize::Small, 18.0)
                             .color(theme().text_muted),
                     )),
                 )
@@ -301,7 +301,7 @@ impl GitPanel {
                 ))
                 .child(grow(
                     label(format!("{} - {repo}", opened.commit.short_sha))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 ))
@@ -327,7 +327,8 @@ impl GitPanel {
                     self.hot(view_diff),
                 );
                 if added + deleted > 0 {
-                    diff_button = diff_button.child(diff_stat(Some(added), Some(deleted), 11.5));
+                    diff_button =
+                        diff_button.child(diff_stat(Some(added), Some(deleted), LabelSize::Small));
                 }
                 if self.hot(view_diff) {
                     diff_button = components::with_tooltip(
@@ -386,7 +387,7 @@ impl GitPanel {
                         label(format!(
                             "{count} commit{plural} since the branch left {base}"
                         ))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                     )
@@ -427,7 +428,7 @@ impl GitPanel {
                 .items_center()
                 .child(grow(
                     label(text.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 )),
@@ -440,7 +441,7 @@ impl GitPanel {
                 .items_center()
                 .child(
                     label(day.to_uppercase())
-                        .size(11.0)
+                        .size(LabelSize::Mini)
                         .weight(600)
                         .color(colors.text_placeholder),
                 ),
@@ -462,13 +463,13 @@ impl GitPanel {
                 header
                     .child(
                         label(if *staged { "Staged" } else { "Not staged" })
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .medium()
                             .color(colors.text_muted),
                     )
                     .child(grow(
                         label(count.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder),
                     ))
             }
@@ -504,7 +505,7 @@ impl GitPanel {
                     )
                     .child(grow(
                         label(text.clone())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted)
                             .truncate(),
                     ));
@@ -514,7 +515,11 @@ impl GitPanel {
                     } else {
                         format!("{left} to review")
                     };
-                    row = row.child(label(text).size(11.0).color(colors.text_placeholder));
+                    row = row.child(
+                        label(text)
+                            .size(LabelSize::Mini)
+                            .color(colors.text_placeholder),
+                    );
                 }
                 row
             }
@@ -551,19 +556,23 @@ impl GitPanel {
                     .items_center()
                     .child(
                         label(format!("{reviewed} of {total} files reviewed"))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_muted)
                             .truncate(),
                     )
                     .child(bar)
                     .child(div().row().flex(1.0))
-                    .child(div().row().h_px(22.0).items_center().on_click(open).child(
-                        label("Open all diffs").size(12.0).color(if self.hot(open) {
-                            colors.text
-                        } else {
-                            colors.text_accent
-                        }),
-                    ))
+                    .child(
+                        div().row().h_px(22.0).items_center().on_click(open).child(
+                            label("Open all diffs").size(LabelSize::Small).color(
+                                if self.hot(open) {
+                                    colors.text
+                                } else {
+                                    colors.text_accent
+                                },
+                            ),
+                        ),
+                    )
             }
             Row::Card { repo } => self.card_header(index, *repo, scan),
             Row::PullRequest { repo, pull_request } => {
@@ -582,7 +591,7 @@ impl GitPanel {
                     .child(icon(IconKind::Plus).size(12.0).color(colors.text_accent))
                     .child(grow(
                         label("Create Pull Request")
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_accent)
                             .truncate(),
                     ));
@@ -602,7 +611,7 @@ impl GitPanel {
                 .items_center()
                 .child(grow(
                     label(text.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                 )),
@@ -620,10 +629,15 @@ impl GitPanel {
                 self.row_base(index, rows::SECTION_H)
                     .gap(6.0)
                     .child(icon(arrow).size(11.0).color(colors.text_muted))
-                    .child(label(title).size(12.0).medium().color(colors.text_muted))
+                    .child(
+                        label(title)
+                            .size(LabelSize::Small)
+                            .medium()
+                            .color(colors.text_muted),
+                    )
                     .child(grow(
                         label(count.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder),
                     ))
             }
@@ -643,22 +657,22 @@ impl GitPanel {
                     .child(icon(IconKind::FileGit).size(11.0).color(colors.text_muted))
                     .child(
                         label("Files changed on this branch")
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .medium()
                             .color(colors.text_muted)
                             .truncate(),
                     )
                     .child(
                         label(format!("vs {base}"))
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder)
                             .truncate(),
                     )
                     .child(div().row().flex(1.0))
-                    .child(diff_stat(Some(*added), Some(*deleted), 11.5))
+                    .child(diff_stat(Some(*added), Some(*deleted), LabelSize::Small))
                     .child(
                         label(count.to_string())
-                            .size(12.0)
+                            .size(LabelSize::Small)
                             .color(colors.text_placeholder),
                     )
             }
@@ -683,18 +697,18 @@ impl GitPanel {
                         .child(components::avatar(&commit.author))
                         .child(grow(
                             label(commit.subject.clone())
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text)
                                 .truncate(),
                         ))
                         .child(
                             label(git::history::relative_time(commit.timestamp))
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_placeholder),
                         )
                         .child(
                             label(commit.short_sha.clone())
-                                .size(11.5)
+                                .size(LabelSize::Small)
                                 .mono()
                                 .color(colors.text_placeholder),
                         );
@@ -713,7 +727,7 @@ impl GitPanel {
                     .child(
                         div().row().child(
                             label(commit.subject.clone())
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text)
                                 .truncate(),
                         ),
@@ -729,13 +743,13 @@ impl GitPanel {
                                     commit.author,
                                     git::history::relative_time(commit.timestamp)
                                 ))
-                                .size(12.0)
+                                .size(LabelSize::Small)
                                 .color(colors.text_placeholder)
                                 .truncate(),
                             )
                             .child(
                                 label(commit.short_sha.clone())
-                                    .size(11.5)
+                                    .size(LabelSize::Small)
                                     .mono()
                                     .color(colors.text_placeholder),
                             ),
@@ -815,7 +829,7 @@ impl GitPanel {
                         "{commits} commit{}",
                         if commits == 1 { "" } else { "s" }
                     ))
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .color(colors.text_placeholder)
                     .into(),
                 );
@@ -830,11 +844,11 @@ impl GitPanel {
                                 deleted + file.deleted.unwrap_or(0),
                             )
                         });
-                trailing.push(diff_stat(Some(added), Some(deleted), 11.5));
+                trailing.push(diff_stat(Some(added), Some(deleted), LabelSize::Small));
             }
         }
         let name_label = label(name)
-            .size(12.0)
+            .size(LabelSize::Small)
             .weight(600)
             .color(colors.text)
             .truncate();
@@ -921,7 +935,10 @@ impl GitPanel {
         } else {
             colors.text
         };
-        let mut name_label = label(name.clone()).size(12.0).color(name_color).truncate();
+        let mut name_label = label(name.clone())
+            .size(LabelSize::Small)
+            .color(name_color)
+            .truncate();
         if deleted {
             name_label = name_label.strikethrough(colors.text_muted);
         }
@@ -936,7 +953,7 @@ impl GitPanel {
             if let Some(folder) = folder {
                 path = path.child(
                     label(folder)
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate_start(),
                 );
@@ -973,7 +990,7 @@ impl GitPanel {
             // A branch file only says what is left to review; its stats live in the diff it opens.
             return row.child(button);
         }
-        row.child(diff_stat(entry.added, entry.deleted, 11.5))
+        row.child(diff_stat(entry.added, entry.deleted, LabelSize::Small))
             .child(status_icon(entry.status))
     }
 
@@ -999,7 +1016,7 @@ impl GitPanel {
         } else {
             branch
         })
-        .size(12.0)
+        .size(LabelSize::Small)
         .color(branch_color)
         .truncate();
         let mut trailing: Vec<Node> = Vec::new();
@@ -1053,7 +1070,7 @@ impl GitPanel {
             .child(Node::from(components::disclosure(open)))
             .child(
                 label(name)
-                    .size(12.0)
+                    .size(LabelSize::Small)
                     .weight(600)
                     .color(colors.text)
                     .truncate(),
@@ -1091,15 +1108,27 @@ impl GitPanel {
             "changes" => "Changes requested",
             _ => "Review pending",
         };
-        let dash = || label("-").size(12.0).color(colors.text_placeholder);
+        let dash = || {
+            label("-")
+                .size(LabelSize::Small)
+                .color(colors.text_placeholder)
+        };
         let mut parts = Vec::new();
         if pr.conflict {
-            parts.push(label("Merge conflict").size(12.0).color(colors.error));
+            parts.push(
+                label("Merge conflict")
+                    .size(LabelSize::Small)
+                    .color(colors.error),
+            );
         }
-        parts.push(label(checks).size(12.0).color(checks_color));
-        parts.push(label(review).size(12.0).color(colors.text));
+        parts.push(label(checks).size(LabelSize::Small).color(checks_color));
+        parts.push(label(review).size(LabelSize::Small).color(colors.text));
         if pr.is_draft {
-            parts.push(label("Draft").size(12.0).color(colors.text_placeholder));
+            parts.push(
+                label("Draft")
+                    .size(LabelSize::Small)
+                    .color(colors.text_placeholder),
+            );
         }
         // Nested from the tail so a narrow card truncates the last part first and earlier parts only once
         // everything after them is gone.
@@ -1119,7 +1148,7 @@ impl GitPanel {
             .child(
                 div().row().child(
                     label(format!("#{} {}", pr.number, pr.title))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .medium()
                         .color(colors.text)
                         .truncate(),
@@ -1187,7 +1216,7 @@ impl GitPanel {
             .child(
                 div().row().child(
                     label(opened.commit.subject.clone())
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .weight(600)
                         .color(colors.text)
                         .truncate(),
@@ -1204,18 +1233,18 @@ impl GitPanel {
                             opened.commit.author,
                             git::history::relative_time(opened.commit.timestamp)
                         ))
-                        .size(12.0)
+                        .size(LabelSize::Small)
                         .color(colors.text_placeholder)
                         .truncate(),
                     )
                     .child(
                         label(opened.commit.short_sha.clone())
-                            .size(11.5)
+                            .size(LabelSize::Small)
                             .mono()
                             .color(colors.text_placeholder),
                     ),
             )
-            .child(label(where_it_is).size(12.0).color(where_color));
+            .child(label(where_it_is).size(LabelSize::Small).color(where_color));
         div()
             .col()
             .h_px(rows::COMMIT_HEADER_H)
@@ -1266,7 +1295,7 @@ impl GitPanel {
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
                 label(workspace_branch)
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .medium()
                     .color(colors.text)
                     .truncate(),
@@ -1287,7 +1316,7 @@ impl GitPanel {
             .child(picker)
             .child(grow(
                 label(count)
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .color(colors.text_placeholder)
                     .truncate(),
             ));
@@ -1300,7 +1329,11 @@ impl GitPanel {
                 .rounded(4.0)
                 .items_center()
                 .on_click(link_id)
-                .child(label(text).size(13.0).color(colors.text_accent));
+                .child(
+                    label(text)
+                        .size(LabelSize::Medium)
+                        .color(colors.text_accent),
+                );
             if self.hot(link_id) {
                 link = components::with_tooltip(
                     link.bg(colors.ghost_element_hover),
@@ -1387,7 +1420,7 @@ impl GitPanel {
                     .items_center()
                     .child(grow(
                         label(summary)
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .color(colors.text_muted)
                             .truncate(),
                     ))
@@ -1459,7 +1492,7 @@ impl GitPanel {
                 .items_center()
                 .child(
                     label(summary)
-                        .size(13.0)
+                        .size(LabelSize::Medium)
                         .color(colors.text_accent)
                         .truncate(),
                 )
@@ -1524,7 +1557,7 @@ impl GitPanel {
                     .child(icon(IconKind::Info).size(12.0).color(colors.icon_muted))
                     .child(grow(
                         label(plan.hint.clone())
-                            .size(13.0)
+                            .size(LabelSize::Medium)
                             .color(colors.text_placeholder)
                             .truncate(),
                     ))
@@ -1548,7 +1581,7 @@ impl GitPanel {
                         commit.subject,
                         self.source_name_of(repo)
                     ))
-                    .size(13.0)
+                    .size(LabelSize::Medium)
                     .color(if self.hot(subject) {
                         colors.text
                     } else {
@@ -1583,7 +1616,7 @@ impl GitPanel {
                         .items_center()
                         .child(
                             label("Last commit")
-                                .size(13.0)
+                                .size(LabelSize::Medium)
                                 .color(colors.text_placeholder),
                         )
                         .child(open)
