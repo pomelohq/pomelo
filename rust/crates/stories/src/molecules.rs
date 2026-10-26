@@ -545,6 +545,20 @@ pub fn stories() -> Vec<StoryDef> {
             },
         ),
         story(
+            "picker-matches",
+            "Picker",
+            "Matches",
+            (460.0, 230.0),
+            || still(|_, _| picker_board("main", true)),
+        ),
+        story(
+            "picker-empty",
+            "Picker",
+            "No matches",
+            (460.0, 190.0),
+            || still(|_, _| picker_board("zzz", false)),
+        ),
+        story(
             "popover-content",
             "Popover",
             "Content, with buttons",
@@ -1024,6 +1038,49 @@ fn card_board(card: components::Card) -> Node {
                         .size(LabelSize::Small)
                         .color(colors.text_muted),
                 ),
+        )
+        .into()
+}
+
+/// A file finder's shape: the query, a few matches with the first selected, and the keys.
+fn picker_board(text: &str, matches: bool) -> Node {
+    let colors = theme();
+    let mut query = TextField::default();
+    query.set_text(text);
+    query.move_to_end();
+    let query = query.render("Search files", true, colors.text, 20.0, FieldFont::Ui);
+    let mut picker = components::picker(420.0, query);
+    if matches {
+        for (index, (name, folder)) in [
+            ("main.rs", "crates/api/src"),
+            ("main.ts", "web/src"),
+            ("domain.rs", "crates/api/src"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            picker = picker.child(
+                components::list_row(ID + index as u64)
+                    .selected(index == 0)
+                    .child(label(name).color(colors.text))
+                    .child(
+                        label(folder)
+                            .size(LabelSize::Small)
+                            .color(colors.text_muted),
+                    ),
+            );
+        }
+    }
+    div()
+        .col()
+        .p(INSET)
+        .child(
+            picker.footer(
+                components::key_hints()
+                    .hint(None, &["enter"], "Open")
+                    .hint(None, &["up", "down"], "Move")
+                    .hint(None, &["escape"], "Close"),
+            ),
         )
         .into()
 }

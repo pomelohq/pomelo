@@ -3,7 +3,7 @@
 //! file to the chosen language.
 
 use editor::highlight::Lang;
-use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node, Space};
+use ui::{div, material_icon, theme, LabelSize, MaterialIcon, Node};
 use workspace::text_field::{FieldFont, TextField, INPUT_FONT};
 
 use crate::command_palette::scroll_rows;
@@ -11,7 +11,6 @@ use crate::fuzzy::{fuzzy_match, Match};
 
 pub const WIDTH: f32 = 544.0;
 const MAX_RESULTS_HEIGHT: f32 = 384.0;
-const HEAD_HEIGHT: f32 = 36.0;
 const PLACEHOLDER: &str = "Select a language...";
 const MAX_MATCHES: usize = 100;
 const CURRENT_SUFFIX: &str = " (current)";
@@ -219,25 +218,18 @@ impl LanguageSelector {
 
     pub fn render(&self, id_base: u64) -> Node {
         let colors = theme();
-        let head = div()
-            .row()
-            .items_center()
-            .h_px(HEAD_HEIGHT)
-            .px(Space::S10)
-            .child(self.field.render(
-                PLACEHOLDER,
-                true,
-                colors.editor_foreground,
-                INPUT_FONT * FieldFont::Ui.line_height(),
-                FieldFont::Ui,
-            ));
+        let query = self.field.render(
+            PLACEHOLDER,
+            true,
+            colors.editor_foreground,
+            INPUT_FONT * FieldFont::Ui.line_height(),
+            FieldFont::Ui,
+        );
         let visible = Self::visible_rows();
         let end = (self.scroll_top + visible).min(self.matches.len());
-        let mut results = div().col().py(Space::S4);
-        if self.matches.is_empty() {
-            results = results.child(components::empty_state("No matches").compact());
-        } else {
-            results = results
+        let mut picker = components::picker(WIDTH, query);
+        if !self.matches.is_empty() {
+            picker = picker
                 .children(crate::list_scrollbar::render(
                     WIDTH - 1.0,
                     visible.min(self.matches.len()) as f32 * row_height() + 8.0,
@@ -248,15 +240,7 @@ impl LanguageSelector {
                 ))
                 .children((self.scroll_top..end).map(|row| self.render_row(row, id_base)));
         }
-        components::card()
-            .padding(0.0)
-            .raised()
-            .render()
-            .w_px(WIDTH)
-            .child(head)
-            .child(components::divider())
-            .child(results)
-            .into()
+        picker.into()
     }
 
     fn render_row(&self, row: usize, id_base: u64) -> Node {

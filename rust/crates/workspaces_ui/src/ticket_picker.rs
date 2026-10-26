@@ -403,11 +403,8 @@ impl TicketPicker {
         if suggestions.is_empty() && typed.is_empty() && !placeholders {
             return None;
         }
-        let mut list = components::card()
-            .padding(4.0)
-            .raised()
+        let mut list = components::popover(width)
             .render()
-            .w_px(width)
             .on_click(SUGGESTIONS_SURFACE);
         if placeholders {
             let seconds = self.loading_since.elapsed().as_secs_f32();
