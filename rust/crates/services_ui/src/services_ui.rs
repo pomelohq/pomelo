@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use pom_services::ServiceTarget;
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, label, theme, IconKind, Node, Rgba};
 use workspace::list_nav::ListNav;
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{AgentFix, EditKey, PaletteEntry, PaneKind, PanelRequest, SidePanelView};
@@ -37,16 +37,14 @@ const SHARED_GROUP: &str = "_shared";
 
 const ROW_H: f32 = 26.0;
 const HEADER_H: f32 = 34.0;
-const FILTER_H: f32 = 64.0;
+const FILTER_H: f32 = 36.0;
 /// Hit ids per row: the row itself plus its controls.
 const ROW_STRIDE: u64 = 16;
-/// Controls above the tree: the filter, the status filter, and the summary card's buttons.
+/// Controls above the tree: the filter and the header's start and stop buttons.
 const HEAD_BASE: u64 = 8_000_000;
 const FILTER: u64 = HEAD_BASE;
-const STATUS_FILTER: u64 = HEAD_BASE + 1;
 const START_ALL: u64 = HEAD_BASE + 10;
 const STOP_ALL: u64 = HEAD_BASE + 11;
-const RESTART_FAILED: u64 = HEAD_BASE + 12;
 /// A "needs attention" card's controls: the card, then its buttons.
 const ATTENTION_BASE: u64 = HEAD_BASE + 100_000;
 const ATTENTION_STRIDE: u64 = 8;
@@ -118,42 +116,6 @@ impl CardAction {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-enum StatusFilter {
-    #[default]
-    All,
-    Running,
-    Failed,
-    Stopped,
-}
-
-impl StatusFilter {
-    const ALL: [StatusFilter; 4] = [
-        StatusFilter::All,
-        StatusFilter::Running,
-        StatusFilter::Failed,
-        StatusFilter::Stopped,
-    ];
-
-    fn title(self) -> &'static str {
-        match self {
-            StatusFilter::All => "All",
-            StatusFilter::Running => "Running",
-            StatusFilter::Failed => "Failed",
-            StatusFilter::Stopped => "Stopped",
-        }
-    }
-
-    fn keeps(self, state: &State) -> bool {
-        match self {
-            StatusFilter::All => true,
-            StatusFilter::Running => matches!(state, State::Running | State::Busy(_)),
-            StatusFilter::Failed => state.needs_attention(),
-            StatusFilter::Stopped => *state == State::Stopped,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 enum Row {
     Group {
@@ -164,8 +126,6 @@ enum Row {
         collapsed: bool,
         /// The standing of each of its services, for the pips.
         states: Vec<State>,
-        /// The shared containers its config uses.
-        engines: Vec<pom_db::Engine>,
     },
     Service {
         target: ServiceTarget,
@@ -341,7 +301,6 @@ pub struct ServicesPanel {
     list_h: f32,
     filter: TextField,
     filter_focused: bool,
-    status_filter: StatusFilter,
     menu: Option<OpenMenu>,
     requests: Vec<PanelRequest>,
     tab_buttons: Vec<TabButton>,
@@ -388,7 +347,6 @@ impl ServicesPanel {
                 field
             },
             filter_focused: false,
-            status_filter: StatusFilter::All,
             menu: None,
             requests: Vec::new(),
             tab_buttons: Vec::new(),
@@ -499,15 +457,14 @@ impl ServicesPanel {
     }
 
     fn filtering(&self) -> bool {
-        !self.filter.text().trim().is_empty() || self.status_filter != StatusFilter::All
+        !self.filter.text().trim().is_empty()
     }
 
-    fn keeps(&self, target: &ServiceTarget, state: &State) -> bool {
+    fn keeps(&self, target: &ServiceTarget) -> bool {
         let query = self.filter.text().trim().to_lowercase();
-        let named = query.is_empty()
+        query.is_empty()
             || target.service.to_lowercase().contains(&query)
-            || target.repo.to_lowercase().contains(&query);
-        named && self.status_filter.keeps(state)
+            || target.repo.to_lowercase().contains(&query)
     }
 
     fn rebuild_rows(&mut self) {
@@ -533,17 +490,6 @@ impl ServicesPanel {
                 }
             }
         }
-        let users: Vec<(String, pom_db::Engine, Vec<String>)> = config
-            .shared_services
-            .iter()
-            .map(|(name, def)| {
-                (
-                    name.clone(),
-                    pom_db::Engine::of_service(name, def),
-                    pom_db::service_users(&config, name),
-                )
-            })
-            .collect();
         let filtering = self.filtering();
         let mut rows = Vec::new();
         let mut attention = Vec::new();
@@ -577,28 +523,12 @@ impl ServicesPanel {
                 .into_iter()
                 .zip(holders)
                 .zip(&states)
-                .filter(|((target, _), state)| self.keeps(target, state))
+                .filter(|((target, _), _)| self.keeps(target))
                 .map(|(pair, _)| pair)
                 .collect();
             if filtering && kept.is_empty() {
                 continue;
             }
-            let alias = config
-                .repos
-                .get(&key)
-                .map(|dir| {
-                    if dir.alias.is_empty() {
-                        key.clone()
-                    } else {
-                        dir.alias.clone()
-                    }
-                })
-                .unwrap_or_else(|| key.clone());
-            let engines = users
-                .iter()
-                .filter(|(_, _, used_by)| used_by.contains(&alias))
-                .map(|(_, engine, _)| *engine)
-                .collect();
             let collapsed = !filtering && self.collapsed.contains(&key);
             rows.push(Row::Group {
                 key,
@@ -610,7 +540,6 @@ impl ServicesPanel {
                 total: states.len(),
                 collapsed,
                 states,
-                engines,
             });
             if collapsed {
                 continue;
@@ -632,7 +561,6 @@ impl ServicesPanel {
                 total: names.len(),
                 collapsed,
                 states: Vec::new(),
-                engines: Vec::new(),
             });
             if !collapsed {
                 for name in names {
@@ -796,7 +724,6 @@ impl ServicesPanel {
                 total,
                 collapsed: _,
                 states,
-                engines,
             } => {
                 let mut name = div().row().flex(1.0).gap(6.0).items_center();
                 if key == SHARED_GROUP {
@@ -809,42 +736,26 @@ impl ServicesPanel {
                     );
                 } else {
                     name = name.child(label(text.clone()).medium().color(colors.text).truncate());
-                    let mut logos = div().row().gap(3.0).items_center();
-                    for engine in engines {
-                        let (kind, tint) = database_ui::engine_logo(*engine);
-                        logos = logos.child(icon(kind).size(12.0).color(tint));
-                    }
-                    name = name.child(logos);
                 }
-                let trailing: Node =
-                    if hovered {
-                        div()
-                            .row()
-                            .gap(2.0)
-                            .child(self.button(self.id(index, Control::StartAll), IconKind::Play))
-                            .child(self.button(self.id(index, Control::StopAll), IconKind::Stop))
-                            .child(self.more_button(index))
-                            .into()
-                    } else {
-                        let failed = states.iter().any(State::needs_attention);
-                        let mut pips = div().row().gap(3.0).items_center();
-                        for state in states.iter().take(8) {
-                            pips = pips.child(components::dot(view::state_color(state), 5.0));
-                        }
-                        div()
-                            .row()
-                            .gap(6.0)
-                            .items_center()
-                            .child(pips)
-                            .child(label(format!("{running}/{total}")).size(11.0).color(
-                                if failed {
-                                    colors.error
-                                } else {
-                                    colors.text_muted
-                                },
-                            ))
-                            .into()
-                    };
+                let trailing: Node = if hovered {
+                    div()
+                        .row()
+                        .gap(2.0)
+                        .child(self.button(self.id(index, Control::StartAll), IconKind::Play))
+                        .child(self.button(self.id(index, Control::StopAll), IconKind::Stop))
+                        .child(self.more_button(index))
+                        .into()
+                } else {
+                    let failed = states.iter().any(State::needs_attention);
+                    label(format!("{running}/{total}"))
+                        .size(11.0)
+                        .color(if failed {
+                            colors.error
+                        } else {
+                            colors.text_placeholder
+                        })
+                        .into()
+                };
                 body.child(name).child(trailing).into()
             }
             Row::Service { target, holder } => {
@@ -877,17 +788,6 @@ impl ServicesPanel {
                         .child(self.button(self.id(index, Control::Logs), IconKind::Terminal))
                         .child(self.more_button(index))
                         .into(),
-                    (State::Crashed, false) => {
-                        label("crashed").size(11.0).color(colors.error).into()
-                    }
-                    (State::Failed { port: Some(port) }, false) => label(format!(":{port} in use"))
-                        .size(11.0)
-                        .mono()
-                        .color(colors.warning)
-                        .into(),
-                    (State::Failed { port: None }, false) => {
-                        label("failed").size(11.0).color(colors.error).into()
-                    }
                     (_, false) => match self.port(target) {
                         Some(port) => label(format!(":{port}"))
                             .size(11.0)
@@ -936,16 +836,6 @@ impl ServicesPanel {
                     .config()
                     .map(|config| pom_db::service_users(&config, name))
                     .unwrap_or_default();
-                let def = self
-                    .model
-                    .context
-                    .config()
-                    .and_then(|config| config.shared_services.get(name).cloned());
-                let (logo, tint) = match &def {
-                    Some(def) if def.is_command() => (IconKind::Terminal, colors.icon_muted),
-                    Some(def) => database_ui::engine_logo(pom_db::Engine::of_service(name, def)),
-                    None => database_ui::engine_logo(pom_db::Engine::Other),
-                };
                 let trailing: Node = match (&state, hovered) {
                     (State::Busy(text), _) => {
                         label(*text).size(11.0).color(colors.text_accent).into()
@@ -970,25 +860,22 @@ impl ServicesPanel {
                         .child(self.button(self.id(index, Control::Start), IconKind::Play))
                         .child(self.more_button(index))
                         .into(),
-                    (_, false) if used_by.is_empty() => label("not used here")
-                        .size(11.0)
-                        .color(colors.text_placeholder)
-                        .into(),
-                    (_, false) => label(used_by.join(", "))
-                        .size(11.0)
-                        .color(colors.text_muted)
-                        .truncate()
-                        .into(),
+                    (_, false) => div().into(),
+                };
+                // A container no repo here uses is dimmed rather than labeled.
+                let ink = if used_by.is_empty() {
+                    colors.text_placeholder
+                } else {
+                    colors.text
                 };
                 body.child(view::status_icon(&state))
-                    .child(icon(logo).size(13.0).color(tint))
                     .child(
                         div()
                             .row()
                             .flex(1.0)
                             .gap(6.0)
                             .items_center()
-                            .child(label(name.clone()).color(colors.text).truncate())
+                            .child(label(name.clone()).color(ink).truncate())
                             .child(
                                 label(format!(
                                     ":{}",
@@ -1005,246 +892,100 @@ impl ServicesPanel {
         }
     }
 
-    /// The workspace at a glance: how many run, a bar of the split, and the buttons that act on all of them.
-    fn summary_card(&self, width: f32) -> Node {
-        let colors = theme();
-        let counts = self.counts;
-        let inner = width - 16.0 - 20.0 - 2.0;
-        let status = if counts.busy > 0 {
-            format!("{} busy", counts.busy)
-        } else {
-            format!("{} of {} running", counts.running, counts.total)
-        };
-        let status = label(status).size(11.5).color(colors.text_muted);
-        let status_w = ui::measure(&status.clone().into()).0;
-        let ticket = (!self.model.context.ticket.is_empty()).then(|| {
-            components::chip(&self.model.context.ticket)
-                .color(theme().text_muted)
-                .into()
-        });
-        let ticket_w = ticket.as_ref().map_or(0.0, |tag| ui::measure(tag).0 + 6.0);
-        let name = label(self.model.context.branch.clone())
-            .medium()
-            .color(colors.text);
-        let natural = ui::measure(&name.clone().into()).0;
-        let name_w = natural.min((inner - status_w - ticket_w - 8.0).max(40.0));
-        let mut title = div()
-            .row()
-            .gap(6.0)
-            .items_center()
-            .child(div().row().w_px(name_w).child(name.truncate()));
-        if let Some(ticket) = ticket {
-            title = title.child(ticket);
-        }
-        let title = div()
-            .row()
-            .items_center()
-            .child(div().row().flex(1.0).items_center().child(title))
-            .child(status);
-        let total = counts.total.max(1) as f32;
-        let segment = |count: usize, color: Rgba| -> Option<Node> {
-            (count > 0).then(|| {
-                div()
-                    .w_px((inner * count as f32 / total).max(2.0))
-                    .h_px(4.0)
-                    .bg(color)
-                    .into()
-            })
-        };
-        let mut bar = div()
-            .row()
-            .w_px(inner)
-            .h_px(4.0)
-            .rounded(2.0)
-            .bg(colors.border_variant);
-        for piece in [
-            segment(counts.running, colors.success),
-            segment(counts.busy, colors.text_accent),
-            segment(counts.attention, colors.error),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            bar = bar.child(piece);
-        }
-        let legend_item = |color: Rgba, text: String| -> Node {
-            div()
-                .row()
-                .gap(5.0)
-                .items_center()
-                .child(components::dot(color, 7.0))
-                .child(label(text).size(11.5).color(colors.text_muted))
-                .into()
-        };
-        let mut legend = vec![legend_item(
-            colors.success,
-            format!("{} running", counts.running),
-        )];
-        if counts.busy > 0 {
-            legend.push(legend_item(
-                colors.text_accent,
-                format!("{} busy", counts.busy),
-            ));
-        }
-        if counts.attention > 0 {
-            legend.push(legend_item(
-                colors.error,
-                format!("{} need attention", counts.attention),
-            ));
-        }
-        if counts.stopped > 0 {
-            legend.push(legend_item(
-                colors.border,
-                format!("{} stopped", counts.stopped),
-            ));
-        }
-        let mut buttons = vec![
-            action_button(
-                self.base + START_ALL,
-                Some(IconKind::Play),
-                "Start all",
-                Tone::Primary,
-                self.hot(self.base + START_ALL),
-            ),
-            action_button(
-                self.base + STOP_ALL,
-                Some(IconKind::Stop),
-                "Stop all",
-                Tone::Plain,
-                self.hot(self.base + STOP_ALL),
-            ),
-        ];
-        if counts.attention > 0 {
-            buttons.push(action_button(
-                self.base + RESTART_FAILED,
-                Some(IconKind::RotateCw),
-                "Restart failed",
-                Tone::Plain,
-                self.hot(self.base + RESTART_FAILED),
-            ));
-        }
-        components::card()
-            .padding(10.0)
-            .render()
-            .w_px(width - 16.0)
-            .gap(8.0)
-            .child(title)
-            .child(bar)
-            .child(view::pack(legend, inner, 10.0))
-            .child(view::pack(buttons, inner, 6.0))
-            .into()
-    }
-
+    /// One problem as a strip under its own colored edge: what broke and when, the line that tells why, and
+    /// the one fix that suits it, with logs and restart kept small beside the title.
     fn attention_card(&self, index: usize, card: &Attention, width: f32) -> Node {
         let colors = theme();
-        let inner = width - 16.0 - 18.0 - 2.0;
         let port_conflict = card.crash.is_none() && card.port.is_some();
         let tint = if port_conflict {
             colors.warning
         } else {
             colors.error
         };
-        let name = service_title(&card.target);
         let (what, when) = match (&card.crash, card.port) {
-            (Some(crash), _) => ("crashed".to_string(), crash.at.map(view::ago)),
+            (Some(crash), _) => (format!("crashed, {}", crash.exit), crash.at.map(view::ago)),
             (None, Some(port)) => (format!("cannot bind :{port}"), None),
             (None, None) => ("failed to start".to_string(), None),
         };
-        let mut title = div()
-            .row()
-            .gap(6.0)
-            .items_center()
-            .child(
-                icon(if port_conflict {
-                    IconKind::Warning
-                } else {
-                    IconKind::XCircle
-                })
-                .size(12.0)
-                .color(tint),
-            )
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .gap(4.0)
-                    .items_center()
-                    .child(label(name).medium().color(colors.text))
-                    .child(label(what).color(colors.text_muted).truncate()),
-            );
+        let mut title = div().row().gap(4.0).items_center().child(
+            div()
+                .row()
+                .flex(1.0)
+                .gap(5.0)
+                .items_center()
+                .child(
+                    label(service_title(&card.target))
+                        .medium()
+                        .color(colors.text),
+                )
+                .child(label(what).size(11.5).color(colors.text_muted).truncate()),
+        );
         if let Some(when) = when {
             title = title.child(label(when).size(11.0).color(colors.text_placeholder));
         }
-        let mut body = div().col().gap(4.0).child(title);
+        title = title.child(self.button(self.card_id(index, CardAction::Logs), IconKind::File));
+        if !port_conflict {
+            title = title
+                .child(self.button(self.card_id(index, CardAction::Restart), IconKind::RotateCw));
+        }
+        let mut body = div().col().flex(1.0).gap(5.0).child(title);
         let detail = match &card.crash {
             Some(crash) => crash.line.clone(),
             None => card.error.as_deref().map(first_line),
         };
         if let Some(detail) = detail {
             body = body.child(
-                div().row().w_px(inner).child(
+                div().row().child(
                     label(detail)
-                        .size(11.5)
+                        .size(11.0)
                         .mono()
-                        .color(colors.text)
+                        .color(colors.text_muted)
                         .truncate(),
                 ),
             );
         }
-        if let Some(crash) = &card.crash {
-            body = body.child(
-                label(format!("Stopped with {}.", crash.exit))
-                    .size(11.5)
-                    .color(colors.text_muted),
-            );
-        }
-        let button = |action: CardAction, kind: Option<IconKind>, text: &str, tone: Tone| {
-            let id = self.card_id(index, action);
-            action_button(id, kind, text, tone, self.hot(id))
-        };
-        let mut buttons = Vec::new();
-        if port_conflict && self.offers(access::ServiceControl::Relocate) {
-            buttons.push(button(
+        let fix = if port_conflict && self.offers(access::ServiceControl::Relocate) {
+            Some((
                 CardAction::NewPort,
-                Some(IconKind::ArrowUpRight),
+                IconKind::ArrowUpRight,
                 "Use a new port",
                 Tone::Primary,
-            ));
-        }
-        buttons.push(button(
-            CardAction::Logs,
-            Some(IconKind::File),
-            "View logs",
-            Tone::Plain,
-        ));
-        if self.offers(access::ServiceControl::SideAgents) {
-            buttons.push(button(
+            ))
+        } else if !port_conflict && self.offers(access::ServiceControl::SideAgents) {
+            Some((
                 CardAction::Fix,
-                Some(IconKind::Sparkle),
+                IconKind::Sparkle,
                 "Fix with Claude",
                 Tone::Agent,
-            ));
+            ))
+        } else {
+            None
+        };
+        if let Some((action, kind, text, tone)) = fix {
+            let id = self.card_id(index, action);
+            body = body.child(div().row().child(action_button(
+                id,
+                Some(kind),
+                text,
+                tone,
+                self.hot(id),
+            )));
         }
-        if !port_conflict {
-            buttons.push(button(
-                CardAction::Restart,
-                Some(IconKind::RotateCw),
-                "",
-                Tone::Plain,
-            ));
+        let open = self.card_id(index, CardAction::Open);
+        let mut strip = div()
+            .row()
+            .w_px(width)
+            .pl(12.0)
+            .pr(6.0)
+            .py(6.0)
+            .gap(8.0)
+            .on_click(open)
+            .child(div().w_px(2.0).rounded(1.0).bg(tint))
+            .child(body);
+        if self.hover == Some(open) {
+            strip = strip.bg(colors.ghost_element_hover);
         }
-        let hovered = self.hover == Some(self.card_id(index, CardAction::Open));
-        components::card()
-            .padding(9.0)
-            .tint(tint)
-            .hovered(hovered)
-            .render()
-            .w_px(width - 16.0)
-            .gap(6.0)
-            .on_click(self.card_id(index, CardAction::Open))
-            .child(body)
-            .child(view::pack(buttons, inner, 6.0))
-            .into()
+        strip.into()
     }
 
     fn filter_bar(&self) -> Node {
@@ -1262,48 +1003,20 @@ impl ServicesPanel {
                     FieldFont::Ui,
                 )),
         );
-        let segments = StatusFilter::ALL
-            .into_iter()
-            .enumerate()
-            .map(|(index, filter)| {
-                let count = match filter {
-                    StatusFilter::All => self.counts.total,
-                    StatusFilter::Running => self.counts.running + self.counts.busy,
-                    StatusFilter::Failed => self.counts.attention,
-                    StatusFilter::Stopped => self.counts.stopped,
-                };
-                components::segment(self.base + STATUS_FILTER + index as u64, filter.title())
-                    .count(count)
-            });
-        let selected = StatusFilter::ALL
-            .iter()
-            .position(|filter| *filter == self.status_filter)
-            .unwrap_or(0);
-        let segments = components::segmented(segments, selected);
-        div()
-            .col()
-            .h_px(FILTER_H)
-            .px(8.0)
-            .gap(6.0)
-            .child(field)
-            .child(segments)
-            .into()
+        div().col().h_px(FILTER_H).px(8.0).child(field).into()
     }
 
-    /// What scrolls under the filter: the summary card, the cards of what needs attention, then the tree.
+    /// What scrolls under the filter: what needs attention, then the tree.
     fn blocks(&self, width: f32) -> Vec<(Node, f32)> {
         let mut blocks = Vec::new();
         let mut push = |node: Node| {
             let height = ui::measure(&node).1;
             blocks.push((node, height));
         };
-        if self.counts.total > 0 && !self.filtering() {
-            push(view::inset(self.summary_card(width)));
-            if !self.attention.is_empty() {
-                push(view::section("Needs attention", Some(self.attention.len())));
-                for (index, card) in self.attention.iter().enumerate() {
-                    push(view::inset(self.attention_card(index, card, width)));
-                }
+        if !self.attention.is_empty() && !self.filtering() {
+            push(view::section("Needs attention", Some(self.attention.len())));
+            for (index, card) in self.attention.iter().enumerate() {
+                push(self.attention_card(index, card, width));
             }
         }
         let tree = self.tree_rows();
@@ -1391,12 +1104,6 @@ impl ServicesPanel {
             if running == (action == Action::Stop) {
                 self.model.run(action, target);
             }
-        }
-    }
-
-    fn restart_failed(&mut self) {
-        for card in self.attention.clone() {
-            self.model.run(Action::Restart, card.target);
         }
     }
 
@@ -2166,14 +1873,44 @@ impl SidePanelView for ServicesPanel {
             .items_center()
             .child(label("Services").size(13.0).medium().color(colors.text))
             .child(
-                div().row().flex(1.0).items_center().child(
-                    label(self.model.context.branch.clone())
-                        .size(12.0)
-                        .mono()
-                        .color(colors.text_placeholder)
-                        .truncate(),
-                ),
+                div()
+                    .row()
+                    .flex(1.0)
+                    .gap(6.0)
+                    .items_center()
+                    .child(
+                        label(self.model.context.branch.clone())
+                            .size(12.0)
+                            .mono()
+                            .color(colors.text_placeholder)
+                            .truncate(),
+                    )
+                    .children((!self.model.context.ticket.is_empty()).then(|| {
+                        components::chip(&self.model.context.ticket)
+                            .color(colors.text_muted)
+                            .into()
+                    })),
             );
+        if self.counts.total > 0 {
+            let counts = self.counts;
+            let (status, ink) = if counts.busy > 0 {
+                (format!("{} busy", counts.busy), colors.text_accent)
+            } else if counts.attention > 0 {
+                (
+                    format!("{}/{} running", counts.running, counts.total),
+                    colors.error,
+                )
+            } else {
+                (
+                    format!("{}/{} running", counts.running, counts.total),
+                    colors.text_muted,
+                )
+            };
+            header = header
+                .child(label(status).size(11.0).color(ink))
+                .child(self.button(self.base + START_ALL, IconKind::Play))
+                .child(self.button(self.base + STOP_ALL, IconKind::Stop));
+        }
         for (index, button) in self.tab_buttons.iter().enumerate() {
             header =
                 header.child(self.button(self.base + TAB_BUTTON_BASE + index as u64, button.icon));
@@ -2237,16 +1974,8 @@ impl SidePanelView for ServicesPanel {
         }
         match id.checked_sub(self.base) {
             Some(FILTER) => return,
-            Some(offset) if (STATUS_FILTER..STATUS_FILTER + 4).contains(&offset) => {
-                if let Some(filter) = StatusFilter::ALL.get((offset - STATUS_FILTER) as usize) {
-                    self.status_filter = *filter;
-                    self.scroll = 0.0;
-                }
-                return;
-            }
             Some(START_ALL) => return self.start_or_stop_all(Action::Start),
             Some(STOP_ALL) => return self.start_or_stop_all(Action::Stop),
-            Some(RESTART_FAILED) => return self.restart_failed(),
             _ => {}
         }
         if let Some((index, action)) = self.decode_card(id) {
