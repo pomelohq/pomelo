@@ -823,7 +823,79 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story(
+            "spinner",
+            "Spinner",
+            "Sizes and colors",
+            (320.0, 88.0),
+            || {
+                Ok(Box::new(Spinners {
+                    started: std::time::Instant::now(),
+                }))
+            },
+        ),
+        story("badge", "Badge", "Counts", (300.0, 72.0), || {
+            still(|_, _| {
+                let colors = theme();
+                alone(
+                    div()
+                        .row()
+                        .items_center()
+                        .gap(Space::S12)
+                        .child(components::badge(1))
+                        .child(components::badge(7))
+                        .child(components::badge(42))
+                        .child(components::badge(120))
+                        .child(components::badge(3).color(colors.error))
+                        .child(components::badge(5).color(colors.success)),
+                )
+            })
+        }),
     ]
+}
+
+/// Spinners turn on their own, so this board keeps asking the gallery for frames.
+struct Spinners {
+    started: std::time::Instant,
+}
+
+impl Story for Spinners {
+    fn render(&mut self, _width: f32, _height: f32) -> Node {
+        let seconds = self.started.elapsed().as_secs_f32();
+        let colors = theme();
+        alone(
+            div()
+                .col()
+                .gap(Space::S16)
+                .child(
+                    div()
+                        .row()
+                        .items_center()
+                        .gap(Space::S16)
+                        .child(components::spinner(seconds).size(12.0))
+                        .child(components::spinner(seconds))
+                        .child(components::spinner(seconds).size(20.0))
+                        .child(components::spinner(seconds).color(colors.text_accent))
+                        .child(components::spinner(seconds).color(colors.warning)),
+                )
+                .child(
+                    div()
+                        .row()
+                        .items_center()
+                        .gap(Space::S8)
+                        .child(components::spinner(seconds).size(12.0))
+                        .child(
+                            ui::label("Taking over...")
+                                .size(LabelSize::Small)
+                                .color(colors.text_muted),
+                        ),
+                ),
+        )
+    }
+
+    fn animating(&self) -> bool {
+        true
+    }
 }
 
 fn tab(title: &str) -> components::Tab {

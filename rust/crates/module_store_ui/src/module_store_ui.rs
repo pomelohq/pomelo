@@ -454,21 +454,6 @@ fn small(text: impl Into<String>, color: Rgba) -> ui::Label {
     label(text.into()).size(LabelSize::Small).color(color)
 }
 
-/// 0..1, repeating every `period` seconds.
-fn wave(clock: f32, period: f32) -> f32 {
-    if ui::reduce_motion() {
-        return 1.0;
-    }
-    ((clock / period).fract() * std::f32::consts::TAU).sin() * 0.5 + 0.5
-}
-
-/// A pulsing dot standing in for a spinner.
-fn pulse(clock: f32) -> Node {
-    let mut color = theme().text_accent;
-    color.a *= 0.35 + 0.65 * wave(clock, 0.9);
-    components::dot(color, 7.0).into()
-}
-
 fn chip(text: &str, highlight: bool) -> Node {
     let colors = theme();
     let chip = components::chip(text).color(if text == "main" {
@@ -579,7 +564,11 @@ fn button(spec: Button, state: &StoreState, hovered: Option<u64>, row_hovered: b
             .gap(Space::S6)
             .px(Space::S10)
             .h_px(24.0)
-            .child(pulse(state.clock))
+            .child(
+                components::spinner(state.clock)
+                    .size(12.0)
+                    .color(theme().text_accent),
+            )
             .child(small(spec.working, colors.text_muted))
             .into();
     }
@@ -1018,7 +1007,11 @@ fn header(state: &StoreState, hovered: Option<u64>) -> Node {
                 .row()
                 .items_center()
                 .gap(Space::S6)
-                .child(pulse(state.clock))
+                .child(
+                    components::spinner(state.clock)
+                        .size(12.0)
+                        .color(theme().text_accent),
+                )
                 .child(small(
                     match state.progress {
                         Some((step, steps)) => {

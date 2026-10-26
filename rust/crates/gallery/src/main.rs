@@ -341,7 +341,11 @@ impl Gallery {
         let needed = self.raster_scale();
         let wanted = self.raster_target();
         let settled = self.settled();
-        let mut filling = false;
+        let mut filling = self
+            .focused
+            .and_then(|index| self.boards.get(index))
+            .and_then(|board| board.story.as_ref())
+            .is_some_and(|story| story.animating());
         let mut waiting: Vec<(f32, usize)> = self
             .boards
             .iter_mut()
@@ -353,6 +357,10 @@ impl Gallery {
                 let visible = sx + w >= 0.0 && sy + h >= 0.0 && sx <= canvas.w && sy <= canvas.h;
                 if !visible || board.error.is_some() {
                     return None;
+                }
+                if board.story.as_ref().is_some_and(|story| story.animating()) {
+                    filling = true;
+                    board.stale = true;
                 }
                 if board.story.as_mut().is_some_and(|story| story.pending()) {
                     filling = true;

@@ -1,6 +1,7 @@
 //! Pomelo's design system: every control a screen is built from, each in one file, each shown in the gallery.
 
 mod avatar;
+mod badge;
 mod banner;
 mod breadcrumb;
 mod button;
@@ -29,6 +30,7 @@ mod section_header;
 mod segmented;
 mod select;
 mod skeleton;
+mod spinner;
 mod split_button;
 mod status_item;
 mod status_line;
@@ -41,6 +43,7 @@ mod tooltip;
 mod tree_row;
 
 pub use avatar::*;
+pub use badge::*;
 pub use banner::*;
 pub use breadcrumb::*;
 pub use button::*;
@@ -69,6 +72,7 @@ pub use section_header::*;
 pub use segmented::*;
 pub use select::*;
 pub use skeleton::*;
+pub use spinner::*;
 pub use split_button::*;
 pub use status_item::*;
 pub use status_line::*;
