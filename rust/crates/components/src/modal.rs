@@ -1,6 +1,6 @@
-use ui::{div, label, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
-pub const MODAL_RADIUS: f32 = 10.0;
+pub const MODAL_RADIUS: Radius = Radius::XLarge;
 /// Horizontal inset of the header title and the body.
 pub const MODAL_INSET: f32 = 18.0;
 

@@ -17,7 +17,7 @@ use settings_ui::{
     ConnectionStatus, HostAnswer, HostError, HostLink, HostLoad, HostPage, HostSettingsStore,
     IntegrationsPage, TokenSource,
 };
-use ui::{Context, Frame, Overlay, Painted, RawView, Rect, Window};
+use ui::{Context, Frame, Overlay, Painted, Radius, RawView, Rect, Window};
 
 const JIRA_FIELDS: [u64; 3] = [
     settings_ui::CTRL_JIRA_SITE,
@@ -1022,7 +1022,7 @@ impl SettingsView {
             let focus: ui::Node = ui::div()
                 .w_px(ring.w)
                 .h_px(ring.h)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .border(1.0, ui::theme().panel_focused_border)
                 .into();
             overlay.rects.extend(ui::render(&focus, ring).rects);

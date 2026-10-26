@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 
 /// A number with a minus and a plus beside it; clicking the number edits it in place.
 pub struct Stepper {
@@ -54,7 +54,7 @@ impl From<Stepper> for Node {
             .row()
             .h_px(28.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.element_background)
             .border(
                 1.0,

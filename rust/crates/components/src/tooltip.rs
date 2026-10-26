@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, LabelSize};
+use ui::{div, theme, Div, LabelSize, Radius};
 
 const TOOLTIP_HEIGHT: f32 = 24.0;
 
@@ -22,7 +22,7 @@ pub fn tooltip_bubble(text: &str, keys: Option<&str>) -> Div {
         .items_center()
         .px(8.0)
         .h_px(TOOLTIP_HEIGHT)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .bg(colors.elevated_surface_background)
         .border(1.0, colors.border)
         .child(content)

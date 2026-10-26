@@ -1,4 +1,4 @@
-use ui::{div, theme, Node};
+use ui::{div, theme, Node, Radius};
 
 const PERIOD: f32 = 1.2;
 
@@ -12,5 +12,10 @@ pub fn skeleton(width: f32, seconds: f32, delay: f32) -> Node {
         let phase = (seconds / PERIOD - delay) * std::f32::consts::TAU;
         0.10 + 0.08 * (0.5 + 0.5 * phase.sin())
     };
-    div().w_px(width).h_px(10.0).rounded(5.0).bg(fill).into()
+    div()
+        .w_px(width)
+        .h_px(10.0)
+        .rounded(Radius::Medium)
+        .bg(fill)
+        .into()
 }

@@ -5,7 +5,7 @@
 
 use editor::{EditorBuffer, Lang, Syntax};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ui::{div, icon, label, theme, IconKind, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, Node, Radius, Rgba};
 
 const BOLD_WEIGHT: u16 = 700;
 const HEADING_WEIGHT: u16 = 600;
@@ -1244,7 +1244,7 @@ impl MarkdownLayout {
                                     .justify_center()
                                     .w_px(TASK_BOX)
                                     .h_px(TASK_BOX)
-                                    .rounded(2.0)
+                                    .rounded(Radius::XSmall)
                                     .border(1.0, colors.border);
                                 if *checked {
                                     square = square.child(
@@ -1419,7 +1419,7 @@ fn render_run(
     let node: Node = if style.code {
         div()
             .row()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .bg(with_alpha(colors.editor_foreground, 0.08))
             .child(run)
             .into()

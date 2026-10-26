@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pom_db::object_storage::{format_size, HttpTransport, ObjectEntry, ObjectRead};
 use pom_db::Database;
 use terminal::Modifiers;
-use ui::{div, label, theme, IconKind, LabelSize, Node, Rect};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Rect};
 use workspace::{Item, ItemTick};
 
 use crate::{DatabaseContext, Pending};
@@ -353,7 +353,7 @@ impl ObjectItem {
                 .col()
                 .w_px(inner)
                 .h_px((height * 0.4).clamp(120.0, 260.0))
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .border(1.0, colors.border_variant)
                 .image(*id)
                 .into(),
@@ -364,7 +364,7 @@ impl ObjectItem {
                     .w_px(inner)
                     .px(8.0)
                     .py(6.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .bg(colors.editor_background)
                     .border(1.0, colors.border_variant);
                 for line in lines
@@ -601,7 +601,7 @@ impl Item for ObjectItem {
                     .w_px(width - 2.0 * PAD)
                     .px(12.0)
                     .py(10.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .bg(colors.surface_background)
                     .border(1.0, colors.border_variant);
                 for line in lines.iter().skip(first).take(visible) {

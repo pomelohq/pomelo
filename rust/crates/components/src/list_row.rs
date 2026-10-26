@@ -1,4 +1,4 @@
-use ui::{div, theme, Node};
+use ui::{div, theme, Node, Radius};
 
 /// One row of a picker or list: what it shows left to right, lit while hovered, tinted while selected.
 pub struct ListRow {
@@ -45,7 +45,7 @@ impl From<ListRow> for Node {
             .py(4.0)
             .gap(6.0)
             .items_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .on_click(row.id);
         if row.selected {
             item = item.bg(colors.overlay_selected);

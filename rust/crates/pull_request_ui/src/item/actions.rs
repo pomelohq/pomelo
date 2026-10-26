@@ -6,7 +6,7 @@ use std::sync::mpsc;
 
 use pom_forge::{MergeMethod, Mutation, PullRequest, ReviewEvent, ThreadComment, TimelineItem};
 use terminal::Keystroke;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::{EditKey, PanelRequest, TerminalKeyOutcome};
 
 use super::PrItem;
@@ -305,7 +305,7 @@ impl PrItem {
             .px(8.0)
             .gap(8.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.editor_background)
             .child(
                 div()
@@ -372,7 +372,7 @@ impl PrItem {
                         .col()
                         .px(10.0)
                         .py(8.0)
-                        .rounded(6.0)
+                        .rounded(Radius::Medium)
                         .bg(colors.panel_background)
                         .border(
                             1.0,

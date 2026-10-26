@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use pom_services::ServiceTarget;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -754,7 +754,7 @@ impl ServiceItem {
             .w_px(width - 28.0)
             .p(10.0)
             .gap(7.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .border(1.0, tint.alpha(0.3))
             .bg(tint.alpha(0.06))
             .child(
@@ -782,7 +782,7 @@ impl ServiceItem {
                     .row()
                     .w_px(inner)
                     .p(8.0)
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .bg(ui::Rgba::new(0.0, 0.0, 0.0, 0.2))
                     .child(
                         label(detail)
@@ -953,7 +953,7 @@ impl ServiceItem {
             .h_px(32.0)
             .px(10.0)
             .gap(6.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .items_center()
             .bg(colors.background)
             .child(
@@ -1544,7 +1544,7 @@ impl ServiceItem {
                 .px(8.0)
                 .gap(5.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(self.base + id)
                 .hover_bg(if on {
                     colors.element_selected
@@ -1727,12 +1727,15 @@ fn log_text(line: &LogLine, query: &str, wrap: Option<f32>) -> Node {
             );
         }
         text = text.child(
-            div().rounded(2.0).bg(colors.warning.alpha(0.3)).child(
-                label(matched.to_string())
-                    .size(LabelSize::Medium)
-                    .mono()
-                    .color(colors.text),
-            ),
+            div()
+                .rounded(Radius::XSmall)
+                .bg(colors.warning.alpha(0.3))
+                .child(
+                    label(matched.to_string())
+                        .size(LabelSize::Medium)
+                        .mono()
+                        .color(colors.text),
+                ),
         );
         rest = &rest[at + query.len()..];
         rest_lower = &rest_lower[at + query.len()..];

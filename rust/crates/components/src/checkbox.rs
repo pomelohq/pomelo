@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 /// A checkbox (14px box, accent filled when on) and its label, the whole row clickable. Built with
 /// [`checkbox`].
@@ -41,11 +41,15 @@ impl From<Checkbox> for Node {
             .justify_center()
             .w_px(14.0)
             .h_px(14.0)
-            .rounded(4.0);
+            .rounded(Radius::Small);
         square = if checkbox.partial {
-            square
-                .bg(colors.accent_fill)
-                .child(div().w_px(7.0).h_px(2.0).rounded(1.0).bg(colors.on_accent))
+            square.bg(colors.accent_fill).child(
+                div()
+                    .w_px(7.0)
+                    .h_px(2.0)
+                    .rounded(Radius::XSmall)
+                    .bg(colors.on_accent),
+            )
         } else if checkbox.checked {
             square
                 .bg(colors.accent_fill)

@@ -1,4 +1,4 @@
-use ui::{div, theme, IconKind, Node, Rgba};
+use ui::{div, theme, IconKind, Node, Radius, Rgba};
 
 use crate::button::raised_hover;
 use crate::ButtonSize;
@@ -104,7 +104,7 @@ impl From<Select> for Node {
             .gap(gap)
             .h_px(size.height())
             .px(size.pad_x())
-            .rounded(6.0);
+            .rounded(Radius::Medium);
         if !select.quiet {
             node = node
                 .bg(dim(colors.element_background))

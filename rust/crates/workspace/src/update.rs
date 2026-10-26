@@ -1,7 +1,7 @@
 //! The self-update button at the right of the title bar and the app menu's update item. The app maps the
 //! updater's state into these; the window only draws them and reports clicks.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 pub const UPDATE_BUTTON: u64 = 960;
 pub const UPDATE_DISMISS: u64 = 961;
@@ -70,7 +70,7 @@ pub fn button(update: &UpdateButton, hovered: Option<u64>) -> Node {
         .gap(6.0)
         .h_px(24.0)
         .px(8.0)
-        .rounded(5.0)
+        .rounded(Radius::Medium)
         .on_click(UPDATE_BUTTON)
         .child(icon(update.icon).size(13.0).color(icon_color))
         .child(

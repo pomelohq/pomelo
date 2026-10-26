@@ -5,7 +5,8 @@ use std::ops::Range;
 use pom_db::object_storage::format_size;
 use pom_db::{Engine, TableKind};
 use ui::{
-    div, icon, label, material_icon, theme, Div, IconKind, LabelSize, MaterialIcon, Node, Rgba,
+    div, icon, label, material_icon, theme, Div, IconKind, LabelSize, MaterialIcon, Node, Radius,
+    Rgba,
 };
 use workspace::text_field::FieldFont;
 
@@ -83,7 +84,7 @@ fn name(text: &str, hit: Option<Range<usize>>, color: Rgba, medium: bool) -> Nod
     row.child(
         div()
             .row()
-            .rounded(2.0)
+            .rounded(Radius::XSmall)
             .bg(theme().search_match_background)
             .child(styled(found)),
     )

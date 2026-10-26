@@ -15,7 +15,9 @@ use crate::{
     SESSION_TRIGGER, SIDEBAR_TOGGLE, TREE_MENU_TARGET,
 };
 use std::time::{Duration, Instant};
-use ui::{Context, Frame, IconKind, LabelSize, Overlay, Painted, RawView, Rect, Rgba, Window};
+use ui::{
+    Context, Frame, IconKind, LabelSize, Overlay, Painted, Radius, RawView, Rect, Rgba, Window,
+};
 
 use crate::{
     TreeAction, MENU_EDIT_COPY_TRIM, MENU_EDIT_GO_TO_DECLARATION, MENU_EDIT_GO_TO_DEFINITION,
@@ -75,7 +77,7 @@ const ZOOM_PADDING: f32 = 8.0;
 const PAGE_TAB: u64 = 1150;
 const PAGE_TAB_CLOSE: u64 = 1151;
 
-const TOAST_ANIM: Duration = Duration::from_millis(160);
+const TOAST_ANIM: Duration = ui::Motion::Normal.duration();
 const MODAL_TOP: f32 = 80.0;
 
 struct Toast {
@@ -2530,7 +2532,7 @@ impl WorkspaceView {
             let btn = ui::div()
                 .w_px(26.0)
                 .h_px(20.0)
-                .rounded(5.0)
+                .rounded(Radius::Medium)
                 .items_center()
                 .justify_center()
                 .on_click(SIDEBAR_TOGGLE)
@@ -2688,7 +2690,7 @@ impl WorkspaceView {
         if let Some(zoom) = self.zoom {
             let rect = zoom.outer;
             let mut frame = Painted::default();
-            frame.rects.extend(box_shadow(rect, &LARGE_SHADOW, 0.0));
+            frame.rects.extend(ui::box_shadow(rect, &LARGE_SHADOW, 0.0));
             frame.rects.push(Rect::new(
                 rect.x,
                 rect.y,
@@ -2803,7 +2805,7 @@ impl WorkspaceView {
             let mut painted = Painted::default();
             painted
                 .rects
-                .extend(elevation_shadow(rect, crate::Elevation::Overlay));
+                .extend(ui::elevation_shadow(rect, ui::Elevation::Overlay, 1.0));
             let p = ui::render(&row, rect);
             header_hits.extend(p.hits.iter().copied());
             painted.rects.extend(p.rects);
@@ -2909,7 +2911,7 @@ impl WorkspaceView {
             self.popover_rects.push(popover);
             painted
                 .rects
-                .extend(elevation_shadow(popover, crate::Elevation::Elevated));
+                .extend(ui::elevation_shadow(popover, ui::Elevation::Elevated, 1.0));
             painted.rects.extend(p.rects);
             painted.tris.extend(p.tris);
             painted.texts.extend(p.texts);
@@ -2925,7 +2927,7 @@ impl WorkspaceView {
         let window_modal = self.window_modal.as_mut().map(|modal| crate::ModalView {
             width: modal.width(),
             node: modal.render(),
-            elevation: crate::Elevation::Modal,
+            elevation: ui::Elevation::Modal,
         });
         let tab_switcher = self
             .tab_switcher
@@ -2934,7 +2936,7 @@ impl WorkspaceView {
             .map(|switcher| crate::ModalView {
                 width: TAB_SWITCHER_W,
                 node: tab_switcher_node(switcher, self.session_menu_hover),
-                elevation: crate::Elevation::Modal,
+                elevation: ui::Elevation::Modal,
             });
         let modal = match window_modal.or(tab_switcher) {
             Some(modal) => Some(modal),
@@ -2965,7 +2967,7 @@ impl WorkspaceView {
             let mut painted = Painted::default();
             painted
                 .rects
-                .extend(elevation_shadow(rect, modal.elevation));
+                .extend(ui::elevation_shadow(rect, modal.elevation, 1.0));
             painted.rects.extend(frame.base.rects);
             painted.tris.extend(frame.base.tris);
             painted.texts.extend(frame.base.texts);
@@ -8482,7 +8484,7 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
             .px(8.0)
             .gap(8.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .on_click(id)
             .child(glyph)
             .child(title);
@@ -8523,7 +8525,7 @@ fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Paint
     ));
     painted
         .rects
-        .extend(elevation_shadow(rect, crate::Elevation::Modal));
+        .extend(ui::elevation_shadow(rect, ui::Elevation::Modal, 1.0));
     let p = ui::render(&ui::div().col().child(dialog).into(), rect);
     painted.rects.extend(p.rects);
     painted.tris.extend(p.tris);
@@ -8533,83 +8535,8 @@ fn prompt_dialog(prompt: &crate::Prompt, active: usize, w: f32, h: f32) -> Paint
     painted
 }
 
-/// Layered shadows under a floating surface: (y offset, alpha, blur) per elevation. The renderer has no blur,
-/// so each blurred layer is a stack of rects growing across the blur width, the alpha split between them.
-const SHADOW_MAX_LAYERS: f32 = 48.0;
-
-pub fn elevation_shadow(rect: Rect, elevation: crate::Elevation) -> Vec<Rect> {
-    let light = ui::theme().appearance == ui::Appearance::Light;
-    let shadows: &[(f32, f32, f32)] = match (elevation, light) {
-        (crate::Elevation::Elevated, true) => &[(2.0, 0.12, 3.0), (1.0, 0.03, 0.0)],
-        (crate::Elevation::Elevated, false) => &[(2.0, 0.12, 3.0), (1.0, 0.06, 0.0)],
-        (crate::Elevation::Modal, true) => &[
-            (2.0, 0.06, 3.0),
-            (3.0, 0.06, 6.0),
-            (6.0, 0.04, 12.0),
-            (1.0, 0.04, 0.0),
-        ],
-        (crate::Elevation::Modal, false) => &[
-            (2.0, 0.12, 3.0),
-            (3.0, 0.08, 6.0),
-            (6.0, 0.04, 12.0),
-            (1.0, 0.12, 0.0),
-        ],
-        (crate::Elevation::Overlay, true) => &[(12.0, 0.16, 16.0)],
-        (crate::Elevation::Overlay, false) => &[(12.0, 0.5, 16.0)],
-    };
-    let layers: Vec<(f32, f32, f32, f32)> = shadows
-        .iter()
-        .map(|&(offset, alpha, blur)| (offset, alpha, blur, 0.0))
-        .collect();
-    box_shadow(rect, &layers, 8.0)
-}
-
 /// The large drop shadow a zoomed view casts: offset down, blurred, pulled in by a negative spread.
 const LARGE_SHADOW: [(f32, f32, f32, f32); 2] = [(10.0, 0.1, 15.0, -3.0), (4.0, 0.1, 6.0, -4.0)];
-
-/// Rects approximating CSS box shadows under `rect`, each `(offset_y, alpha, blur, spread)` in black.
-fn box_shadow(rect: Rect, shadows: &[(f32, f32, f32, f32)], radius: f32) -> Vec<Rect> {
-    let mut rects = Vec::new();
-    for &(offset, alpha, blur, grow) in shadows {
-        let rect = Rect::new(
-            rect.x - grow,
-            rect.y - grow,
-            (rect.w + grow * 2.0).max(0.0),
-            (rect.h + grow * 2.0).max(0.0),
-            Rgba::TRANSPARENT,
-        );
-        // A gaussian blur with sigma = blur fades out within 3 sigma of the edge, reaching above the box even
-        // though the shadow drops down; nested rects weighted by the gaussian sum to that falloff.
-        let layers: Vec<(f32, f32)> = if blur <= 0.0 {
-            vec![(0.0, 1.0)]
-        } else {
-            let extent = 3.0 * blur;
-            let steps = (2.0 * extent).ceil().min(SHADOW_MAX_LAYERS) as usize;
-            let step = 2.0 * extent / steps as f32;
-            (0..steps)
-                .map(|index| {
-                    let spread = -extent + (index as f32 + 0.5) * step;
-                    let density = (-0.5 * (spread / blur).powi(2)).exp()
-                        / (blur * (2.0 * std::f32::consts::PI).sqrt());
-                    (spread, density * step)
-                })
-                .collect()
-        };
-        for (spread, weight) in layers {
-            rects.push(Rect {
-                x: rect.x - spread,
-                y: rect.y + offset - spread,
-                w: rect.w + spread * 2.0,
-                h: rect.h + spread * 2.0,
-                color: Rgba::new(0.0, 0.0, 0.0, alpha * weight),
-                radius: (radius + spread).max(0.0),
-                border: 0.0,
-                border_color: Rgba::TRANSPARENT,
-            });
-        }
-    }
-    rects
-}
 
 /// `text` cut to at most `max` characters by dropping its start, marked with a leading "...".
 fn truncate_front(text: &str, max: usize) -> String {
@@ -9059,7 +8986,7 @@ fn notification_node(notification: &Notification, card_w: f32, hovered: Option<u
         let mut button = ui::div()
             .w_px(control_w)
             .h_px(control_w)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .items_center()
             .justify_center()
             .on_click(id)
@@ -9112,7 +9039,7 @@ fn notification_card(notification: &Notification, w: f32, h: f32, hovered: Optio
     let mut painted = Painted::default();
     painted
         .rects
-        .extend(elevation_shadow(rect, crate::Elevation::Modal));
+        .extend(ui::elevation_shadow(rect, ui::Elevation::Modal, 1.0));
     let content = ui::render(&node, Rect::new(x, y, card_w, card_h, Rgba::TRANSPARENT));
     painted.rects.extend(content.rects);
     painted.tris.extend(content.tris);
@@ -9143,7 +9070,7 @@ fn lifted(node: &ui::Node, area: Rect) -> Painted {
     let mut painted = Painted::default();
     painted
         .rects
-        .extend(elevation_shadow(bounds, crate::Elevation::Elevated));
+        .extend(ui::elevation_shadow(bounds, ui::Elevation::Elevated, 1.0));
     painted.rects.extend(card.rects);
     painted.texts.extend(card.texts);
     painted.icons.extend(card.icons);
@@ -9161,7 +9088,7 @@ fn push_card(card: Painted, hits: &mut Vec<(Rect, u64)>, overlays: &mut Vec<Over
     let mut painted = Painted::default();
     painted
         .rects
-        .extend(elevation_shadow(rect, crate::Elevation::Elevated));
+        .extend(ui::elevation_shadow(rect, ui::Elevation::Elevated, 1.0));
     painted.rects.extend(card.rects);
     painted.tris.extend(card.tris);
     painted.texts.extend(card.texts);
@@ -9359,7 +9286,7 @@ mod tests {
     #[test]
     fn modal_shadow_reaches_above_the_box_and_fades() {
         let rect = Rect::new(100.0, 100.0, 200.0, 100.0, Rgba::TRANSPARENT);
-        let rects = elevation_shadow(rect, crate::Elevation::Modal);
+        let rects = ui::elevation_shadow(rect, ui::Elevation::Modal, 1.0);
         let top = rects.iter().map(|r| r.y).fold(f32::MAX, f32::min);
         assert!(top < 80.0, "reaches {top}");
         let coverage = |y: f32| -> f32 {

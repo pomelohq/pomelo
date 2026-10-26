@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use pom_remote::{ForwardKind, ForwardState, PortForward, RemotePorts};
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -126,7 +126,7 @@ fn row(index: usize, forward: &PortForward, hovered: Option<u64>) -> Node {
                 .h_px(16.0)
                 .px(4.0)
                 .items_center()
-                .rounded(3.0)
+                .rounded(Radius::Small)
                 .border(1.0, colors.border_variant)
                 .child(
                     label("shared")
@@ -459,7 +459,10 @@ impl Item for PortsPage {
         merge(
             &mut painted,
             ui::render(
-                &div().rounded(6.0).bg(theme().panel_background).into(),
+                &div()
+                    .rounded(Radius::Medium)
+                    .bg(theme().panel_background)
+                    .into(),
                 card,
             ),
         );

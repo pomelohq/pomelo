@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
 
 use editor::transform::{LineTransform, TextTransform};
-use ui::{div, label, theme, LabelSize, Node};
+use ui::{div, label, theme, LabelSize, Node, Radius};
 use workspace::{render_keystroke, EditKey};
 
 use crate::fuzzy::{fuzzy_match, Match};
@@ -1086,7 +1086,7 @@ impl CommandPalette {
             .px(8.0)
             .gap(10.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .on_click(id_base + PaletteClick::Row(row).offset())
             .child(workspace::switcher_tile(&entry.row, current))
             .child(text)

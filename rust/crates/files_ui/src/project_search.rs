@@ -9,7 +9,7 @@ use editor::search::{SearchOptions, SearchQuery};
 use files::search::{FileResult, SearchRequest};
 use files::ProjectFs;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Rect};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::{EditKey, Item, ItemTick, TerminalKeyOutcome};
 
@@ -599,7 +599,7 @@ impl ProjectSearch {
             .pr(4.0)
             .gap(8.0)
             .items_center()
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.background)
             .border(1.0, border)
             .on_click(id)

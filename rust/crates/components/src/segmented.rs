@@ -1,4 +1,4 @@
-use ui::{div, theme, Div, IconKind, Node, Rgba};
+use ui::{div, theme, Div, IconKind, Node, Radius, Rgba};
 
 use crate::ButtonSize;
 
@@ -88,7 +88,7 @@ impl Segmented {
             .row()
             .p(SEGMENT_INSET)
             .gap(SEGMENT_INSET)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.background);
         for (index, segment) in self.segments.into_iter().enumerate() {
             let chosen = index == self.selected;
@@ -106,7 +106,7 @@ impl Segmented {
                 .px(size.pad_x())
                 .gap(6.0)
                 .items_center()
-                .rounded(4.0);
+                .rounded(Radius::Small);
             if segment.enabled {
                 cell = cell.on_click(segment.id);
                 if !chosen {

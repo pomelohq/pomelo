@@ -10,7 +10,7 @@ use components::{modal_footer, modal_frame, modal_header, modal_note, modal_sect
 use indexmap::IndexMap;
 use module_store::Outlook;
 use pom_agent::NameSuggestion;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::{EditKey, InputField, ModalResult, WindowModal, WINDOW_MODAL_BASE};
 
 use crate::repo_branch_picker::{
@@ -707,7 +707,7 @@ impl CreateWorkspaceModal {
             .col()
             .gap(2.0)
             .p(4.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(theme().editor_background);
         for (index, row) in self.repos.iter().enumerate() {
             list = list.child(self.repo_row(index, row, name_width));
@@ -763,7 +763,7 @@ impl CreateWorkspaceModal {
             .gap(6.0)
             .h_px(TRIGGER_HEIGHT)
             .px(6.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .on_click(BRANCH_BOX_BASE + index as u64)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
@@ -798,7 +798,7 @@ impl CreateWorkspaceModal {
             .items_center()
             .h_px(34.0)
             .px(8.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .child(checkbox(REPO_BASE + index as u64, row.picked, ""))
             .child(div().w_px(10.0))
             .child(

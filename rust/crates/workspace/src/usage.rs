@@ -1,7 +1,7 @@
 //! The agents' usage where the window shows it: a chip at the right of the title bar (the signed-in
 //! account and its 5-hour and weekly limits) with a card under it, and today's total in the status bar.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 
 pub const USAGE_CHIP: u64 = 18;
 pub const APP_MENU: u64 = 19;
@@ -300,7 +300,10 @@ pub fn today_card(info: &UsageInfo, hovered: Option<u64>) -> Node {
                 .child(meter(window.used, None, 5.0)),
         );
     }
-    let mut rows = div().col().rounded(6.0).border(1.0, colors.border_variant);
+    let mut rows = div()
+        .col()
+        .rounded(Radius::Medium)
+        .border(1.0, colors.border_variant);
     for (index, (workspace, value)) in today.by_workspace.iter().enumerate() {
         if index > 0 {
             rows = rows.child(components::divider());

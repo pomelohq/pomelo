@@ -2,7 +2,7 @@
 //! other, or both, or to hand the file to a side agent to merge.
 
 use git::conflict::{self, Conflict, Side};
-use ui::{div, theme, IconKind, Node, Rect};
+use ui::{div, theme, IconKind, Node, Radius, Rect};
 use workspace::{AgentFix, PanelRequest};
 
 use crate::{edit_line_h, FileItem, CONFLICT_CONTROL_BASE};
@@ -132,7 +132,7 @@ impl FileItem {
                 .px(BUTTON_GAP)
                 .gap(BUTTON_GAP)
                 .items_center()
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .bg(colors.editor_background)
                 .border(1.0, colors.border_variant);
             for (control, text) in labels {

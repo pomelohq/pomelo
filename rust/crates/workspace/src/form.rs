@@ -7,7 +7,7 @@ use std::any::Any;
 use crate::text_field::{FieldFont, TextField};
 use crate::EditKey;
 use components::{field, modal_footer, modal_frame, modal_header, modal_section, MODAL_INSET};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 /// Click ids of the open window modal.
 pub const WINDOW_MODAL_BASE: u64 = 910_000_000;
@@ -89,11 +89,13 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
             .gap(10.0)
             .pl(6.0)
             .child(
-                div()
-                    .row()
-                    .h_px(20.0)
-                    .items_center()
-                    .child(div().w_px(4.0).h_px(4.0).rounded(2.0).bg(colors.text_muted)),
+                div().row().h_px(20.0).items_center().child(
+                    div()
+                        .w_px(4.0)
+                        .h_px(4.0)
+                        .rounded(Radius::XSmall)
+                        .bg(colors.text_muted),
+                ),
             )
             .child(body_text(item, text_width - 18.0))
             .into()
@@ -158,7 +160,7 @@ pub fn prompt_card(prompt: &crate::Prompt, active: usize, button_base: u64) -> N
                 .gap(8.0)
                 .px(12.0)
                 .py(10.0)
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .bg(colors.editor_background)
                 .child(
                     div()

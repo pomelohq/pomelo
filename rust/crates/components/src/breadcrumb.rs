@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius};
 
 const TEXT: LabelSize = LabelSize::Medium;
 
@@ -92,7 +92,7 @@ impl Breadcrumb {
             row = row
                 .h_px(22.0)
                 .px(4.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(id)
                 .hover_bg(colors.ghost_element_hover);
             if self.hovered == Some(id) {

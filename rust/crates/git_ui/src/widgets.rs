@@ -1,6 +1,6 @@
 use git::working_copy::Staging;
 use git::ChangeStatus;
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
@@ -66,7 +66,7 @@ pub(crate) fn icon_button(id: u64, kind: IconKind, hot: bool, enabled: bool) -> 
     let mut button = div()
         .w_px(22.0)
         .h_px(22.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .items_center()
         .justify_center()
         .on_click(id)

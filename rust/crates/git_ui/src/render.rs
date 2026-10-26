@@ -1,6 +1,6 @@
 use git::working_copy::{Staging, Upstream};
 use git::ChangeStatus;
-use ui::{deferred, div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{deferred, div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
@@ -25,7 +25,7 @@ const FOOTER_GAP: f32 = 8.0;
 const CARD_INSET: f32 = 6.0;
 /// A card's own padding around its rows.
 const CARD_PAD_X: f32 = 4.0;
-const CARD_RADIUS: f32 = 10.0;
+const CARD_RADIUS: Radius = Radius::XLarge;
 
 fn fill(row: Div) -> Div {
     row.child(div().row().flex(1.0))
@@ -100,7 +100,7 @@ impl GitPanel {
         Some(
             pill.h_px(18.0)
                 .px(6.0)
-                .rounded(9.0)
+                .rounded(Radius::XLarge)
                 .items_center()
                 .bg(color.alpha(0.14))
                 .child(
@@ -544,10 +544,16 @@ impl GitPanel {
                     .w_px(BAR_W)
                     .h_px(8.0)
                     .p(2.0)
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .bg(colors.background)
                     .border(1.0, colors.border_variant)
-                    .child(div().w_px(fill_w).h_px(4.0).rounded(2.0).bg(colors.info));
+                    .child(
+                        div()
+                            .w_px(fill_w)
+                            .h_px(4.0)
+                            .rounded(Radius::XSmall)
+                            .bg(colors.info),
+                    );
                 div()
                     .row()
                     .h_px(rows::PROGRESS_H)
@@ -584,7 +590,7 @@ impl GitPanel {
                     .h_px(30.0)
                     .px(8.0)
                     .gap(6.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .items_center()
                     .border(1.0, colors.text_accent.alpha(0.4))
                     .on_click(self.id(index, Control::Main))
@@ -714,7 +720,7 @@ impl GitPanel {
                         );
                 }
                 // A ring for a commit only this checkout has, a filled dot once origin has it too.
-                let dot = div().w_px(9.0).h_px(9.0).rounded(4.5);
+                let dot = div().w_px(9.0).h_px(9.0).rounded(Radius::Small);
                 let dot = if unpushed {
                     dot.border(2.0, colors.text_accent)
                 } else {
@@ -965,7 +971,7 @@ impl GitPanel {
             let mut button = div()
                 .w_px(20.0)
                 .h_px(20.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .items_center()
                 .justify_center()
                 .on_click(eye)
@@ -1160,7 +1166,7 @@ impl GitPanel {
             .h_px(rows::PULL_REQUEST_H - 1.0)
             .px(8.0)
             .gap(8.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .items_center()
             .bg(if hovered {
                 colors.element_hover
@@ -1186,7 +1192,7 @@ impl GitPanel {
                 div()
                     .col()
                     .pb(1.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .bg(colors.border)
                     .child(card),
             ),
@@ -1289,7 +1295,7 @@ impl GitPanel {
             .h_px(BRANCH_ROW_H)
             .px(6.0)
             .gap(5.0)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .items_center()
             .on_click(pick)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
@@ -1326,7 +1332,7 @@ impl GitPanel {
                 .row()
                 .h_px(BRANCH_ROW_H)
                 .px(4.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .items_center()
                 .on_click(link_id)
                 .child(
@@ -1488,7 +1494,7 @@ impl GitPanel {
                 .row()
                 .h_px(22.0)
                 .gap(4.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .items_center()
                 .child(
                     label(summary)
@@ -1572,7 +1578,7 @@ impl GitPanel {
                 .row()
                 .flex(1.0)
                 .h_px(22.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .items_center()
                 .on_click(subject)
                 .child(grow(

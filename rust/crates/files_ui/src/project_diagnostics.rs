@@ -8,7 +8,7 @@ use editor::syntax::Syntax;
 use editor::{EditorBuffer, Lang};
 use lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString};
 use terminal::Modifiers;
-use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, material_icon, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::{Item, ItemTick};
 
 pub const ITEM_ID: &str = "project-diagnostics";
@@ -532,7 +532,7 @@ impl ProjectDiagnostics {
         let mut copy = div()
             .w_px(BUTTON)
             .h_px(BUTTON)
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .items_center()
             .justify_center()
             .on_click(copy_id)

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use editor::snippet::{boundary_suffixes, SnippetDefinition};
-use ui::{div, label, theme, LabelSize, Node, Rgba};
+use ui::{div, label, theme, LabelSize, Node, Radius, Rgba};
 
 use crate::fuzzy::fuzzy_match;
 use crate::list_scrollbar::{self, ScrollbarReveal};
@@ -480,7 +480,7 @@ impl CompletionsMenu {
                 .items_center()
                 .h_px(crate::edit_line_h())
                 .px(6.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(id_base + row as u64);
             if self.hovered == Some(id_base + row as u64) {
                 item = item.bg(colors.ghost_element_hover);

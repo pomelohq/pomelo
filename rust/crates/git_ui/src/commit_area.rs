@@ -6,7 +6,7 @@ use git::access::{GitAccess, GitOp, RemoteCommand, RepoSource};
 use git::working_copy::{
     CommandError, CommandOutput, CommitOptions, HeadState, PushMode, Staging, StatusEntry, Upstream,
 };
-use ui::{div, theme, Node};
+use ui::{div, theme, Node, Radius};
 use workspace::text_field::TextArea;
 use workspace::PanelRequest;
 
@@ -411,7 +411,7 @@ impl CommitArea {
             .h_px(self.editor_height())
             .py(EDITOR_PAD)
             .px(EDITOR_PAD_X)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.panel_background)
             .border(1.0, ring)
             .on_click(click_id)

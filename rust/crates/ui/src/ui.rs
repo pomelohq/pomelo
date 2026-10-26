@@ -8,6 +8,7 @@ mod scroll_gesture;
 mod scroll_pane;
 mod theme;
 pub mod theme_file;
+mod tokens;
 mod typography;
 pub use app::*;
 pub use element::*;
@@ -15,6 +16,7 @@ pub use key_binding::{keystroke_as_typed, render_keystroke, render_keystroke_in}
 pub use scroll_gesture::ScrollGesture;
 pub use scroll_pane::ScrollPane;
 pub use theme::*;
+pub use tokens::*;
 pub use typography::*;
 
 // Re-export the reactive core so view crates depend on `ui` alone (the framework exposes these from one crate).

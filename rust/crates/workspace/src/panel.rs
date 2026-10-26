@@ -4,7 +4,7 @@
 //! interior (the workspace list) now renders through `ProjectPanel` instead of hand-placed rects.
 
 use components::status_line;
-use ui::{div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DockPosition {
@@ -133,7 +133,7 @@ pub fn function_bar(
         let cell = div()
             .w_px(26.0)
             .h_px(20.0)
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .items_center()
             .justify_center()
             .on_click(id)
@@ -522,7 +522,7 @@ impl Panel for ProjectPanel {
                     .justify_center()
                     .w_px(24.0)
                     .h_px(24.0)
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .on_click(crate::WORKSPACE_NEW)
                     .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
             );
@@ -620,7 +620,7 @@ fn group_header(
         .render()
         .h_px(20.0)
         .px(8.0)
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .on_click(id);
     if hovered == Some(id) {
         header = header.bg(colors.element_hover);
@@ -635,7 +635,7 @@ fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
         .row()
         .items_center()
         .justify_center()
-        .rounded(9.0)
+        .rounded(Radius::XLarge)
         .on_click(id);
     if folded {
         marker = marker
@@ -728,7 +728,7 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
                 .justify_center()
                 .w_px(RAIL_TILE)
                 .h_px(28.0)
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(crate::WORKSPACE_NEW)
                 .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
         );
@@ -857,7 +857,7 @@ fn rail_cell(
             13.0,
             3.0,
             16.0,
-            div().rounded(1.5).bg(colors.text_accent),
+            div().rounded(Radius::XSmall).bg(colors.text_accent),
         );
     }
     cell.into()
@@ -865,7 +865,7 @@ fn rail_cell(
 
 const LIST_TILE: f32 = 32.0;
 const RAIL_TILE: f32 = 36.0;
-const TILE_RADIUS: f32 = 10.0;
+const TILE_RADIUS: Radius = Radius::XLarge;
 
 fn agent_working(agent: Option<AgentDot>) -> bool {
     matches!(
@@ -932,9 +932,15 @@ fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running
         let track = size - 18.0;
         let scan = div()
             .row()
-            .rounded(1.0)
+            .rounded(Radius::XSmall)
             .bg(with_alpha(ink, ink.a * 0.18))
-            .child(div().w_px(track * 0.4).h_px(2.0).rounded(1.0).bg(bar));
+            .child(
+                div()
+                    .w_px(track * 0.4)
+                    .h_px(2.0)
+                    .rounded(Radius::XSmall)
+                    .bg(bar),
+            );
         return tile.pin(Corner::BottomLeft, 9.0, -3.0, track, 2.0, scan);
     }
     if running == 0 {
@@ -946,7 +952,7 @@ fn tile_floor(tile: Div, size: f32, ink: Rgba, bar: Rgba, working: bool, running
             div()
                 .w_px(3.0)
                 .h_px(3.0)
-                .rounded(1.5)
+                .rounded(Radius::XSmall)
                 .bg(with_alpha(ink, ink.a * 0.55)),
         );
     }
@@ -962,7 +968,9 @@ fn danger_ring(tile: Div, size: f32) -> Div {
         -gap,
         size + 2.0 * gap,
         size + 2.0 * gap,
-        div().rounded(TILE_RADIUS + gap).border(1.5, theme().error),
+        div()
+            .rounded_px(TILE_RADIUS.px() + gap)
+            .border(1.5, theme().error),
     )
 }
 
@@ -1041,7 +1049,7 @@ fn pin_pill_with(
         .items_center()
         .justify_center()
         .gap(1.0)
-        .rounded(INNER_H / 2.0 + RING)
+        .rounded_px(INNER_H / 2.0 + RING)
         .bg(bg)
         .border(RING, colors.panel_background);
     let mut inner_w = 0.0;
@@ -1128,14 +1136,14 @@ fn creation_tile(op: &crate::WorkspaceOp, size: f32) -> Div {
                 0.0,
                 size,
                 level,
-                div().rounded(TILE_RADIUS.min(level / 2.0)).bg(fill),
+                div().rounded_px(TILE_RADIUS.px().min(level / 2.0)).bg(fill),
             )
             .pin(
                 Corner::BottomLeft,
                 0.0,
-                -(level - TILE_RADIUS.min(level)),
+                -(level - TILE_RADIUS.px().min(level)),
                 size,
-                TILE_RADIUS.min(level),
+                TILE_RADIUS.px().min(level),
                 div().bg(fill),
             );
     }
@@ -1313,7 +1321,7 @@ fn workspace_row(
         .col()
         .px(8.0)
         .py(5.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(crate::WORKSPACE_ROW_BASE + row.index as u64)
         .child(main_line);
     if let Some((op, position)) = open_failure {
@@ -1448,7 +1456,13 @@ pub fn group_ghost(group: crate::TicketGroup, count: usize) -> Node {
         .px(10.0)
         .gap(6.0)
         .items_center()
-        .child(div().w_px(6.0).h_px(6.0).rounded(2.0).bg(group.color()))
+        .child(
+            div()
+                .w_px(6.0)
+                .h_px(6.0)
+                .rounded(Radius::XSmall)
+                .bg(group.color()),
+        )
         .child(
             label(group.label())
                 .size(LabelSize::Small)
@@ -1597,7 +1611,7 @@ fn op_details(
         .col()
         .px(8.0)
         .py(7.0)
-        .rounded(5.0)
+        .rounded(Radius::Medium)
         .bg(colors.editor_background)
         .border(1.0, colors.border_variant)
         .child(
@@ -1695,7 +1709,7 @@ pub fn manual_menu(op: &crate::WorkspaceOp, position: usize, width: f32) -> Node
             .gap(1.0)
             .px(8.0)
             .py(6.0)
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .on_click(id)
             .child(label(title).size(LabelSize::Small).color(colors.text))
             .child(
@@ -1813,7 +1827,12 @@ fn op_row(
             ),
         );
     }
-    let mut row = div().col().px(8.0).py(5.0).rounded(6.0).child(main_line);
+    let mut row = div()
+        .col()
+        .px(8.0)
+        .py(5.0)
+        .rounded(Radius::Medium)
+        .child(main_line);
     if expanded && op.status == OpStatus::Failed {
         row = row
             .pb(8.0)

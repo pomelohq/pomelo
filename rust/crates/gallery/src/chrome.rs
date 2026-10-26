@@ -1,5 +1,5 @@
 use components::MenuItem;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 
 use crate::scene::{Board, Group};
 
@@ -101,7 +101,7 @@ fn icon_button(id: u64, kind: IconKind) -> Node {
         .h_px(26.0)
         .items_center()
         .justify_center()
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(id)
         .hover_bg(theme().ghost_element_hover)
         .child(icon(kind).size(15.0).color(theme().icon_muted))
@@ -126,7 +126,7 @@ fn row(
         .gap(8.0)
         .pl(8.0 + depth * 16.0)
         .pr(8.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(id)
         .hover_bg(colors.ghost_element_hover);
     if selected {
@@ -195,7 +195,7 @@ pub fn left(
                     .gap(6.0)
                     .pl(6.0)
                     .pr(8.0)
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .on_click(GROUP + group_index as u64)
                     .hover_bg(theme().ghost_element_hover)
                     .child(components::disclosure(open))
@@ -262,7 +262,7 @@ fn swatch(name: &str) -> Node {
         div()
             .w_px(10.0)
             .h_px(10.0)
-            .rounded(5.0)
+            .rounded(Radius::Medium)
             .bg(color)
             .border(1.0, muted(theme().border, 0.9))
     };
@@ -285,7 +285,7 @@ pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom
                 .h_px(26.0)
                 .items_center()
                 .justify_center()
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .on_click(ZOOM_ACTUAL)
                 .hover_bg(theme().ghost_element_hover)
                 .child(
@@ -415,7 +415,7 @@ fn pill() -> ui::Div {
         .h_px(40.0)
         .items_center()
         .px(6.0)
-        .rounded(10.0)
+        .rounded(Radius::XLarge)
         .bg(theme().panel_background)
         .border(1.0, theme().border)
 }
@@ -426,7 +426,7 @@ fn picker(id: u64, content: Node) -> Node {
         .items_center()
         .gap(6.0)
         .px(8.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .on_click(id)
         .hover_bg(theme().ghost_element_hover)
         .child(content)
@@ -480,7 +480,7 @@ pub fn shortcut_tip(action: &str) -> Node {
             .px(5.0)
             .items_center()
             .justify_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .bg(theme().element_background)
             .child(content)
     };
@@ -496,7 +496,7 @@ pub fn shortcut_tip(action: &str) -> Node {
         .items_center()
         .gap(6.0)
         .p(6.0)
-        .rounded(8.0)
+        .rounded(Radius::Large)
         .bg(theme().elevated_surface_background)
         .border(1.0, theme().border)
         .child(label(action).size(LabelSize::Small))

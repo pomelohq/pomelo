@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use components::{modal_footer, modal_frame, modal_header, modal_note, modal_section};
 use pom_remote::{Connection, Host, ProjectEntry, Snapshot, SourceError};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 use workspace::{
     CenterNotice, EditKey, ModalResult, NoticeBanner, NoticeButton, NoticeFact, NoticeTone,
     WindowModal, WINDOW_MODAL_BASE,
@@ -153,7 +153,7 @@ impl ConnectHostModal {
             .gap(12.0)
             .h_px(ROW_H)
             .px(10.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .child(icon(kind).size(16.0).color(colors.icon_muted))
             .child(
                 div()
@@ -217,7 +217,7 @@ impl ConnectHostModal {
             .row()
             .px(10.0)
             .py(8.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .bg(colors.element_background)
             .child(
                 label(text.to_string())

@@ -1,4 +1,4 @@
-use ui::{div, theme, Appearance, Div, IconKind, LabelSize, Node, Rgba};
+use ui::{div, theme, Appearance, Div, IconKind, LabelSize, Node, Radius, Rgba};
 
 use crate::dot;
 
@@ -74,7 +74,7 @@ impl Pill {
             .gap(5.0)
             .h_px(20.0)
             .px(7.0)
-            .rounded(10.0)
+            .rounded(Radius::XLarge)
             .bg(fill)
             .child(match pill.icon {
                 Some(kind) => ui::icon(kind).size(11.0).color(ink).into(),

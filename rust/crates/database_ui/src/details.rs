@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use pom_db::TableStructure;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba};
 
 use crate::json::{self, Json};
 
@@ -101,7 +101,7 @@ pub(crate) fn link(id: u64, text: &str, hovered: Option<u64>) -> Node {
         .px(4.0)
         .h_px(18.0)
         .items_center()
-        .rounded(3.0)
+        .rounded(Radius::Small)
         .on_click(id)
         .child(small(text, colors.text_accent));
     if hovered == Some(id) {
@@ -399,7 +399,7 @@ pub(crate) fn json_box(
     }
     div()
         .col()
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .border(1.0, colors.border_variant)
         .bg(colors.editor_background)
         .child(bar)
@@ -469,7 +469,7 @@ pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -
         return div()
             .col()
             .p(10.0)
-            .rounded(6.0)
+            .rounded(Radius::Medium)
             .border(1.0, colors.border_focused)
             .bg(colors.editor_background)
             .child(editor)
@@ -496,7 +496,7 @@ pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -
     div()
         .col()
         .p(10.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .border(1.0, colors.border_variant)
         .bg(colors.editor_background)
         .on_click(VALUE_AREA)
@@ -587,7 +587,7 @@ pub(crate) fn value_target(cell: &CellView<'_>, hovered: Option<u64>) -> Option<
                 .h_px(26.0)
                 .px(4.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(OPEN_TARGET)
                 .child(
                     div().row().flex(1.0).items_center().child(
@@ -655,7 +655,7 @@ fn field_line(
         .pr(4.0)
         .gap(8.0)
         .items_center()
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .child(div().w_px(2.0).h_px(26.0).bg(if focused {
             colors.text_accent
         } else {
@@ -711,7 +711,7 @@ pub(crate) fn row_view(
                 .row()
                 .h_px(26.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(id)
                 .child(div().w_px(2.0).h_px(26.0).bg(if focused == Some(index) {
                     colors.text_accent
@@ -760,7 +760,7 @@ pub(crate) fn row_view(
                 .px(6.0)
                 .gap(8.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .on_click(id)
                 .child(
                     div().row().flex(1.0).items_center().child(
@@ -1064,7 +1064,7 @@ pub(crate) fn ddl_view(ddl: &str, hovered: Option<u64>) -> Node {
     let mut code = div()
         .col()
         .p(10.0)
-        .rounded(6.0)
+        .rounded(Radius::Medium)
         .border(1.0, colors.border_variant)
         .bg(colors.panel_background);
     for line in ddl.lines() {

@@ -1,4 +1,4 @@
-use ui::{div, label, theme, LabelSize, Node};
+use ui::{div, label, theme, LabelSize, Node, Radius};
 
 /// A person, by the first letter of their name in a circle: a commit's author, a reviewer.
 pub fn avatar(name: &str) -> Node {
@@ -7,7 +7,7 @@ pub fn avatar(name: &str) -> Node {
     div()
         .w_px(18.0)
         .h_px(18.0)
-        .rounded(9.0)
+        .rounded(Radius::XLarge)
         .items_center()
         .justify_center()
         .bg(colors.element_hover)

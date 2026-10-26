@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 use pom_secrets::SecretStore;
 use terminal::{Keystroke, Modifiers};
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect};
 use workspace::text_field::TextField;
 use workspace::{EditKey, InputField, Item, ItemTick, TerminalKeyOutcome};
 
@@ -176,7 +176,7 @@ impl SecretsItem {
                     .h_px(20.0)
                     .px(8.0)
                     .items_center()
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .bg(colors.background)
                     .border(1.0, colors.border_variant)
                     .child(
@@ -222,7 +222,7 @@ impl SecretsItem {
                     .h_px(20.0)
                     .px(8.0)
                     .items_center()
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .bg(colors.error)
                     .on_click(base + DELETE)
                     .child(
@@ -302,7 +302,10 @@ impl Item for SecretsItem {
             .size(LabelSize::Small)
             .color(colors.text_muted)
             .wrap(doc_w - 48.0);
-        let mut list = div().col().rounded(6.0).bg(colors.panel_background);
+        let mut list = div()
+            .col()
+            .rounded(Radius::Medium)
+            .bg(colors.panel_background);
         if self.names.is_empty() {
             list = list.child(
                 div().row().h_px(ROW_H).px(14.0).items_center().child(

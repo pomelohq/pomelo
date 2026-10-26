@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use settings::Settings;
-use ui::{div, label, theme, LabelSize, Node};
+use ui::{div, label, theme, LabelSize, Node, Radius};
 
 use super::{
     control_value, dim_c, is_default, jira_items, proxy_text, Control, IntegrationsPage, Page,
@@ -654,7 +654,7 @@ pub fn state_line(host: &HostPage) -> Option<Node> {
                 .py(10.0)
                 .gap(10.0)
                 .items_center()
-                .rounded(8.0)
+                .rounded(Radius::Large)
                 .bg(colors.element_background)
                 .child(
                     ui::icon(ui::IconKind::Warning)

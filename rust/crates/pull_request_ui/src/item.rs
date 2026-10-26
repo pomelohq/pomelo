@@ -7,7 +7,7 @@ use markdown::{MarkdownBody, MarkdownStyle, DOCUMENT_STYLE};
 use pom_forge::{MergeMethod, PrTarget, PullRequest, TimelineItem, TimelineKind};
 use pom_paths::StateDir;
 use terminal::Modifiers;
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Rect, Rgba};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rect, Rgba};
 use workspace::text_field::{TextArea, TextField};
 use workspace::{Item, ItemTick, PanelRequest, TerminalKeyOutcome};
 
@@ -377,7 +377,7 @@ impl PrItem {
                     div()
                         .w_px(420.0 * share)
                         .h_px(10.0)
-                        .rounded(5.0)
+                        .rounded(Radius::Medium)
                         .bg(colors.element_hover),
                 );
             }
@@ -565,7 +565,7 @@ impl PrItem {
                     .gap(6.0)
                     .px(8.0)
                     .py(6.0)
-                    .rounded(4.0)
+                    .rounded(Radius::Small)
                     .bg(colors.editor_background)
                     .child(head);
                 for comment in &thread.comments {
@@ -712,7 +712,7 @@ impl PrItem {
                 .px(12.0)
                 .gap(10.0)
                 .items_center()
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .bg(colors.panel_background)
                 .child(icon(kind).size(14.0).color(color))
                 .child(

@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
@@ -56,7 +56,7 @@ impl ConsoleToolbar for SideAgentBar {
                 .h_px(20.0)
                 .px(6.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .border(1.0, colors.border_variant)
                 .child(
                     label("read-only")
@@ -69,7 +69,7 @@ impl ConsoleToolbar for SideAgentBar {
                 .h_px(20.0)
                 .px(6.0)
                 .items_center()
-                .rounded(4.0)
+                .rounded(Radius::Small)
                 .border(1.0, colors.warning.alpha(0.5))
                 .child(
                     label("can edit")
@@ -83,7 +83,7 @@ impl ConsoleToolbar for SideAgentBar {
             .px(9.0)
             .gap(5.0)
             .items_center()
-            .rounded(12.0)
+            .rounded_px(12.0)
             .border(1.0, colors.border_variant)
             .child(icon(IconKind::Branch).size(12.0).color(colors.icon_muted))
             .child(
@@ -98,7 +98,7 @@ impl ConsoleToolbar for SideAgentBar {
                 .px(if label_too { 10.0 } else { 7.0 })
                 .gap(6.0)
                 .items_center()
-                .rounded(5.0)
+                .rounded(Radius::Medium)
                 .border(1.0, colors.border_variant)
                 .on_click(self.base + SEND)
                 .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted));
@@ -117,7 +117,7 @@ impl ConsoleToolbar for SideAgentBar {
             .h_px(26.0)
             .items_center()
             .justify_center()
-            .rounded(4.0)
+            .rounded(Radius::Small)
             .on_click(self.base + ARCHIVE)
             .child(icon(IconKind::Archive).size(14.0).color(colors.icon_muted));
         // A narrow dock drops the least needed first: the send button's label, then what it started with,

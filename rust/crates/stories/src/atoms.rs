@@ -1,7 +1,7 @@
 //! The shared controls screens are built from, one state per board.
 
 use components::{ButtonKind, ButtonSize};
-use ui::{div, theme, Corner, IconKind, LabelSize, Node, Rgba};
+use ui::{div, theme, Corner, IconKind, LabelSize, Node, Radius, Rgba};
 use workspace::InputField;
 
 use crate::{still, Story, StoryDef};
@@ -357,7 +357,7 @@ pub fn stories() -> Vec<StoryDef> {
                 alone(
                     div()
                         .p(8.0)
-                        .rounded(6.0)
+                        .rounded(Radius::Medium)
                         .bg(theme().accent_fill)
                         .child(components::key_chip("cmd-enter", true)),
                 )
@@ -876,7 +876,7 @@ fn hovered_with_tooltip(kind: IconKind, text: &str, keys: Option<&str>) -> Node 
         .h_px(24.0)
         .items_center()
         .justify_center()
-        .rounded(4.0)
+        .rounded(Radius::Small)
         .bg(colors.ghost_element_hover)
         .child(ui::icon(kind).size(14.0).color(colors.icon))
         .pin(Corner::TopLeft, 11.0, 9.0, POINTER, POINTER, pointer);

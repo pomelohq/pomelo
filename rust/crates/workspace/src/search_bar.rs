@@ -8,7 +8,7 @@ use crate::EditKey;
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius};
 
 use crate::text_field::INPUT_FONT;
 const INPUT_H: f32 = 32.0;
@@ -452,7 +452,7 @@ impl SearchBar {
                 let mut button = div()
                     .w_px(BUTTON)
                     .h_px(BUTTON)
-                    .rounded(2.0)
+                    .rounded(Radius::XSmall)
                     .items_center()
                     .justify_center()
                     .child(icon(kind).size(BUTTON_ICON).color(color));
@@ -476,7 +476,7 @@ impl SearchBar {
                     .pr(4.0)
                     .gap(4.0)
                     .items_center()
-                    .rounded(6.0)
+                    .rounded(Radius::Medium)
                     .border(1.0, border)
                     .on_click(SearchClick::id(click, base))
                     .child(field.render(

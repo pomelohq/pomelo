@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use ui::{deferred, div, theme, Node};
 
 const HIDE_DELAY: Duration = Duration::from_secs(1);
-const FADE: Duration = Duration::from_millis(400);
+const FADE: Duration = ui::Motion::Slow.duration();
 const THUMB_WIDTH: f32 = 6.0;
 const PADDING: f32 = 4.0;
 const MIN_THUMB: f32 = 25.0;
@@ -73,7 +73,7 @@ pub fn render(
                     div()
                         .w_px(THUMB_WIDTH)
                         .h_px(thumb)
-                        .rounded(THUMB_WIDTH / 2.0)
+                        .rounded_px(THUMB_WIDTH / 2.0)
                         .bg(color.alpha(color.a * opacity)),
                 )
                 .child(div().w_px(PADDING)),

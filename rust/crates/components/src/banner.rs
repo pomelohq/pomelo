@@ -1,4 +1,4 @@
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius};
 
 /// What a banner reports, which sets its icon and color.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,7 +157,7 @@ impl Banner {
                 .gap(4.0)
                 .px(10.0)
                 .py(8.0)
-                .rounded(6.0)
+                .rounded(Radius::Medium)
                 .bg(colors.editor_background);
             for command in self.commands {
                 block = block.child(
@@ -186,4 +186,4 @@ impl From<Banner> for Node {
     }
 }
 
-pub const BANNER_RADIUS: f32 = 10.0;
+pub const BANNER_RADIUS: Radius = Radius::XLarge;

@@ -1,11 +1,11 @@
-use ui::{div, theme, Node};
+use ui::{div, theme, Node, Radius};
 
 use crate::dot;
 
 /// A 14px radio mark: a hairline ring, or the accent fill with a dot when chosen.
 pub fn radio(on: bool) -> Node {
     let colors = theme();
-    let mark = div().row().w_px(14.0).h_px(14.0).rounded(7.0);
+    let mark = div().row().w_px(14.0).h_px(14.0).rounded(Radius::Large);
     if on {
         mark.items_center()
             .justify_center()
