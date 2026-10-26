@@ -6,7 +6,7 @@ use git::access::{GitAccess, GitOp, RemoteCommand, RepoSource};
 use git::working_copy::{
     CommandError, CommandOutput, CommitOptions, HeadState, PushMode, Staging, StatusEntry, Upstream,
 };
-use ui::{div, theme, Node, Radius, Space};
+use ui::Node;
 use workspace::text_field::TextArea;
 use workspace::PanelRequest;
 
@@ -14,8 +14,6 @@ use workspace::PanelRequest;
 const EDITOR_MIN_ROWS: usize = 3;
 const EDITOR_MAX_ROWS: usize = 6;
 const EDITOR_FONT: f32 = 13.0;
-const EDITOR_PAD: Space = Space::S8;
-const EDITOR_PAD_X: Space = Space::S10;
 const EDITOR_MIN_H: f32 = 80.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +167,7 @@ impl CommitArea {
     }
 
     pub fn editor_height(&self) -> f32 {
-        (2.0 * EDITOR_PAD.px() + self.editor.line_height() * self.editor_rows() as f32)
+        (2.0 * components::TEXT_AREA_PAD_Y + self.editor.line_height() * self.editor_rows() as f32)
             .max(EDITOR_MIN_H)
     }
 
@@ -393,29 +391,16 @@ impl CommitArea {
     }
 
     pub fn render_editor(&mut self, width: f32, placeholder: &str, click_id: u64) -> Node {
-        let colors = theme();
         let rows = self.editor_rows();
         let text = self.editor.render(
             placeholder,
             self.focused,
-            (width - 2.0 * EDITOR_PAD_X.px()).max(40.0),
+            (width - 2.0 * components::TEXT_AREA_PAD_X).max(40.0),
             rows,
         );
-        let ring = if self.focused || !self.editor.text().is_empty() {
-            colors.text_accent
-        } else {
-            colors.border_variant
-        };
-        div()
-            .col()
+        components::text_area_box(click_id, self.focused, false)
             .w_px(width)
             .h_px(self.editor_height())
-            .py(EDITOR_PAD)
-            .px(EDITOR_PAD_X)
-            .rounded(Radius::Medium)
-            .bg(colors.panel_background)
-            .border(1.0, ring)
-            .on_click(click_id)
             .child(text)
             .into()
     }

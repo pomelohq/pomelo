@@ -340,13 +340,12 @@ impl PrItem {
         {
             return None;
         }
-        let colors = theme();
         let focused = self.focus == Some(Field::Review);
         let busy = self.pending.is_some();
         let field = self.review.render(
             "Leave a review",
             focused,
-            width - 2.0 * 12.0 - 2.0 * 10.0,
+            width - 2.0 * 12.0 - 2.0 * components::TEXT_AREA_PAD_X,
             4,
         );
         let mut buttons = div().row().gap(Space::S8).items_center();
@@ -367,24 +366,7 @@ impl PrItem {
                 .render()
                 .w_px(width)
                 .gap(Space::S8)
-                .child(
-                    div()
-                        .col()
-                        .px(Space::S10)
-                        .py(Space::S8)
-                        .rounded(Radius::Medium)
-                        .bg(colors.panel_background)
-                        .border(
-                            1.0,
-                            if focused {
-                                colors.text_accent
-                            } else {
-                                colors.border_variant
-                            },
-                        )
-                        .on_click(REVIEW_FIELD)
-                        .child(field),
-                )
+                .child(components::text_area_box(REVIEW_FIELD, focused, false).child(field))
                 .child(buttons)
                 .into(),
         )

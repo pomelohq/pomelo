@@ -28,6 +28,34 @@ pub fn input_box(click_id: u64, focused: bool, error: bool) -> Div {
     }
 }
 
+/// Inset of a [`text_area_box`]; its text gets the box width less twice this.
+pub const TEXT_AREA_PAD_X: f32 = 10.0;
+pub const TEXT_AREA_PAD_Y: f32 = 8.0;
+
+/// The box a multi-line text area sits in, styled as [`input_box`] is; the caller sizes it and puts the
+/// area inside.
+pub fn text_area_box(click_id: u64, focused: bool, error: bool) -> Div {
+    let colors = theme();
+    let border = match (error, focused) {
+        (true, _) => colors.error,
+        (false, true) => colors.border_focused,
+        (false, false) => colors.border,
+    };
+    let frame = div()
+        .col()
+        .px(Space::Px(TEXT_AREA_PAD_X))
+        .py(Space::Px(TEXT_AREA_PAD_Y))
+        .rounded(Radius::Medium)
+        .bg(colors.editor_background)
+        .border(1.0, border)
+        .on_click(click_id);
+    if focused && !error {
+        frame.ring(3.0, colors.overlay_selected)
+    } else {
+        frame
+    }
+}
+
 /// `text` in a box of the design's line height, so stacked lines keep the rhythm the type scale sets.
 pub fn text_line(height: f32, text: Label) -> Node {
     div().row().h_px(height).items_center().child(text).into()

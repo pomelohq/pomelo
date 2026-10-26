@@ -339,6 +339,35 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|_, _| field(None, Some("A branch name has no spaces"), "feat login")),
         ),
         story(
+            "text-area-empty",
+            "Text area",
+            "Empty",
+            (360.0, 112.0),
+            || still(|_, _| text_area_board("", false, false)),
+        ),
+        story(
+            "text-area-focused",
+            "Text area",
+            "Focused, several lines",
+            (360.0, 112.0),
+            || {
+                still(|_, _| {
+                    text_area_board(
+                        "Add the login form\n\nKeeps the session in a cookie the api reads.",
+                        true,
+                        false,
+                    )
+                })
+            },
+        ),
+        story(
+            "text-area-error",
+            "Text area",
+            "Error",
+            (360.0, 112.0),
+            || still(|_, _| text_area_board("{ \"port\": 30", false, true)),
+        ),
+        story(
             "search-field-empty",
             "Search field",
             "Empty",
@@ -1057,6 +1086,31 @@ fn card_board(card: components::Card) -> Node {
 }
 
 /// A file finder's shape: the query, a few matches with the first selected, and the keys.
+fn text_area_board(text: &str, focused: bool, error: bool) -> Node {
+    const WIDTH: f32 = 328.0;
+    let mut area = workspace::text_field::TextArea::default();
+    area.set_ui_font();
+    area.set_text(text);
+    let rows = 3;
+    let height = area.line_height() * rows as f32 + 2.0 * components::TEXT_AREA_PAD_Y;
+    let field = area.render(
+        "Message",
+        focused,
+        WIDTH - 2.0 * components::TEXT_AREA_PAD_X,
+        rows,
+    );
+    div()
+        .col()
+        .p(INSET)
+        .child(
+            components::text_area_box(1, focused, error)
+                .w_px(WIDTH)
+                .h_px(height)
+                .child(field),
+        )
+        .into()
+}
+
 fn tab_bar_board(width: f32, pane: bool) -> Node {
     let document = || ui::material_icon(ui::MaterialIcon::Document).size(14.0);
     let mut tabs = vec![components::tab(1, "Usage")
