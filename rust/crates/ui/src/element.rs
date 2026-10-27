@@ -1236,6 +1236,14 @@ pub fn render_interactive(node: &Node, area: Rect, interaction: Interaction) -> 
     painted
 }
 
+/// `paint_frame`, painting the hovered and pressed clickable divs with their `hover_bg` / `active_bg`.
+pub fn paint_frame_interactive(node: &Node, area: Rect, interaction: Interaction) -> Frame {
+    let previous = INTERACTION.replace(interaction);
+    let frame = paint_frame(node, area);
+    INTERACTION.set(previous);
+    frame
+}
+
 /// The topmost clickable id at `(x, y)`, as hover and cursor checks need it.
 pub fn topmost_hit(hits: &[(Rect, u64)], x: f32, y: f32) -> Option<u64> {
     hits.iter()

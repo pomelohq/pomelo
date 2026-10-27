@@ -370,19 +370,24 @@ pub fn paint(story: &mut dyn Story, width: f32, height: f32) -> ui::Painted {
     )
 }
 
-/// The story and what floats above it, one layer each.
+/// The story and what floats above it, one layer each; a clipped region of the story keeps its own layer.
 pub fn paint_layers(story: &mut dyn Story, width: f32, height: f32) -> Vec<ui::Overlay> {
+    let area = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
+    let frame = ui::paint_frame(
+        &ui::div()
+            .bg(ui::theme().panel_background)
+            .child(story.render(width, height))
+            .into(),
+        area,
+    );
+    let mut base = frame.base;
+    base.hits = frame.hits;
     let mut layers = vec![ui::Overlay {
-        painted: paint(story, width, height),
+        painted: base,
         clip: None,
     }];
-    layers.extend(story.overlays(ui::Rect::new(
-        0.0,
-        0.0,
-        width,
-        height,
-        ui::Rgba::TRANSPARENT,
-    )));
+    layers.extend(frame.overlays);
+    layers.extend(story.overlays(area));
     layers
 }
 
