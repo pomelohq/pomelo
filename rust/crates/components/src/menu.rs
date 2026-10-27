@@ -185,18 +185,7 @@ impl<'a> Menu<'a> {
                 card = card.child(separator());
             }
             if item.header {
-                card = card.child(
-                    div()
-                        .row()
-                        .h_px(MENU_ROW)
-                        .px(Space::S8)
-                        .items_center()
-                        .child(
-                            ui::label(item.label.to_string())
-                                .size(LabelSize::Small)
-                                .color(colors.text_muted),
-                        ),
-                );
+                card = card.child(menu_header(item.label.to_string()));
                 continue;
             }
             card = card.child(self.row(item, marks));
@@ -283,6 +272,20 @@ impl<'a> Menu<'a> {
             }
         }
     }
+}
+
+/// A group's title in a menu: small, muted and not clickable.
+pub fn menu_header(text: impl Into<String>) -> Div {
+    div()
+        .row()
+        .h_px(MENU_ROW)
+        .px(Space::S8)
+        .items_center()
+        .child(
+            ui::label(text.into())
+                .size(LabelSize::Small)
+                .color(theme().text_muted),
+        )
 }
 
 /// One menu row on its own, for a card that mixes other content with a few commands (a popover).

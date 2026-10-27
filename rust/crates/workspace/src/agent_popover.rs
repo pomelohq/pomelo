@@ -278,20 +278,9 @@ pub fn new_agent(
                     ),
                 )
                 .child(
-                    div()
-                        .row()
-                        .h_px(28.0)
-                        .px(Space::S12)
-                        .items_center()
-                        .rounded(Radius::Medium)
-                        .bg(if hot(hover, START_BUTTON) {
-                            colors.info_border.alpha(0.4)
-                        } else {
-                            colors.info_background
-                        })
-                        .border(1.0, colors.info_border)
-                        .on_click(START_BUTTON)
-                        .child(label(start_text).size(LabelSize::Medium).color(colors.text)),
+                    components::button(START_BUTTON, start_text)
+                        .kind(components::ButtonKind::Primary)
+                        .size(components::ButtonSize::Medium),
                 ),
         )
         .child(separator());

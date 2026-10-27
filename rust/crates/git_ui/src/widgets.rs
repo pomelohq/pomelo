@@ -1,6 +1,6 @@
 use git::working_copy::Staging;
 use git::ChangeStatus;
-use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Radius, Rgba, Space};
+use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba, Space};
 
 pub(crate) const ROW_H: f32 = 26.0;
 /// The tab track's top margin plus its padded segments.
@@ -59,26 +59,17 @@ pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: LabelSiz
     row.into()
 }
 
-/// One vertical guide per tree level above `depth`, 16px apart like the Files panel.
-/// A bubble under (or over) the hovered control, kept inside the panel.
 pub(crate) fn icon_button(id: u64, kind: IconKind, hot: bool, enabled: bool) -> Div {
-    let colors = theme();
-    let mut button = div()
-        .w_px(22.0)
-        .h_px(22.0)
-        .rounded(Radius::Small)
-        .items_center()
-        .justify_center()
-        .on_click(id)
-        .child(icon(kind).size(14.0).color(if enabled {
-            colors.icon_muted
-        } else {
-            colors.text_disabled
-        }));
-    if hot && enabled {
-        button = button.bg(colors.ghost_element_hover);
+    let button = components::icon_button(id, kind)
+        .enabled(enabled)
+        .hovered(hot.then_some(id))
+        .render();
+    // A disabled button still takes the pointer so its tooltip can say why.
+    if enabled {
+        button
+    } else {
+        button.on_click(id)
     }
-    button
 }
 
 pub(crate) fn ghost_button(id: u64, leading: Option<IconKind>, text: &str, hot: bool) -> Div {

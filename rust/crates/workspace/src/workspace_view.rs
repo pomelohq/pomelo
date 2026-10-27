@@ -8463,9 +8463,7 @@ const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
 /// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
 fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
     let colors = ui::theme();
-    let mut list = components::card().padding(4.0).raised().render();
-    for (row, entry) in switcher.entries.iter().enumerate() {
-        let id = crate::TAB_SWITCHER_BASE + row as u64;
+    let rows = switcher.entries.iter().enumerate().map(|(row, entry)| {
         let glyph: ui::Node = match entry.icon {
             Some(kind) => ui::icon(kind).size(14.0).color(colors.icon_muted).into(),
             None => ui::material_icon(entry.material).size(14.0).into(),
@@ -8474,24 +8472,16 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
         if entry.preview {
             title = title.italic();
         }
-        let mut line = ui::div()
-            .row()
-            .h_px(28.0)
-            .px(Space::S8)
-            .gap(Space::S8)
-            .items_center()
-            .rounded(Radius::Medium)
-            .on_click(id)
+        components::list_row(crate::TAB_SWITCHER_BASE + row as u64)
+            .selected(switcher.nav.selected == Some(row))
+            .hovered(hovered)
             .child(glyph)
-            .child(title);
-        if switcher.nav.selected == Some(row) {
-            line = line.bg(colors.overlay_selected);
-        } else if hovered == Some(id) {
-            line = line.bg(colors.element_hover);
-        }
-        list = list.child(line);
-    }
-    list.into()
+            .child(title)
+    });
+    components::picker_list(TAB_SWITCHER_W)
+        .children(rows)
+        .render()
+        .into()
 }
 
 /// A confirmation over a dimmed window, centered.
