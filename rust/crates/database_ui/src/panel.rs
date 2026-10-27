@@ -111,6 +111,21 @@ pub struct DatabasePanel {
 
 impl DatabasePanel {
     pub fn new(context: DatabaseContext) -> DatabasePanel {
+        let mut panel = DatabasePanel::closed(context);
+        let first = panel
+            .model
+            .databases
+            .iter()
+            .find(|database| database.engine.is_sql())
+            .map(|database| (database.repo.clone(), database.name.clone()));
+        if let Some((repo, name)) = first {
+            panel.toggle_database(&repo, &name);
+        }
+        panel
+    }
+
+    /// The panel with every database folded and nothing opened, so no connection is made (previews and tests).
+    pub fn closed(context: DatabaseContext) -> DatabasePanel {
         let mut panel = DatabasePanel {
             model: Model::default(),
             context,
@@ -139,15 +154,6 @@ impl DatabasePanel {
         };
         panel.reload_config();
         panel.load_consoles();
-        let first = panel
-            .model
-            .databases
-            .iter()
-            .find(|database| database.engine.is_sql())
-            .map(|database| (database.repo.clone(), database.name.clone()));
-        if let Some((repo, name)) = first {
-            panel.toggle_database(&repo, &name);
-        }
         panel
     }
 
@@ -457,6 +463,14 @@ impl DatabasePanel {
         self.model
             .loaded
             .insert(database.to_string(), Loaded::Failed(Box::new(failure)));
+    }
+
+    /// Shows a database as still connecting, opened (previews and tests).
+    pub fn show_connecting(&mut self, database: &str) {
+        self.expand_everywhere(database);
+        self.model
+            .loaded
+            .insert(database.to_string(), Loaded::Loading(Pending::idle()));
     }
 
     pub fn toggle_full_error(&mut self, database: &str) {

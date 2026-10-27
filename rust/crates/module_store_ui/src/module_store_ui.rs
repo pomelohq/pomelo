@@ -1538,6 +1538,14 @@ impl Item for StorePage {
 
 /// A tab over a made-up project, for headless snapshots.
 pub fn preview_page() -> StorePage {
+    StorePage::new(
+        Rc::new(RefCell::new(preview_state())),
+        "~/.local/state/pom/nm-store".into(),
+    )
+}
+
+/// What `preview_page` shows, for previews that change it or send it on as a host would.
+pub fn preview_state() -> StoreState {
     use module_store::{Entry, Manager, Method, RepoOverview};
     let now = 1_800_000_000;
     let day = 86_400;
@@ -1664,17 +1672,13 @@ pub fn preview_page() -> StorePage {
         ],
         others: vec![entry("billing", "x1", 0.5, 40)],
     };
-    let state = StoreState {
+    StoreState {
         method: "copy-on-write, workspaces take no extra disk".into(),
         overview: Some(overview),
         now,
         running: vec![("web".into(), "feat-pay".into())],
         ..StoreState::default()
-    };
-    StorePage::new(
-        Rc::new(RefCell::new(state)),
-        "~/.local/state/pom/nm-store".into(),
-    )
+    }
 }
 
 pub fn board_page(which: &str) -> StorePage {

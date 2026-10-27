@@ -173,11 +173,8 @@ impl WindowModal for AddRepoModal {
                 "Afterwards",
                 components::segmented(
                     [
-                        components::segment(USE_AI, "Let Claude wire its env and shared services"),
-                        components::segment(
-                            REVIEW_LATER,
-                            "Review its entry in the config afterwards",
-                        ),
+                        components::segment(USE_AI, "Let Claude wire it up"),
+                        components::segment(REVIEW_LATER, "Review it in the config"),
                     ],
                     usize::from(!self.use_ai),
                 )

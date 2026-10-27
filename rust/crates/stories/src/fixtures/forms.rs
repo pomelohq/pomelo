@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use workspace::{EditKey, WindowModal, WINDOW_MODAL_BASE};
 use workspaces_ui::{
-    AddRepoModal, BranchSource, CreateWorkspaceModal, RenameWorkspaceModal, RepoBranches,
-    TicketList, TicketSource, UseBranchModal,
+    AddRepoModal, BranchSource, CreateWorkspaceModal, PickReposModal, RenameWorkspaceModal,
+    RepoBranches, TicketList, TicketSource, UseBranchModal,
 };
 
 // The forms' own click ids, as they lay them out.
@@ -16,6 +16,8 @@ const BRANCH_FIELD: u64 = WINDOW_MODAL_BASE + 3;
 const BRANCH_BOX: u64 = WINDOW_MODAL_BASE + 300;
 const ADD_REPO_USE_AI: u64 = WINDOW_MODAL_BASE + 5;
 const ADD_REPO_WORKSPACE: u64 = WINDOW_MODAL_BASE + 100;
+const TICKET_FIELD: u64 = WINDOW_MODAL_BASE + 7;
+const PICK_REPO_BASE: u64 = WINDOW_MODAL_BASE + 100;
 
 fn namer() -> workspaces_ui::Namer {
     Arc::new(|seed: &str, _: &str| {
@@ -26,7 +28,18 @@ fn namer() -> workspaces_ui::Namer {
     })
 }
 
+#[derive(Clone, Copy)]
+enum Jira {
+    Answers,
+    Slow,
+    Fails,
+}
+
 fn tickets() -> TicketSource {
+    tickets_from(Jira::Answers)
+}
+
+fn tickets_from(jira: Jira) -> TicketSource {
     let issue = |key: &str, summary: &str| pom_jira::SprintIssue {
         key: key.into(),
         summary: summary.into(),
@@ -46,7 +59,14 @@ fn tickets() -> TicketSource {
                 name: "Web".into(),
             }])
         }),
-        issues: Arc::new(move |_| Ok(issues.clone())),
+        issues: Arc::new(move |_| match jira {
+            Jira::Answers => Ok(issues.clone()),
+            Jira::Slow => {
+                std::thread::sleep(Duration::from_secs(60));
+                Ok(Vec::new())
+            }
+            Jira::Fails => Err("Jira answered 401 Unauthorized: check the API token".into()),
+        }),
         board: Some(1),
         start: Some(TicketList::Sprint(1)),
         remember: Arc::new(|_| {}),
@@ -147,10 +167,34 @@ fn create(existing: &[&str]) -> CreateWorkspaceModal {
     modal
 }
 
-/// The modal a scene draws: `create`, `create-branch`, `create-taken`, `rename`, `add-repo`, `use-branch`.
+/// The create form as it opens, its Ticket list dropped down over Jira answering this way.
+fn create_tickets(jira: Jira) -> CreateWorkspaceModal {
+    let mut modal = CreateWorkspaceModal::new(
+        vec!["api".into(), "web".into(), "worker".into()],
+        Vec::new(),
+        namer(),
+    )
+    .with_tickets(tickets_from(jira))
+    .with_branches(branches());
+    // A Jira that never answers keeps the form busy, so settle only waits for the branches.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < deadline {
+        modal.tick();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    if !matches!(jira, Jira::Slow) {
+        settle(&mut modal);
+    }
+    modal.click(TICKET_FIELD);
+    modal
+}
+
+/// The modal a scene draws: `create`, `create-branch`, `create-taken`, `create-tickets`,
+/// `create-tickets-loading`, `create-tickets-error`, `rename`, `add-repo`, `add-repo-blank`, `use-branch`,
+/// `pick-repos`, or `connect-` and a step of Connect to Host.
 pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
     if let Some(step) = name.strip_prefix("connect-") {
-        return crate::remote_fixture::connect_modal(step)
+        return super::host::connect_modal(step)
             .map(|modal| Box::new(modal) as Box<dyn WindowModal>);
     }
     Some(match name {
@@ -172,6 +216,20 @@ pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
             modal.click(BRANCH_FIELD);
             modal.key(EditKey::SelectAll, false);
             modal.text("feat-login");
+            Box::new(modal)
+        }
+        "create-tickets" => Box::new(create_tickets(Jira::Answers)),
+        "create-tickets-loading" => Box::new(create_tickets(Jira::Slow)),
+        "create-tickets-error" => Box::new(create_tickets(Jira::Fails)),
+        "add-repo-blank" => Box::new(AddRepoModal::new(
+            vec!["PROJ-101 Fix login".into(), "PROJ-107 New sidebar".into()],
+            vec!["api".into(), "web".into()],
+            Box::new(Vec::new),
+            true,
+        )),
+        "pick-repos" => {
+            let mut modal = PickReposModal::new("feat-login", vec!["worker".into(), "docs".into()]);
+            modal.click(PICK_REPO_BASE);
             Box::new(modal)
         }
         "rename" => Box::new(RenameWorkspaceModal::new(
@@ -205,7 +263,7 @@ pub fn modal(name: &str) -> Option<Box<dyn WindowModal>> {
 /// The confirmation a scene draws: `delete`, `discard-all`, `discard-file`.
 pub fn prompt(name: &str) -> Option<workspace::Prompt> {
     if name == "save-conflict" {
-        return crate::remote_fixture::conflict_prompt();
+        return super::host::conflict_prompt();
     }
     let (message, detail, confirm) = match name {
         "delete" => (

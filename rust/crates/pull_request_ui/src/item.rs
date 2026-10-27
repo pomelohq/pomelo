@@ -92,6 +92,35 @@ impl PrItem {
         target: PrTarget,
         cached: Option<PullRequest>,
     ) -> PrItem {
+        let mut item = PrItem::unloaded(state, session, waker, target, cached);
+        item.load();
+        item
+    }
+
+    /// A tab that never reaches GitHub: it stays on its loading card until `show` or `show_error` (previews).
+    pub fn preview(target: PrTarget) -> PrItem {
+        let mut item = PrItem::unloaded(
+            StateDir::new(std::env::temp_dir()),
+            String::new(),
+            Arc::new(|| {}),
+            target,
+            None,
+        );
+        item.connect = Arc::new(|| None);
+        let (answer, loading) = mpsc::channel();
+        // An answer that never comes, without a thread waiting to send it.
+        std::mem::forget(answer);
+        item.loading = Some(loading);
+        item
+    }
+
+    fn unloaded(
+        state: StateDir,
+        session: String,
+        waker: Arc<dyn Fn() + Send + Sync>,
+        target: PrTarget,
+        cached: Option<PullRequest>,
+    ) -> PrItem {
         let connect = {
             let (state, session) = (state.clone(), session.clone());
             Arc::new(move || pom_forge::resolve(&state, &session))
@@ -125,7 +154,6 @@ impl PrItem {
         };
         item.review.set_font_size(12.0);
         item.review.set_ui_font();
-        item.load();
         item
     }
 
