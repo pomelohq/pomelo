@@ -3,6 +3,7 @@
 
 pub mod agents;
 pub mod atoms;
+pub mod chrome;
 pub mod database;
 pub mod dev_services;
 pub mod environment;
@@ -98,6 +99,7 @@ pub fn all() -> Vec<StoryDef> {
     all.extend(git::stories());
     all.extend(settings::stories());
     all.extend(agents::stories());
+    all.extend(chrome::stories());
     all.extend(database::stories());
     all.extend(pull_request::stories());
     all.extend(remote::stories());
@@ -208,6 +210,22 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     ("Organisms", "Agents", &["Agent dock"]),
     (
         "Organisms",
+        "Workspace",
+        &[
+            "Title bar",
+            "Session menu",
+            "Status bar",
+            "Workspace rail",
+            "Pane tab bar",
+            "Toasts",
+            "Welcome",
+            "Prompt",
+            "Tab switcher",
+            "Workspace switcher",
+        ],
+    ),
+    (
+        "Organisms",
         "Data",
         &["Database panel", "Environment and secrets"],
     ),
@@ -292,6 +310,16 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Usage page" => "What the project's agents spent, by workspace, agent or model, with the account's limits; costs can be hidden, and an empty page says no agent ran yet.",
         "Dev services log" => "The requests through the dev proxy and the webhooks fanned out to workspaces, one opened with its bodies, filtered to errors, none yet, and the servers stopped or held by pom proxy.",
         "Agent dock" => "The agent dock: the workspace's Main agent pinned first in its tab bar, and the strip over an agent someone else drives, with Take over and the tool call waiting for Allow or Deny.",
+        "Title bar" => "The top of the main window: the host for a project on another machine, the session, its branch, a pill when another workspace waits for you, the update button, the agents' usage and the app menu.",
+        "Session menu" => "The session switcher under the title bar: the project in this window, recent ones with the host each lives on, and starting, opening or connecting to another.",
+        "Status bar" => "The bottom strip: the workspace's functions and terminal on the left, today's agent spend, the terminal and agent toggles on the right.",
+        "Workspace rail" => "The workspaces of the project as the side dock shows them: a tile per workspace when the dock is collapsed, a row with its status, agent and pull request when it is open.",
+        "Pane tab bar" => "A center pane's tabs over real items: a pinned tab, the active one, a preview in italics, and the pane's split and zoom buttons.",
+        "Toasts" => "What the window says above its status bar: a toast that goes by itself, and the cards that stay until handled, such as an update to restart into or a config that stopped loading.",
+        "Welcome" => "The window without a project: what to start with, what this Mac lacks to run services, and the recent projects.",
+        "Prompt" => "A confirmation over the dimmed window before something that cannot be undone or that drops work.",
+        "Tab switcher" => "The open tabs by recency while ctrl-tab is held; the highlighted one opens on release.",
+        "Workspace switcher" => "Every workspace by what needs you first, then main, then by ticket status, with the new-workspace command at the foot.",
         _ => return None,
     })
 }
