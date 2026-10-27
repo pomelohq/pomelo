@@ -307,13 +307,7 @@ impl Item for SecretsItem {
             .rounded(Radius::Medium)
             .bg(colors.panel_background);
         if self.names.is_empty() {
-            list = list.child(
-                div().row().h_px(ROW_H).px(Space::S14).items_center().child(
-                    label("No secrets yet.")
-                        .size(LabelSize::Small)
-                        .color(colors.text_muted),
-                ),
-            );
+            list = list.child(components::empty_state("No secrets yet").compact());
         }
         let first = (self.scroll / ROW_H) as usize;
         let visible = ((height - 180.0) / ROW_H).max(1.0) as usize;

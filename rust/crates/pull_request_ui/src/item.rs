@@ -692,11 +692,7 @@ impl PrItem {
         let mut column = div().col().gap(Space::S2);
         if pr.status_check_rollup.is_empty() {
             return column
-                .child(
-                    label("No checks")
-                        .size(LabelSize::Small)
-                        .color(colors.text_placeholder),
-                )
+                .child(components::empty_state("No checks").compact())
                 .into();
         }
         for (index, check) in pr.status_check_rollup.iter().enumerate() {

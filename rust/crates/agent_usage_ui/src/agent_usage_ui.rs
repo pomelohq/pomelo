@@ -898,7 +898,7 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
                 .into(),
         ));
     } else {
-        column = column.child(hint("No agent replies in this period.".into()));
+        column = column.child(components::empty_state("No agent replies in this period").compact());
     }
     div()
         .col()
