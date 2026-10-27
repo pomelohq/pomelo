@@ -44,10 +44,8 @@ const OPEN_ALL_DIFFS: u64 = FIXED + 8;
 const BRANCH_MENU: u64 = FIXED + 9;
 const BRANCH_LINK: u64 = FIXED + 10;
 const COMMIT_EDITOR: u64 = FIXED + 11;
-const PLAN: u64 = FIXED + 12;
 const COMMIT: u64 = FIXED + 13;
 const COMMIT_MENU: u64 = FIXED + 14;
-const LAST_COMMIT: u64 = FIXED + 15;
 const UNCOMMIT: u64 = FIXED + 16;
 const SYNC: u64 = FIXED + 17;
 const SYNC_MENU: u64 = FIXED + 18;
@@ -214,6 +212,9 @@ pub struct GitPanel {
     excluded: HashSet<String>,
     /// Repos the user chose to keep on their own branch since the panel opened.
     kept: HashSet<String>,
+    /// The commit running now, then the one just made until the next click: its repos and whether it amended.
+    committing: Option<(Vec<String>, bool)>,
+    committed: Option<(Vec<String>, bool)>,
     opened: Option<OpenedCommit>,
     /// The pushes of a machine that sends each repo's scan as it changes, while the panel is shown.
     watching: Arc<Mutex<Option<git::access::Watching>>>,
@@ -263,6 +264,8 @@ impl GitPanel {
             folded: HashSet::new(),
             excluded: HashSet::new(),
             kept: HashSet::new(),
+            committing: None,
+            committed: None,
             opened: None,
             waker,
         }
@@ -913,6 +916,12 @@ impl GitPanel {
         let Some(message) = message else {
             return;
         };
+        let repos = plan
+            .targets
+            .iter()
+            .map(|target| target.repo.clone())
+            .collect();
+        self.committing = Some((repos, self.commit.amend));
         self.commit.commit(plan.targets, message);
     }
 
@@ -925,35 +934,55 @@ impl GitPanel {
         }
     }
 
-    /// Undoes the last commit, keeping its changes staged and its message in the editor.
+    /// Undoes the commit just made in each of its repos, keeping its changes staged and its message in the editor.
     fn uncommit(&mut self) {
+        let Some((repos, false)) = self.committed.take() else {
+            return;
+        };
         let scan = self.current();
-        let Some((repo, commit)) = self.last_commit(&scan) else {
-            return;
-        };
-        if !Self::can_uncommit(&scan, repo, &commit) {
-            self.requests.push(PanelRequest::Toast(
-                "That commit is already pushed, so it stays".into(),
-            ));
-            return;
-        }
-        let Some(source) = self.sources.get(repo).cloned() else {
-            return;
-        };
-        let message = self.access.head_message(&source);
-        match self.access.act(&source, GitOp::SoftReset) {
-            Ok(()) => {
-                if self.commit.editor.text().trim().is_empty() {
-                    if let Some(message) = message {
-                        self.commit.editor.set_text(&message);
-                    }
-                }
-                self.requests.push(PanelRequest::Toast(format!(
-                    "Uncommitted \"{}\" in {}: its changes are staged again",
-                    commit.subject, source.name
-                )));
+        let mut undone = Vec::new();
+        let mut pushed = Vec::new();
+        let mut message = None;
+        for name in repos {
+            let Some(repo) = self.repo_index(&name) else {
+                continue;
+            };
+            let Some(source) = self.sources.get(repo).cloned() else {
+                continue;
+            };
+            let Some(commit) = scan
+                .repos
+                .get(repo)
+                .and_then(|state| state.head_commit.clone())
+            else {
+                continue;
+            };
+            if !Self::can_uncommit(&scan, repo, &commit) {
+                pushed.push(name);
+                continue;
             }
-            Err(error) => self.requests.push(PanelRequest::Toast(error.message)),
+            message = message.or_else(|| self.access.head_message(&source));
+            match self.access.act(&source, GitOp::SoftReset) {
+                Ok(()) => undone.push(name),
+                Err(error) => self.requests.push(PanelRequest::Toast(error.message)),
+            }
+        }
+        if self.commit.editor.text().trim().is_empty() {
+            if let Some(message) = message {
+                self.commit.editor.set_text(&message);
+            }
+        }
+        if !undone.is_empty() {
+            self.requests.push(PanelRequest::Toast(format!(
+                "Uncommitted in {}: the changes are staged again",
+                undone.join(", ")
+            )));
+        }
+        if !pushed.is_empty() {
+            self.requests.push(PanelRequest::Toast(format!(
+                "Already pushed in {}, so it stays",
+                pushed.join(", ")
+            )));
         }
         self.refresh();
     }
@@ -1250,22 +1279,38 @@ impl GitPanel {
         self.open_menu_with(entries);
     }
 
-    fn targets_menu(&mut self) {
+    /// Which repos get a commit (one each, same message), then how to commit.
+    fn commit_menu(&mut self) {
         let scan = self.current();
-        let mut entries = vec![(
-            "One commit per repo, same message".to_string(),
-            MenuAction::Header,
-            false,
-            false,
-        )];
-        for target in self.commit_targets(&scan) {
-            entries.push((
-                format!("{} ({} staged)", target.repo, target.staged),
-                MenuAction::ToggleTarget(target.repo.clone()),
-                !self.excluded.contains(&target.repo),
-                false,
-            ));
+        let targets = self.commit_targets(&scan);
+        let mut entries = Vec::new();
+        if targets.len() > 1 {
+            entries.push(("Commit To".to_string(), MenuAction::Header, false, false));
+            for target in targets {
+                entries.push((
+                    format!("{} ({} staged)", target.repo, target.staged),
+                    MenuAction::ToggleTarget(target.repo.clone()),
+                    !self.excluded.contains(&target.repo),
+                    false,
+                ));
+            }
         }
+        entries.push(("Options".to_string(), MenuAction::Header, false, false));
+        if self.last_commit(&scan).is_some() {
+            entries.push(("Amend".into(), MenuAction::Amend, self.commit.amend, false));
+        }
+        entries.push((
+            "Signoff".into(),
+            MenuAction::Signoff,
+            self.commit.signoff,
+            false,
+        ));
+        entries.push((
+            "Skip Hooks".into(),
+            MenuAction::SkipHooks,
+            self.commit.skip_hooks,
+            false,
+        ));
         self.open_menu_with(entries);
     }
 
@@ -1520,38 +1565,8 @@ impl GitPanel {
             BRANCH_MENU | DRIFT_CHIP => self.branch_menu(),
             BRANCH_LINK => self.set_tab(Tab::Remote),
             COMMIT_EDITOR => self.commit.focused = true,
-            PLAN => self.targets_menu(),
             COMMIT => self.commit_now(),
-            COMMIT_MENU => {
-                let has_commit = self.last_commit(&self.current()).is_some();
-                let mut entries = vec![(
-                    "Commit Options".to_string(),
-                    MenuAction::Header,
-                    false,
-                    false,
-                )];
-                if has_commit {
-                    entries.push(("Amend".into(), MenuAction::Amend, self.commit.amend, false));
-                }
-                entries.push((
-                    "Signoff".into(),
-                    MenuAction::Signoff,
-                    self.commit.signoff,
-                    false,
-                ));
-                entries.push((
-                    "Skip Hooks".into(),
-                    MenuAction::SkipHooks,
-                    self.commit.skip_hooks,
-                    false,
-                ));
-                self.open_menu_with(entries);
-            }
-            LAST_COMMIT => {
-                if let Some((repo, commit)) = self.last_commit(&self.current()) {
-                    self.open_commit(repo, commit, false);
-                }
-            }
+            COMMIT_MENU => self.commit_menu(),
             UNCOMMIT => self.uncommit(),
             SYNC => self.sync_all(true, true),
             SYNC_MENU => self.open_menu_with(vec![
@@ -1604,8 +1619,10 @@ impl SidePanelView for GitPanel {
             self.spawn_poller();
         }
         if let Some(outcome) = self.commit.poll() {
+            let committing = self.committing.take();
             if matches!(outcome, commit_area::Outcome::Committed) {
                 self.excluded.clear();
+                self.committed = committing;
             }
             self.requests.extend(commit_area::outcome_requests(outcome));
             self.refresh();
@@ -1615,6 +1632,9 @@ impl SidePanelView for GitPanel {
 
     fn click(&mut self, id: u64) {
         self.commit.focused = false;
+        if id != self.fixed(UNCOMMIT) {
+            self.committed = None;
+        }
         if let Some(offset) = id.checked_sub(self.base) {
             if (FIXED..FIXED_END).contains(&offset) && self.click_fixed(offset) {
                 return;

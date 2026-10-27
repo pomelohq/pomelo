@@ -261,16 +261,18 @@ fn one_commit_per_included_repo_with_the_same_message() {
         source("docs", &docs, "feat"),
     ]);
     let shown = texts(&mut panel);
-    assert!(shown.contains("3 commits: api 1, web 1, docs 1"), "{shown}");
+    assert!(shown.contains("Commit to 3 repos"), "{shown}");
 
-    click(&mut panel, "3 commits: api 1, web 1, docs 1");
+    // The chevron beside the button.
+    let chevron = id_at(&mut panel, "Commit to 3 repos") + 1;
+    panel.click(chevron);
     assert!(matches!(
         panel.take_requests().as_slice(),
         [PanelRequest::OpenMenu]
     ));
     menu_pick(&mut panel, "docs (1 staged)");
     let shown = texts(&mut panel);
-    assert!(shown.contains("2 commits: api 1, web 1"), "{shown}");
+    assert!(shown.contains("Commit to api, web"), "{shown}");
 
     let editor = id_at(&mut panel, "Enter commit message");
     panel.click_at(editor, 20.0, 12.0);
@@ -294,41 +296,49 @@ fn one_commit_per_included_repo_with_the_same_message() {
     assert_eq!(staged(&docs), "d.md");
 
     let shown = texts(&mut panel);
-    assert!(shown.contains("Last commit"), "{shown}");
-    click(&mut panel, "Share the login flow - web");
+    assert!(shown.contains("Committed to api, web|Undo"), "{shown}");
+    click(&mut panel, "History");
+    click(&mut panel, "Changes");
     let shown = texts(&mut panel);
     assert!(
-        shown.contains("w.ts") && shown.contains("not pushed yet"),
-        "{shown}"
+        !shown.contains("Committed to"),
+        "gone after the next click: {shown}"
     );
-    let file = id_at(&mut panel, "w.ts");
-    panel.click(file);
-    assert!(matches!(
-        panel.take_requests().as_slice(),
-        [PanelRequest::OpenItem(_)]
-    ));
-
-    click(&mut panel, "Changes");
-    let undo = texts(&mut panel);
-    assert!(undo.contains("Last commit"), "{undo}");
 }
 
 #[test]
-fn uncommit_keeps_the_changes_staged() {
+fn undo_uncommits_each_repo_and_keeps_the_changes_staged() {
     let temp = tempfile::tempdir().expect("temp");
-    let root = repo(temp.path(), "api", &["a.rs"], "feat");
-    write(&root, "a.rs", "two\n");
-    git(&root, &["commit", "-q", "-am", "Change a"]);
-    let mut panel = panel(vec![source("api", &root, "feat")]);
-    let last = id_at(&mut panel, "Change a - api");
-    // The uncommit button follows the subject.
-    panel.click(last + 1);
+    let api = repo(temp.path(), "api", &["a.rs"], "feat");
+    let web = repo(temp.path(), "web", &["w.ts"], "feat");
+    for (root, file) in [(&api, "a.rs"), (&web, "w.ts")] {
+        write(root, file, "two\n");
+        git(root, &["add", "."]);
+    }
+    let mut panel = panel(vec![
+        source("api", &api, "feat"),
+        source("web", &web, "feat"),
+    ]);
+    let editor = id_at(&mut panel, "Enter commit message");
+    panel.click_at(editor, 20.0, 12.0);
+    panel.text("Change both");
+    panel.key(workspace::EditKey::ReplaceAll, false);
+    settle(&mut panel);
+    assert_eq!(git_out(&api, &["log", "-1", "--format=%s"]), "Change both");
+
+    click(&mut panel, "Undo");
     panel.wait_for_scan();
-    assert_eq!(git_out(&root, &["log", "-1", "--format=%s"]), "base");
-    assert_eq!(staged(&root), "a.rs");
+    for (root, file) in [(&api, "a.rs"), (&web, "w.ts")] {
+        assert_eq!(git_out(root, &["log", "-1", "--format=%s"]), "base");
+        assert_eq!(staged(root), file);
+    }
     let requests = panel.take_requests();
     assert!(
-        matches!(requests.as_slice(), [PanelRequest::Toast(message)] if message.contains("staged again"))
+        matches!(requests.as_slice(), [PanelRequest::Toast(message)] if message.contains("api, web") && message.contains("staged again"))
+    );
+    assert!(
+        texts(&mut panel).contains("Change both"),
+        "the message comes back"
     );
 }
 
@@ -488,6 +498,16 @@ fn the_branch_row_points_out_repos_on_another_branch() {
         source("web", &web, "feat-login"),
     ]);
     let shown = texts(&mut panel);
+    assert!(
+        shown.contains("web is on ana/mail-retry, not feat-login"),
+        "{shown}"
+    );
+    assert!(
+        !shown.contains("in 1 of 2"),
+        "Changes has no branch row: {shown}"
+    );
+    click(&mut panel, "History");
+    let shown = texts(&mut panel);
     assert!(shown.contains("feat-login|in 1 of 2"), "{shown}");
     assert!(shown.contains("|web on ana/mail"), "{shown}");
 
@@ -545,6 +565,9 @@ fn the_branch_row_points_out_repos_on_another_branch() {
         !shown.contains("web on ana/mail"),
         "kept is not drift: {shown}"
     );
+    click(&mut panel, "Changes");
+    let shown = texts(&mut panel);
+    assert!(!shown.contains("web is on"), "kept is not drift: {shown}");
 }
 
 #[test]

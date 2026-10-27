@@ -14,6 +14,7 @@ pub struct SplitButton {
     hovered: Option<u64>,
     primary: bool,
     size: ButtonSize,
+    width: Option<f32>,
 }
 
 pub fn split_button(main: u64, menu: u64, text: impl Into<String>) -> SplitButton {
@@ -26,6 +27,7 @@ pub fn split_button(main: u64, menu: u64, text: impl Into<String>) -> SplitButto
         hovered: None,
         primary: false,
         size: ButtonSize::Small,
+        width: None,
     }
 }
 
@@ -52,6 +54,12 @@ impl SplitButton {
 
     pub fn size(mut self, size: ButtonSize) -> Self {
         self.size = size;
+        self
+    }
+
+    /// Stretches the control to `width`, its label centered in the main half.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
         self
     }
 
@@ -87,6 +95,9 @@ impl SplitButton {
             .gap(Space::S6)
             .items_center()
             .on_click(self.main);
+        if self.width.is_some() {
+            main = main.flex(1.0).justify_center();
+        }
         if self.enabled && self.hovered == Some(self.main) {
             main = main.bg(self.hover());
         }
@@ -135,6 +146,9 @@ impl SplitButton {
             _ => (colors.element_background, colors.border),
         };
         let mut control = div().row().rounded(Radius::Medium).items_center().bg(fill);
+        if let Some(width) = self.width {
+            control = control.w_px(width);
+        }
         if !self.primary {
             control = control.border(1.0, colors.border);
         }

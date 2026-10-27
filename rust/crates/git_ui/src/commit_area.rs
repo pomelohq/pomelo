@@ -119,8 +119,6 @@ pub(crate) struct CommitPlan {
     pub enabled: bool,
     /// The git command the button runs, or why it can't.
     pub hint: String,
-    /// What the button will make: "1 commit in api (2 files)", "2 commits: api 2, web 1".
-    pub summary: String,
     pub targets: Vec<CommitTarget>,
 }
 
@@ -213,33 +211,10 @@ impl CommitArea {
         .filter(|(on, _)| *on)
         .map(|(_, flag)| *flag)
         .collect();
-        let plural = |count: usize| if count == 1 { "" } else { "s" };
-        let summary = match targets.as_slice() {
-            [] if staged.is_empty() => "nothing staged".to_string(),
-            [] => "no repo chosen".to_string(),
-            [only] if self.amend && only.staged == 0 => {
-                format!("amend the last commit in {}", only.repo)
-            }
-            [only] => format!(
-                "1 commit in {} ({} file{})",
-                only.repo,
-                only.staged,
-                plural(only.staged)
-            ),
-            many => format!(
-                "{} commits: {}",
-                many.len(),
-                many.iter()
-                    .map(|target| format!("{} {}", target.repo, target.staged))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        };
         CommitPlan {
             title: if self.amend { "Amend" } else { "Commit" },
             enabled: why_not.is_none(),
             hint: why_not.map_or_else(|| format!("git commit{flags}"), str::to_string),
-            summary,
             targets,
         }
     }
@@ -789,6 +764,13 @@ mod tests {
         }
     }
 
+    fn repos(plan: &CommitPlan) -> Vec<&str> {
+        plan.targets
+            .iter()
+            .map(|target| target.repo.as_str())
+            .collect()
+    }
+
     #[test]
     fn the_plan_says_what_a_commit_would_make_or_why_not() {
         let mut area = CommitArea::new(Arc::new(|| {}), Arc::new(git::access::LocalGit));
@@ -796,17 +778,17 @@ mod tests {
         let plan = area.plan(&[], &none, false, None);
         assert!(!plan.enabled);
         assert_eq!(plan.hint, "Stage files to commit");
-        assert_eq!(plan.summary, "nothing staged");
+        assert!(plan.targets.is_empty());
         let staged = [target("api", 2), target("web", 1)];
         let plan = area.plan(&staged, &none, false, None);
         assert_eq!(plan.hint, "Enter a commit message");
-        assert_eq!(plan.summary, "2 commits: api 2, web 1");
+        assert_eq!(repos(&plan), ["api", "web"]);
         let plan = area.plan(&staged, &none, true, None);
         assert!(plan.enabled, "a suggestion stands in for an empty message");
         assert_eq!(plan.hint, "git commit");
         let without_web: HashSet<String> = ["web".to_string()].into();
         let plan = area.plan(&staged, &without_web, true, None);
-        assert_eq!(plan.summary, "1 commit in api (2 files)");
+        assert_eq!(repos(&plan), ["api"]);
         let everything_out: HashSet<String> = ["web".to_string(), "api".to_string()].into();
         assert_eq!(
             area.plan(&staged, &everything_out, true, None).hint,
@@ -818,7 +800,7 @@ mod tests {
         let plan = area.plan(&[], &none, true, Some(&last));
         assert_eq!(plan.title, "Amend");
         assert_eq!(plan.hint, "git commit --amend --signoff");
-        assert_eq!(plan.summary, "amend the last commit in api");
+        assert_eq!(repos(&plan), ["api"], "the amend names its repo");
         let mut conflicted = target("api", 1);
         conflicted.conflicts = true;
         assert!(!area.plan(&[conflicted], &none, true, None).enabled);
