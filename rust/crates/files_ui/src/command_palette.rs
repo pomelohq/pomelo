@@ -994,7 +994,8 @@ impl CommandPalette {
     }
 }
 
-const SWITCHER_ROW_HEIGHT: f32 = 45.0;
+const SWITCHER_ROW_HEIGHT: f32 = SWITCHER_ITEM_HEIGHT + 1.0;
+const SWITCHER_ITEM_HEIGHT: f32 = 52.0;
 const SWITCHER_HEADER_HEIGHT: f32 = 26.0;
 const SWITCHER_LIST_HEIGHT: f32 = 420.0;
 const SWITCHER_TILE: f32 = 32.0;
@@ -1056,7 +1057,7 @@ impl CommandPalette {
         let mut item = div()
             .row()
             .flex(1.0)
-            .h_px(44.0)
+            .h_px(SWITCHER_ITEM_HEIGHT)
             .px(Space::S8)
             .gap(Space::S10)
             .items_center()
