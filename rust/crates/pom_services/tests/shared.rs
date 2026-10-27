@@ -140,6 +140,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     cpus: 1.50
     mem_limit: 1073741824
+    shm_size: 1073741824
     healthcheck:
       disable: true
     networks:

@@ -673,3 +673,19 @@ fn a_config_read_elsewhere_parses_as_the_file_does() {
     assert_eq!(parsed, loaded);
     assert!(pom_config::Config::from_text("repos: [", &path).is_err());
 }
+
+#[test]
+fn a_postgres_gets_a_larger_shm_unless_it_sets_its_own() {
+    let config = load(
+        "shared_services:\n  postgres:\n    image: postgres:16\n  pg2:\n    image: docker.io/library/postgis/postgis:16\n    shm_size: 2G\n  redis:\n    image: redis:7\n",
+    );
+    let shm = |name: &str| config.shared_services[name].shm_bytes();
+    assert_eq!(shm("postgres"), Some(1 << 30));
+    assert_eq!(shm("pg2"), Some(2 << 30));
+    assert_eq!(shm("redis"), None, "other images keep Docker's default");
+    assert_eq!(config.validate(), Ok(()));
+
+    let bad = load("shared_services:\n  postgres:\n    image: postgres:16\n    shm_size: lots\n");
+    let errors = bad.validate().expect_err("invalid size");
+    assert!(errors.contains("shm_size"), "{errors}");
+}

@@ -239,6 +239,9 @@ impl ServiceRunner {
                 if let Some(bytes) = def.limit.memory_bytes() {
                     out.push_str(&format!("    mem_limit: {bytes}\n"));
                 }
+                if let Some(bytes) = def.shm_bytes() {
+                    out.push_str(&format!("    shm_size: {bytes}\n"));
+                }
                 // Readiness is probed from the host; an image's own HEALTHCHECK would `docker exec` on a timer.
                 out.push_str("    healthcheck:\n      disable: true\n");
                 out.push_str(&format!(

@@ -138,6 +138,8 @@ pub struct ServiceHealthCheck {
     pub timeout: String,
 }
 
+const POSTGRES_SHM_BYTES: u64 = 1 << 30;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SharedServiceDef {
     pub kind: String,
@@ -161,11 +163,24 @@ pub struct SharedServiceDef {
     pub port: Option<u16>,
     /// For an `image`: a cap on the container.
     pub limit: crate::limits::ResourceLimit,
+    /// For an `image`: the size of its `/dev/shm`.
+    pub shm_size: String,
 }
 
 impl SharedServiceDef {
     pub fn is_command(&self) -> bool {
         !self.cmd.is_empty()
+    }
+
+    /// `/dev/shm` for the container: as set, else 1 GiB for a Postgres, whose parallel queries from many
+    /// workspaces outgrow Docker's 64 MB.
+    pub fn shm_bytes(&self) -> Option<u64> {
+        if let Ok(Some(bytes)) = crate::limits::parse_memory(&self.shm_size) {
+            return Some(bytes);
+        }
+        let repository = self.image.rsplit('/').next().unwrap_or_default();
+        (repository.starts_with("postgres") || repository.starts_with("postgis"))
+            .then_some(POSTGRES_SHM_BYTES)
     }
 }
 
@@ -578,6 +593,7 @@ impl SharedServiceDef {
         def.repo = decoder.string(field("repo"));
         def.port = decoder.opt_u16(field("port"));
         def.limit = decode_limit(decoder, node, Section::Shared);
+        def.shm_size = decoder.string(field("shm_size"));
         def
     }
 }
