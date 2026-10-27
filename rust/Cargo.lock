@@ -1654,6 +1654,7 @@ name = "gallery"
 version = "0.9.10"
 dependencies = [
  "anyhow",
+ "arboard",
  "components",
  "objc2 0.6.4",
  "serde",

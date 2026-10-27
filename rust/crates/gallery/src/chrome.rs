@@ -3,6 +3,8 @@ use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space
 
 use ui::inspect::{Inspect, Inspected};
 
+use crate::comments::Comment;
+
 use crate::scene::{Board, Group};
 
 pub const LEFT: f32 = 248.0;
@@ -24,6 +26,11 @@ pub const ZOOM_OUT: u64 = ACTIONS + 4;
 pub const THEMES: u64 = ACTIONS + 5;
 pub const PAGES: u64 = ACTIONS + 6;
 pub const INSPECT: u64 = ACTIONS + 7;
+pub const COMMENT_FIELD: u64 = ACTIONS + 8;
+pub const COMMENT_SEND: u64 = ACTIONS + 9;
+pub const COPY_FOR_AGENT: u64 = ACTIONS + 10;
+pub const COMMENT: u64 = 6 << 20;
+pub const RESOLVE: u64 = 7 << 20;
 
 pub enum Click {
     Page(usize),
@@ -38,6 +45,11 @@ pub enum Click {
     ZoomOut,
     Hide,
     Inspect,
+    Comment(u64),
+    Resolve(u64),
+    CommentField,
+    CommentSend,
+    CopyForAgent,
 }
 
 pub fn decode(id: u64) -> Option<Click> {
@@ -47,6 +59,8 @@ pub fn decode(id: u64) -> Option<Click> {
         2 => Click::Board(index),
         3 => Click::Theme(index),
         5 => Click::Group(index),
+        6 => Click::Comment(index as u64),
+        7 => Click::Resolve(index as u64),
         _ => match id {
             ZOOM_FIT => Click::Fit,
             ZOOM_ACTUAL => Click::Actual,
@@ -56,6 +70,9 @@ pub fn decode(id: u64) -> Option<Click> {
             THEMES => Click::Themes,
             PAGES => Click::Pages,
             INSPECT => Click::Inspect,
+            COMMENT_FIELD => Click::CommentField,
+            COMMENT_SEND => Click::CommentSend,
+            COPY_FOR_AGENT => Click::CopyForAgent,
             _ => return None,
         },
     })
@@ -343,6 +360,7 @@ pub fn inspector(
     origin: (f32, f32),
     parent: bool,
     child: bool,
+    comments: Node,
 ) -> Node {
     let mut panel = div().col().child(section("Inspect", None));
     let Some(element) = element else {
@@ -355,6 +373,7 @@ pub fn inspector(
                         .wrap(RIGHT - 32.0),
                 ),
             )
+            .child(comments)
             .into();
     };
     let rect = element.rect;
@@ -443,8 +462,135 @@ pub fn inspector(
                     .color(theme().text_muted),
             ),
         )
+        .child(comments)
         .into()
 }
+
+/// The open comments on the pinned element, then the box to add one; `field` is `None` until one is pinned.
+pub fn comment_thread(on_element: &[&Comment], field: Option<Node>, can_send: bool) -> Node {
+    let mut thread = div().col();
+    let Some(field) = field else {
+        return thread.into();
+    };
+    thread = thread.child(section("Comment", None));
+    for comment in on_element {
+        thread = thread.child(comment_row(comment, None));
+    }
+    thread
+        .child(
+            div()
+                .col()
+                .gap(Space::S8)
+                .px(Space::S16)
+                .pt(Space::S4)
+                .child(field)
+                .child(
+                    div().justify_end().child(
+                        components::button(COMMENT_SEND, "Comment")
+                            .kind(components::ButtonKind::Primary)
+                            .keystroke(Some("cmd-enter"))
+                            .enabled(can_send),
+                    ),
+                ),
+        )
+        .into()
+}
+
+/// Every open comment, each leading to its element, with the button that hands them all to an agent.
+pub fn comment_list(open: &[(&Comment, &str)]) -> Node {
+    let mut list = div()
+        .col()
+        .pt(Space::S12)
+        .child(section("Open comments", Some(open.len().to_string())));
+    if open.is_empty() {
+        return list
+            .child(
+                div().px(Space::S16).child(
+                    label("Pin an element and write what should change.")
+                        .size(LabelSize::Small)
+                        .color(theme().text_muted)
+                        .wrap(RIGHT - 32.0),
+                ),
+            )
+            .into();
+    }
+    for (comment, place) in open {
+        list = list.child(comment_row(comment, Some(place)));
+    }
+    list.child(
+        div().px(Space::S16).pt(Space::S8).child(
+            components::button(COPY_FOR_AGENT, "Copy for agent")
+                .kind(components::ButtonKind::Agent)
+                .icon(Some(IconKind::Copy)),
+        ),
+    )
+    .into()
+}
+
+fn comment_row(comment: &Comment, place: Option<&str>) -> Node {
+    let mut text = div().col().flex(1.0).gap(Space::S2);
+    if let Some(place) = place {
+        text = text.child(
+            label(place)
+                .size(LabelSize::Mini)
+                .color(theme().text_muted)
+                .wrap(RIGHT - 32.0 - 52.0),
+        );
+    }
+    text = text.child(
+        label(comment.text.trim())
+            .size(LabelSize::Small)
+            .wrap(RIGHT - 32.0 - 52.0),
+    );
+    let line = div()
+        .flex(1.0)
+        .px(Space::S8)
+        .py(Space::S6)
+        .gap(Space::S8)
+        .rounded(Radius::Medium)
+        .on_click(COMMENT + comment.id)
+        .hover_bg(theme().ghost_element_hover)
+        .child(comment_badge(comment.id))
+        .child(text)
+        .child(
+            div()
+                .w_px(20.0)
+                .h_px(20.0)
+                .items_center()
+                .justify_center()
+                .rounded(Radius::Small)
+                .on_click(RESOLVE + comment.id)
+                .hover_bg(theme().ghost_element_hover)
+                .child(icon(IconKind::Check).size(13.0).color(theme().icon_muted)),
+        );
+    div().px(INSET).child(line).into()
+}
+
+/// A comment's marker on its board, clicked to open the board with the element pinned.
+pub fn comment_badge_target(id: u64, badge: Node) -> Node {
+    div().on_click(COMMENT + id).child(badge).into()
+}
+
+/// The numbered marker a comment wears in the list and on its board.
+pub fn comment_badge(id: u64) -> Node {
+    div()
+        .h_px(18.0)
+        .px(Space::S6)
+        .items_center()
+        .justify_center()
+        .rounded_px(9.0)
+        .bg(theme().text_accent)
+        .child(
+            label(id.to_string())
+                .size(LabelSize::Mini)
+                .weight(600)
+                .color(theme().background),
+        )
+        .into()
+}
+
+const NAME_W: f32 = 76.0;
+const VALUE_W: f32 = RIGHT - 32.0 - NAME_W - 8.0;
 
 fn px(value: f32) -> String {
     let rounded = (value * 10.0).round() / 10.0;
@@ -459,7 +605,7 @@ fn property(name: &str, value: Node) -> Node {
         .px(Space::S16)
         .child(
             div()
-                .w_px(84.0)
+                .w_px(NAME_W)
                 .child(label(name).size(LabelSize::Small).color(theme().text_muted)),
         )
         .child(div().flex(1.0).child(value))
@@ -467,10 +613,7 @@ fn property(name: &str, value: Node) -> Node {
 }
 
 fn text_value(text: &str) -> Node {
-    label(text)
-        .size(LabelSize::Small)
-        .wrap(RIGHT - 32.0 - 84.0 - 8.0)
-        .into()
+    label(text).size(LabelSize::Small).wrap(VALUE_W).into()
 }
 
 fn color_value(color: Rgba) -> Node {
@@ -486,7 +629,7 @@ fn color_value(color: Rgba) -> Node {
     }
     let mut text = div().col();
     if let Some(token) = ui::theme_file::token_name(color) {
-        text = text.child(label(token).size(LabelSize::Small).mono());
+        text = text.child(label(token).size(LabelSize::Small).wrap(VALUE_W - 18.0));
     }
     div()
         .items_center()
