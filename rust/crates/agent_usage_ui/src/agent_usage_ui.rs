@@ -783,22 +783,11 @@ pub fn render(state: &UsageState, width: f32, hovered: Option<u64>) -> Node {
         key(b).total_cmp(&key(a))
     });
     let chip = |text: String, max: f32| -> Node {
-        let text_w = ui::measure(&label(text.clone()).size(LabelSize::Mini).into()).0;
-        div()
-            .row()
-            .h_px(18.0)
-            .px(Space::S6)
-            .items_center()
-            .rounded(Radius::Small)
-            .border(1.0, colors.border_variant)
-            .child(
-                div().row().w_px(text_w.min(max)).child(
-                    label(text)
-                        .size(LabelSize::Mini)
-                        .color(colors.text_muted)
-                        .truncate(),
-                ),
-            )
+        components::chip(text)
+            .color(colors.text_muted)
+            .fill(Rgba::TRANSPARENT)
+            .border(colors.border_variant)
+            .max_width(max)
             .into()
     };
     // The numbers and the button keep their room; the title and the workspace share what is left.

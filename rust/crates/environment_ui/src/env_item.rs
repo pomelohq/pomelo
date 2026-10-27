@@ -219,12 +219,7 @@ impl EnvItem {
         div()
             .row()
             .w_px(BADGE_W)
-            .child(
-                components::chip(text)
-                    .color(color)
-                    .fill(color.alpha(0.14))
-                    .border(color.alpha(0.3)),
-            )
+            .child(components::chip(text).tinted(color))
             .into()
     }
 

@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Space};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
@@ -51,31 +51,15 @@ impl ConsoleToolbar for SideAgentBar {
     fn render(&self, width: f32, _lines: usize) -> Node {
         let colors = theme();
         let tag = if self.read_only {
-            div()
-                .row()
-                .h_px(20.0)
-                .px(Space::S6)
-                .items_center()
-                .rounded(Radius::Small)
-                .border(1.0, colors.border_variant)
-                .child(
-                    label("read-only")
-                        .size(LabelSize::Small)
-                        .color(colors.text_muted),
-                )
+            components::chip("read-only")
+                .color(colors.text_muted)
+                .border(colors.border_variant)
+                .render()
         } else {
-            div()
-                .row()
-                .h_px(20.0)
-                .px(Space::S6)
-                .items_center()
-                .rounded(Radius::Small)
-                .border(1.0, colors.warning.alpha(0.5))
-                .child(
-                    label("can edit")
-                        .size(LabelSize::Small)
-                        .color(colors.warning),
-                )
+            components::chip("can edit")
+                .color(colors.warning)
+                .border(colors.warning.alpha(0.5))
+                .render()
         };
         let context = div()
             .row()

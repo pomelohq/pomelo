@@ -539,23 +539,7 @@ impl GitPanel {
                 } else {
                     *reviewed as f32 / *total as f32
                 };
-                const BAR_W: f32 = 90.0;
-                let fill_w = ((BAR_W - 4.0) * fraction.max(0.02)).min(BAR_W - 4.0);
-                let bar = div()
-                    .row()
-                    .w_px(BAR_W)
-                    .h_px(8.0)
-                    .p(Space::S2)
-                    .rounded(Radius::Small)
-                    .bg(colors.background)
-                    .border(1.0, colors.border_variant)
-                    .child(
-                        div()
-                            .w_px(fill_w)
-                            .h_px(4.0)
-                            .rounded(Radius::XSmall)
-                            .bg(colors.info),
-                    );
+                let bar = components::progress_bar(fraction).width(90.0);
                 div()
                     .row()
                     .h_px(rows::PROGRESS_H)

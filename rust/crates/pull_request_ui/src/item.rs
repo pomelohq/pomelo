@@ -663,11 +663,7 @@ impl PrItem {
             let mut chips = div().row().gap(Space::S4);
             for tag in &pr.labels {
                 let color = hex_color(&tag.color).unwrap_or(colors.text_muted);
-                chips = chips.child(
-                    components::chip(tag.name.clone())
-                        .color(color)
-                        .fill(color.alpha(0.2)),
-                );
+                chips = chips.child(components::chip(tag.name.clone()).tinted(color));
             }
             column = column.child(section("Labels", chips.into()));
         }

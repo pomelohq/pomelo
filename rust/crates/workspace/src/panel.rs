@@ -624,46 +624,32 @@ fn group_header(
     div().col().pt(Space::S12).child(header).into()
 }
 
-/// A group on the rail: a hairline above its tiles, or a chip with its count once folded away.
+/// A group on the rail: a hairline above its tiles, or a pill with its count once folded away.
 fn group_marker(count: usize, folded: bool, id: u64, hovered: bool) -> Node {
     let colors = theme();
-    let mut marker = div()
-        .row()
-        .items_center()
-        .justify_center()
-        .rounded(Radius::XLarge)
-        .on_click(id);
-    if folded {
-        marker = marker
-            .h_px(18.0)
-            .px(Space::S6)
-            .gap(Space::S2)
-            .bg(if hovered {
-                colors.element_hover
-            } else {
-                (colors.text).alpha(0.05)
-            })
-            .child(
-                icon(IconKind::ChevronRight)
-                    .size(9.0)
-                    .color(colors.text_placeholder),
-            )
-            .child(
-                label(count.to_string())
-                    .size(LabelSize::XSmall)
-                    .medium()
-                    .color(colors.text_placeholder),
-            );
+    let marker: Node = if folded {
+        components::pill(count.to_string())
+            .icon(IconKind::ChevronRight)
+            .color(colors.text_placeholder)
+            .on_click(id)
+            .hovered(hovered)
+            .into()
     } else {
         // The hairline keeps a taller hit area so the group stays easy to fold from the rail.
-        marker = marker
+        let mut line = div()
+            .row()
+            .items_center()
+            .justify_center()
+            .rounded(Radius::XLarge)
+            .on_click(id)
             .w_px(36.0)
             .h_px(9.0)
             .child(div().w_px(20.0).h_px(1.0).bg(colors.border));
         if hovered {
-            marker = marker.bg(colors.element_hover);
+            line = line.bg(colors.element_hover);
         }
-    }
+        line.into()
+    };
     div()
         .row()
         .pt(Space::S4)
@@ -822,12 +808,11 @@ fn rail_cell(
     let mut tile = workspace_tile(row, RAIL_TILE, current, hovered, false);
     // Main never shows PRs, so its corner carries its background update instead.
     tile = match upkeep {
-        Upkeep::Running(_) => pin_pill(tile, Some(IconKind::RotateCw), None, colors.text_accent),
-        Upkeep::Done => pin_pill(tile, Some(IconKind::BadgeCheck), None, colors.success),
+        Upkeep::Running(_) => pin_pill(tile, IconKind::RotateCw, colors.text_accent),
+        Upkeep::Done => pin_pill(tile, IconKind::BadgeCheck, colors.success),
         Upkeep::Failed { position, .. } => pin_pill_with(
             tile,
-            Some(IconKind::BadgeAlert),
-            None,
+            IconKind::BadgeAlert,
             colors.error,
             Some(op_base(position) + crate::WORKSPACE_OP_POPOVER),
         ),
@@ -1017,52 +1002,27 @@ fn workspace_tile(row: &WorkspaceRow, size: f32, current: bool, hovered: bool, q
     tile
 }
 
-/// Hangs a pill off a tile's top-right corner: a glyph, a count, or both, on `bg` with a ring of the panel colour
-/// cutting it from the tile. A lone glyph makes a circle; a count stretches it into a capsule.
-fn pin_pill(tile: Div, glyph: Option<IconKind>, text: Option<String>, bg: Rgba) -> Div {
-    pin_pill_with(tile, glyph, text, bg, None)
+/// Hangs a glyph badge off a tile's top-right corner, on a ring of the panel colour cutting it from the tile.
+fn pin_pill(tile: Div, glyph: IconKind, bg: Rgba) -> Div {
+    pin_pill_with(tile, glyph, bg, None)
 }
 
-fn pin_pill_with(
-    tile: Div,
-    glyph: Option<IconKind>,
-    text: Option<String>,
-    bg: Rgba,
-    click: Option<u64>,
-) -> Div {
-    const INNER_H: f32 = 15.0;
-    const GLYPH: f32 = 9.0;
+fn pin_pill_with(tile: Div, glyph: IconKind, bg: Rgba, click: Option<u64>) -> Div {
     const RING: f32 = 2.0;
-    let colors = theme();
-    let ink = colors.editor_background;
-    let mut pill = div()
+    let side = components::BADGE_SIZE + 2.0 * RING;
+    let mut ring = div()
         .row()
+        .w_px(side)
+        .h_px(side)
         .items_center()
         .justify_center()
-        .gap(Space::Px(1.0))
-        .rounded_px(INNER_H / 2.0 + RING)
-        .bg(bg)
-        .border(RING, colors.panel_background);
-    let mut inner_w = 0.0;
-    if let Some(glyph) = glyph {
-        pill = pill.child(icon(glyph).size(GLYPH).color(ink));
-        inner_w += GLYPH;
-    }
-    if let Some(text) = text {
-        inner_w += ui::measure_text_width(&text, 9.5, false, 700)
-            + if glyph.is_some() { 1.0 } else { 0.0 };
-        pill = pill.child(label(text).size(LabelSize::XSmall).weight(700).color(ink));
-    }
-    let inner_w = if glyph.is_some() && inner_w > GLYPH {
-        inner_w + 3.0 + 4.0
-    } else {
-        INNER_H
-    };
+        .rounded_px(side / 2.0)
+        .bg(theme().panel_background)
+        .child(components::badge_icon(glyph, bg));
     if let Some(id) = click {
-        pill = pill.on_click(id);
+        ring = ring.on_click(id);
     }
-    let (w, h) = (inner_w.max(INNER_H) + 2.0 * RING, INNER_H + 2.0 * RING);
-    tile.pin(Corner::TopRight, 8.0 + RING, -6.0 - RING, w, h, pill)
+    tile.pin(Corner::TopRight, 8.0 + RING, -6.0 - RING, side, side, ring)
 }
 
 /// A workspace being created, as a dim tile that fills from the bottom as its stages finish; a red ring when
@@ -1153,7 +1113,7 @@ fn creation_tile(op: &crate::WorkspaceOp, size: f32) -> Div {
     );
     match op.status {
         OpStatus::Failed => danger_ring(tile, size),
-        OpStatus::Queued => pin_pill(tile, Some(IconKind::Clock), None, colors.text_placeholder),
+        OpStatus::Queued => pin_pill(tile, IconKind::Clock, colors.text_placeholder),
         _ => tile,
     }
 }

@@ -398,13 +398,14 @@ pub fn stories() -> Vec<StoryDef> {
             })
         }),
         story("chip-tinted", "Chip", "Tinted", BUTTON, || {
+            still(|_, _| alone(components::chip("Pro").tinted(theme().text_accent)))
+        }),
+        story("chip-truncated", "Chip", "Truncated", BUTTON, || {
             still(|_, _| {
-                let accent = theme().text_accent;
                 alone(
-                    components::chip("Pro")
-                        .color(accent)
-                        .fill(accent.alpha(0.14))
-                        .border(accent.alpha(0.3)),
+                    components::chip("proj-101-paginate-the-users-index")
+                        .color(theme().text_muted)
+                        .max_width(120.0),
                 )
             })
         }),
@@ -864,6 +865,27 @@ pub fn stories() -> Vec<StoryDef> {
                         .child(components::badge(120))
                         .child(components::badge(3).color(colors.error))
                         .child(components::badge(5).color(colors.success)),
+                )
+            })
+        }),
+        story("badge-icon", "Badge", "Glyph", (300.0, 72.0), || {
+            still(|_, _| {
+                let colors = theme();
+                alone(
+                    div()
+                        .row()
+                        .items_center()
+                        .gap(Space::S12)
+                        .child(components::badge_icon(
+                            IconKind::RotateCw,
+                            colors.text_accent,
+                        ))
+                        .child(components::badge_icon(IconKind::BadgeCheck, colors.success))
+                        .child(components::badge_icon(IconKind::BadgeAlert, colors.error))
+                        .child(components::badge_icon(
+                            IconKind::Clock,
+                            colors.text_placeholder,
+                        )),
                 )
             })
         }),
