@@ -26,9 +26,9 @@ pub use form::{
 pub use panel::{
     function_bar, function_content, function_dock_body, is_side_panel_id, side_panel_base,
     side_panel_kind, switcher_order, switcher_status, switcher_tile, switcher_title,
-    terminal_content, terminal_dock_body, ticket_key, AgentDot, AgentEmptyPanel, AgentFix,
-    DockPosition, PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel, SidePanelView,
-    TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
+    terminal_content, terminal_dock_body, ticket_key, workspace_rail, AgentDot, AgentEmptyPanel,
+    AgentFix, DockPosition, PaletteEntry, PaneKind, Panel, PanelRequest, ProjectPanel,
+    SidePanelView, TerminalPanel, WorkspaceList, WorkspaceRow, SIDE_PANEL_BASE, SIDE_PANEL_SPAN,
 };
 pub use ui::render_keystroke;
 pub use update::{
@@ -49,9 +49,10 @@ pub use welcome::{
 
 // Re-exported below where defined: status_bar, status_tooltip, tooltip_above, session_action_tooltip, tooltip.
 pub use workspace_view::{
-    delete_workspace_detail, notification_preview, toast_preview, unpushed_warning,
-    workspace_row_menu, ParkedWorkspace, ResizeCursor, RowMenuFacts, SessionRequest,
-    TitlebarGesture, WorkspaceEffects, WorkspaceRequests, WorkspaceView,
+    delete_workspace_detail, notification_preview, prompt_preview, tab_switcher_preview,
+    toast_preview, unpushed_warning, workspace_row_menu, ParkedWorkspace, ResizeCursor,
+    RowMenuFacts, SessionRequest, TitlebarGesture, WorkspaceEffects, WorkspaceRequests,
+    WorkspaceView,
 };
 
 /// One selection's piece of copied editor text: its length in chars, whether it was a whole line, and the
