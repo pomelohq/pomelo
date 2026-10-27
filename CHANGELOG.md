@@ -4,6 +4,26 @@ All notable changes to Pomelo are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Pomelo follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.11] - 2026-10-28
+
+### Added
+- A remote project's editor shows the git gutter, blame and line staging, run on the host; an older pom there leaves the gutter empty. (#445)
+- A shared service with a Postgres or PostGIS image gets 1 GiB of `/dev/shm`, so many workspaces querying it at once no longer fail with `could not resize shared memory segment`. Any image service can set its own `shm_size`. (#496)
+
+### Changed
+- One design system across the app: every label is on one type scale, gaps and padding on one spacing scale, corners, shadows and motion on one set of steps, and every color comes from the theme. Buttons, pickers, menus, popovers, tabs, chips, pills, progress and empty states are shared components, so they look and behave the same in every panel. (#464, #466, #467, #468, #469, #470, #471, #472, #473, #475, #476, #477, #478)
+- The Services panel is simpler: a header with running/total and Start all / Stop all, one strip per problem with its fix, and quieter service and shared rows. (#448)
+- The Git panel shows each changed file once, ticked when staged and dashed when partly staged; Staged / Not staged sections remain under View Options. (#487)
+- The Git panel commit footer is a message box and one split button naming the repos it commits to, with Amend, Signoff and Skip Hooks in its menu, a warning only when a repo is off the workspace branch, and Undo right after a commit. (#486)
+- A database that fails to open shows its cause in one line with the main fix as a split button; the details open on click, and databases waiting on the same down server say "Same cause as ...". (#489)
+- Take over on an agent someone else drives runs without freezing the window, shows that it is running, and says why when it fails. (#483)
+
+### Fixed
+- `pom agent send` presses the retry Enter for a prompt the agent folded to `[Image #N]`, so a pasted image path no longer stays unsent. (#490)
+- The Git panel no longer keeps an old HEAD when a refresh comes in while it is reading, so Undo after a commit finds the commit. (#497)
+- Workspace switcher rows have room for their status pill. (#488)
+- An empty state's action button sits centered under its title. (#474)
+
 ## [0.9.10] - 2026-10-24
 
 ### Security
