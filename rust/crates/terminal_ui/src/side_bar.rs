@@ -1,7 +1,7 @@
 //! The row over a side agent's console: what it is for, whether it may edit, what it started with, and the
 //! button that hands its answer to the main agent's prompt.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
+use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Space};
 
 use crate::item::{ConsoleAction, ConsoleToolbar};
 
