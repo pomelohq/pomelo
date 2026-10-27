@@ -66,7 +66,8 @@ impl EmptyState {
             column = column.child(crate::paragraph(body, width).centered());
         }
         if let Some(action) = self.action {
-            column = column.child(div().pt(Space::S4).child(action));
+            // A column stretches its containers across, so the button's row centers it itself.
+            column = column.child(div().row().justify_center().pt(Space::S4).child(action));
         }
         div()
             .col()
