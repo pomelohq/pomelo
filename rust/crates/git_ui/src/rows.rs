@@ -436,7 +436,7 @@ impl GitPanel {
                     .iter()
                     .map(|entry| working_entry(repo, entry, Scope::Working))
                     .collect();
-                self.file_rows(scan, index, Scope::Working, entries, 0, rows);
+                self.file_rows(scan, index, Scope::Working, entries, 1, rows);
                 continue;
             }
             for staged in [true, false] {

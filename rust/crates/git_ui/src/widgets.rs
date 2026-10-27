@@ -1,5 +1,4 @@
 use git::working_copy::Staging;
-use git::ChangeStatus;
 use ui::{div, icon, label, theme, Div, IconKind, LabelSize, Node, Rgba, Space};
 
 pub(crate) const ROW_H: f32 = 26.0;
@@ -19,19 +18,6 @@ pub(crate) fn checkbox(id: u64, staging: Staging, hot: bool) -> Node {
                 .hovered(hot),
         )
         .into()
-}
-
-pub(crate) fn status_icon(status: ChangeStatus) -> Node {
-    let colors = theme();
-    let (kind, color) = match status {
-        ChangeStatus::Conflicted => (IconKind::Warning, colors.warning),
-        ChangeStatus::Deleted => (IconKind::SquareMinus, colors.version_control_deleted),
-        ChangeStatus::Modified | ChangeStatus::Renamed => {
-            (IconKind::SquareDot, colors.version_control_modified)
-        }
-        ChangeStatus::Added => (IconKind::SquarePlus, colors.version_control_added),
-    };
-    icon(kind).size(13.0).color(color).into()
 }
 
 pub(crate) fn diff_stat(added: Option<u32>, deleted: Option<u32>, size: LabelSize) -> Node {

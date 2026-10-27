@@ -8,8 +8,8 @@ use crate::commit_area::{self, RemoteKind};
 use crate::rows::{self, Row};
 use crate::scan::{RepoScan, Scan};
 use crate::widgets::{
-    arrow_count, checkbox, diff_stat, ghost_button, icon_button, status_icon, text_width, INDENT,
-    ROW_H, TAB_BAR_H, TOOLBAR_H,
+    arrow_count, checkbox, diff_stat, ghost_button, icon_button, text_width, INDENT, ROW_H,
+    TAB_BAR_H, TOOLBAR_H,
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
@@ -914,17 +914,20 @@ impl GitPanel {
         }
         let name_color = if reviewed {
             colors.text_placeholder
-        } else if deleted {
-            colors.text_muted
         } else {
-            colors.text
+            match entry.status {
+                ChangeStatus::Added => colors.version_control_added,
+                ChangeStatus::Modified | ChangeStatus::Renamed => colors.version_control_modified,
+                ChangeStatus::Deleted => colors.version_control_deleted,
+                ChangeStatus::Conflicted => colors.warning,
+            }
         };
         let mut name_label = label(name.clone())
             .size(LabelSize::Small)
             .color(name_color)
             .truncate();
         if deleted {
-            name_label = name_label.strikethrough(colors.text_muted);
+            name_label = name_label.strikethrough(name_color);
         }
         let mut path = div()
             .row()
@@ -974,8 +977,11 @@ impl GitPanel {
             // A branch file only says what is left to review; its stats live in the diff it opens.
             return row.child(button);
         }
-        row.child(diff_stat(entry.added, entry.deleted, LabelSize::Small))
-            .child(status_icon(entry.status))
+        row = row.child(diff_stat(entry.added, entry.deleted, LabelSize::Small));
+        if entry.status == ChangeStatus::Conflicted {
+            row = row.child(icon(IconKind::Warning).size(13.0).color(colors.warning));
+        }
+        row
     }
 
     fn card_header(&self, index: usize, repo: usize, scan: &Scan) -> Div {
