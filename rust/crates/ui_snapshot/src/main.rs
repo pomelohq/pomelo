@@ -3570,8 +3570,14 @@ fn main() -> anyhow::Result<()> {
             tool: "Bash".into(),
             summary: "bundle exec rspec spec/requests/users_spec.rb".into(),
         };
-        let node = terminal_ui::lease_strip(0, Some("an orchestrator"), Some(&pending), lw)
-            .unwrap_or_else(|| ui::div().into());
+        let node = terminal_ui::lease_strip(
+            0,
+            Some("an orchestrator"),
+            terminal_ui::TakeOver::Ready,
+            Some(&pending),
+            lw,
+        )
+        .unwrap_or_else(|| ui::div().into());
         let painted = ui::render(
             &node,
             ui::Rect::new(0.0, 0.0, lw, lh, ui::Rgba::TRANSPARENT),
