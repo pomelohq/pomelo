@@ -182,6 +182,7 @@ pub struct GitPanel {
     sources: Arc<Vec<RepoSource>>,
     scan: Arc<Mutex<Arc<Scan>>>,
     scanning: Arc<AtomicBool>,
+    scan_again: Arc<AtomicBool>,
     started: bool,
     drawn_at: Arc<Mutex<Option<Instant>>>,
     stop: Arc<AtomicBool>,
@@ -241,6 +242,7 @@ impl GitPanel {
             scan: Arc::new(Mutex::new(scan::remembered_scan(&sources))),
             sources: Arc::new(sources),
             scanning: Arc::new(AtomicBool::new(false)),
+            scan_again: Arc::new(AtomicBool::new(false)),
             started: false,
             drawn_at: Arc::new(Mutex::new(None)),
             stop: Arc::new(AtomicBool::new(false)),
@@ -335,6 +337,7 @@ impl GitPanel {
             sources: self.sources.clone(),
             scan: self.scan.clone(),
             scanning: self.scanning.clone(),
+            again: self.scan_again.clone(),
             waker: self.waker.clone(),
         }
     }
@@ -342,7 +345,8 @@ impl GitPanel {
     /// Starts a background re-read unless one is running.
     pub fn refresh(&mut self) {
         let scanner = self.scanner();
-        if scanner.scanning.swap(true, Ordering::AcqRel) {
+        scanner.again.store(true, Ordering::SeqCst);
+        if scanner.scanning.swap(true, Ordering::SeqCst) {
             return;
         }
         let spawned = std::thread::Builder::new()
