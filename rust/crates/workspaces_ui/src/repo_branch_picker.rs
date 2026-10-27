@@ -2,17 +2,16 @@
 //! origin branches, narrowed as you type, and a row that creates the typed branch when nothing matches. Opening
 //! it fetches origin in the background, so branches pushed since show up, tagged new.
 
-use components::{section_header, text_line};
+use components::text_line;
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Instant;
 
-use components::overlay_ring;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use pom_workspace::BranchInfo;
-use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
+use ui::{deferred, div, icon, label, theme, IconKind, LabelSize, Node, Rgba, Space};
 use workspace::text_field::{FieldFont, TextField};
 use workspace::WINDOW_MODAL_BASE;
 
@@ -229,36 +228,29 @@ impl BranchPicker {
             format!("the other repos stay on {workspace_branch}")
         };
         let note = format!("Use another branch in {}; {others}", self.repo);
-        let panel = components::card()
-            .padding(0.0)
-            .raised()
-            .render()
-            .w_px(WIDTH)
-            .ring(1.0, overlay_ring())
-            .on_click(PICKER_SURFACE)
-            .child(self.head(&format!("Branch for {}", self.repo)))
-            .child(self.query_row())
-            .child(self.list(workspace_branch, branches, choice))
+        let query = div()
+            .row()
+            .flex(1.0)
+            .items_center()
+            .gap(Space::S8)
+            .on_click(PICKER_QUERY)
+            .child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted))
             .child(
-                div()
-                    .col()
-                    .rounded(Radius::XLarge)
-                    .bg(colors.panel_background)
-                    .child(div().h_px(8.0).bg(colors.panel_background))
-                    .child(
-                        div()
-                            .row()
-                            .px(Space::S14)
-                            .pb(Space::S8)
-                            .items_center()
-                            .child(
-                                label(note)
-                                    .size(LabelSize::Small)
-                                    .color(colors.text_placeholder)
-                                    .truncate(),
-                            ),
-                    ),
-            );
+                self.query
+                    .render(PLACEHOLDER, true, colors.text, 20.0, FieldFont::Ui),
+            )
+            .child(self.status_label());
+        let footer = div().row().h_px(28.0).px(Space::S10).items_center().child(
+            label(note)
+                .size(LabelSize::Small)
+                .color(colors.text_placeholder)
+                .truncate(),
+        );
+        let panel = components::picker(WIDTH, query)
+            .children(self.rows(workspace_branch, branches, choice))
+            .footer(footer)
+            .render()
+            .on_click(PICKER_SURFACE);
         deferred(panel)
             .below_or_above(TRIGGER_HEIGHT, TRIGGER_GAP)
             .priority(1)
@@ -310,7 +302,7 @@ impl BranchPicker {
             .col()
             .gap(Space::S16)
             .on_click(PICKER_SURFACE)
-            .child(self.query_box(true))
+            .child(self.query_box())
             .child(hint);
         let (status, color) = self.status();
         if color == colors.warning {
@@ -322,55 +314,24 @@ impl BranchPicker {
         column.into()
     }
 
-    /// The picker's title and how fresh its branches are, with a refresh at the end.
-    fn head(&self, title: &str) -> Node {
-        div()
-            .row()
-            .items_center()
-            .gap(Space::S6)
-            .px(Space::S12)
-            .pt(Space::S10)
-            .pb(Space::S2)
-            .child(
-                div()
-                    .row()
-                    .flex(1.0)
-                    .items_center()
-                    .child(section_header(title)),
-            )
-            .child(self.status_label())
-            .into()
-    }
-
-    /// The focused query box, with a branch icon when it stands alone in a modal.
-    fn query_box(&self, leading: bool) -> Node {
+    /// The focused query box with a branch icon, standing alone in a modal.
+    fn query_box(&self) -> Node {
         let colors = theme();
-        let mut row = components::input_box(PICKER_QUERY, true, false);
-        if leading {
-            row = row.child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted));
-        }
-        row.child(
-            self.query
-                .render(PLACEHOLDER, true, colors.text, 20.0, FieldFont::Ui),
-        )
-        .into()
-    }
-
-    fn query_row(&self) -> Node {
-        div()
-            .col()
-            .px(Space::S8)
-            .py(Space::S6)
-            .child(self.query_box(false))
+        components::input_box(PICKER_QUERY, true, false)
+            .child(icon(IconKind::Branch).size(14.0).color(colors.icon_muted))
+            .child(
+                self.query
+                    .render(PLACEHOLDER, true, colors.text, 20.0, FieldFont::Ui),
+            )
             .into()
     }
 
-    fn list(
+    fn rows(
         &self,
         workspace_branch: &str,
         branches: Option<&RepoBranches>,
         choice: Option<&str>,
-    ) -> Node {
+    ) -> Vec<Node> {
         let entries = self.entries(workspace_branch, branches);
         let base = branches
             .map(|known| known.base.as_str())
@@ -379,12 +340,15 @@ impl BranchPicker {
             .highlighted
             .saturating_sub(ROWS_SHOWN - 1)
             .min(entries.len().saturating_sub(ROWS_SHOWN));
-        let mut list = div().col().gap(Space::Px(1.0)).px(Space::S6).pb(Space::S6);
-        for (index, entry) in entries.iter().enumerate().skip(first).take(ROWS_SHOWN) {
-            list =
-                list.child(self.entry_row(entry, index, workspace_branch, branches, base, choice));
-        }
-        list.into()
+        entries
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(ROWS_SHOWN)
+            .map(|(index, entry)| {
+                self.entry_row(entry, index, workspace_branch, branches, base, choice)
+            })
+            .collect()
     }
 
     /// Whether origin was fetched, is being fetched, or failed, as a muted label; clicking it fetches again.
@@ -524,17 +488,8 @@ impl BranchPicker {
                 ),
             );
         }
-        div()
-            .row()
-            .px(Space::S8)
-            .py(Space::S6)
-            .rounded(Radius::Medium)
-            .on_click(ENTRY_BASE + index as u64)
-            .bg(if index == self.highlighted {
-                colors.overlay_selected
-            } else {
-                Rgba::TRANSPARENT
-            })
+        components::list_row(ENTRY_BASE + index as u64)
+            .selected(index == self.highlighted)
             .child(text)
             .into()
     }
