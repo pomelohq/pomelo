@@ -92,6 +92,25 @@ struct Gallery {
     layers_scroll: f32,
     /// Where the layer list sits, top to bottom, so the wheel over it scrolls it instead of the canvas.
     layers_area: (f32, f32),
+    inspect: Inspector,
+}
+
+/// The inspect mode: the open board's elements as last painted, the one under the pointer and the one pinned.
+#[derive(Default)]
+struct Inspector {
+    on: bool,
+    elements: Vec<ui::inspect::Inspected>,
+    origin: (f32, f32),
+    hovered: Option<usize>,
+    picked: Option<usize>,
+}
+
+impl Inspector {
+    fn shown(&self) -> Option<usize> {
+        self.picked
+            .or(self.hovered)
+            .filter(|index| *index < self.elements.len())
+    }
 }
 
 /// A focused story's context menu, opened at the pointer by a right click.
@@ -158,6 +177,7 @@ impl Gallery {
             chrome_hovered: None,
             layers_scroll: 0.0,
             layers_area: (0.0, 0.0),
+            inspect: Inspector::default(),
         };
         gallery.open_page(page, saved.camera.is_none());
         gallery
@@ -311,6 +331,21 @@ impl Gallery {
         }
         self.focused_hits.clear();
         self.hovered = None;
+        self.inspect.elements.clear();
+        self.inspect.hovered = None;
+        self.inspect.picked = None;
+    }
+
+    fn toggle_inspect(&mut self) {
+        self.inspect = Inspector {
+            on: !self.inspect.on,
+            ..Inspector::default()
+        };
+        if self.inspect.on {
+            self.hovered = None;
+        }
+        self.hover();
+        self.redraw();
     }
 
     fn set_theme(&mut self, name: &'static str) {
@@ -543,6 +578,8 @@ impl Gallery {
             let canvas_x = canvas.x;
             let camera = self.camera;
             let hovered = self.hovered;
+            let inspecting = self.inspect.on;
+            let mut inspected = Vec::new();
             if let Some(board) = self.boards.get_mut(index) {
                 let (sx, sy) = camera.to_screen(board.x, board.y);
                 let area = ui::Rect::new(
@@ -557,14 +594,23 @@ impl Gallery {
                         .bg(ui::theme().panel_background)
                         .child(story.render(area.w, area.h))
                         .into();
-                    let frame = ui::paint_frame_interactive(
-                        &node,
-                        area,
-                        ui::Interaction {
-                            hovered,
-                            pressed: None,
-                        },
-                    );
+                    let paint = || {
+                        ui::paint_frame_interactive(
+                            &node,
+                            area,
+                            ui::Interaction {
+                                hovered,
+                                pressed: None,
+                            },
+                        )
+                    };
+                    let frame = if inspecting {
+                        let (frame, elements) = ui::inspect::inspect(paint);
+                        inspected = elements;
+                        frame
+                    } else {
+                        paint()
+                    };
                     live = frame.base;
                     live.hits = frame.hits;
                     live_overlays = frame.overlays;
@@ -588,6 +634,10 @@ impl Gallery {
                         None => visible,
                     });
                 }
+                self.inspect.origin = (area.x, area.y);
+            }
+            if inspecting {
+                self.inspect.elements = inspected;
             }
         }
         self.focused_hits = live.hits.clone();
@@ -648,7 +698,19 @@ impl Gallery {
             });
             list_clip = Some((0.0, top_h, chrome::LEFT, visible));
             self.layers_area = (top_h, h);
-            let right = chrome::right(h, &self.themes, self.theme, zoom);
+            let inspector = self.inspect.on.then(|| {
+                let shown = self.inspect.shown();
+                let element = shown.and_then(|index| self.inspect.elements.get(index));
+                chrome::inspector(
+                    element,
+                    self.inspect.origin,
+                    element.is_some_and(|element| element.parent.is_some()),
+                    shown.is_some_and(|index| {
+                        !ui::inspect::children(&self.inspect.elements, index).is_empty()
+                    }),
+                )
+            });
+            let right = chrome::right(h, &self.themes, self.theme, zoom, inspector);
             side.append(ui::render_interactive(
                 &right,
                 ui::Rect::new(
@@ -785,6 +847,10 @@ impl Gallery {
                 overlay.append(sub);
             }
         }
+        let mut highlight = ui::Painted::default();
+        if self.inspect.on {
+            highlight_element(&mut highlight, &self.inspect, &theme);
+        }
         self.chrome_hits = side.hits.clone();
         self.chrome_hits.extend(list.hits.iter().copied());
         self.chrome_hits.extend(overlay.hits.iter().copied());
@@ -821,6 +887,13 @@ impl Gallery {
             ),
         ];
         layers.extend(stories::layers(&live_overlays));
+        layers.push((
+            highlight.rects.as_slice(),
+            highlight.tris.as_slice(),
+            highlight.texts.as_slice(),
+            highlight.icons.as_slice(),
+            live_clip,
+        ));
         layers.push((
             overlay.rects.as_slice(),
             overlay.tris.as_slice(),
@@ -869,6 +942,13 @@ impl Gallery {
             return;
         }
         let canvas = self.canvas();
+        if self.inspect.on && self.focused.is_some() {
+            if let Some(at) = ui::inspect::element_at(&self.inspect.elements, x, y) {
+                self.inspect.picked = Some(at);
+                self.redraw();
+                return;
+            }
+        }
         if let Some(index) = self.focused {
             if let Some(id) = ui::topmost_hit(&self.focused_hits, x, y) {
                 if let Some(story) = self.boards.get_mut(index).and_then(Board::story) {
@@ -971,6 +1051,7 @@ impl Gallery {
                 self.zoom(0.8, canvas.w / 2.0, canvas.h / 2.0);
             }
             Some(chrome::Click::Hide) => self.toggle_chrome(),
+            Some(chrome::Click::Inspect) => self.toggle_inspect(),
             Some(chrome::Click::Themes) => self.toggle_menu(Menu::Themes),
             Some(chrome::Click::Pages) => self.toggle_menu(Menu::Pages),
             Some(chrome::Click::Group(index)) => {
@@ -1008,7 +1089,15 @@ impl Gallery {
             self.chrome_hovered = chrome_hovered;
             self.redraw();
         }
-        if let Some(index) = self.focused {
+        if self.inspect.on {
+            let at = self
+                .focused
+                .and(ui::inspect::element_at(&self.inspect.elements, x, y));
+            if at != self.inspect.hovered {
+                self.inspect.hovered = at;
+                self.redraw();
+            }
+        } else if let Some(index) = self.focused {
             let id = ui::topmost_hit(&self.focused_hits, x, y);
             pointer |= id.is_some();
             if id != self.hovered {
@@ -1022,6 +1111,8 @@ impl Gallery {
         if let Some(window) = &self.window {
             window.set_cursor(if self.space || self.dragging.is_some() {
                 CursorIcon::Grab
+            } else if self.inspect.hovered.is_some() && chrome_hovered.is_none() {
+                CursorIcon::Crosshair
             } else if pointer {
                 CursorIcon::Pointer
             } else {
@@ -1137,6 +1228,32 @@ impl Gallery {
             {
                 self.toggle_chrome();
                 self.redraw();
+                return;
+            }
+            Key::Character(c) if command && c.eq_ignore_ascii_case("i") => {
+                self.toggle_inspect();
+                return;
+            }
+            Key::Named(NamedKey::Escape) if self.inspect.on => {
+                if self.inspect.picked.take().is_none() {
+                    self.toggle_inspect();
+                }
+                self.redraw();
+                return;
+            }
+            Key::Named(step @ (NamedKey::ArrowUp | NamedKey::ArrowDown))
+                if self.inspect.shown().is_some() && self.menu.is_none() =>
+            {
+                let elements = &self.inspect.elements;
+                let shown = self.inspect.shown();
+                let next = shown.and_then(|index| match step {
+                    NamedKey::ArrowUp => elements.get(index).and_then(|element| element.parent),
+                    _ => ui::inspect::children(elements, index).first().copied(),
+                });
+                if next.is_some() {
+                    self.inspect.picked = next;
+                    self.redraw();
+                }
                 return;
             }
             Key::Character(c) if command && c.as_str() == "0" => {
@@ -1336,6 +1453,119 @@ impl ApplicationHandler for Gallery {
 }
 
 /// Rects have no dash style, so the frame is laid out of short pieces along each edge.
+/// Tints the inspected element the way browser devtools do: content blue, padding green, gaps purple.
+fn highlight_element(out: &mut ui::Painted, inspect: &Inspector, theme: &ui::ThemeColors) {
+    let elements = &inspect.elements;
+    let Some(shown) = inspect.hovered.or(inspect.picked) else {
+        return;
+    };
+    let Some(element) = elements.get(shown) else {
+        return;
+    };
+    let content = ui::Rgba::new(0.36, 0.62, 0.95, 0.30);
+    let padding_tint = ui::Rgba::new(0.45, 0.78, 0.42, 0.38);
+    let gap_tint = ui::Rgba::new(0.72, 0.45, 0.92, 0.38);
+    let rect = element.rect;
+    match &element.what {
+        ui::inspect::Inspect::Box {
+            padding: [top, right, bottom, left],
+            gap,
+            row,
+            ..
+        } => {
+            let inner = ui::Rect::new(
+                rect.x + left,
+                rect.y + top,
+                (rect.w - left - right).max(0.0),
+                (rect.h - top - bottom).max(0.0),
+                content,
+            );
+            let bands = [
+                (rect.x, rect.y, rect.w, *top),
+                (rect.x, inner.y + inner.h, rect.w, *bottom),
+                (rect.x, inner.y, *left, inner.h),
+                (inner.x + inner.w, inner.y, *right, inner.h),
+            ];
+            for (x, y, w, h) in bands {
+                if w > 0.0 && h > 0.0 {
+                    out.rects.push(ui::Rect::new(x, y, w, h, padding_tint));
+                }
+            }
+            out.rects.push(inner);
+            if *gap > 0.0 {
+                let children = ui::inspect::children(elements, shown);
+                for pair in children.windows(2) {
+                    let (Some(a), Some(b)) = (elements.get(pair[0]), elements.get(pair[1])) else {
+                        continue;
+                    };
+                    let (a, b) = (a.rect, b.rect);
+                    let band = if *row {
+                        let x = a.x + a.w;
+                        ui::Rect::new(x, inner.y, b.x - x, inner.h, gap_tint)
+                    } else {
+                        let y = a.y + a.h;
+                        ui::Rect::new(inner.x, y, inner.w, b.y - y, gap_tint)
+                    };
+                    if band.w > 0.0 && band.h > 0.0 {
+                        out.rects.push(band);
+                    }
+                }
+            }
+        }
+        _ => out
+            .rects
+            .push(ui::Rect::new(rect.x, rect.y, rect.w, rect.h, content)),
+    }
+    for (index, color) in [
+        (Some(shown), theme.text_accent),
+        (
+            inspect.picked.filter(|picked| *picked != shown),
+            theme.border_focused,
+        ),
+    ] {
+        let Some(outlined) = index.and_then(|index| elements.get(index)) else {
+            continue;
+        };
+        let mut outline = ui::Rect::new(
+            outlined.rect.x,
+            outlined.rect.y,
+            outlined.rect.w,
+            outlined.rect.h,
+            ui::Rgba::TRANSPARENT,
+        );
+        outline.border = 1.0;
+        outline.border_color = color;
+        out.rects.push(outline);
+    }
+    let tag: ui::Node = ui::div()
+        .h_px(18.0)
+        .px(ui::Space::S6)
+        .items_center()
+        .rounded(ui::Radius::Small)
+        .bg(theme.text_accent)
+        .child(
+            ui::label(format!("{} x {}", rect.w.round(), rect.h.round()))
+                .size(ui::LabelSize::XSmall)
+                .mono()
+                .color(theme.background),
+        )
+        .into();
+    let (tag_w, tag_h) = ui::measure(&tag);
+    let board_bottom = elements
+        .first()
+        .map_or(f32::MAX, |root| root.rect.y + root.rect.h);
+    let below = rect.y + rect.h + 4.0;
+    let y = if below + tag_h <= board_bottom {
+        below
+    } else {
+        rect.y - tag_h - 4.0
+    };
+    out.append(ui::render(
+        &tag,
+        ui::Rect::new(rect.x, y, tag_w.ceil(), tag_h.ceil(), ui::Rgba::TRANSPARENT),
+    ));
+}
+
 fn dashed_frame(painted: &mut ui::Painted, x: f32, y: f32, w: f32, h: f32, color: ui::Rgba) {
     const DASH: f32 = 6.0;
     const GAP: f32 = 4.0;

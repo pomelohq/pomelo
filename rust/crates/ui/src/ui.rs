@@ -3,6 +3,7 @@
 
 mod app;
 mod element;
+pub mod inspect;
 mod key_binding;
 mod scroll_gesture;
 mod scroll_pane;
