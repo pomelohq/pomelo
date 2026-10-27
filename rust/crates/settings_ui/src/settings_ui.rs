@@ -2246,11 +2246,7 @@ fn toolbar_scope(project: Option<&ProjectPage>) -> (String, Option<(u64, &'stati
 }
 
 fn toolbar_chip(scope: String, file: Option<(u64, &'static str)>) -> Node {
-    let accent = theme().text_accent;
-    let chip = components::chip(scope)
-        .color(accent)
-        .fill(accent.alpha(0.14))
-        .border(accent.alpha(0.3));
+    let chip = components::chip(scope).tinted(theme().text_accent);
     div()
         .row()
         .h_px(30.0)

@@ -112,11 +112,7 @@ fn plan_chip(plan: &str) -> Node {
     if let Some(first) = text.get(0..1) {
         text = first.to_uppercase() + &text[1..];
     }
-    components::chip(text)
-        .color(colors.text_accent)
-        .fill(colors.text_accent.alpha(0.14))
-        .border(colors.text_accent.alpha(0.3))
-        .into()
+    components::chip(text).tinted(colors.text_accent).into()
 }
 
 fn menu_row(id: u64, text: &'static str, keys: Option<&'static str>, hovered: Option<u64>) -> Node {
