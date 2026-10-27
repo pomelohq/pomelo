@@ -29,6 +29,10 @@ enum State {
     Open,
     Connecting,
     Failed,
+    /// The first failure opened to its details.
+    FailedDetails,
+    /// Every Postgres database of a repo waits on one stopped server.
+    ServerDown,
     Folded,
     Empty,
 }
@@ -159,10 +163,18 @@ fn fill(panel: &mut database_ui::DatabasePanel, names: &[String], state: State) 
             );
         }
         State::Connecting => panel.show_connecting(first),
-        State::Failed => {
+        State::Failed | State::FailedDetails => {
             panel.show_failure(first, missing(first), Some("myproject_main".into()));
             if let Some(other) = names.get(1) {
                 panel.show_failure(other, refused(other), None);
+            }
+            if matches!(state, State::FailedDetails) {
+                panel.toggle_full_error(first);
+            }
+        }
+        State::ServerDown => {
+            for name in names.iter().take(2) {
+                panel.show_failure(name, refused(name), None);
             }
         }
         State::Folded | State::Empty => {}
@@ -232,6 +244,14 @@ pub fn stories() -> Vec<StoryDef> {
         story("database-panel-failed", "Failed to connect", || {
             build(State::Failed)
         }),
+        story("database-panel-failed-details", "Failure details", || {
+            build(State::FailedDetails)
+        }),
+        story(
+            "database-panel-server-down",
+            "Server down for every database",
+            || build(State::ServerDown),
+        ),
         story("database-panel-empty", "No databases", || {
             build(State::Empty)
         }),

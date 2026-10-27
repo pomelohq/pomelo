@@ -3,6 +3,7 @@
 use pom_db::{Database, Engine, TableKind};
 use ui::IconKind;
 
+use crate::failure::FailureAction;
 use crate::tree::{prefix_name, readable, Row};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +42,7 @@ pub(crate) enum Action {
     DownloadObject,
     CopyPresignedUrl,
     DeleteObject,
+    Fix(FailureAction),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,7 +153,11 @@ pub(crate) fn icon(action: &Action) -> Option<IconKind> {
         | Action::DeleteKeys
         | Action::DeleteFolder
         | Action::DeleteObject => IconKind::Trash,
-        Action::Header | Action::RenameConsole => return None,
+        Action::Fix(FailureAction::FixWithAgent) => IconKind::Sparkle,
+        Action::Fix(FailureAction::CopyError | FailureAction::CopyFromMain) => IconKind::Copy,
+        Action::Fix(FailureAction::Retry) => IconKind::RotateCw,
+        Action::Fix(FailureAction::EditConfig) => IconKind::File,
+        Action::Header | Action::RenameConsole | Action::Fix(_) => return None,
     })
 }
 
