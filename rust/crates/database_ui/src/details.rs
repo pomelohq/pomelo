@@ -458,12 +458,7 @@ pub(crate) fn value_title(cell: &CellView<'_>) -> Node {
 pub(crate) fn value_box(cell: &CellView<'_>, editor: Option<Node>, width: f32) -> Node {
     let colors = theme();
     if let Some(editor) = editor {
-        return div()
-            .col()
-            .p(Space::S10)
-            .rounded(Radius::Medium)
-            .border(1.0, colors.border_focused)
-            .bg(colors.editor_background)
+        return components::text_area_box(VALUE_AREA, true, false)
             .child(editor)
             .into();
     }

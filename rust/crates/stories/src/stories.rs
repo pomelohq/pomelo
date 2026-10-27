@@ -149,7 +149,11 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
             "Divider",
         ],
     ),
-    ("Molecules", "Forms", &["Field", "Search field"]),
+    (
+        "Molecules",
+        "Forms",
+        &["Field", "Text area", "Search field"],
+    ),
     ("Molecules", "Menus", &["Menu", "Select menu", "Picker"]),
     (
         "Molecules",
@@ -214,6 +218,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Dot" => "Running, needs a look, failed, busy; the ring is a state that has not started. 6 in dense rows, 7 beside a label, 8 on its own.",
         "Input" => "The box a line of text is typed in: ringed while focused, red on an error, mono for code, masked for secrets. A Field puts its label and hint around it.",
         "Field" => "A labeled input: the label above, the hint or the error below. Every form field is one.",
+        "Text area" => "Several lines of text: a commit message, a review, a value being edited. The same box as an input, sized by its owner; the text wraps and scrolls inside.",
         "Search field" => "The box a panel filters its list with: a search icon, the query, and a clear button once something is typed.",
         "Section header" => "The title over a group of rows or fields: uppercase and muted, with a count or one quiet action at the right; a chevron when the group folds away.",
         "List row" => "One row of a picker or list: icon, text and anything at the end; tinted while selected, lit while hovered.",
