@@ -1,7 +1,7 @@
 //! The self-update button at the right of the title bar and the app menu's update item. The app maps the
 //! updater's state into these; the window only draws them and reports clicks.
 
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
+use ui::{div, theme, IconKind, Node};
 
 pub const UPDATE_BUTTON: u64 = 960;
 pub const UPDATE_DISMISS: u64 = 961;
@@ -58,26 +58,17 @@ pub struct UpdateInfo {
 pub fn button(update: &UpdateButton, hovered: Option<u64>) -> Node {
     let colors = theme();
     let hot = hovered == Some(UPDATE_BUTTON) && update.click.is_some();
-    let (text, icon_color) = match update.tone {
-        UpdateTone::Normal if hot => (colors.text, colors.text),
-        UpdateTone::Normal => (colors.text_muted, colors.text_muted),
-        UpdateTone::Ready => (colors.text, colors.text_accent),
-        UpdateTone::Warning => (colors.warning, colors.warning),
+    let mut button = components::button(UPDATE_BUTTON, update.label.clone())
+        .icon(Some(update.icon))
+        .hovered(hot.then_some(UPDATE_BUTTON));
+    button = match update.tone {
+        UpdateTone::Normal => button.kind(components::ButtonKind::Ghost),
+        UpdateTone::Ready => button.kind(components::ButtonKind::Primary),
+        UpdateTone::Warning => button
+            .kind(components::ButtonKind::Ghost)
+            .color(colors.warning),
     };
-    let mut chip = div()
-        .row()
-        .items_center()
-        .gap(Space::S6)
-        .h_px(24.0)
-        .px(Space::S8)
-        .rounded(Radius::Medium)
-        .on_click(UPDATE_BUTTON)
-        .child(icon(update.icon).size(13.0).color(icon_color))
-        .child(
-            label(update.label.clone())
-                .size(LabelSize::Small)
-                .color(text),
-        );
+    let mut chip = button.render();
     if let Some(progress) = update.progress {
         chip = chip.child(
             div()
@@ -87,19 +78,13 @@ pub fn button(update: &UpdateButton, hovered: Option<u64>) -> Node {
         );
     }
     if update.dismissable {
-        let dismiss = components::icon_button(UPDATE_DISMISS, IconKind::Close)
+        let mut dismiss = components::icon_button(UPDATE_DISMISS, IconKind::Close)
             .size(components::ButtonSize::XSmall)
             .hovered(hovered);
-        chip = chip.child(dismiss);
-    }
-    match update.tone {
-        UpdateTone::Ready => {
-            chip = chip
-                .bg(colors.text_accent.alpha(0.14))
-                .border(1.0, colors.text_accent.alpha(0.45));
+        if update.tone == UpdateTone::Ready {
+            dismiss = dismiss.color(colors.on_accent);
         }
-        _ if hot => chip = chip.bg(colors.ghost_element_hover),
-        _ => {}
+        chip = chip.child(dismiss);
     }
     chip.into()
 }

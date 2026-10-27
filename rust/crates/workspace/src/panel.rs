@@ -515,17 +515,7 @@ impl Panel for ProjectPanel {
                     .weight(600)
                     .color(colors.text_placeholder),
             )
-            .child(
-                div()
-                    .row()
-                    .items_center()
-                    .justify_center()
-                    .w_px(24.0)
-                    .h_px(24.0)
-                    .rounded(Radius::Small)
-                    .on_click(crate::WORKSPACE_NEW)
-                    .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
-            );
+            .child(icon_button(IconKind::Plus, crate::WORKSPACE_NEW));
         let mut col = div()
             .col()
             .px(Space::S8)
@@ -733,15 +723,9 @@ pub fn workspace_rail(list: &WorkspaceList<'_>, width: f32) -> Node {
         .gap(Space::S4)
         .items_center()
         .child(
-            div()
-                .row()
-                .items_center()
-                .justify_center()
-                .w_px(RAIL_TILE)
-                .h_px(28.0)
-                .rounded(Radius::Small)
-                .on_click(crate::WORKSPACE_NEW)
-                .child(icon(IconKind::Plus).size(14.0).color(colors.icon_muted)),
+            components::icon_button(crate::WORKSPACE_NEW, IconKind::Plus)
+                .size(components::ButtonSize::Medium)
+                .color(colors.text_muted),
         );
     let upkeep = upkeep_of(list.ops, list.expanded, list.upkeep_done);
     let cell = |row: &WorkspaceRow, upkeep: Upkeep<'_>| {

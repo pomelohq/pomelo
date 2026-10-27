@@ -91,35 +91,16 @@ impl ConsoleToolbar for SideAgentBar {
                     .size(LabelSize::Medium)
                     .color(colors.text),
             );
-        let send = |label_too: bool| {
-            let mut send = div()
-                .row()
-                .h_px(26.0)
-                .px(if label_too { Space::S10 } else { Space::S8 })
-                .gap(Space::S6)
-                .items_center()
-                .rounded(Radius::Medium)
-                .border(1.0, colors.border_variant)
-                .on_click(self.base + SEND)
-                .child(icon(IconKind::Return).size(12.0).color(colors.icon_muted));
+        let send = |label_too: bool| -> ui::Div {
             if label_too {
-                send = send.child(
-                    label("Send to main")
-                        .size(LabelSize::Medium)
-                        .color(colors.text),
-                );
+                components::button(self.base + SEND, "Send to main")
+                    .icon(Some(IconKind::Return))
+                    .render()
+            } else {
+                components::icon_button(self.base + SEND, IconKind::Return).render()
             }
-            send
         };
-        let archive = div()
-            .row()
-            .w_px(26.0)
-            .h_px(26.0)
-            .items_center()
-            .justify_center()
-            .rounded(Radius::Small)
-            .on_click(self.base + ARCHIVE)
-            .child(icon(IconKind::Archive).size(14.0).color(colors.icon_muted));
+        let archive = components::icon_button(self.base + ARCHIVE, IconKind::Archive).render();
         // A narrow dock drops the least needed first: the send button's label, then what it started with,
         // then the access tag. Send and Archive always stay.
         let row = |tag: Option<&ui::Div>, context: Option<&ui::Div>, send_label: bool| {

@@ -8,12 +8,11 @@ use crate::EditKey;
 use editor::search::{
     active_match_index, match_index_for_direction, Direction, SearchOptions, SearchQuery,
 };
-use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Space};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Radius, Space};
 
 use crate::text_field::INPUT_FONT;
 const INPUT_H: f32 = 32.0;
-const BUTTON: f32 = 20.0;
-const BUTTON_ICON: f32 = 16.0;
+const BUTTON: f32 = 24.0;
 const TOOLBAR_PAD_X: Space = Space::S8;
 const TOOLBAR_PAD_Y: Space = Space::S6;
 const LINE_GAP: Space = Space::S8;
@@ -442,24 +441,10 @@ impl SearchBar {
         let colors = theme();
         let icon_button =
             |kind: IconKind, click: SearchClick, toggled: bool, enabled: bool| -> Node {
-                let color = if !enabled {
-                    colors.text_disabled
-                } else if toggled {
-                    colors.text_accent
-                } else {
-                    colors.icon
-                };
-                let mut button = div()
-                    .w_px(BUTTON)
-                    .h_px(BUTTON)
-                    .rounded(Radius::XSmall)
-                    .items_center()
-                    .justify_center()
-                    .child(icon(kind).size(BUTTON_ICON).color(color));
-                if enabled {
-                    button = button.on_click(click.id(base));
-                }
-                button.into()
+                components::icon_button(click.id(base), kind)
+                    .toggled(toggled)
+                    .enabled(enabled)
+                    .into()
             };
         let vertical_rule = || components::vertical_divider(BUTTON);
         let input =
