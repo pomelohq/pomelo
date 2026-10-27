@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 components = { path = "../components" }
 anyhow.workspace = true
+arboard = "3.6.1"
 serde.workspace = true
 serde_json.workspace = true
 stories = { path = "../stories" }

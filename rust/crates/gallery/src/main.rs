@@ -2,6 +2,7 @@
 //! with a pinch or cmd-wheel, double-click a story to step into it and use it, Escape to step out.
 
 mod chrome;
+mod comments;
 mod scene;
 
 use std::sync::Arc;
@@ -93,6 +94,9 @@ struct Gallery {
     /// Where the layer list sits, top to bottom, so the wheel over it scrolls it instead of the canvas.
     layers_area: (f32, f32),
     inspect: Inspector,
+    comments: comments::Comments,
+    draft: workspace::text_field::TextArea,
+    drafting: bool,
 }
 
 /// The inspect mode: the open board's elements as last painted, the one under the pointer and the one pinned.
@@ -103,6 +107,8 @@ struct Inspector {
     origin: (f32, f32),
     hovered: Option<usize>,
     picked: Option<usize>,
+    /// The element a comment points at, picked once the board has been painted and its elements are known.
+    pending_pick: Option<Vec<usize>>,
 }
 
 impl Inspector {
@@ -178,6 +184,9 @@ impl Gallery {
             layers_scroll: 0.0,
             layers_area: (0.0, 0.0),
             inspect: Inspector::default(),
+            comments: comments::Comments::load(),
+            draft: comment_field(),
+            drafting: false,
         };
         gallery.open_page(page, saved.camera.is_none());
         gallery
@@ -344,8 +353,102 @@ impl Gallery {
         if self.inspect.on {
             self.hovered = None;
         }
+        self.drafting = false;
         self.hover();
         self.redraw();
+    }
+
+    fn focused_story(&self) -> Option<&'static str> {
+        self.focused
+            .and_then(|index| self.boards.get(index))
+            .map(|board| board.def.id)
+    }
+
+    fn send_comment(&mut self) {
+        let text = self.draft.text();
+        let (Some(story), Some(picked)) = (self.focused_story(), self.inspect.picked) else {
+            return;
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        let added = self.comments.add(
+            story,
+            &self.inspect.elements,
+            picked,
+            self.inspect.origin,
+            text.trim().to_string(),
+        );
+        if added.is_some() {
+            self.comments.save();
+            self.draft = comment_field();
+            self.drafting = false;
+        }
+    }
+
+    /// Opens the board a comment is on, with its element pinned.
+    fn go_to_comment(&mut self, id: u64) {
+        let Some(comment) = self
+            .comments
+            .comments
+            .iter()
+            .find(|comment| comment.id == id)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(page) = self
+            .defs
+            .iter()
+            .find(|def| def.id == comment.story)
+            .and_then(|def| self.pages.iter().position(|page| *page == def.page))
+        else {
+            return;
+        };
+        if page != self.page {
+            self.open_page(page, false);
+        }
+        if self.focused_story() != Some(comment.story.as_str()) {
+            self.unfocus();
+            match self
+                .boards
+                .iter()
+                .position(|board| board.def.id == comment.story)
+            {
+                Some(index) => self.focus(index),
+                None => return,
+            }
+        }
+        self.inspect.on = true;
+        self.inspect.hovered = None;
+        self.inspect.picked = None;
+        self.inspect.pending_pick = Some(comment.path);
+        self.hovered = None;
+        self.redraw();
+    }
+
+    fn copy_for_agent(&self) {
+        let text = comments::for_agent(&self.comments, &self.defs, self.theme);
+        if let Err(error) = arboard::Clipboard::new().and_then(|mut board| board.set_text(text)) {
+            eprintln!("gallery: copy: {error}");
+        }
+    }
+
+    /// Open comments on the current page's boards, each with where it points on the canvas.
+    fn comment_dots(&self) -> Vec<(u64, f32, f32)> {
+        let canvas = self.canvas();
+        self.comments
+            .open()
+            .filter_map(|comment| {
+                let board = self
+                    .boards
+                    .iter()
+                    .find(|board| board.def.id == comment.story)?;
+                let [x, y, w, _] = comment.rect;
+                let (sx, sy) = self.camera.to_screen(board.x + x + w, board.y + y);
+                Some((comment.id, canvas.x + sx, sy))
+            })
+            .collect()
     }
 
     fn set_theme(&mut self, name: &'static str) {
@@ -638,6 +741,9 @@ impl Gallery {
             }
             if inspecting {
                 self.inspect.elements = inspected;
+                if let Some(path) = self.inspect.pending_pick.take() {
+                    self.inspect.picked = comments::index_of(&self.inspect.elements, &path);
+                }
             }
         }
         self.focused_hits = live.hits.clone();
@@ -701,6 +807,56 @@ impl Gallery {
             let inspector = self.inspect.on.then(|| {
                 let shown = self.inspect.shown();
                 let element = shown.and_then(|index| self.inspect.elements.get(index));
+                let story = self.focused_story();
+                let path = self
+                    .inspect
+                    .picked
+                    .map(|index| comments::path_of(&self.inspect.elements, index));
+                let on_element: Vec<&comments::Comment> = self
+                    .comments
+                    .open()
+                    .filter(|comment| {
+                        Some(comment.story.as_str()) == story
+                            && path.as_ref() == Some(&comment.path)
+                    })
+                    .collect();
+                let field = path.is_some().then(|| {
+                    components::text_area_box(chrome::COMMENT_FIELD, self.drafting, false)
+                        .child(self.draft.render(
+                            "What should change?",
+                            self.drafting,
+                            chrome::RIGHT - 32.0 - components::TEXT_AREA_PAD_X * 2.0,
+                            3,
+                        ))
+                        .into()
+                });
+                let open: Vec<(&comments::Comment, String)> = self
+                    .comments
+                    .open()
+                    .map(|comment| {
+                        let place = self
+                            .defs
+                            .iter()
+                            .find(|def| def.id == comment.story)
+                            .map_or(comment.story.clone(), |def| {
+                                format!("{} > {}", def.group, def.title)
+                            });
+                        (comment, place)
+                    })
+                    .collect();
+                let open: Vec<(&comments::Comment, &str)> = open
+                    .iter()
+                    .map(|(comment, place)| (*comment, place.as_str()))
+                    .collect();
+                let comments_panel = ui::div()
+                    .col()
+                    .child(chrome::comment_thread(
+                        &on_element,
+                        field,
+                        !self.draft.text().trim().is_empty(),
+                    ))
+                    .child(chrome::comment_list(&open))
+                    .into();
                 chrome::inspector(
                     element,
                     self.inspect.origin,
@@ -708,6 +864,7 @@ impl Gallery {
                     shown.is_some_and(|index| {
                         !ui::inspect::children(&self.inspect.elements, index).is_empty()
                     }),
+                    comments_panel,
                 )
             });
             let right = chrome::right(h, &self.themes, self.theme, zoom, inspector);
@@ -851,7 +1008,29 @@ impl Gallery {
         if self.inspect.on {
             highlight_element(&mut highlight, &self.inspect, &theme);
         }
-        self.chrome_hits = side.hits.clone();
+        let mut dots = ui::Painted::default();
+        for (id, x, y) in self.comment_dots() {
+            let badge = chrome::comment_badge(id);
+            let (badge_w, badge_h) = ui::measure(&badge);
+            dots.append(ui::render_interactive(
+                &chrome::comment_badge_target(id, badge),
+                ui::Rect::new(
+                    x - badge_w / 2.0,
+                    y - badge_h / 2.0,
+                    badge_w.ceil(),
+                    badge_h.ceil(),
+                    ui::Rgba::TRANSPARENT,
+                ),
+                ui::Interaction {
+                    hovered: self.chrome_hovered,
+                    pressed: None,
+                },
+            ));
+        }
+        dots.hits
+            .retain(|(rect, _)| rect.x + rect.w > canvas.x && rect.x < canvas.x + canvas.w);
+        self.chrome_hits = dots.hits.clone();
+        self.chrome_hits.extend(side.hits.iter().copied());
         self.chrome_hits.extend(list.hits.iter().copied());
         self.chrome_hits.extend(overlay.hits.iter().copied());
 
@@ -895,6 +1074,13 @@ impl Gallery {
             live_clip,
         ));
         layers.push((
+            dots.rects.as_slice(),
+            dots.tris.as_slice(),
+            dots.texts.as_slice(),
+            dots.icons.as_slice(),
+            canvas_clip,
+        ));
+        layers.push((
             overlay.rects.as_slice(),
             overlay.tris.as_slice(),
             overlay.texts.as_slice(),
@@ -933,7 +1119,14 @@ impl Gallery {
             self.redraw();
             return;
         }
-        if let Some(id) = ui::topmost_hit(&self.chrome_hits, x, y) {
+        let chrome_hit = ui::topmost_hit(&self.chrome_hits, x, y);
+        if !matches!(
+            chrome_hit,
+            Some(chrome::COMMENT_FIELD | chrome::COMMENT_SEND)
+        ) {
+            self.drafting = false;
+        }
+        if let Some(id) = chrome_hit {
             self.chrome_click(id);
             return;
         }
@@ -1052,6 +1245,14 @@ impl Gallery {
             }
             Some(chrome::Click::Hide) => self.toggle_chrome(),
             Some(chrome::Click::Inspect) => self.toggle_inspect(),
+            Some(chrome::Click::Comment(id)) => self.go_to_comment(id),
+            Some(chrome::Click::Resolve(id)) => {
+                self.comments.resolve(id);
+                self.comments.save();
+            }
+            Some(chrome::Click::CommentField) => self.drafting = true,
+            Some(chrome::Click::CommentSend) => self.send_comment(),
+            Some(chrome::Click::CopyForAgent) => self.copy_for_agent(),
             Some(chrome::Click::Themes) => self.toggle_menu(Menu::Themes),
             Some(chrome::Click::Pages) => self.toggle_menu(Menu::Pages),
             Some(chrome::Click::Group(index)) => {
@@ -1205,6 +1406,45 @@ impl Gallery {
         };
     }
 
+    fn draft_key(&mut self, event: &winit::event::KeyEvent, command: bool) {
+        let shift = self.modifiers.shift_key();
+        let edit = match &event.logical_key {
+            Key::Named(NamedKey::Escape) => {
+                self.drafting = false;
+                return;
+            }
+            Key::Named(NamedKey::Enter) if command => {
+                self.send_comment();
+                return;
+            }
+            Key::Character(c) if command && c.eq_ignore_ascii_case("v") => {
+                match arboard::Clipboard::new().and_then(|mut board| board.get_text()) {
+                    Ok(text) => self.draft.insert(&text),
+                    Err(error) => eprintln!("gallery: paste: {error}"),
+                }
+                return;
+            }
+            Key::Named(NamedKey::Enter) => EditKey::Enter,
+            Key::Named(NamedKey::ArrowLeft) => EditKey::Left,
+            Key::Named(NamedKey::ArrowRight) => EditKey::Right,
+            Key::Named(NamedKey::ArrowUp) => EditKey::Up,
+            Key::Named(NamedKey::ArrowDown) => EditKey::Down,
+            Key::Named(NamedKey::Home) => EditKey::Home,
+            Key::Named(NamedKey::End) => EditKey::End,
+            Key::Named(NamedKey::Backspace) => EditKey::Backspace,
+            Key::Named(NamedKey::Delete) => EditKey::Delete,
+            _ => {
+                if !command {
+                    if let Some(text) = event.text.as_ref() {
+                        self.draft.insert(text);
+                    }
+                }
+                return;
+            }
+        };
+        self.draft.key(edit, shift);
+    }
+
     fn key(&mut self, event: &winit::event::KeyEvent) {
         let pressed = event.state == ElementState::Pressed;
         if let Key::Named(NamedKey::Space) = event.logical_key {
@@ -1221,6 +1461,11 @@ impl Gallery {
             return;
         }
         let command = self.modifiers.super_key() || self.modifiers.control_key();
+        if self.drafting {
+            self.draft_key(event, command);
+            self.redraw();
+            return;
+        }
         match &event.logical_key {
             _ if command
                 && self.modifiers.shift_key()
@@ -1564,6 +1809,12 @@ fn highlight_element(out: &mut ui::Painted, inspect: &Inspector, theme: &ui::The
         &tag,
         ui::Rect::new(rect.x, y, tag_w.ceil(), tag_h.ceil(), ui::Rgba::TRANSPARENT),
     ));
+}
+
+fn comment_field() -> workspace::text_field::TextArea {
+    let mut field = workspace::text_field::TextArea::default();
+    field.set_ui_font();
+    field
 }
 
 fn dashed_frame(painted: &mut ui::Painted, x: f32, y: f32, w: f32, h: f32, color: ui::Rgba) {
