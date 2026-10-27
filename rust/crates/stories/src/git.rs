@@ -14,6 +14,10 @@ use crate::{Story, StoryDef};
 enum Repos {
     Changes(fixture::State),
     Remote(fixture::RemoteState),
+    /// Web left on another branch than the workspace's.
+    Drift,
+    /// The staged changes committed from the panel, its undo still on offer.
+    Committed,
 }
 
 #[derive(Clone, Copy)]
@@ -61,8 +65,22 @@ impl GitStory {
         let Some(panel) = self.panel.as_mut() else {
             return;
         };
+        if panel.operation_running() {
+            // Only a render takes the commit's outcome.
+            let (width, height) = PANEL;
+            panel.render(width, height);
+            return;
+        }
         if self.scanned || panel.scanning() {
             return;
+        }
+        if matches!(self.repos, Repos::Committed) {
+            if panel.text("Paginate the users list")
+                && panel.key(workspace::EditKey::ReplaceAll, false)
+            {
+                self.repos = Repos::Changes(fixture::State::Staged);
+                return;
+            }
         }
         self.scanned = true;
         if self.tab == git_ui::Tab::Remote {
@@ -191,6 +209,8 @@ fn build(repos: Repos, tab: git_ui::Tab, access: Access) -> anyhow::Result<Box<d
                 let roots = match repos {
                     Repos::Changes(state) => fixture::create(&root, state)?,
                     Repos::Remote(state) => fixture::create_remote(&root, state)?,
+                    Repos::Drift => fixture::create_drift(&root)?,
+                    Repos::Committed => fixture::create(&root, fixture::State::Staged)?,
                 };
                 Ok(Made { scratch, roots })
             });
@@ -228,6 +248,12 @@ pub fn stories() -> Vec<StoryDef> {
         }),
         story("git-panel-unstaged", "Nothing staged", || {
             build(Repos::Changes(State::Unstaged), Tab::Changes, Access::Local)
+        }),
+        story("git-panel-drift", "A repo on another branch", || {
+            build(Repos::Drift, Tab::Changes, Access::Local)
+        }),
+        story("git-panel-committed", "Just committed", || {
+            build(Repos::Committed, Tab::Changes, Access::Local)
         }),
         story("git-panel-remote", "Remote", || {
             build(

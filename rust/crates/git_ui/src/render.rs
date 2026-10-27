@@ -1,4 +1,4 @@
-use git::working_copy::{Staging, Upstream};
+use git::working_copy::Staging;
 use git::ChangeStatus;
 use ui::{
     deferred, div, icon, label, theme, Corner, Div, IconKind, LabelSize, Node, Radius, Rgba, Space,
@@ -13,14 +13,13 @@ use crate::widgets::{
 };
 use crate::{
     Control, GitPanel, Scope, Tab, BACK, BRANCH_LINK, BRANCH_MENU, COMMIT, COMMIT_EDITOR,
-    COMMIT_MENU, DRIFT_CHIP, FETCH_ALL, LAST_COMMIT, OPEN_ALL_DIFFS, PLAN, STAGE_ALL, STAGE_MENU,
-    SYNC, SYNC_MENU, TAB_CHANGES, TAB_HISTORY, TAB_REMOTE, UNCOMMIT, VIEW_DIFF, VIEW_OPTIONS,
+    COMMIT_MENU, DRIFT_CHIP, FETCH_ALL, OPEN_ALL_DIFFS, STAGE_ALL, STAGE_MENU, SYNC, SYNC_MENU,
+    TAB_CHANGES, TAB_HISTORY, TAB_REMOTE, UNCOMMIT, VIEW_DIFF, VIEW_OPTIONS,
 };
 
 const BRANCH_ROW_H: f32 = 24.0;
 const COMMIT_ROW_H: f32 = 28.0;
-const LAST_COMMIT_H: f32 = 30.0;
-const WHY_H: f32 = 20.0;
+const NOTE_H: f32 = 22.0;
 const FOOTER_PAD: Space = Space::S10;
 const FOOTER_GAP: Space = Space::S8;
 /// The list's side padding; cards sit this far in from the panel's edges.
@@ -1440,21 +1439,10 @@ impl GitPanel {
         (footer.into(), 1.0 + 2.0 * FOOTER_PAD.px() + height)
     }
 
-    /// The Changes footer's rows (branch, message, commit, why it can't, last commit) and their height.
+    /// The Changes footer: a warning when a repo is off the workspace branch, the message, the commit button
+    /// naming its repos, and right after a commit a way to undo it.
     fn changes_footer(&mut self, width: f32, scan: &Scan) -> (Vec<Node>, f32) {
         let colors = theme();
-        let to_push = scan
-            .repos
-            .iter()
-            .filter(|repo| {
-                repo.branch_name().is_some()
-                    && match repo.upstream() {
-                        Upstream::None | Upstream::Gone => true,
-                        Upstream::Tracked { ahead, .. } => ahead > 0,
-                    }
-            })
-            .count();
-        let link = (to_push > 0).then(|| format!("{to_push} to push"));
         let plan = self.plan(scan);
         let staged = self.commit_targets(scan);
         let placeholder = if staged.is_empty() {
@@ -1463,45 +1451,17 @@ impl GitPanel {
             self.suggestion(&plan.targets, scan)
                 .unwrap_or_else(|| "Enter commit message".into())
         };
-        let editor = self
-            .commit
-            .render_editor(width, &placeholder, self.fixed(COMMIT_EDITOR));
-        let plan_node: Node = {
-            let summary = if staged.is_empty() {
-                "nothing staged".to_string()
-            } else {
-                plan.summary.clone()
-            };
-            let id = self.fixed(PLAN);
-            let mut pick = div()
-                .row()
-                .h_px(22.0)
-                .gap(Space::S4)
-                .rounded(Radius::Small)
-                .items_center()
-                .child(
-                    label(summary)
-                        .size(LabelSize::Medium)
-                        .color(colors.text_accent)
-                        .truncate(),
-                )
-                .child(
-                    icon(IconKind::ChevronDown)
-                        .size(10.0)
-                        .color(colors.text_accent),
-                );
-            if !staged.is_empty() {
-                pick = pick.on_click(id);
-            }
-            if self.hot(id) {
-                pick = components::with_tooltip(
-                    pick.bg(colors.ghost_element_hover),
-                    "Each repo gets its own commit with this message; choose which repos",
-                    true,
-                );
-            }
-            pick.into()
-        };
+        let mut rows = Vec::new();
+        let mut height = 0.0;
+        if let Some(warning) = self.drift_warning(width, scan) {
+            rows.push(warning);
+            height += NOTE_H + FOOTER_GAP.px();
+        }
+        rows.push(
+            self.commit
+                .render_editor(width, &placeholder, self.fixed(COMMIT_EDITOR)),
+        );
+        height += self.commit.editor_height() + FOOTER_GAP.px() + COMMIT_ROW_H;
         let options: Vec<&str> = [
             (self.commit.signoff, "signoff"),
             (self.commit.skip_hooks, "no hooks"),
@@ -1511,112 +1471,130 @@ impl GitPanel {
         .map(|(_, text)| *text)
         .collect();
         let note = (!options.is_empty()).then(|| format!("+{}", options.join(", ")));
-        let split =
-            components::split_button(self.fixed(COMMIT), self.fixed(COMMIT_MENU), plan.title)
-                .note(note.as_deref())
-                .enabled(plan.enabled)
-                .hovered(self.hover)
-                .primary()
-                .size(components::ButtonSize::Medium);
+        let title = if staged.is_empty() && !self.commit.amend {
+            "Nothing staged".to_string()
+        } else {
+            format!(
+                "{} {}",
+                plan.title,
+                commit_targets_text(&plan.targets, self.commit.amend)
+            )
+        };
+        let split = components::split_button(self.fixed(COMMIT), self.fixed(COMMIT_MENU), title)
+            .note(note.as_deref())
+            .enabled(plan.enabled)
+            .hovered(self.hover)
+            .primary()
+            .size(components::ButtonSize::Medium)
+            .width(width);
         let mut main = split.main_half();
         if self.hot(self.fixed(COMMIT)) {
-            main = components::with_tooltip(main, &plan.hint, true);
+            let tip = if plan.enabled && plan.targets.len() > 1 {
+                "One commit in each repo, same message"
+            } else {
+                &plan.hint
+            };
+            main = components::with_tooltip(main, tip, true);
         }
-        let commit_row = div()
-            .row()
-            .w_px(width)
-            .h_px(COMMIT_ROW_H)
-            .gap(Space::S8)
-            .items_center()
-            .child(grow(plan_node))
-            .child(split.finish(main));
-        let (branch, branch_h) = self.branch_row(width, scan, link);
-        let mut rows = vec![branch, editor, commit_row.into()];
-        let mut height = branch_h
-            + FOOTER_GAP.px()
-            + self.commit.editor_height()
-            + FOOTER_GAP.px()
-            + COMMIT_ROW_H;
-        // Say why the button is off right under it, not only in its tooltip.
-        if !plan.enabled && !plan.hint.is_empty() {
-            rows.push(
-                div()
-                    .row()
-                    .w_px(width)
-                    .h_px(WHY_H)
-                    .gap(Space::S6)
-                    .items_center()
-                    .child(icon(IconKind::Info).size(12.0).color(colors.icon_muted))
-                    .child(grow(
-                        label(plan.hint.clone())
-                            .size(LabelSize::Medium)
-                            .color(colors.text_placeholder)
-                            .truncate(),
-                    ))
-                    .into(),
-            );
-            height += FOOTER_GAP.px() + WHY_H;
-        }
-        if let Some((repo, commit)) = self.last_commit(scan) {
-            let pushed = !Self::can_uncommit(scan, repo, &commit);
-            let subject = self.fixed(LAST_COMMIT);
-            let mut open = div()
+        rows.push(split.finish(main));
+        if let Some((repos, amended)) = &self.committed {
+            let done = if *amended {
+                format!("Amended the last commit in {}", repos.join(", "))
+            } else {
+                format!("Committed to {}", repos.join(", "))
+            };
+            let mut row = div()
                 .row()
-                .flex(1.0)
-                .h_px(22.0)
-                .rounded(Radius::Small)
-                .items_center()
-                .on_click(subject)
-                .child(grow(
-                    label(format!(
-                        "{} - {}",
-                        commit.subject,
-                        self.source_name_of(repo)
-                    ))
-                    .size(LabelSize::Medium)
-                    .color(if self.hot(subject) {
-                        colors.text
-                    } else {
-                        colors.text_muted
-                    })
-                    .truncate(),
-                ));
-            if self.hot(subject) {
-                open = open.bg(colors.ghost_element_hover);
-            }
-            let undo = self.fixed(UNCOMMIT);
-            let mut undo_button = icon_button(undo, IconKind::Undo, self.hot(undo), !pushed);
-            if self.hot(undo) {
-                let tip = if pushed {
-                    "Already pushed: can't uncommit"
-                } else {
-                    "Uncommit (git reset HEAD^ --soft)"
-                };
-                undo_button = components::with_tooltip(undo_button, tip, true);
-            }
-            let last = div()
-                .col()
                 .w_px(width)
-                .child(line(colors.border_variant))
-                .child(
-                    div()
-                        .row()
-                        .w_px(width)
-                        .h_px(LAST_COMMIT_H - 1.0)
-                        .pt(Space::S6)
-                        .gap(Space::S8)
-                        .items_center()
-                        .child(
-                            label("Last commit")
-                                .size(LabelSize::Medium)
-                                .color(colors.text_placeholder),
-                        )
-                        .child(open)
-                        .child(undo_button),
-                );
-            rows.push(last.into());
-            height += FOOTER_GAP.px() + LAST_COMMIT_H;
+                .h_px(NOTE_H)
+                .gap(Space::S6)
+                .items_center()
+                .child(icon(IconKind::Check).size(12.0).color(colors.icon_muted))
+                .child(grow(
+                    label(done)
+                        .size(LabelSize::Medium)
+                        .color(colors.text_muted)
+                        .truncate(),
+                ));
+            if !amended {
+                let undo = self.fixed(UNCOMMIT);
+                let mut link = div()
+                    .row()
+                    .h_px(NOTE_H)
+                    .px(Space::S4)
+                    .rounded(Radius::Small)
+                    .items_center()
+                    .on_click(undo)
+                    .child(
+                        label("Undo")
+                            .size(LabelSize::Medium)
+                            .color(colors.text_accent),
+                    );
+                if self.hot(undo) {
+                    link = components::with_tooltip(
+                        link.bg(colors.ghost_element_hover),
+                        "Uncommit, keeping the changes staged",
+                        true,
+                    );
+                }
+                row = row.child(link);
+            }
+            rows.push(row.into());
+            height += FOOTER_GAP.px() + NOTE_H;
         }
         (rows, height)
+    }
+
+    /// One line naming the repos on another branch than the workspace's; a click offers to switch or keep them.
+    fn drift_warning(&self, width: f32, scan: &Scan) -> Option<Node> {
+        let colors = theme();
+        let workspace_branch = self.workspace_branch(scan);
+        let drifted: Vec<String> = (0..self.sources.len())
+            .filter_map(|index| match self.other_branch(scan, index) {
+                Some((branch, false)) => {
+                    Some(format!("{} is on {branch}", self.source_name_of(index)))
+                }
+                _ => None,
+            })
+            .collect();
+        if drifted.is_empty() {
+            return None;
+        }
+        let id = self.fixed(DRIFT_CHIP);
+        let mut row = div()
+            .row()
+            .w_px(width)
+            .h_px(NOTE_H)
+            .px(Space::S4)
+            .gap(Space::S6)
+            .rounded(Radius::Small)
+            .items_center()
+            .on_click(id)
+            .child(icon(IconKind::Warning).size(12.0).color(colors.warning))
+            .child(grow(
+                label(format!("{}, not {workspace_branch}", drifted.join(", ")))
+                    .size(LabelSize::Medium)
+                    .color(colors.warning)
+                    .truncate(),
+            ));
+        if self.hot(id) {
+            row = components::with_tooltip(
+                row.bg(colors.ghost_element_hover),
+                "Switch it to the workspace branch, or keep it",
+                true,
+            );
+        }
+        Some(row.into())
+    }
+}
+
+/// "to api", "to api, web", "to 3 repos"; an amend with nothing staged names its repo the same way.
+fn commit_targets_text(targets: &[commit_area::CommitTarget], amend: bool) -> String {
+    let preposition = if amend { "in" } else { "to" };
+    match targets {
+        [] => "no repo".to_string(),
+        [one] => format!("{preposition} {}", one.repo),
+        [one, two] => format!("{preposition} {}, {}", one.repo, two.repo),
+        many => format!("{preposition} {} repos", many.len()),
     }
 }
