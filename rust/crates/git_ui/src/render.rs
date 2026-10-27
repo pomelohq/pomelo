@@ -539,23 +539,7 @@ impl GitPanel {
                 } else {
                     *reviewed as f32 / *total as f32
                 };
-                const BAR_W: f32 = 90.0;
-                let fill_w = ((BAR_W - 4.0) * fraction.max(0.02)).min(BAR_W - 4.0);
-                let bar = div()
-                    .row()
-                    .w_px(BAR_W)
-                    .h_px(8.0)
-                    .p(Space::S2)
-                    .rounded(Radius::Small)
-                    .bg(colors.background)
-                    .border(1.0, colors.border_variant)
-                    .child(
-                        div()
-                            .w_px(fill_w)
-                            .h_px(4.0)
-                            .rounded(Radius::XSmall)
-                            .bg(colors.info),
-                    );
+                let bar = components::progress_bar(fraction).width(90.0);
                 div()
                     .row()
                     .h_px(rows::PROGRESS_H)
@@ -587,31 +571,17 @@ impl GitPanel {
                 self.pull_request_block(index, *repo, pull_request)
             }
             Row::CreatePullRequest { .. } => {
-                let mut button = div()
-                    .row()
-                    .h_px(30.0)
-                    .px(Space::S8)
-                    .gap(Space::S6)
-                    .rounded(Radius::Medium)
-                    .items_center()
-                    .border(1.0, colors.text_accent.alpha(0.4))
-                    .on_click(self.id(index, Control::Main))
-                    .child(icon(IconKind::Plus).size(12.0).color(colors.text_accent))
-                    .child(grow(
-                        label("Create Pull Request")
-                            .size(LabelSize::Small)
-                            .color(colors.text_accent)
-                            .truncate(),
-                    ));
-                if self.hovered_row() == Some(index) {
-                    button = button.bg(colors.ghost_element_hover);
-                }
+                let id = self.id(index, Control::Main);
+                let button = components::button(id, "Create Pull Request")
+                    .icon(Some(IconKind::Plus))
+                    .hovered((self.hovered_row() == Some(index)).then_some(id));
                 self.mark_keyboard_row(
                     index,
                     div()
-                        .col()
+                        .row()
                         .h_px(rows::CREATE_PR_H)
                         .px(Space::S2)
+                        .items_center()
                         .child(button),
                 )
             }

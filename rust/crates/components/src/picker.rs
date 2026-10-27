@@ -8,7 +8,7 @@ pub const PICKER_HEAD_HEIGHT: f32 = 36.0;
 /// foot. The caller owns the query field and the rows, so selection and scrolling stay with it.
 pub struct Picker {
     width: f32,
-    query: Node,
+    query: Option<Node>,
     rows: Vec<Node>,
     empty: String,
     footer: Option<Node>,
@@ -17,7 +17,18 @@ pub struct Picker {
 pub fn picker(width: f32, query: impl Into<Node>) -> Picker {
     Picker {
         width,
-        query: query.into(),
+        query: Some(query.into()),
+        rows: Vec::new(),
+        empty: "No matches".into(),
+        footer: None,
+    }
+}
+
+/// A picker with nothing to type, for a list stepped through by keys (the tab switcher).
+pub fn picker_list(width: f32) -> Picker {
+    Picker {
+        width,
+        query: None,
         rows: Vec::new(),
         empty: "No matches".into(),
         footer: None,
@@ -69,14 +80,11 @@ impl Picker {
         } else {
             div().col().py(Space::S4).children(self.rows)
         };
-        let mut frame = card()
-            .padding(0.0)
-            .raised()
-            .render()
-            .w_px(self.width)
-            .child(picker_head(self.query))
-            .child(divider())
-            .child(body);
+        let mut frame = card().padding(0.0).raised().render().w_px(self.width);
+        if let Some(query) = self.query {
+            frame = frame.child(picker_head(query)).child(divider());
+        }
+        frame = frame.child(body);
         if let Some(footer) = self.footer {
             frame = frame.child(divider()).child(footer);
         }

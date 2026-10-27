@@ -7,6 +7,7 @@ pub struct Chip {
     icon: Option<IconKind>,
     fill: Option<Rgba>,
     border: Option<Rgba>,
+    max_width: Option<f32>,
 }
 
 pub fn chip(label: impl Into<String>) -> Chip {
@@ -16,6 +17,7 @@ pub fn chip(label: impl Into<String>) -> Chip {
         icon: None,
         fill: None,
         border: None,
+        max_width: None,
     }
 }
 
@@ -40,6 +42,19 @@ impl Chip {
         self
     }
 
+    /// Text, fill and edge all in one color, for a tag that names a kind (a plan, a scope, a label).
+    pub fn tinted(self, color: Rgba) -> Self {
+        self.color(color)
+            .fill(color.alpha(0.14))
+            .border(color.alpha(0.3))
+    }
+
+    /// Truncates the label past this width, for a free-form value in a fixed column.
+    pub fn max_width(mut self, width: f32) -> Self {
+        self.max_width = Some(width);
+        self
+    }
+
     pub fn render(self) -> Div {
         let colors = theme();
         let ink = self.color.unwrap_or(colors.text);
@@ -55,12 +70,17 @@ impl Chip {
         if let Some(kind) = self.icon {
             chip = chip.child(ui::icon(kind).size(10.0).color(ink));
         }
-        chip.child(
-            ui::label(self.label)
-                .size(LabelSize::XSmall)
-                .mono()
-                .color(ink),
-        )
+        let text = ui::label(self.label)
+            .size(LabelSize::XSmall)
+            .mono()
+            .color(ink);
+        match self.max_width {
+            Some(max) => {
+                let width = ui::measure(&text.clone().into()).0.min(max);
+                chip.child(div().row().w_px(width).child(text.truncate()))
+            }
+            None => chip.child(text),
+        }
     }
 }
 
