@@ -1,6 +1,8 @@
 use components::MenuItem;
 use ui::{div, icon, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
 
+use ui::inspect::{Inspect, Inspected};
+
 use crate::scene::{Board, Group};
 
 pub const LEFT: f32 = 248.0;
@@ -21,6 +23,7 @@ pub const ZOOM_IN: u64 = ACTIONS + 3;
 pub const ZOOM_OUT: u64 = ACTIONS + 4;
 pub const THEMES: u64 = ACTIONS + 5;
 pub const PAGES: u64 = ACTIONS + 6;
+pub const INSPECT: u64 = ACTIONS + 7;
 
 pub enum Click {
     Page(usize),
@@ -34,6 +37,7 @@ pub enum Click {
     ZoomIn,
     ZoomOut,
     Hide,
+    Inspect,
 }
 
 pub fn decode(id: u64) -> Option<Click> {
@@ -51,6 +55,7 @@ pub fn decode(id: u64) -> Option<Click> {
             HIDE => Click::Hide,
             THEMES => Click::Themes,
             PAGES => Click::Pages,
+            INSPECT => Click::Inspect,
             _ => return None,
         },
     })
@@ -274,10 +279,35 @@ fn swatch(name: &str) -> Node {
         .into()
 }
 
-pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom: f32) -> Node {
+/// `inspector` is the inspected element's properties, shown in place of the themes while inspecting.
+pub fn right(
+    height: f32,
+    themes: &[(&str, ui::Appearance)],
+    current: &str,
+    zoom: f32,
+    inspector: Option<Node>,
+) -> Node {
+    let mut inspect_button = div()
+        .w_px(26.0)
+        .h_px(26.0)
+        .items_center()
+        .justify_center()
+        .rounded(Radius::Medium)
+        .on_click(INSPECT)
+        .hover_bg(theme().ghost_element_hover);
+    inspect_button = if inspector.is_some() {
+        inspect_button.bg(theme().element_selected).child(
+            icon(IconKind::Pointer)
+                .size(15.0)
+                .color(theme().icon_accent),
+        )
+    } else {
+        inspect_button.child(icon(IconKind::Pointer).size(15.0).color(theme().icon_muted))
+    };
     let zoom_bar = div()
         .items_center()
         .gap(Space::S2)
+        .child(inspect_button)
         .child(icon_button(ZOOM_OUT, IconKind::Dash))
         .child(
             div()
@@ -303,7 +333,180 @@ pub fn right(height: f32, themes: &[(&str, ui::Appearance)], current: &str, zoom
         .bg(theme().panel_background)
         .child(header("View", zoom_bar.into()))
         .child(components::divider())
-        .child(theme_list(RIGHT, themes, current))
+        .child(inspector.unwrap_or_else(|| theme_list(RIGHT, themes, current)))
+        .into()
+}
+
+/// The properties of the element under inspection, with each color named by its theme token where one matches.
+pub fn inspector(
+    element: Option<&Inspected>,
+    origin: (f32, f32),
+    parent: bool,
+    child: bool,
+) -> Node {
+    let mut panel = div().col().child(section("Inspect", None));
+    let Some(element) = element else {
+        return panel
+            .child(
+                div().px(Space::S16).pt(Space::S4).child(
+                    label("Double-click a board, then point at a part of it. Click pins it.")
+                        .size(LabelSize::Small)
+                        .color(theme().text_muted)
+                        .wrap(RIGHT - 32.0),
+                ),
+            )
+            .into();
+    };
+    let rect = element.rect;
+    let kind = match &element.what {
+        Inspect::Box { row: true, .. } => "Row",
+        Inspect::Box { .. } => "Column",
+        Inspect::Text { .. } => "Label",
+        Inspect::Icon { .. } => "Icon",
+    };
+    panel = panel
+        .child(property("Element", text_value(kind)))
+        .child(property(
+            "Size",
+            text_value(&format!("{} x {}", px(rect.w), px(rect.h))),
+        ))
+        .child(property(
+            "Position",
+            text_value(&format!(
+                "{}, {}",
+                px(rect.x - origin.0),
+                px(rect.y - origin.1)
+            )),
+        ));
+    match &element.what {
+        Inspect::Box {
+            padding,
+            gap,
+            background,
+            border,
+            border_color,
+            radius,
+            ..
+        } => {
+            let [top, right, bottom, left] = padding.map(px);
+            panel = panel
+                .child(property(
+                    "Padding",
+                    text_value(&format!("{top} {right} {bottom} {left}")),
+                ))
+                .child(property("Gap", text_value(&px(*gap))))
+                .child(property(
+                    "Background",
+                    background.map_or_else(|| text_value("none"), color_value),
+                ))
+                .child(property("Radius", text_value(&px(*radius))));
+            if *border > 0.0 {
+                panel = panel
+                    .child(property("Border", text_value(&px(*border))))
+                    .child(property("Border color", color_value(*border_color)));
+            }
+        }
+        Inspect::Text {
+            text,
+            size,
+            weight,
+            color,
+            font,
+        } => {
+            panel = panel
+                .child(property("Text", text_value(text)))
+                .child(property("Font", text_value(&format!("{font:?}"))))
+                .child(property("Font size", text_value(&px(*size))))
+                .child(property("Weight", text_value(&weight.to_string())))
+                .child(property("Color", color_value(*color)));
+        }
+        Inspect::Icon { kind, size, color } => {
+            panel = panel
+                .child(property("Icon", text_value(&format!("{kind:?}"))))
+                .child(property("Icon size", text_value(&px(*size))))
+                .child(property("Color", color_value(*color)));
+        }
+    }
+    let mut keys = Vec::new();
+    if parent {
+        keys.push("Up: parent");
+    }
+    if child {
+        keys.push("Down: child");
+    }
+    keys.push("Esc: unpin");
+    panel
+        .child(
+            div().px(Space::S16).pt(Space::S12).child(
+                label(keys.join("   "))
+                    .size(LabelSize::Mini)
+                    .color(theme().text_muted),
+            ),
+        )
+        .into()
+}
+
+fn px(value: f32) -> String {
+    let rounded = (value * 10.0).round() / 10.0;
+    format!("{rounded}")
+}
+
+fn property(name: &str, value: Node) -> Node {
+    div()
+        .py(Space::S4)
+        .items_center()
+        .gap(Space::S8)
+        .px(Space::S16)
+        .child(
+            div()
+                .w_px(84.0)
+                .child(label(name).size(LabelSize::Small).color(theme().text_muted)),
+        )
+        .child(div().flex(1.0).child(value))
+        .into()
+}
+
+fn text_value(text: &str) -> Node {
+    label(text)
+        .size(LabelSize::Small)
+        .wrap(RIGHT - 32.0 - 84.0 - 8.0)
+        .into()
+}
+
+fn color_value(color: Rgba) -> Node {
+    let hex = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let mut code = format!(
+        "#{:02X}{:02X}{:02X}",
+        hex(color.r),
+        hex(color.g),
+        hex(color.b)
+    );
+    if color.a < 1.0 {
+        code.push_str(&format!(" {}%", (color.a * 100.0).round()));
+    }
+    let mut text = div().col();
+    if let Some(token) = ui::theme_file::token_name(color) {
+        text = text.child(label(token).size(LabelSize::Small).mono());
+    }
+    div()
+        .items_center()
+        .gap(Space::S6)
+        .child(
+            div()
+                .w_px(12.0)
+                .h_px(12.0)
+                .rounded(Radius::Small)
+                .bg(color)
+                .border(1.0, theme().border),
+        )
+        .child(
+            text.child(
+                label(code)
+                    .size(LabelSize::Small)
+                    .mono()
+                    .color(theme().text_muted),
+            ),
+        )
         .into()
 }
 

@@ -1354,6 +1354,16 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     color,
                 ));
             }
+            crate::inspect::record(
+                Rect::new(area.x, top, lw.min(area.w), lh, Rgba::TRANSPARENT),
+                || crate::inspect::Inspect::Text {
+                    text: l.text.clone(),
+                    size: l.size,
+                    weight: l.weight,
+                    color: l.color,
+                    font: l.font,
+                },
+            );
             out.texts.push(Text {
                 x: area.x,
                 y: top,
@@ -1370,6 +1380,16 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
         }
         Node::Div(d) => {
             let bg = div_background(d);
+            let inspected = crate::inspect::record(area, || crate::inspect::Inspect::Box {
+                padding: d.pad,
+                gap: d.gap,
+                row: matches!(d.axis, Axis::Row),
+                background: d.bg,
+                border: d.border,
+                border_color: d.border_color,
+                radius: d.radius,
+            });
+            crate::inspect::enter(inspected);
             if let Some((width, color)) = d.ring {
                 out.rects.push(Rect {
                     x: area.x - width,
@@ -1445,6 +1465,7 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
                     pending,
                 );
             }
+            crate::inspect::leave(inspected);
         }
         Node::Icon(i) => {
             // Icons are real SVGs, rasterized to an alpha mask and tinted at draw time (in the renderer).
@@ -1452,6 +1473,14 @@ fn place(node: &Node, area: Rect, viewport: Rect, out: &mut Painted, pending: &m
             let s = rem(i.size);
             let cx = area.x + area.w / 2.0;
             let cy = area.y + area.h / 2.0;
+            crate::inspect::record(
+                Rect::new(cx - s / 2.0, cy - s / 2.0, s, s, Rgba::TRANSPARENT),
+                || crate::inspect::Inspect::Icon {
+                    kind: i.kind,
+                    size: i.size,
+                    color: i.color,
+                },
+            );
             out.icons.push(IconQuad {
                 x: cx - s / 2.0,
                 y: cy - s / 2.0,

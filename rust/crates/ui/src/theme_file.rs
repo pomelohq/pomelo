@@ -26,6 +26,92 @@ const ANSI: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
 
+/// Every named color a theme sets, as a theme file names it (the terminal palette aside).
+pub const TOKENS: [&str; 73] = [
+    "background",
+    "surface.background",
+    "elevated_surface.background",
+    "panel.background",
+    "border",
+    "border.variant",
+    "border.focused",
+    "border.selected",
+    "element.background",
+    "element.hover",
+    "element.active",
+    "element.selected",
+    "ghost_element.hover",
+    "ghost_element.active",
+    "text",
+    "text.muted",
+    "text.placeholder",
+    "text.accent",
+    "text.disabled",
+    "warning",
+    "warning.background",
+    "warning.border",
+    "success",
+    "error",
+    "error.background",
+    "error.border",
+    "hint",
+    "hint.background",
+    "hint.border",
+    "info",
+    "info.background",
+    "info.border",
+    "ignored",
+    "ignored.background",
+    "ignored.border",
+    "attention",
+    "attention.foreground",
+    "accent.background",
+    "accent.foreground",
+    "icon",
+    "icon.muted",
+    "icon.accent",
+    "title_bar.background",
+    "toolbar.background",
+    "tab_bar.background",
+    "tab.active_background",
+    "tab.inactive_background",
+    "editor.background",
+    "editor.foreground",
+    "editor.active_line.background",
+    "editor.gutter.background",
+    "editor.line_number",
+    "editor.active_line_number",
+    "editor.indent_guide",
+    "editor.indent_guide_active",
+    "editor.invisible",
+    "editor.highlighted_line.background",
+    "search.match_background",
+    "search.active_match_background",
+    "version_control.added",
+    "version_control.modified",
+    "version_control.deleted",
+    "link_text.hover",
+    "terminal.background",
+    "terminal.foreground",
+    "terminal.bright_foreground",
+    "terminal.dim_foreground",
+    "scrollbar.thumb.background",
+    "scrollbar.thumb.border",
+    "scrollbar.track.border",
+    "scrollbar.thumb.hover_background",
+    "panel.indent_guide",
+    "panel.focused_border",
+];
+
+/// The token `color` is in the current theme, if any; the first match wins where two tokens share a value.
+pub fn token_name(color: Rgba) -> Option<&'static str> {
+    let mut colors = crate::theme();
+    TOKENS
+        .iter()
+        .find(|token| slot(&mut colors, token).is_some_and(|slot| *slot == color))
+        .copied()
+}
+
 /// The field a token names, or `None` for tokens the app does not draw.
 fn slot<'a>(colors: &'a mut ThemeColors, token: &str) -> Option<&'a mut Rgba> {
     if let Some(name) = token.strip_prefix("terminal.ansi.") {
