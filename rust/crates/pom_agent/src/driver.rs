@@ -256,7 +256,7 @@ impl AgentDriver for ClaudeDriver {
                     let above = above.trim();
                     !above.is_empty() && above.chars().all(|c| c == INPUT_RULE)
                 });
-            ruled.then(|| rest.split_whitespace().collect::<Vec<_>>().join(" "))
+            ruled.then(|| unnumbered_images(&rest.split_whitespace().collect::<Vec<_>>().join(" ")))
         }) else {
             return false;
         };
@@ -269,6 +269,13 @@ impl AgentDriver for ClaudeDriver {
             .unwrap_or_default();
         let wanted: String = first_line
             .split_whitespace()
+            .map(|word| {
+                if is_image_path(word) {
+                    IMAGE_PLACEHOLDER
+                } else {
+                    word
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ")
             .chars()
@@ -277,6 +284,38 @@ impl AgentDriver for ClaudeDriver {
         !wanted.is_empty() && input.starts_with(&wanted)
     }
 }
+
+/// The input box shows a pasted image path as `[Image #N]`; the number is dropped so the path can match it.
+fn unnumbered_images(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(at) = rest.find(IMAGE_OPEN) {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + IMAGE_OPEN.len()..];
+        let digits = after.chars().take_while(char::is_ascii_digit).count();
+        if digits > 0 && after[digits..].starts_with(']') {
+            out.push_str(IMAGE_PLACEHOLDER);
+            rest = &after[digits + 1..];
+        } else {
+            out.push_str(IMAGE_OPEN);
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn is_image_path(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    (word.starts_with('/') || word.starts_with("~/") || word.starts_with("./"))
+        && IMAGE_EXTENSIONS
+            .iter()
+            .any(|extension| lower.ends_with(extension))
+}
+
+const IMAGE_OPEN: &str = "[Image #";
+const IMAGE_PLACEHOLDER: &str = "[Image #]";
+const IMAGE_EXTENSIONS: [&str; 5] = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
 
 /// Footers only a dialog draws under its choices.
 const DIALOG_FOOTERS: [&str; 2] = ["Esc to cancel", "Enter to confirm"];
@@ -398,6 +437,34 @@ mod tests {
     /// spinner it keeps redrawing above the dialog afterwards.
     const PERMISSION_CAPTURE: &[u8] =
         include_bytes!("../tests/fixtures/permission-screen-2.1.309.bin");
+    /// A lone image path pasted into the idle input box, which the agent folds to `[Image #1]`.
+    const IMAGE_FOLD_CAPTURE: &[u8] =
+        include_bytes!("../tests/fixtures/image-fold-screen-2.1.311.bin");
+    /// Four lines pasted into the idle input box, which the agent folds to `[Pasted text #1 +3 lines]`.
+    const LINES_FOLD_CAPTURE: &[u8] =
+        include_bytes!("../tests/fixtures/lines-fold-screen-2.1.311.bin");
+
+    #[test]
+    fn a_folded_paste_still_reads_as_the_prompt_waiting_unsent() {
+        let claude = driver("claude").expect("claude");
+        let image = rendered_at_holder_size(IMAGE_FOLD_CAPTURE);
+        assert!(claude.holds_unsent(&image, "/tmp/pom-capture/a.png"));
+        assert!(
+            !claude.holds_unsent(&image, "a different prompt"),
+            "an image is not any prompt"
+        );
+        let lines = rendered_at_holder_size(LINES_FOLD_CAPTURE);
+        assert!(claude.holds_unsent(
+            &lines,
+            "first line of the prompt\nsecond line\nthird line\nfourth line"
+        ));
+        let typed = vec![
+            "\u{2500}".repeat(20),
+            "\u{276F} see [Image #2] and fix it".to_string(),
+            "\u{2500}".repeat(20),
+        ];
+        assert!(claude.holds_unsent(&typed, "see ~/shots/bug.PNG and fix it"));
+    }
 
     #[test]
     fn the_captured_trust_prompt_reads_as_no_highlighted_above_yes() {
