@@ -432,16 +432,7 @@ impl BucketItem {
             } else {
                 format!("Nothing here is named like {}", self.find.text())
             };
-            return list
-                .child(
-                    div()
-                        .row()
-                        .px(Space::S12)
-                        .h_px(ROW_H)
-                        .items_center()
-                        .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
-                )
-                .into();
+            return list.child(components::empty_state(text).compact()).into();
         }
         for (index, folder) in folders {
             let (size, count) = match self.stats.get(folder) {

@@ -1817,16 +1817,13 @@ impl Panel for AgentEmptyPanel {
             .gap(Space::S8)
             .child(panel_header(self.title()))
             .child(
-                label("No agent open in this dock.")
-                    .size(LabelSize::Medium)
-                    .color(theme().text_muted),
-            )
-            .child(
-                div().row().child(
-                    crate::button(crate::AGENT_TOGGLE, "Start Agent")
-                        .size(components::ButtonSize::Medium)
-                        .icon(Some(IconKind::Sparkle)),
-                ),
+                components::empty_state("No agent open in this dock")
+                    .icon(IconKind::Sparkle)
+                    .action(
+                        crate::button(crate::AGENT_TOGGLE, "Start Agent")
+                            .size(components::ButtonSize::Medium)
+                            .icon(Some(IconKind::Sparkle)),
+                    ),
             )
             .into()
     }

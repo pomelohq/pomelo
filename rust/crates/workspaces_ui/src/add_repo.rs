@@ -119,14 +119,9 @@ impl AddRepoModal {
     }
 
     fn workspaces_section(&self) -> Node {
-        let colors = theme();
         let mut list = div().col().gap(Space::S6);
         if self.workspaces.is_empty() {
-            list = list.child(
-                label("No other workspaces yet")
-                    .size(LabelSize::Small)
-                    .color(colors.text_muted),
-            );
+            list = list.child(components::empty_state("No other workspaces yet").compact());
         }
         for (index, (branch, chosen)) in self.workspaces.iter().enumerate() {
             list = list.child(checkbox(WORKSPACE_BASE + index as u64, *chosen, branch));

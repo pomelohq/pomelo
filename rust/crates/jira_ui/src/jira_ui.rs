@@ -297,11 +297,7 @@ impl TicketItem {
             detail.comments.len()
         )));
         if detail.comments.is_empty() {
-            column = column.child(
-                label("No comments.")
-                    .size(LabelSize::Medium)
-                    .color(colors.text_muted),
-            );
+            column = column.child(components::empty_state("No comments").compact());
         }
         for (index, comment) in detail.comments.iter().enumerate() {
             let body = match self.comments.get_mut(index) {

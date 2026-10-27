@@ -2269,11 +2269,7 @@ fn stub_body(name: &str) -> Node {
         .col()
         .gap(Space::S10)
         .child(label(name).size_px(20.0).color(theme().text))
-        .child(
-            label("No settings here yet.")
-                .size(LabelSize::Medium)
-                .color(theme().text_muted),
-        )
+        .child(components::empty_state("No settings here yet."))
         .into()
 }
 
@@ -4201,8 +4197,8 @@ fn render_page_under(
     if searching && visible.iter().all(|v| !v) {
         return col
             .child(inset(
-                label("No matching settings.")
-                    .color(theme().text_muted)
+                components::empty_state("No matching settings")
+                    .icon(ui::IconKind::Search)
                     .into(),
             ))
             .into();

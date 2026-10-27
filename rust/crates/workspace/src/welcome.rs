@@ -257,11 +257,8 @@ pub fn welcome_page(
     }
     let list = if recent.is_empty() {
         div().col().gap(Space::S2).child(head).child(
-            div().row().px(Space::S8).py(Space::S6).child(
-                label("No projects yet. Created and opened projects show here.")
-                    .size(LabelSize::Small)
-                    .color(colors.text_placeholder),
-            ),
+            components::empty_state("No projects yet. Created and opened projects show here.")
+                .compact(),
         )
     } else {
         div().col().gap(Space::S2).child(head).children(recent)

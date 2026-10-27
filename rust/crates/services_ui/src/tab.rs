@@ -360,7 +360,6 @@ impl ServiceItem {
     }
 
     fn log_list(&mut self, shown: &[usize], width: f32, height: f32) -> Node {
-        let colors = theme();
         let rows = ((height - 8.0) / LOG_ROW_H).floor().max(1.0) as usize;
         self.visible_rows = rows;
         if self.follow || self.top + rows > shown.len() {
@@ -377,13 +376,7 @@ impl ServiceItem {
             } else {
                 "Not running. Start it to follow its output here."
             };
-            return list
-                .child(
-                    label(note)
-                        .size(LabelSize::Medium)
-                        .color(colors.text_placeholder),
-                )
-                .into();
+            return list.child(components::empty_state(note).compact()).into();
         }
         if !self.wrap {
             return self.unwrapped_list(shown, &query, text_w, height);

@@ -468,16 +468,7 @@ impl KeyspaceItem {
             } else {
                 "No key matches"
             };
-            return tree
-                .child(
-                    div()
-                        .row()
-                        .px(Space::S12)
-                        .h_px(ROW_H)
-                        .items_center()
-                        .child(label(text).size(LabelSize::Small).color(colors.text_muted)),
-                )
-                .into();
+            return tree.child(components::empty_state(text).compact()).into();
         }
         for line in self.lines() {
             match line {

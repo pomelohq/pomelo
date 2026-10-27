@@ -1039,15 +1039,7 @@ impl ServicesPanel {
                 None if self.filtering() => "No services match".to_string(),
                 None => "No services in pom.yml".to_string(),
             };
-            push(
-                div()
-                    .row()
-                    .h_px(ROW_H)
-                    .px(Space::S12)
-                    .items_center()
-                    .child(label(text).size(LabelSize::Small).color(theme().text_muted))
-                    .into(),
-            );
+            push(components::empty_state(text).compact().into());
         }
         for index in tree {
             if let Some(row) = self.rows.get(index) {

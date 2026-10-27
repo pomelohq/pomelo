@@ -2173,12 +2173,7 @@ impl Item for TableItem {
                     "No rows"
                 };
                 Some(ui::render(
-                    &div()
-                        .row()
-                        .justify_center()
-                        .pt(Space::S24)
-                        .child(label(text).color(colors.text_muted))
-                        .into(),
+                    &components::empty_state(text).into(),
                     middle_area,
                 ))
             }
