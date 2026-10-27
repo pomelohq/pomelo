@@ -2931,7 +2931,11 @@ impl WorkspaceView {
             .filter(|switcher| Self::tab_switcher_shown(switcher))
             .map(|switcher| crate::ModalView {
                 width: TAB_SWITCHER_W,
-                node: tab_switcher_node(switcher, self.session_menu_hover),
+                node: tab_switcher_preview(
+                    &switcher.entries,
+                    switcher.nav.selected,
+                    self.session_menu_hover,
+                ),
                 elevation: ui::Elevation::Modal,
             });
         let modal = match window_modal.or(tab_switcher) {
@@ -8461,9 +8465,13 @@ const PROMPT_BUTTON_SPAN: u64 = 16;
 const PROMPT_BACKDROP: u64 = PROMPT_BUTTON_BASE + PROMPT_BUTTON_SPAN;
 
 /// The tab switcher's list: each tab's icon and title, the highlighted one selected, the preview in italics.
-fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
+pub fn tab_switcher_preview(
+    entries: &[crate::pane_group_view::TabEntry],
+    selected: Option<usize>,
+    hovered: Option<u64>,
+) -> ui::Node {
     let colors = ui::theme();
-    let rows = switcher.entries.iter().enumerate().map(|(row, entry)| {
+    let rows = entries.iter().enumerate().map(|(row, entry)| {
         let glyph: ui::Node = match entry.icon {
             Some(kind) => ui::icon(kind).size(14.0).color(colors.icon_muted).into(),
             None => ui::material_icon(entry.material).size(14.0).into(),
@@ -8473,7 +8481,7 @@ fn tab_switcher_node(switcher: &TabSwitcher, hovered: Option<u64>) -> ui::Node {
             title = title.italic();
         }
         components::list_row(crate::TAB_SWITCHER_BASE + row as u64)
-            .selected(switcher.nav.selected == Some(row))
+            .selected(selected == Some(row))
             .hovered(hovered)
             .child(glyph)
             .child(title)
@@ -8874,6 +8882,11 @@ fn toast_row(message: &str, action: Option<&str>) -> (ui::Node, f32, f32) {
         action.map(|text| (text, TOAST_ACTION)),
         TOAST_CLOSE,
     )
+}
+
+/// A confirmation alone over a dimmed window of `w` by `h`, as the window draws it.
+pub fn prompt_preview(prompt: &crate::Prompt, w: f32, h: f32) -> Painted {
+    prompt_dialog(prompt, 0, w, h)
 }
 
 /// A toast alone, as the window draws it above the status bar.
