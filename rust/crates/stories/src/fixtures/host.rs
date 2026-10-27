@@ -733,191 +733,224 @@ pub fn connect_modal(step: &str) -> Option<remote_ui::ConnectHostModal> {
     Some(modal)
 }
 
+/// The window of a project on a host in the state `mode` names, its app kept alive so it can draw again.
+pub struct HostWindow {
+    app: ui::Application,
+    handle: ui::WindowHandle,
+    live: bool,
+    _watch: pom_remote::Watch,
+}
+
+impl HostWindow {
+    pub fn open(mode: &str, (width, height): (f32, f32), scale: f32) -> anyhow::Result<Self> {
+        let agents = mode == "agents";
+        let dropped = match mode {
+            "reconnecting" | "files-offline" => Some(pom_rpc::pty::LinkState::Reconnecting {
+                attempt: 3,
+                next_in: Duration::from_secs(2),
+            }),
+            "terminal-disconnected" => Some(pom_rpc::pty::LinkState::Disconnected {
+                reason:
+                    "lost dev: ssh: connect to host dev.example.net port 22: Operation timed out"
+                        .into(),
+            }),
+            _ => None,
+        };
+        let terminal = matches!(mode, "terminal" | "restarted")
+            || (dropped.is_some() && !mode.starts_with("files"));
+        let link = SharedLink::default();
+        let shell = (terminal || agents)
+            .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
+            .transpose()?
+            .map(|(client, server)| {
+                Arc::new(Shell {
+                    client,
+                    _server: server,
+                    link: link.clone(),
+                })
+            });
+        let board = Arc::new(Board {
+            shell,
+            pushes: agents,
+            link: link.clone(),
+            restarts: u64::from(mode == "restarted"),
+            older_pom: matches!(mode, "version" | "version-commands" | "version-updating")
+                .then(|| "0.1.0".to_string())
+                .or_else(|| (mode == "files-old-server").then(|| pom_remote::VERSION.to_string())),
+            serves_files: mode != "files-old-server",
+            serves_terminals: mode != "disconnected",
+            services: Some(window_facts()),
+            ..Board::default()
+        });
+        let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
+        watch.set_visible(true);
+        wait_until(&watch, |snapshot| {
+            snapshot.connection == Connection::Connected
+                && snapshot.status.is_some()
+                && snapshot.services.is_some()
+        });
+        if agents {
+            wait_until(&watch, |snapshot| !snapshot.presence.is_empty());
+        }
+        if let Some(state) = dropped {
+            if let Ok(mut current) = link.lock() {
+                *current = state;
+            }
+            board.down.store(true, Ordering::SeqCst);
+            wait_until(&watch, |snapshot| {
+                matches!(
+                    snapshot.connection,
+                    Connection::Reconnecting { .. } | Connection::Disconnected { .. }
+                )
+            });
+        }
+        if mode == "disconnected" {
+            board.down.store(true, Ordering::SeqCst);
+            watch.refresh_now();
+            wait_until(&watch, |snapshot| {
+                matches!(snapshot.connection, Connection::Disconnected { .. })
+            });
+        }
+        let snapshot = watch.snapshot();
+        let mut files_view = match mode {
+            "files-scanning" => Some(host_files(HostFilesMode::Partial)?),
+            "files-open" => Some(host_files(HostFilesMode::Whole)?),
+            "connected" => Some(host_files_opening(HostFilesMode::Whole, false)?),
+            "files-saving" => Some(host_files(HostFilesMode::Saving)?),
+            "files-offline" => Some(host_files(HostFilesMode::Offline)?),
+            "files-too-large" => Some(host_files(HostFilesMode::TooLarge)?),
+            _ => None,
+        };
+        let sessions = vec![
+            workspace::Session {
+                name: "myproject".into(),
+                path: "/home/dev/pom/myproject".into(),
+                host: Some("dev".into()),
+                ..workspace::Session::default()
+            },
+            workspace::Session {
+                name: "storefront".into(),
+                path: "/Users/me/code/storefront".into(),
+                ..workspace::Session::default()
+            },
+        ];
+        terminal_ui::set_terminal_defaults(15.0, "/bin/sh", 10_000);
+        terminal_ui::set_agent_font_size(15.0);
+        let mut app = ui::Application::new();
+        let (handle, entity) = app.open_raw_window(
+            ui::WindowOptions {
+                width,
+                height,
+                scale,
+                ..Default::default()
+            },
+            |_| {
+                let mut layout = workspace::Layout {
+                    project: Some(project_info(&snapshot)),
+                    ..Default::default()
+                };
+                layout.left.width = 256.0;
+                if mode == "connected" {
+                    layout.active_panels[workspace::DockPosition::Left.index()] =
+                        Some(workspace::Shown::Func(workspace::PaneKind::Services));
+                }
+                layout.right.width = 380.0;
+                layout.bottom.collapsed = true;
+                layout.bottom.width = 360.0;
+                workspace::WorkspaceView::new(layout)
+            },
+        );
+        entity.update(app.app_mut(), |view, _| {
+            view.set_sessions(sessions, Some(0));
+            view.set_usage(super::window_usage());
+            view.set_host_link(remote_ui::host_link(&snapshot.connection));
+            if mode == "create" {
+                view.set_workspace_ops(vec![creating_on_host()]);
+            }
+            view.set_side_panels(vec![Box::new(remote_panel(&watch))]);
+            let update = remote_ui::PomUpdate {
+                can_install: mode != "version-commands",
+                running: (mode == "version-updating")
+                    .then_some(pom_remote::update::UpdateStep::Download),
+                error: None,
+            };
+            let (notice, _) =
+                remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject", &update);
+            view.set_center_notice(Some(notice));
+            if let Some(files) = files_view.take() {
+                view.set_files_view(Some(Box::new(files)));
+            }
+            if mode == "restarted" {
+                view.show_toast(remote_ui::restart_notice("dev"), None);
+            }
+            if agents {
+                let root =
+                    std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
+                let dock = terminal_ui::TerminalPanel::remote_agent_dock(
+                    root,
+                    Arc::new(|| {}),
+                    Some(Box::new(|| {})),
+                );
+                view.set_terminal_views(None, Some(Box::new(dock)));
+                let item_id = services_ui::agent_item_id("feat-login", "dev");
+                view.open_agent_item(&item_id, false, || {
+                    services_ui::remote_agent_item(&watch, "dev", 1)
+                });
+                return;
+            }
+            if let Some(provider) = watch.terminals() {
+                let root =
+                    std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
+                let panel = terminal_ui::TerminalPanel::with_holders(
+                    root.clone(),
+                    Arc::new(|| {}),
+                    terminal_ui::HolderScope {
+                        place: terminal_ui::HolderPlace::Remote(provider),
+                        binary: std::path::PathBuf::new(),
+                        prefix: "term-myproject-feat-login".into(),
+                        group: None,
+                    },
+                );
+                view.set_terminal_views(Some(Box::new(panel)), None);
+                view.open_terminal_in(root);
+            }
+        });
+        let live = terminal || agents || mode.starts_with("files");
+        Ok(HostWindow {
+            app,
+            handle,
+            live,
+            _watch: watch,
+        })
+    }
+
+    /// True for a window whose terminal or files fill in over a few frames.
+    pub fn live(&self) -> bool {
+        self.live
+    }
+
+    pub fn frame(&mut self) -> Option<ui::Frame> {
+        self.app.draw(self.handle)
+    }
+}
+
 pub fn render(
     mode: &str,
     out: &str,
-    (width, height): (f32, f32),
+    size: (f32, f32),
     scale: f32,
     renderer: &mut ui::UiRenderer,
     crop: Option<(u32, u32, u32, u32)>,
 ) -> anyhow::Result<()> {
-    let agents = mode == "agents";
-    let dropped = match mode {
-        "reconnecting" | "files-offline" => Some(pom_rpc::pty::LinkState::Reconnecting {
-            attempt: 3,
-            next_in: Duration::from_secs(2),
-        }),
-        "terminal-disconnected" => Some(pom_rpc::pty::LinkState::Disconnected {
-            reason: "lost dev: ssh: connect to host dev.example.net port 22: Operation timed out"
-                .into(),
-        }),
-        _ => None,
-    };
-    let terminal = matches!(mode, "terminal" | "restarted")
-        || (dropped.is_some() && !mode.starts_with("files"));
-    let link = SharedLink::default();
-    let shell = (terminal || agents)
-        .then(|| pom_rpc::mock::connected(pom_rpc::Config::default(), serve_shell))
-        .transpose()?
-        .map(|(client, server)| {
-            Arc::new(Shell {
-                client,
-                _server: server,
-                link: link.clone(),
-            })
-        });
-    let board = Arc::new(Board {
-        shell,
-        pushes: agents,
-        link: link.clone(),
-        restarts: u64::from(mode == "restarted"),
-        older_pom: matches!(mode, "version" | "version-commands" | "version-updating")
-            .then(|| "0.1.0".to_string())
-            .or_else(|| (mode == "files-old-server").then(|| pom_remote::VERSION.to_string())),
-        serves_files: mode != "files-old-server",
-        serves_terminals: mode != "disconnected",
-        services: Some(window_facts()),
-        ..Board::default()
-    });
-    let watch = pom_remote::Watch::start(board.clone(), "feat-login", Arc::new(|| {}));
-    watch.set_visible(true);
-    wait_until(&watch, |snapshot| {
-        snapshot.connection == Connection::Connected
-            && snapshot.status.is_some()
-            && snapshot.services.is_some()
-    });
-    if agents {
-        wait_until(&watch, |snapshot| !snapshot.presence.is_empty());
-    }
-    if let Some(state) = dropped {
-        if let Ok(mut current) = link.lock() {
-            *current = state;
-        }
-        board.down.store(true, Ordering::SeqCst);
-        wait_until(&watch, |snapshot| {
-            matches!(
-                snapshot.connection,
-                Connection::Reconnecting { .. } | Connection::Disconnected { .. }
-            )
-        });
-    }
-    if mode == "disconnected" {
-        board.down.store(true, Ordering::SeqCst);
-        watch.refresh_now();
-        wait_until(&watch, |snapshot| {
-            matches!(snapshot.connection, Connection::Disconnected { .. })
-        });
-    }
-    let snapshot = watch.snapshot();
-    let mut files_view = match mode {
-        "files-scanning" => Some(host_files(HostFilesMode::Partial)?),
-        "files-open" => Some(host_files(HostFilesMode::Whole)?),
-        "connected" => Some(host_files_opening(HostFilesMode::Whole, false)?),
-        "files-saving" => Some(host_files(HostFilesMode::Saving)?),
-        "files-offline" => Some(host_files(HostFilesMode::Offline)?),
-        "files-too-large" => Some(host_files(HostFilesMode::TooLarge)?),
-        _ => None,
-    };
-    let sessions = vec![
-        workspace::Session {
-            name: "myproject".into(),
-            path: "/home/dev/pom/myproject".into(),
-            host: Some("dev".into()),
-            ..workspace::Session::default()
-        },
-        workspace::Session {
-            name: "storefront".into(),
-            path: "/Users/me/code/storefront".into(),
-            ..workspace::Session::default()
-        },
-    ];
-    terminal_ui::set_terminal_defaults(15.0, "/bin/sh", 10_000);
-    terminal_ui::set_agent_font_size(15.0);
-    let mut app = ui::Application::new();
-    let (handle, entity) = app.open_raw_window(
-        ui::WindowOptions {
-            width,
-            height,
-            scale,
-            ..Default::default()
-        },
-        |_| {
-            let mut layout = workspace::Layout {
-                project: Some(project_info(&snapshot)),
-                ..Default::default()
-            };
-            layout.left.width = 256.0;
-            if mode == "connected" {
-                layout.active_panels[workspace::DockPosition::Left.index()] =
-                    Some(workspace::Shown::Func(workspace::PaneKind::Services));
-            }
-            layout.right.width = 380.0;
-            layout.bottom.collapsed = true;
-            layout.bottom.width = 360.0;
-            workspace::WorkspaceView::new(layout)
-        },
-    );
-    entity.update(app.app_mut(), |view, _| {
-        view.set_sessions(sessions, Some(0));
-        view.set_usage(super::window_usage());
-        view.set_host_link(remote_ui::host_link(&snapshot.connection));
-        if mode == "create" {
-            view.set_workspace_ops(vec![creating_on_host()]);
-        }
-        view.set_side_panels(vec![Box::new(remote_panel(&watch))]);
-        let update = remote_ui::PomUpdate {
-            can_install: mode != "version-commands",
-            running: (mode == "version-updating")
-                .then_some(pom_remote::update::UpdateStep::Download),
-            error: None,
-        };
-        let (notice, _) =
-            remote_ui::remote_notice(&snapshot, watch.location(), "dev", "myproject", &update);
-        view.set_center_notice(Some(notice));
-        if let Some(files) = files_view.take() {
-            view.set_files_view(Some(Box::new(files)));
-        }
-        if mode == "restarted" {
-            view.show_toast(remote_ui::restart_notice("dev"), None);
-        }
-        if agents {
-            let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
-            let dock = terminal_ui::TerminalPanel::remote_agent_dock(
-                root,
-                Arc::new(|| {}),
-                Some(Box::new(|| {})),
-            );
-            view.set_terminal_views(None, Some(Box::new(dock)));
-            let item_id = services_ui::agent_item_id("feat-login", "dev");
-            view.open_agent_item(&item_id, false, || {
-                services_ui::remote_agent_item(&watch, "dev", 1)
-            });
-            return;
-        }
-        if let Some(provider) = watch.terminals() {
-            let root = std::path::PathBuf::from("/home/dev/pom/myproject/workspace--feat-login");
-            let panel = terminal_ui::TerminalPanel::with_holders(
-                root.clone(),
-                Arc::new(|| {}),
-                terminal_ui::HolderScope {
-                    place: terminal_ui::HolderPlace::Remote(provider),
-                    binary: std::path::PathBuf::new(),
-                    prefix: "term-myproject-feat-login".into(),
-                    group: None,
-                },
-            );
-            view.set_terminal_views(Some(Box::new(panel)), None);
-            view.open_terminal_in(root);
-        }
-    });
-    let live = terminal || agents || mode.starts_with("files");
+    let mut window = HostWindow::open(mode, size, scale)?;
+    let live = window.live();
     for _ in 0..if live { 40 } else { 4 } {
-        app.draw(handle).expect("frame");
+        window.frame().ok_or_else(|| anyhow::anyhow!("no frame"))?;
         if live {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    let frame = app.draw(handle).expect("frame");
+    let frame = window.frame().ok_or_else(|| anyhow::anyhow!("no frame"))?;
     let lights = super::scene_lights();
     let mut layers: Vec<ui::Layer> = vec![(
         frame.base.rects.as_slice(),

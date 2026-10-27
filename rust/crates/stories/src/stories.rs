@@ -19,6 +19,7 @@ pub mod remote;
 pub mod services;
 pub mod settings;
 pub mod usage;
+pub mod windows;
 pub mod workspace_forms;
 
 use std::io::BufWriter;
@@ -109,6 +110,7 @@ pub fn all() -> Vec<StoryDef> {
     all.extend(usage::stories());
     all.extend(environment::stories());
     all.extend(dev_services::stories());
+    all.extend(windows::stories());
     all
 }
 
@@ -236,6 +238,7 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     ("Organisms", "Module store", &["Module store"]),
     ("Organisms", "Usage", &["Usage page"]),
     ("Organisms", "Dev services", &["Dev services log"]),
+    ("Pages", "Windows", &["Windows"]),
 ];
 
 /// What a group is for, so someone picking a control knows which one fits.
@@ -320,6 +323,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Prompt" => "A confirmation over the dimmed window before something that cannot be undone or that drops work.",
         "Tab switcher" => "The open tabs by recency while ctrl-tab is held; the highlighted one opens on release.",
         "Workspace switcher" => "Every workspace by what needs you first, then main, then by ticket status, with the new-workspace command at the foot.",
+        "Windows" => "Whole windows as the app lays them out and paints them: the main window over a project on this Mac, and a project on a host with its editor, services, terminal and agents.",
         _ => return None,
     })
 }

@@ -11,7 +11,7 @@ mod e2e;
 
 use stories::fixtures::{
     crop_rgba, editor as editor_fixture, fixture_dir, forms as modal_fixture, git as git_fixture,
-    host as remote_fixture, scene_lights, window_usage,
+    host as remote_fixture, scene_lights, window_project, window_usage,
 };
 
 mod terminal_fixture;
@@ -3775,7 +3775,7 @@ fn main() -> anyhow::Result<()> {
         };
         let window = mode == "window";
         let project = if window {
-            Some(window_project())
+            Some(window_project(&fixture_root()))
         } else {
             project
         };
@@ -5281,7 +5281,7 @@ fn finder_fixture() -> Vec<String> {
 }
 
 fn switcher_fixture() -> workspace::WorkspaceSwitcher {
-    let project = window_project();
+    let project = window_project(&fixture_root());
     let agent = |branch: &str| match branch {
         "proj-101-login-google" => Some(workspace::AgentDot::ToolUse),
         "api-102-rate-limit" => Some(workspace::AgentDot::AwaitingInput),
@@ -5336,93 +5336,6 @@ fn window_crop() -> Option<(u32, u32, u32, u32)> {
     match parts[..] {
         [x, y, w, h] => Some((x, y, w, h)),
         _ => None,
-    }
-}
-
-fn window_project() -> workspace::ProjectInfo {
-    let pr =
-        |count: usize, severity: workspace::PrSeverity, trouble: Option<workspace::PrTrouble>| {
-            Some(workspace::PrSummary {
-                count,
-                severity,
-                trouble,
-            })
-        };
-    // branch, label, ticket status, its category, running services, PRs.
-    type Row = (
-        &'static str,
-        &'static str,
-        &'static str,
-        &'static str,
-        usize,
-        Option<workspace::PrSummary>,
-    );
-    let rows: [Row; 6] = [
-        ("main", "", "", "", 2, None),
-        (
-            "proj-101-login-google",
-            "Login with Google",
-            "In Progress",
-            "indeterminate",
-            3,
-            pr(2, workspace::PrSeverity::Ok, None),
-        ),
-        (
-            "api-102-rate-limit",
-            "Rate limit the public API",
-            "In Progress",
-            "indeterminate",
-            0,
-            None,
-        ),
-        (
-            "web-107-invoice-pdf",
-            "Invoice PDF export",
-            "In Review",
-            "indeterminate",
-            1,
-            pr(
-                1,
-                workspace::PrSeverity::Danger,
-                Some(workspace::PrTrouble::ChecksFailed),
-            ),
-        ),
-        (
-            "ops-112-queue-upgrade",
-            "Upgrade the queue worker",
-            "In Review",
-            "indeterminate",
-            0,
-            pr(
-                2,
-                workspace::PrSeverity::Warn,
-                Some(workspace::PrTrouble::Pending),
-            ),
-        ),
-        (
-            "investigate-0917-5fwg",
-            "investigate flaky spec",
-            "",
-            "",
-            0,
-            None,
-        ),
-    ];
-    workspace::ProjectInfo {
-        states: Vec::new(),
-        name: "myproject".into(),
-        branch: "main".into(),
-        config_path: fixture_root().join("pom.yml"),
-        host: None,
-        workspaces: rows.iter().map(|row| row.0.to_string()).collect(),
-        active: "proj-101-login-google".into(),
-        labels: rows.iter().map(|row| row.1.to_string()).collect(),
-        running: rows.iter().map(|row| row.4).collect(),
-        tickets: rows.iter().map(|row| row.2.to_string()).collect(),
-        ticket_categories: rows.iter().map(|row| row.3.to_string()).collect(),
-        prs: rows.iter().map(|row| row.5).collect(),
-        missing: Vec::new(),
-        repo_branches: Vec::new(),
     }
 }
 
