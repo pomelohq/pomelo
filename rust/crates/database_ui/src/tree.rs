@@ -364,6 +364,8 @@ struct Build<'a> {
     model: &'a Model,
     needle: String,
     rows: Vec<Row>,
+    /// Servers already said to be down, per repo, with the database whose line says it.
+    unreachable: HashMap<(String, String), String>,
 }
 
 impl Model {
@@ -480,6 +482,7 @@ impl Model {
             model: self,
             needle: self.filter.trim().to_lowercase(),
             rows: Vec::new(),
+            unreachable: HashMap::new(),
         };
         build.consoles();
         let found = build.found();
@@ -680,7 +683,23 @@ impl Build<'_> {
         }
         match model.loaded.get(&database.name) {
             None | Some(Loaded::Loading(_)) => self.rows.push(note("Connecting...")),
-            Some(Loaded::Failed(_)) => self.rows.push(Row::Failure { index }),
+            Some(Loaded::Failed(failure)) => {
+                if failure.error.server_answered() {
+                    self.rows.push(Row::Failure { index });
+                    return;
+                }
+                let down = (repo.to_string(), failure.error.server());
+                match self.unreachable.get(&down) {
+                    Some(first) => {
+                        let text = format!("Same cause as {first}");
+                        self.rows.push(note(&text));
+                    }
+                    None => {
+                        self.unreachable.insert(down, database.label.clone());
+                        self.rows.push(Row::Failure { index });
+                    }
+                }
+            }
             Some(Loaded::Schema(schema)) if database.engine == Engine::Redis => {
                 self.keyspaces(repo, index, schema)
             }
@@ -1004,6 +1023,34 @@ pub(crate) mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn one_line_says_a_server_is_down_for_every_database_on_it() {
+        let mut model = model();
+        for name in ["myproject_api", "myproject_api_test"] {
+            let refused = pom_db::ConnectError::new(
+                Engine::Postgres,
+                name,
+                "localhost",
+                5434,
+                "postgres",
+                "Connection refused".into(),
+            );
+            model.loaded.insert(
+                name.into(),
+                Loaded::Failed(Box::new(Failure::new(refused, "api".into()))),
+            );
+            model.opened.insert(database_key("api", name));
+        }
+        let (rows, _) = model.rows();
+        let outline = outline(&rows);
+        let api = &outline[3..7];
+        assert_eq!(
+            api,
+            ["  dev", "    failure", "  test", "    Same cause as dev"],
+            "{outline:?}"
+        );
     }
 
     #[test]

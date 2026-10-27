@@ -597,6 +597,24 @@ impl DatabasePanel {
         let place = readable(&database);
         match action {
             FailureAction::ToggleRaw => self.toggle_full_error(&name),
+            FailureAction::More => {
+                let Some(failure) = self.failure(&name) else {
+                    return;
+                };
+                let entries = failure
+                    .more_actions()
+                    .into_iter()
+                    .map(|action| Entry {
+                        label: action.label().to_string(),
+                        sep: action == FailureAction::FixWithAgent,
+                        action: Action::Fix(action),
+                        danger: false,
+                        disabled: false,
+                    })
+                    .collect();
+                self.menu = Some((Row::Failure { index }, entries));
+                self.requests.push(PanelRequest::OpenMenu);
+            }
             FailureAction::CopyError => self.copy(report, "Copied the error".into()),
             FailureAction::FixWithAgent => {
                 self.requests.push(PanelRequest::FixWithAgent(AgentFix {
@@ -795,6 +813,22 @@ impl DatabasePanel {
                 Ok(message) => {
                     self.toast(message);
                     self.load(&name);
+                    // Starting the shared services answers every database that waited on the same server.
+                    let waiting: Vec<String> = self
+                        .model
+                        .databases
+                        .iter()
+                        .filter(|database| {
+                            database.name != name
+                                && self
+                                    .failure(&database.name)
+                                    .is_some_and(|failure| !failure.error.server_answered())
+                        })
+                        .map(|database| database.name.clone())
+                        .collect();
+                    for other in waiting {
+                        self.load(&other);
+                    }
                 }
                 Err(error) => {
                     if let Some(failure) = self.failure_mut(&name) {
@@ -934,6 +968,11 @@ impl DatabasePanel {
         let place = database.as_ref().map(readable).unwrap_or_default();
         match action {
             Action::Header => {}
+            Action::Fix(fix) => {
+                if let Row::Failure { index } = row {
+                    self.failure_action(index, fix);
+                }
+            }
             Action::Refresh => self.refresh_row(&row),
             Action::CollapseAll => self.model.collapse_all(),
             Action::Collapse => {
@@ -2630,6 +2669,19 @@ mod tests {
         ));
         panel.click(DatabasePanel::failure_id(0, FailureAction::ToggleRaw));
         assert!(panel.failure(&name).is_some_and(|failure| failure.raw_open));
+        panel.click(DatabasePanel::failure_id(0, FailureAction::More));
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::OpenMenu]
+        ));
+        let items = panel.menu_items();
+        let labels: Vec<&str> = items.iter().map(|item| item.label.as_ref()).collect();
+        assert_eq!(labels, ["Fix with Claude", "Copy Error"]);
+        panel.menu_action(items[1].id);
+        assert!(matches!(
+            panel.take_requests().as_slice(),
+            [PanelRequest::Copy(_), PanelRequest::Toast(_)]
+        ));
     }
 
     #[test]
