@@ -193,3 +193,98 @@ pub fn create(root: &Path) -> anyhow::Result<()> {
     write(root, "pom.yml", "name: myproject\n")?;
     Ok(())
 }
+
+/// The three files the project search boards find `User.where(active: true)` in.
+pub fn create_search(root: &Path) -> anyhow::Result<()> {
+    let files = [
+        (
+            "api/app/controllers/users_controller.rb",
+            "class UsersController < ApplicationController\n  before_action :set_user, only: :show\n\n  def index\n    @users = User.where(active: true).order(:name)\n    render json: @users\n  end\n\n  def show\n    render json: @user\n  end\n\n  private\n\n  def set_user\n    @user = User.where(active: true).find(params[:id])\n  end\nend\n",
+        ),
+        (
+            "api/spec/requests/users_spec.rb",
+            "require \"rails_helper\"\n\nRSpec.describe \"Users\", type: :request do\n  describe \"GET /users\" do\n    before { create_list(:user, 30) }\n\n    it \"lists active users\" do\n      get \"/users\"\n      expect(User.where(active: true).count).to eq(30)\n    end\n  end\nend\n",
+        ),
+        (
+            "web/src/api/users.ts",
+            "import { client } from \"./client\";\n\nexport async function activeUsers() {\n  // mirrors User.where(active: true) on the server\n  return client.get(\"/users\");\n}\n",
+        ),
+    ];
+    for (path, text) in files {
+        write(root, path, text)?;
+    }
+    Ok(())
+}
+
+/// The project diagnostics tab over two files: two errors in the TypeScript client, a warning in the controller.
+pub fn project_diagnostics() -> Box<dyn workspace::Item> {
+    files_ui::project_diagnostics_preview(vec![
+        (
+            "web/src/api/users.ts".into(),
+            API_TS.to_string(),
+            vec![
+                (12, 41, 56, true, "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.", "ts", "2355"),
+                (13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304"),
+            ],
+        ),
+        (
+            "api/app/controllers/users_controller.rb".into(),
+            CONTROLLER.to_string(),
+            vec![(
+                14,
+                4,
+                6,
+                false,
+                "Style/GuardClause: Use a guard clause instead of wrapping the code inside a conditional expression.",
+                "rubocop",
+                "",
+            )],
+        ),
+    ])
+}
+
+/// The hover over the undefined `pageSize`: its error, then the function's signature and doc.
+pub fn hover() -> Vec<(ui::Node, ui::Rect)> {
+    files_ui::hover_preview(
+        "web/src/api/users.ts",
+        API_TS,
+        (13, 44),
+        vec![(13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304")],
+        "```typescript\nfunction fetchUsers({ page, per }: Page): Promise<User[]>\n```\n\nThe server caps per at 100; ask for less and page instead.",
+        (1092.0, 770.0),
+    )
+}
+
+/// The completions for `query` after `users.`, with the chosen one's doc beside them.
+pub fn completion(query: &str) -> Vec<(ui::Node, ui::Rect)> {
+    files_ui::completion_preview(
+        vec![
+            ("filter", "(predicate) => User[]", false),
+            ("find", "(predicate) => User", false),
+            ("findIndex", "(predicate) => number", false),
+            ("findLast", "(predicate) => User", false),
+            ("fill", "(value, start?, end?)", false),
+            ("flat", "(depth?) => User[]", false),
+            ("for in", "snippet", true),
+        ],
+        query,
+        "```typescript\nfind(predicate): User | undefined\n```\n\nReturns the value of the first element in the array where predicate is true, and undefined otherwise.",
+    )
+}
+
+/// Popovers where the editor places them, raised with their shadow, inset so the shadow shows.
+pub fn paint_popovers(popovers: Vec<(ui::Node, ui::Rect)>) -> ui::Painted {
+    let mut painted = ui::Painted::default();
+    for (node, rect) in popovers {
+        let rect = ui::Rect::new(rect.x + 24.0, rect.y + 24.0, rect.w, rect.h, rect.color);
+        painted
+            .rects
+            .extend(ui::elevation_shadow(rect, ui::Elevation::Elevated, 1.0));
+        let part = ui::render(&ui::div().col().child(node).into(), rect);
+        painted.rects.extend(part.rects);
+        painted.tris.extend(part.tris);
+        painted.texts.extend(part.texts);
+        painted.icons.extend(part.icons);
+    }
+    painted
+}

@@ -6,6 +6,7 @@ pub mod atoms;
 pub mod chrome;
 pub mod database;
 pub mod dev_services;
+pub mod editor;
 pub mod environment;
 pub mod fixtures;
 pub mod foundations;
@@ -18,6 +19,7 @@ pub mod pull_request;
 pub mod remote;
 pub mod services;
 pub mod settings;
+pub mod terminal;
 pub mod usage;
 pub mod windows;
 pub mod workspace_forms;
@@ -110,6 +112,8 @@ pub fn all() -> Vec<StoryDef> {
     all.extend(usage::stories());
     all.extend(environment::stories());
     all.extend(dev_services::stories());
+    all.extend(editor::stories());
+    all.extend(terminal::stories());
     all.extend(windows::stories());
     all
 }
@@ -238,6 +242,22 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     ("Organisms", "Module store", &["Module store"]),
     ("Organisms", "Usage", &["Usage page"]),
     ("Organisms", "Dev services", &["Dev services log"]),
+    (
+        "Organisms",
+        "Editor",
+        &[
+            "File tree",
+            "Editor",
+            "Editor popovers",
+            "Project search",
+            "Diagnostics",
+        ],
+    ),
+    (
+        "Organisms",
+        "Terminal",
+        &["Terminal panel", "Side agent bar"],
+    ),
     ("Pages", "Windows", &["Windows"]),
 ];
 
@@ -323,6 +343,13 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Prompt" => "A confirmation over the dimmed window before something that cannot be undone or that drops work.",
         "Tab switcher" => "The open tabs by recency while ctrl-tab is held; the highlighted one opens on release.",
         "Workspace switcher" => "Every workspace by what needs you first, then main, then by ticket status, with the new-workspace command at the foot.",
+        "File tree" => "The Files tree beside the editor: opened down to the file being edited, with git marks on what changed, and its context menu on a file.",
+        "Editor" => "The center pane over real files: tabs over a file with its diff marks, two panes split side by side, and a file opened read only.",
+        "Editor popovers" => "What opens over the text: find and replace, go to line in each of its states, the hover with a diagnostic and the docs, and completions with the chosen one's doc.",
+        "Project search" => "cmd-shift-f in a tab: the matches by file with replace and the include filter open, and the tab before the first search.",
+        "Diagnostics" => "Every problem the language servers report across the project, by file, each opened to its line.",
+        "Terminal panel" => "The terminal dock of a project on a host: a shell with its output, and the same shell kept open under the notice while the host is down.",
+        "Side agent bar" => "The strip over a side agent's console: its role, whether it may edit, what it started with, and Send to main. A narrow dock drops the send label, then the context, then the tag.",
         "Windows" => "Whole windows as the app lays them out and paints them: the main window over a project on this Mac, and a project on a host with its editor, services, terminal and agents.",
         _ => return None,
     })
