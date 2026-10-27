@@ -2974,17 +2974,9 @@ impl Layout {
             .map(|s| s.name.as_str())
             .unwrap_or("Open a Project");
         let active = hovered == Some(SESSION_TRIGGER) || self.session_menu;
-        let mut trigger = div()
-            .row()
-            .items_center()
-            .px(Space::S8)
-            .h_px(24.0)
-            .rounded(Radius::Medium)
-            .on_click(SESSION_TRIGGER)
-            .child(label(name).size(LabelSize::Medium).color(text_c()));
-        if active {
-            trigger = trigger.bg(theme().ghost_element_hover);
-        }
+        let trigger = components::button(SESSION_TRIGGER, name)
+            .kind(components::ButtonKind::Ghost)
+            .hovered(active.then_some(SESSION_TRIGGER));
         let mut bar_row = div().row().items_center().gap(Space::S2).h_px(TOP_BAR_H);
         if let Some(host) = self
             .project
@@ -3031,22 +3023,8 @@ impl Layout {
             ),
         );
         let chevron_hot = hovered == Some(APP_MENU) || self.app_menu_open;
-        let mut chevron = div()
-            .row()
-            .w_px(24.0)
-            .h_px(24.0)
-            .rounded(Radius::Medium)
-            .items_center()
-            .justify_center()
-            .on_click(APP_MENU)
-            .child(
-                ui::icon(ui::IconKind::ChevronDown)
-                    .size(12.0)
-                    .color(if chevron_hot { text_c() } else { text_dim_c() }),
-            );
-        if chevron_hot {
-            chevron = chevron.bg(theme().ghost_element_hover);
-        }
+        let chevron = components::icon_button(APP_MENU, ui::IconKind::ChevronDown)
+            .hovered(chevron_hot.then_some(APP_MENU));
         let mut right = div().row().items_center().gap(Space::S8).h_px(TOP_BAR_H);
         if let Some(waiting) = self.waiting_workspace() {
             right = right.child(
@@ -3104,24 +3082,7 @@ impl Layout {
 
     fn window_buttons(&self, hovered: Option<u64>) -> Node {
         let button = |id: u64, kind: ui::IconKind| -> Node {
-            let hot = hovered == Some(id);
-            let mut button = div()
-                .row()
-                .w_px(20.0)
-                .h_px(20.0)
-                .rounded(Radius::XLarge)
-                .items_center()
-                .justify_center()
-                .on_click(id)
-                .child(ui::icon(kind).size(14.0).color(if hot {
-                    theme().icon_muted
-                } else {
-                    theme().icon
-                }));
-            if hot {
-                button = button.bg(theme().ghost_element_hover);
-            }
-            button.into()
+            components::icon_button(id, kind).hovered(hovered).into()
         };
         let maximize = if self.maximized {
             ui::IconKind::WindowRestore
@@ -3131,7 +3092,7 @@ impl Layout {
         div()
             .row()
             .items_center()
-            .gap(Space::S12)
+            .gap(Space::S8)
             .pl(Space::S12)
             .child(button(WINDOW_MINIMIZE, ui::IconKind::WindowMinimize))
             .child(button(WINDOW_MAXIMIZE, maximize))

@@ -146,6 +146,22 @@ pub fn stories() -> Vec<StoryDef> {
                 })
             },
         ),
+        story(
+            "button-state-color",
+            "Button",
+            "State color",
+            BUTTON,
+            || {
+                still(|_, _| {
+                    alone(
+                        components::button(ID, "Update failed")
+                            .kind(ButtonKind::Ghost)
+                            .icon(Some(IconKind::Warning))
+                            .color(theme().warning),
+                    )
+                })
+            },
+        ),
         story("button-hovered", "Button", "Hovered", BUTTON, || {
             still(|_, _| alone(components::button(ID, "Restart").hovered(Some(ID))))
         }),

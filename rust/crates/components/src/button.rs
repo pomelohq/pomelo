@@ -69,6 +69,7 @@ pub struct Button {
     size: ButtonSize,
     leading: Option<IconKind>,
     keystroke: Option<String>,
+    color: Option<Rgba>,
     enabled: bool,
     hovered: bool,
 }
@@ -81,6 +82,7 @@ pub fn button(id: u64, text: impl Into<String>) -> Button {
         size: ButtonSize::Small,
         leading: None,
         keystroke: None,
+        color: None,
         enabled: true,
         hovered: false,
     }
@@ -104,6 +106,12 @@ impl Button {
 
     pub fn keystroke(mut self, keystroke: Option<&str>) -> Self {
         self.keystroke = keystroke.map(str::to_string);
+        self
+    }
+
+    /// Text and icon in a state color, for a ghost button that also reports a state (an update that failed).
+    pub fn color(mut self, color: Rgba) -> Self {
+        self.color = Some(color);
         self
     }
 
@@ -138,6 +146,7 @@ impl Button {
             ButtonKind::Secondary | ButtonKind::Ghost | ButtonKind::Agent => colors.text,
             ButtonKind::Danger => colors.error,
         };
+        let ink = button.color.unwrap_or(ink);
         let mut node = div()
             .row()
             .items_center()
@@ -174,7 +183,7 @@ impl Button {
             }
         }
         if let Some(kind) = button.leading {
-            let glyph = if button.kind == ButtonKind::Agent {
+            let glyph = if button.kind == ButtonKind::Agent && button.color.is_none() {
                 agent_tint()
             } else {
                 ink
