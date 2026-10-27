@@ -190,6 +190,7 @@ fn ticking_in_not_staged_stages_and_unticking_in_staged_unstages() {
     write(&root, "app.rs", "one\ntwo\n");
     write(&root, "src/deep/new.rs", "a\n");
     let mut panel = panel(vec![source("api", &root, "feat")]);
+    panel.set_view(true, true);
     let shown = texts(&mut panel);
     assert!(shown.contains("Changes|2"), "{shown}");
     assert!(shown.contains("|api|"), "{shown}");
@@ -243,6 +244,47 @@ fn ticking_in_not_staged_stages_and_unticking_in_staged_unstages() {
         !texts(&mut panel).contains("Staged|1|app.rs"),
         "the section folds"
     );
+}
+
+#[test]
+fn each_file_shows_once_with_its_box_saying_how_much_is_staged() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = repo(temp.path(), "api", &["app.rs", "lib.rs"], "feat");
+    write(&root, "app.rs", "one\ntwo\n");
+    write(&root, "new.rs", "a\n");
+    let mut panel = panel(vec![source("api", &root, "feat")]);
+    let shown = texts(&mut panel);
+    assert!(
+        !shown.contains("Not staged") && !shown.contains("|Staged|"),
+        "one list per repo: {shown}"
+    );
+
+    let app = id_at(&mut panel, "app.rs");
+    panel.click(app + CHECK);
+    panel.wait_for_scan();
+    assert_eq!(staged(&root), "app.rs");
+
+    write(&root, "app.rs", "one\ntwo\nthree\n");
+    panel.refresh();
+    panel.wait_for_scan();
+    let shown = texts(&mut panel);
+    assert_eq!(
+        shown.matches("|app.rs|").count(),
+        1,
+        "a partly staged file still shows once: {shown}"
+    );
+    let app = id_at(&mut panel, "app.rs");
+    panel.click(app + CHECK);
+    panel.wait_for_scan();
+    assert_eq!(
+        git_out(&root, &["diff", "--name-only"]),
+        "",
+        "ticking a partly staged file stages the rest"
+    );
+    let app = id_at(&mut panel, "app.rs");
+    panel.click(app + CHECK);
+    panel.wait_for_scan();
+    assert_eq!(staged(&root), "", "unticking unstages");
 }
 
 #[test]

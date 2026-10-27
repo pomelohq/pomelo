@@ -259,7 +259,7 @@ impl GitPanel {
             pull_requests: None,
             tab: Tab::Changes,
             tree_view: true,
-            group_by_staging: true,
+            group_by_staging: false,
             timeline: false,
             folded: HashSet::new(),
             excluded: HashSet::new(),
