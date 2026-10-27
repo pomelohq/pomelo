@@ -256,8 +256,6 @@ impl Failure {
             .flex(1.0)
             .h_px(LINE_H)
             .gap(Space::S6)
-            .px(Space::S4)
-            .rounded(Radius::Small)
             .items_center()
             .on_click(toggle_id)
             .child(icon(IconKind::Warning).size(12.0).color(tone))
@@ -284,7 +282,7 @@ impl Failure {
             );
         if toggle_hot {
             cause = components::with_tooltip(
-                cause.bg(colors.ghost_element_hover),
+                cause,
                 if self.raw_open {
                     "Hide details"
                 } else {
@@ -293,12 +291,11 @@ impl Failure {
                 true,
             );
         }
-        // Under the cause, lined up with its text: the panel is too narrow for the cause and a fix on one line.
+        // Under the cause: the panel is too narrow for the cause and a fix on one line.
         let mut fixes = div()
             .row()
             .w_px(width)
             .h_px(LINE_H)
-            .pl(Space::Px(4.0 + 12.0 + 6.0))
             .gap(Space::S4)
             .items_center();
         match &self.busy {
@@ -333,7 +330,7 @@ impl Failure {
             .child(fixes);
         if let Some(error) = &self.action_error {
             block = block.child(
-                div().row().px(Space::S4).child(
+                div().row().child(
                     label(fix_summary(error))
                         .size(LabelSize::Small)
                         .color(colors.error)
@@ -423,16 +420,22 @@ impl Failure {
                 div()
                     .row()
                     .w_px(inner)
-                    .gap(Space::S6)
+                    .h_px(22.0)
+                    .items_center()
                     .child(
-                        label(raw)
-                            .size(LabelSize::Mini)
-                            .mono()
-                            .color(colors.text)
-                            .wrap(inner - 28.0),
+                        label("error")
+                            .size(LabelSize::Small)
+                            .color(colors.text_placeholder),
                     )
                     .child(div().flex(1.0))
                     .child(copy),
+            )
+            .child(
+                label(raw)
+                    .size(LabelSize::Mini)
+                    .mono()
+                    .color(colors.text)
+                    .wrap(inner),
             )
             .into()
     }
