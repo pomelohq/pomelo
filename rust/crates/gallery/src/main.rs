@@ -557,7 +557,7 @@ impl Gallery {
                         .bg(ui::theme().panel_background)
                         .child(story.render(area.w, area.h))
                         .into();
-                    live = ui::render_interactive(
+                    let frame = ui::paint_frame_interactive(
                         &node,
                         area,
                         ui::Interaction {
@@ -565,13 +565,29 @@ impl Gallery {
                             pressed: None,
                         },
                     );
-                    live_overlays = story.overlays(area);
+                    live = frame.base;
+                    live.hits = frame.hits;
+                    live_overlays = frame.overlays;
+                    live_overlays.extend(story.overlays(area));
                 }
                 let x0 = area.x.max(canvas.x);
                 let y0 = area.y.max(0.0);
                 let x1 = (area.x + area.w).min(canvas.x + canvas.w);
                 let y1 = (area.y + area.h).min(canvas.h);
                 live_clip = Some((x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)));
+                let visible = ui::Rect::new(
+                    x0,
+                    y0,
+                    (x1 - x0).max(0.0),
+                    (y1 - y0).max(0.0),
+                    ui::Rgba::TRANSPARENT,
+                );
+                for overlay in &mut live_overlays {
+                    overlay.clip = Some(match overlay.clip {
+                        Some(clip) => intersect(clip, visible),
+                        None => visible,
+                    });
+                }
             }
         }
         self.focused_hits = live.hits.clone();
@@ -1383,4 +1399,12 @@ fn main() -> anyhow::Result<()> {
     let mut gallery = Gallery::new();
     event_loop.run_app(&mut gallery)?;
     Ok(())
+}
+
+fn intersect(a: ui::Rect, b: ui::Rect) -> ui::Rect {
+    let x = a.x.max(b.x);
+    let y = a.y.max(b.y);
+    let w = ((a.x + a.w).min(b.x + b.w) - x).max(0.0);
+    let h = ((a.y + a.h).min(b.y + b.h) - y).max(0.0);
+    ui::Rect::new(x, y, w, h, ui::Rgba::TRANSPARENT)
 }
