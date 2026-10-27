@@ -74,13 +74,12 @@ impl GitStory {
         if self.scanned || panel.scanning() {
             return;
         }
-        if matches!(self.repos, Repos::Committed) {
-            if panel.text("Paginate the users list")
-                && panel.key(workspace::EditKey::ReplaceAll, false)
-            {
-                self.repos = Repos::Changes(fixture::State::Staged);
-                return;
-            }
+        if matches!(self.repos, Repos::Committed)
+            && panel.text("Paginate the users list")
+            && panel.key(workspace::EditKey::ReplaceAll, false)
+        {
+            self.repos = Repos::Changes(fixture::State::Staged);
+            return;
         }
         self.scanned = true;
         if self.tab == git_ui::Tab::Remote {
