@@ -58,11 +58,27 @@ pub(crate) struct Scanner {
     pub sources: Arc<Vec<RepoSource>>,
     pub scan: Arc<Mutex<Arc<Scan>>>,
     pub scanning: Arc<AtomicBool>,
+    /// A refresh asked while a read ran: what it must see may have changed after that read began.
+    pub again: Arc<AtomicBool>,
     pub waker: Arc<dyn Fn() + Send + Sync>,
 }
 
 impl Scanner {
     pub fn run(&self) {
+        loop {
+            self.again.store(false, Ordering::SeqCst);
+            self.read();
+            if self.again.load(Ordering::SeqCst) {
+                continue;
+            }
+            self.scanning.store(false, Ordering::SeqCst);
+            if !self.again.load(Ordering::SeqCst) || self.scanning.swap(true, Ordering::SeqCst) {
+                return;
+            }
+        }
+    }
+
+    fn read(&self) {
         // Repos are read side by side: one after another, a few of them keep the panel waiting over a second.
         let repos: Vec<RepoScan> = std::thread::scope(|threads| {
             let handles: Vec<_> = self
@@ -83,9 +99,7 @@ impl Scanner {
                 })
                 .collect()
         });
-        let changed = self.publish(repos);
-        self.scanning.store(false, Ordering::Release);
-        if changed {
+        if self.publish(repos) {
             (self.waker)();
         }
     }
