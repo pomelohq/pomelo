@@ -595,6 +595,30 @@ pub fn stories() -> Vec<StoryDef> {
             || still(|width, _| tab_bar_board(width, false)),
         ),
         story(
+            "picker-list",
+            "Picker",
+            "No query, stepped by keys",
+            (340.0, 150.0),
+            || {
+                still(|_, _| {
+                    let rows = ["session.rs", "main.rs", "README.md"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, title)| {
+                            components::list_row(index as u64)
+                                .selected(index == 1)
+                                .child(ui::material_icon(ui::MaterialIcon::Document).size(14.0))
+                                .child(label(title).color(theme().text))
+                        });
+                    div()
+                        .col()
+                        .p(INSET)
+                        .child(components::picker_list(300.0).children(rows).render())
+                        .into()
+                })
+            },
+        ),
+        story(
             "picker-empty",
             "Picker",
             "No matches",

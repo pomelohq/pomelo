@@ -7,7 +7,7 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Instant;
 
 use pom_jira::{Board, SprintIssue};
-use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Radius, Rgba, Space};
+use ui::{deferred, div, label, theme, IconKind, LabelSize, Node, Space};
 use workspace::{InputField, WINDOW_MODAL_BASE};
 
 use crate::{TicketList, TicketSource};
@@ -396,47 +396,30 @@ impl TicketPicker {
     }
 
     fn suggestion_list(&self, width: f32, hovered: Option<u64>) -> Option<Node> {
-        let colors = theme();
         let suggestions = self.suggestions();
         let typed = self.field.text().trim().to_string();
         let placeholders = self.loading_list();
         if suggestions.is_empty() && typed.is_empty() && !placeholders {
             return None;
         }
-        let mut list = components::popover(width)
-            .render()
-            .on_click(SUGGESTIONS_SURFACE);
+        let mut list = components::picker_list(width);
         if placeholders {
             let seconds = self.loading_since.elapsed().as_secs_f32();
-            for (row, summary) in [0.62, 0.44, 0.7, 0.52].into_iter().enumerate() {
-                list = list.child(placeholder_row(seconds, row, summary * width * 0.6));
-            }
-            return Some(list.into());
-        }
-        if suggestions.is_empty() {
-            let note = format!("No ticket matches; {typed} is used as the key");
-            return Some(
-                list.child(
-                    div().row().h_px(28.0).px(Space::S8).items_center().child(
-                        label(note)
-                            .size(LabelSize::Small)
-                            .color(colors.text_muted)
-                            .truncate(),
-                    ),
-                )
-                .into(),
+            list = list.children(
+                [0.62, 0.44, 0.7, 0.52]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row, summary)| placeholder_row(seconds, row, summary * width * 0.6)),
             );
+        } else {
+            list = list
+                .empty(format!("No ticket matches; {typed} is used as the key"))
+                .children(suggestions.iter().enumerate().map(|(index, issue)| {
+                    let id = SUGGESTION_BASE + index as u64;
+                    suggestion_row(issue, id, index == self.highlighted, hovered)
+                }));
         }
-        for (index, issue) in suggestions.iter().enumerate() {
-            let id = SUGGESTION_BASE + index as u64;
-            list = list.child(suggestion_row(
-                issue,
-                id,
-                index == self.highlighted,
-                hovered == Some(id),
-            ));
-        }
-        Some(list.into())
+        Some(list.render().on_click(SUGGESTIONS_SURFACE).into())
     }
 
     /// Every board's sprint, then the backlog and the user's own tickets; the current one is accented.
@@ -474,7 +457,7 @@ fn placeholder_row(seconds: f32, row: usize, summary_width: f32) -> Node {
         .items_center()
         .gap(Space::S10)
         .h_px(28.0)
-        .px(Space::S8)
+        .px(Space::S10)
         .child(div().row().w_px(KEY_W).items_center().child(bar(64.0)))
         .child(
             div()
@@ -503,23 +486,13 @@ fn status_pill(issue: &SprintIssue) -> Node {
         .into()
 }
 
-fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool) -> Node {
+fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: Option<u64>) -> Node {
     let colors = theme();
-    div()
+    let cells = div()
         .row()
+        .flex(1.0)
         .items_center()
         .gap(Space::S10)
-        .h_px(28.0)
-        .px(Space::S8)
-        .rounded(Radius::Medium)
-        .on_click(id)
-        .bg(if highlighted {
-            colors.element_selected
-        } else if hovered {
-            colors.ghost_element_hover
-        } else {
-            Rgba::TRANSPARENT
-        })
         .child(
             div().row().w_px(KEY_W).items_center().child(
                 label(issue.key.clone())
@@ -551,6 +524,10 @@ fn suggestion_row(issue: &SprintIssue, id: u64, highlighted: bool, hovered: bool
                 } else {
                     Node::from(div())
                 }),
-        )
+        );
+    components::list_row(id)
+        .selected(highlighted)
+        .hovered(hovered)
+        .child(cells)
         .into()
 }

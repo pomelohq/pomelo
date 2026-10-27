@@ -1429,7 +1429,7 @@ mod tests {
         settle(&mut modal);
         let text = painted_text(&mut modal);
         assert!(
-            text.contains("BRANCH FOR WEB") && text.contains("FETCHED JUST NOW"),
+            text.contains("Use another branch in web") && text.contains("FETCHED JUST NOW"),
             "{text}"
         );
         assert!(

@@ -89,10 +89,7 @@ pub fn slices_for(text: &str) -> Option<Vec<ClipboardSlice>> {
 }
 
 use components::{button, key_chip, ButtonKind, MenuItem};
-use ui::{
-    div, folder_icon, label, render, theme, LabelSize, Node, Painted, Radius, Rect, Rgba, Space,
-    Text,
-};
+use ui::{div, label, render, theme, LabelSize, Node, Painted, Radius, Rect, Rgba, Space, Text};
 
 pub const TOP_BAR_H: f32 = 40.0;
 pub const STATUS_BAR_H: f32 = 28.0; // the thin status strip at the very bottom (a component, not a dock)
@@ -1123,9 +1120,9 @@ pub const SESSION_REVEAL_BASE: u64 = 500;
 const MENU_PAD: f32 = 4.0;
 const MENU_SEARCH_H: f32 = 30.0;
 const MENU_DIV_H: f32 = 9.0; // menu_divider() = py(4) + 1px line
-const MENU_HEADER_H: f32 = 24.0;
-const MENU_ITEM_H: f32 = 32.0;
-const MENU_ACTION_H: f32 = 32.0;
+const MENU_HEADER_H: f32 = components::MENU_ROW;
+const MENU_ITEM_H: f32 = components::MENU_ROW;
+const MENU_ACTION_H: f32 = components::MENU_ROW;
 const MENU_MAX_LIST: f32 = 300.0; // list region caps here, then scrolls
 
 /// The session to a remote project's host, as the title bar's host shows it.
@@ -3314,44 +3311,31 @@ impl Layout {
                 Rgba::TRANSPARENT,
             ),
         );
-        let mut footer = div()
-            .col()
-            .gap(Space::S2)
-            .child(action_row(
-                ui::icon(ui::IconKind::Plus)
-                    .size(14.0)
-                    .color(theme().icon_muted)
-                    .into(),
-                "New session...",
-                SESSION_NEW,
-                hovered,
-            ))
-            .child(action_row(
-                folder_icon().into(),
-                "Open a session...",
-                SESSION_OPEN,
-                hovered,
-            ))
-            .child(action_row(
-                ui::icon(ui::IconKind::Server)
-                    .size(14.0)
-                    .color(theme().icon_muted)
-                    .into(),
+        let mut actions = vec![
+            (ui::IconKind::Plus, "New session...", SESSION_NEW),
+            (ui::IconKind::Folder, "Open a session...", SESSION_OPEN),
+            (
+                ui::IconKind::Server,
                 "Connect to host...",
                 SESSION_CONNECT_HOST,
-                hovered,
-            ));
+            ),
+        ];
         if local_project {
-            footer = footer.child(action_row(
-                ui::icon(ui::IconKind::File)
-                    .size(14.0)
-                    .color(theme().icon_muted)
-                    .into(),
-                "Edit pom.yml",
-                SESSION_EDIT_CONFIG,
-                hovered,
-            ));
+            actions.push((ui::IconKind::File, "Edit pom.yml", SESSION_EDIT_CONFIG));
         }
+        let footer =
+            div()
+                .col()
+                .gap(Space::S2)
+                .children(actions.into_iter().map(|(kind, text, id)| {
+                    components::menu_row(
+                        &components::MenuItem {
+                            icon: Some(kind),
+                            ..components::MenuItem::new(id, text)
+                        },
+                        hovered,
+                    )
+                }));
         let footer: Node = footer.into();
         push_into(
             &mut fixed,
@@ -3368,13 +3352,7 @@ impl Layout {
         let mut col = div().col().gap(Space::S2);
         for &(header, item) in &entries {
             if let Some(h) = header {
-                col = col.child(
-                    div()
-                        .px(Space::S8)
-                        .h_px(MENU_HEADER_H)
-                        .items_center()
-                        .child(label(h).size(LabelSize::Small).color(text_dim_c())),
-                );
+                col = col.child(components::menu_header(h));
             } else if let Some(i) = item {
                 if let Some(s) = self.sessions.get(i) {
                     col = col.child(session_row(i, s, Some(i) == self.current_session, hovered));
@@ -3444,23 +3422,6 @@ fn caret(visible: bool) -> Node {
         .into()
 }
 
-fn action_row(icon: Node, text: &str, id: u64, hovered: Option<u64>) -> Node {
-    let mut r = div()
-        .row()
-        .items_center()
-        .gap(Space::S8)
-        .px(Space::S8)
-        .h_px(28.0)
-        .rounded(Radius::Medium)
-        .on_click(id)
-        .child(icon)
-        .child(label(text).size(LabelSize::Medium).color(text_c()));
-    if hovered == Some(id) {
-        r = r.bg(theme().element_hover);
-    }
-    r.into()
-}
-
 fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> Node {
     let id = SESSION_ITEM_BASE + i as u64;
     let action_ids = [
@@ -3503,7 +3464,7 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
         .row()
         .items_center()
         .px(Space::S8)
-        .h_px(28.0)
+        .h_px(components::MENU_ROW)
         .rounded(Radius::Medium)
         .on_click(id);
     if row_hover {
@@ -3539,7 +3500,7 @@ fn session_row(i: usize, s: &Session, current: bool, hovered: Option<u64>) -> No
         }
         r = r
             .justify_between()
-            .bg(theme().element_hover)
+            .bg(theme().tint())
             .child(left)
             .child(actions);
     } else {
