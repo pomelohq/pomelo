@@ -19,6 +19,17 @@ git = { path = "../git" }
 git_ui = { path = "../git_ui" }
 pull_request_ui = { path = "../pull_request_ui" }
 pom_forge = { path = "../pom_forge" }
+agent_usage_ui = { path = "../agent_usage_ui" }
+database_ui = { path = "../database_ui" }
+dev_services_ui = { path = "../dev_services_ui" }
+environment_ui = { path = "../environment_ui" }
+module_store = { path = "../module_store" }
+module_store_ui = { path = "../module_store_ui" }
+onboarding_ui = { path = "../onboarding_ui" }
+pom_db = { path = "../pom_db" }
+pom_jira = { path = "../pom_jira" }
+pom_proxy = { path = "../pom_proxy" }
+pom_secrets = { path = "../pom_secrets" }
 settings = { path = "../settings" }
 settings_ui = { path = "../settings_ui" }
 files_ui = { path = "../files_ui" }

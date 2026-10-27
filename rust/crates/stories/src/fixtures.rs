@@ -1,8 +1,10 @@
 //! The data stories and scenes draw: scratch projects on disk, a stand-in host, and the window's fixed facts.
 
 pub mod editor;
+pub mod forms;
 pub mod git;
 pub mod host;
+pub mod pull_request;
 pub mod settings;
 
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -116,7 +116,8 @@ fn palette(index: usize) -> Rgba {
 }
 
 pub fn format_tokens(tokens: f64) -> String {
-    match tokens {
+    // An empty f64 sum is -0.0, which would print as "-0".
+    match tokens + 0.0 {
         t if t >= 1e9 => format!("{:.1}B", t / 1e9),
         t if t >= 1e7 => format!("{:.0}M", t / 1e6),
         t if t >= 1e6 => format!("{:.1}M", t / 1e6),
@@ -126,6 +127,7 @@ pub fn format_tokens(tokens: f64) -> String {
 }
 
 pub fn format_cost(cost: f64) -> String {
+    let cost = cost + 0.0;
     if cost >= 100.0 {
         format!("${cost:.0}")
     } else {
@@ -1069,6 +1071,11 @@ mod tests;
 
 /// A page over made-up sessions, for headless snapshots.
 pub fn preview_page() -> UsagePage {
+    UsagePage::new(Rc::new(RefCell::new(preview_state())))
+}
+
+/// What `preview_page` shows, for previews that change it.
+pub fn preview_state() -> UsageState {
     let workspaces = ["feat-login", "PROJ-101", "main", "feat-pay"];
     let mut seed: u64 = 7;
     let mut next = || {
@@ -1112,7 +1119,7 @@ pub fn preview_page() -> UsagePage {
             });
         }
     }
-    let state = UsageState {
+    UsageState {
         turns,
         today,
         limits: UsageInfo {
@@ -1133,6 +1140,5 @@ pub fn preview_page() -> UsagePage {
             ..UsageInfo::default()
         },
         ..UsageState::default()
-    };
-    UsagePage::new(Rc::new(RefCell::new(state)))
+    }
 }

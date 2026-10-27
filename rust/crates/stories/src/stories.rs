@@ -3,12 +3,22 @@
 
 pub mod agents;
 pub mod atoms;
+pub mod database;
+pub mod dev_services;
+pub mod environment;
 pub mod fixtures;
 pub mod foundations;
 pub mod git;
+pub mod module_store;
 pub mod molecules;
+pub mod onboarding;
+pub mod page;
+pub mod pull_request;
+pub mod remote;
 pub mod services;
 pub mod settings;
+pub mod usage;
+pub mod workspace_forms;
 
 use std::io::BufWriter;
 use std::path::Path;
@@ -33,6 +43,16 @@ pub trait Story {
     /// does not show through it.
     fn overlay(&mut self, _area: ui::Rect) -> Option<ui::Painted> {
         None
+    }
+    /// Every layer that floats above the story, back to front, each with the region it is clipped to.
+    fn overlays(&mut self, area: ui::Rect) -> Vec<ui::Overlay> {
+        self.overlay(area)
+            .map(|painted| ui::Overlay {
+                painted,
+                clip: None,
+            })
+            .into_iter()
+            .collect()
     }
     /// The context menu a right click on `id` opens; empty when it opens none.
     fn context_menu(&mut self, _id: u64) -> Vec<components::MenuItem> {
@@ -78,6 +98,15 @@ pub fn all() -> Vec<StoryDef> {
     all.extend(git::stories());
     all.extend(settings::stories());
     all.extend(agents::stories());
+    all.extend(database::stories());
+    all.extend(pull_request::stories());
+    all.extend(remote::stories());
+    all.extend(onboarding::stories());
+    all.extend(workspace_forms::stories());
+    all.extend(module_store::stories());
+    all.extend(usage::stories());
+    all.extend(environment::stories());
+    all.extend(dev_services::stories());
     all
 }
 
@@ -177,6 +206,18 @@ pub const SECTIONS: &[(&str, &str, &[&str])] = &[
     ("Organisms", "Git", &["Git panel"]),
     ("Organisms", "Settings", &["Settings window"]),
     ("Organisms", "Agents", &["Agent dock"]),
+    (
+        "Organisms",
+        "Data",
+        &["Database panel", "Environment and secrets"],
+    ),
+    ("Organisms", "Pull requests", &["Pull request"]),
+    ("Organisms", "Remote", &["Remote"]),
+    ("Organisms", "Onboarding", &["Onboarding"]),
+    ("Organisms", "Workspace forms", &["Workspace forms"]),
+    ("Organisms", "Module store", &["Module store"]),
+    ("Organisms", "Usage", &["Usage page"]),
+    ("Organisms", "Dev services", &["Dev services log"]),
 ];
 
 /// What a group is for, so someone picking a control knows which one fits.
@@ -241,6 +282,15 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Service tab" => "One service opened in the center: status, URL, env, command and live logs.",
         "Git panel" => "The Git panel in the side dock over every repo of the workspace: what changed and what is staged, the branch against origin with its pull request, the history, and the same panel in the window of a project on a host.",
         "Settings window" => "The Settings window: a page per category, a search across them, and the host tab a remote window adds beside This Mac, with the host's settings read, being read or out of reach.",
+        "Database panel" => "The Database panel in the side dock: every database, keyspace and bucket of the workspace, opened to its tables and columns, still connecting, failed with the fix to run, or none in pom.yml.",
+        "Environment and secrets" => "The Environment tab with a service's env and where each value comes from, and the Secrets tab with the session's secrets, one being added and one armed for delete.",
+        "Pull request" => "The pull request tab of a branch: its overview with checks, reviews and the conversation, the Checks list, and the card it shows while looking one up, when there is none, or when the lookup failed.",
+        "Remote" => "A project on a host: Connect to Host from picking the host to picking the project, and the page in place of the editor for each state of the connection and of pom on the host.",
+        "Onboarding" => "The new project page: the repos, setup and review steps of its form, the run that sets the project up, a failed check and its fix, and the summary once it works.",
+        "Workspace forms" => "The forms that make and change workspaces: Create with its ticket and branch pickers, a taken branch, Rename, Add repo, Use branch and Pick repos.",
+        "Module store" => "The node_modules store: each repo's lockfile versions with the workspaces that share them, sizes being measured, nothing read yet, a store that could not be read, and the store of a host.",
+        "Usage page" => "What the project's agents spent, by workspace, agent or model, with the account's limits; costs can be hidden, and an empty page says no agent ran yet.",
+        "Dev services log" => "The requests through the dev proxy and the webhooks fanned out to workspaces, one opened with its bodies, filtered to errors, none yet, and the servers stopped or held by pom proxy.",
         "Agent dock" => "The agent dock: the workspace's Main agent pinned first in its tab bar, and the strip over an agent someone else drives, with Take over and the tool call waiting for Allow or Deny.",
         _ => return None,
     })
@@ -262,9 +312,12 @@ pub fn paint(story: &mut dyn Story, width: f32, height: f32) -> ui::Painted {
 }
 
 /// The story and what floats above it, one layer each.
-pub fn paint_layers(story: &mut dyn Story, width: f32, height: f32) -> Vec<ui::Painted> {
-    let mut layers = vec![paint(story, width, height)];
-    layers.extend(story.overlay(ui::Rect::new(
+pub fn paint_layers(story: &mut dyn Story, width: f32, height: f32) -> Vec<ui::Overlay> {
+    let mut layers = vec![ui::Overlay {
+        painted: paint(story, width, height),
+        clip: None,
+    }];
+    layers.extend(story.overlays(ui::Rect::new(
         0.0,
         0.0,
         width,
@@ -274,16 +327,16 @@ pub fn paint_layers(story: &mut dyn Story, width: f32, height: f32) -> Vec<ui::P
     layers
 }
 
-pub fn layers(painted: &[ui::Painted]) -> Vec<ui::Layer<'_>> {
+pub fn layers(painted: &[ui::Overlay]) -> Vec<ui::Layer<'_>> {
     painted
         .iter()
         .map(|layer| {
             (
-                layer.rects.as_slice(),
-                layer.tris.as_slice(),
-                layer.texts.as_slice(),
-                layer.icons.as_slice(),
-                None,
+                layer.painted.rects.as_slice(),
+                layer.painted.tris.as_slice(),
+                layer.painted.texts.as_slice(),
+                layer.painted.icons.as_slice(),
+                layer.clip.map(|clip| (clip.x, clip.y, clip.w, clip.h)),
             )
         })
         .collect()

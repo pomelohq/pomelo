@@ -63,6 +63,8 @@ fn tokens_and_costs_read_short() {
     assert_eq!(format_tokens(4_547_117_590.0), "4.5B");
     assert_eq!(format_cost(8006.84), "$8007");
     assert_eq!(format_cost(1.456), "$1.46");
+    assert_eq!(format_tokens(-0.0), "0");
+    assert_eq!(format_cost(-0.0), "$0.00");
     assert_eq!(day_name(0), "Thu");
 }
 

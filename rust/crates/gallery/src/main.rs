@@ -538,7 +538,7 @@ impl Gallery {
 
         let mut live = ui::Painted::default();
         let mut live_clip = None;
-        let mut live_overlay: Option<ui::Painted> = None;
+        let mut live_overlays: Vec<ui::Overlay> = Vec::new();
         if let Some(index) = self.focused {
             let canvas_x = canvas.x;
             let camera = self.camera;
@@ -565,7 +565,7 @@ impl Gallery {
                             pressed: None,
                         },
                     );
-                    live_overlay = story.overlay(area);
+                    live_overlays = story.overlays(area);
                 }
                 let x0 = area.x.max(canvas.x);
                 let y0 = area.y.max(0.0);
@@ -575,11 +575,14 @@ impl Gallery {
             }
         }
         self.focused_hits = live.hits.clone();
+        for layer in &live_overlays {
+            self.focused_hits.extend(layer.painted.hits.iter().copied());
+        }
 
         let mut side = ui::Painted::default();
         let mut list = ui::Painted::default();
         let mut list_clip = None;
-        let mut overlay = live_overlay.unwrap_or_default();
+        let mut overlay = ui::Painted::default();
         if self.chrome {
             let (top, layers) = chrome::left(
                 &self.pages,
@@ -771,7 +774,7 @@ impl Gallery {
         self.chrome_hits.extend(overlay.hits.iter().copied());
 
         let canvas_clip = Some((canvas.x, 0.0, canvas.w, canvas.h));
-        let layers: [ui::Layer; 5] = [
+        let mut layers: Vec<ui::Layer> = vec![
             (
                 base.rects.as_slice(),
                 base.tris.as_slice(),
@@ -800,14 +803,15 @@ impl Gallery {
                 list.icons.as_slice(),
                 list_clip,
             ),
-            (
-                overlay.rects.as_slice(),
-                overlay.tris.as_slice(),
-                overlay.texts.as_slice(),
-                overlay.icons.as_slice(),
-                None,
-            ),
         ];
+        layers.extend(stories::layers(&live_overlays));
+        layers.push((
+            overlay.rects.as_slice(),
+            overlay.tris.as_slice(),
+            overlay.texts.as_slice(),
+            overlay.icons.as_slice(),
+            None,
+        ));
         if let Some(renderer) = self.renderer.as_mut() {
             if let Err(error) = renderer.render_frame(theme.background, &layers) {
                 eprintln!("gallery: draw: {error}");

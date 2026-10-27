@@ -708,18 +708,25 @@ fn tabs_for(entry: &ProxyLogEntry) -> Vec<(DetailTab, String)> {
     tabs
 }
 
-fn side(state: &DevRequestsState, hovered: Option<u64>) -> Node {
+fn side(state: &DevRequestsState, hovered: Option<u64>, width: f32) -> Node {
     let colors = theme();
     let Some(entry) = state.selected_entry() else {
-        let mut column = div().col().gap(Space::S6).p(Space::S16).child(small(
-            "Select a request to see what was sent and what came back.",
-            colors.text_muted,
-        ));
+        let text_w = (width - 2.0 * Space::S16.px()).max(0.0);
+        let mut column = div().col().gap(Space::S6).p(Space::S16).child(
+            components::paragraph(
+                "Select a request to see what was sent and what came back.",
+                text_w,
+            )
+            .color(colors.text_muted),
+        );
         if state.served_elsewhere {
-            column = column.child(small(
-                "`pom proxy` in a terminal is serving these ports; its requests show in that terminal.",
-                colors.text_muted,
-            ));
+            column = column.child(
+                components::paragraph(
+                    "`pom proxy` in a terminal is serving these ports; its requests show in that terminal.",
+                    text_w,
+                )
+                .color(colors.text_muted),
+            );
         }
         return column.into();
     };
@@ -1030,15 +1037,6 @@ impl Item for DevRequestsPage {
 
     fn paint_body(&mut self, body: Rect, _focused: bool) -> Option<ui::Painted> {
         let scale = ui::ui_text_scale();
-        let (bar, list_tree, side_tree, selected) = {
-            let state = self.shared.borrow();
-            (
-                toolbar(&state, self.hovered),
-                list(&state, self.hovered),
-                side(&state, self.hovered),
-                state.selected_entry().is_some(),
-            )
-        };
         let bar_h = TOOLBAR_H * scale;
         let inset = CARD_INSET * scale;
         let gap = CARD_GAP * scale;
@@ -1048,6 +1046,15 @@ impl Item for DevRequestsPage {
         let list_w = (cards_w * LIST_SHARE).round();
         let side_x = body.x + inset + list_w + gap;
         let side_w = cards_w - list_w;
+        let (bar, list_tree, side_tree, selected) = {
+            let state = self.shared.borrow();
+            (
+                toolbar(&state, self.hovered),
+                list(&state, self.hovered),
+                side(&state, self.hovered, side_w / scale),
+                state.selected_entry().is_some(),
+            )
+        };
         let mut painted = ui::render(
             &bar,
             Rect::new(body.x, body.y, body.w, bar_h, Rgba::TRANSPARENT),
@@ -1190,6 +1197,11 @@ impl Item for DevRequestsPage {
 
 /// A tab over made-up traffic, for headless snapshots.
 pub fn preview_page() -> DevRequestsPage {
+    DevRequestsPage::new(Rc::new(RefCell::new(preview_state())))
+}
+
+/// What `preview_page` shows, for previews that change it.
+pub fn preview_state() -> DevRequestsState {
     let header = |name: &str, value: &str| (name.to_string(), value.to_string());
     let entry = |seq: u64, kind: RequestKind, method: &str, path: &str, status: u16, ms: u64| {
         ProxyLogEntry {
@@ -1275,7 +1287,7 @@ pub fn preview_page() -> DevRequestsPage {
             2,
         ),
     ];
-    let state = DevRequestsState {
+    DevRequestsState {
         proxy: ServerStatus {
             enabled: true,
             running: true,
@@ -1294,8 +1306,7 @@ pub fn preview_page() -> DevRequestsPage {
             payload(br#"{"ok":true,"service":"api/server","fanout":2}"#),
         )),
         ..DevRequestsState::default()
-    };
-    DevRequestsPage::new(Rc::new(RefCell::new(state)))
+    }
 }
 
 pub fn board_page(with_requests: bool) -> DevRequestsPage {
