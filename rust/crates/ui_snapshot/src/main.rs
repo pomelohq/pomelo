@@ -653,39 +653,13 @@ fn fixture_root() -> std::path::PathBuf {
 fn editor_board_fixture(board: &str) -> anyhow::Result<()> {
     let root = fixture_root();
     editor_fixture::create(&root)?;
-    let open = |paths: &[&str]| {
-        paths
-            .iter()
-            .map(|path| root.join(path).display().to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    };
-    let controller = "api/app/controllers/users_controller.rb";
-    let (files, select) = match board {
-        "language" => (open(&["web/src/api/users"]), "6,0,0"),
-        "markdown" => (open(&["api/README.md"]), "6,8,0"),
-        "image" => (open(&["web/public/logo.png"]), "0,0,0"),
-        "readonly" => (open(&[controller]), "5,4,0"),
-        "tabs" => (
-            open(&[
-                controller,
-                "api/config/routes.rb",
-                "api/README.md",
-                "web/src/api/users.ts",
-                "pom.yml",
-            ]),
-            "5,4,0",
-        ),
-        _ => (
-            open(&[
-                controller,
-                "api/config/routes.rb",
-                "api/README.md",
-                controller,
-            ]),
-            "5,4,0",
-        ),
-    };
+    let (files, (line, column, lines)) = stories::fixtures::window::board_files(board, &root);
+    let files = files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let select = format!("{line},{column},{lines}");
     std::env::set_var("FILESROOT", &root);
     std::env::set_var("OPENFILES", files);
     std::env::set_var("SELECT", select);
@@ -741,115 +715,12 @@ fn board_terminals(board: &str) -> Option<Vec<terminal_fixture::Term>> {
     })
 }
 
-fn move_caret(view: &mut workspace::WorkspaceView, line: usize, column: usize) {
-    view.editor_key(workspace::EditKey::DocumentStart, false);
-    for _ in 0..line {
-        view.editor_key(workspace::EditKey::Down, false);
-    }
-    for _ in 0..column {
-        view.editor_key(workspace::EditKey::Right, false);
-    }
-}
-
-type BoardStep = Box<dyn Fn(&mut workspace::WorkspaceView)>;
+type BoardStep = stories::fixtures::window::BoardStep;
 
 fn editor_board_steps(board: &str) -> Vec<BoardStep> {
     use workspace::pane::PaneCommand;
     let root = fixture_root();
-    let open = |path: &'static str| -> BoardStep {
-        let path = root.join(path);
-        Box::new(move |view| view.open_file(&path))
-    };
     match board {
-        "split" => {
-            let (spec, other) = (
-                root.join("api/spec/requests/users_spec.rb"),
-                root.join("api/spec/models/user_spec.rb"),
-            );
-            vec![Box::new(move |view| {
-                view.pane_command(PaneCommand::Split(
-                    workspace::pane_group::SplitDirection::Right,
-                ));
-                view.open_file(&spec);
-                view.open_file(&other);
-                view.pane_command(PaneCommand::ActivateItem(0));
-                view.pane_command(PaneCommand::CloseActiveItem);
-                view.pane_command(PaneCommand::ActivateItem(0));
-                move_caret(view, 8, 16);
-            })]
-        }
-        "tabs" => vec![
-            Box::new(|view| view.deploy_project_diagnostics(false)),
-            open("pom.yml"),
-            open("web/src/api/users.ts"),
-            open("api/README.md"),
-            open("api/config/routes.rb"),
-            open("api/app/controllers/users_controller.rb"),
-            Box::new(|view| {
-                view.run_action(workspace::keymap::Action::ToggleTabSwitcher);
-            }),
-        ],
-        "find" => vec![
-            Box::new(|view| {
-                view.editor_key(workspace::EditKey::DeploySearch, false);
-            }),
-            Box::new(|view| {
-                view.editor_text("user");
-                view.editor_key(workspace::EditKey::ToggleSearchWholeWord, false);
-                view.editor_key(workspace::EditKey::ToggleSearchReplace, false);
-            }),
-            Box::new(|view| {
-                view.editor_key(workspace::EditKey::Tab, false);
-                view.editor_text("account");
-                view.editor_key(workspace::EditKey::Tab, false);
-            }),
-        ],
-        "language" => vec![
-            Box::new(|view| {
-                view.editor_key(workspace::EditKey::ToggleLanguageSelector, false);
-            }),
-            Box::new(|view| {
-                view.editor_text("t");
-            }),
-        ],
-        "goto" => vec![
-            Box::new(|view| {
-                view.editor_key(workspace::EditKey::ToggleGoToLine, false);
-            }),
-            Box::new(|view| {
-                view.editor_text("26:5");
-            }),
-        ],
-        "image" => {
-            let (logo, broken) = (
-                root.join("web/public/logo.png"),
-                root.join("web/public/broken.png"),
-            );
-            vec![
-                Box::new(move |view| {
-                    view.pane_command(PaneCommand::Split(
-                        workspace::pane_group::SplitDirection::Right,
-                    ));
-                    view.open_file(&broken);
-                    view.pane_command(PaneCommand::ActivateItem(0));
-                    view.pane_command(PaneCommand::CloseActiveItem);
-                }),
-                Box::new(move |view| {
-                    view.pane_command(PaneCommand::ActivatePane(
-                        workspace::pane_group::SplitDirection::Left,
-                    ));
-                    let _ = &logo;
-                }),
-            ]
-        }
-        "markdown" => vec![Box::new(|view| {
-            view.editor_key(workspace::EditKey::OpenMarkdownPreviewToTheSide, false);
-        })],
-        "vim-normal" => vec![Box::new(|view| move_caret(view, 5, 13))],
-        "vim-visual" => vec![Box::new(|view| {
-            move_caret(view, 5, 2);
-            view.editor_text("Vjj");
-        })],
         board if board.starts_with("term-") => {
             let mut steps: Vec<BoardStep> = board_terminals(board)
                 .unwrap_or_else(|| {
@@ -897,10 +768,7 @@ fn editor_board_steps(board: &str) -> Vec<BoardStep> {
             }
             steps
         }
-        "tree-menu" => vec![Box::new(|view| {
-            view.right_click(200.0, 205.0);
-        })],
-        _ => Vec::new(),
+        _ => stories::fixtures::window::board_steps(board, &root),
     }
 }
 
@@ -2270,7 +2138,7 @@ fn main() -> anyhow::Result<()> {
         let mut item = if board {
             let root =
                 std::env::temp_dir().join(format!("pom-snapshot-search-{}", std::process::id()));
-            search_fixture(&root)?;
+            editor_fixture::create_search(&root)?;
             let mut item = if query.is_empty() {
                 files_ui::project_search_preview(root.clone(), "", false)
             } else {
@@ -2321,30 +2189,7 @@ fn main() -> anyhow::Result<()> {
             ui::set_theme(ui::by_name(&name));
         }
         let (width, height) = scene_size().unwrap_or((1092.0, 798.0));
-        let users_ts = editor_fixture::API_TS.to_string();
-        let mut item = files_ui::project_diagnostics_preview(vec![
-            (
-                "web/src/api/users.ts".into(),
-                users_ts,
-                vec![
-                    (12, 41, 56, true, "A function whose declared type is neither 'undefined', 'void', nor 'any' must return a value.", "ts", "2355"),
-                    (13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304"),
-                ],
-            ),
-            (
-                "api/app/controllers/users_controller.rb".into(),
-                editor_fixture::CONTROLLER.to_string(),
-                vec![(
-                    14,
-                    4,
-                    6,
-                    false,
-                    "Style/GuardClause: Use a guard clause instead of wrapping the code inside a conditional expression.",
-                    "rubocop",
-                    "",
-                )],
-            ),
-        ]);
+        let mut item = editor_fixture::project_diagnostics();
         item.set_focused(true);
         let body = ui::Rect::new(0.0, 0.0, width, height, ui::Rgba::TRANSPARENT);
         let painted = item
@@ -3444,46 +3289,12 @@ fn main() -> anyhow::Result<()> {
         }
         let (kind, query) = picker.split_once(':').unwrap_or((picker.as_str(), ""));
         let popovers = match kind {
-            "hover" => Some(files_ui::hover_preview(
-                "web/src/api/users.ts",
-                editor_fixture::API_TS,
-                (13, 44),
-                vec![(13, 44, 52, true, "Cannot find name 'pageSize'.", "ts", "2304")],
-                "```typescript\nfunction fetchUsers({ page, per }: Page): Promise<User[]>\n```\n\nThe server caps per at 100; ask for less and page instead.",
-                (1092.0, 770.0),
-            )),
-            "completion" => Some(files_ui::completion_preview(
-                vec![
-                    ("filter", "(predicate) => User[]", false),
-                    ("find", "(predicate) => User", false),
-                    ("findIndex", "(predicate) => number", false),
-                    ("findLast", "(predicate) => User", false),
-                    ("fill", "(value, start?, end?)", false),
-                    ("flat", "(depth?) => User[]", false),
-                    ("for in", "snippet", true),
-                ],
-                query,
-                "```typescript\nfind(predicate): User | undefined\n```\n\nReturns the value of the first element in the array where predicate is true, and undefined otherwise.",
-            )),
+            "hover" => Some(editor_fixture::hover()),
+            "completion" => Some(editor_fixture::completion(query)),
             _ => None,
         };
         let painted = match popovers {
-            Some(popovers) => {
-                let mut painted = ui::Painted::default();
-                for (node, rect) in popovers {
-                    let rect =
-                        ui::Rect::new(rect.x + 24.0, rect.y + 24.0, rect.w, rect.h, rect.color);
-                    painted
-                        .rects
-                        .extend(ui::elevation_shadow(rect, ui::Elevation::Elevated, 1.0));
-                    let part = ui::render(&ui::div().col().child(node).into(), rect);
-                    painted.rects.extend(part.rects);
-                    painted.tris.extend(part.tris);
-                    painted.texts.extend(part.texts);
-                    painted.icons.extend(part.icons);
-                }
-                painted
-            }
+            Some(popovers) => editor_fixture::paint_popovers(popovers),
             None => {
                 let node = match kind {
                     "finder" => files_ui::file_finder_preview(finder_fixture(), Vec::new(), query),
@@ -5114,32 +4925,6 @@ fn scene_size() -> Option<(f32, f32)> {
     let size = std::env::var("SCENESIZE").ok()?;
     let (width, height) = size.split_once('x')?;
     Some((width.parse().ok()?, height.parse().ok()?))
-}
-
-/// The three files the project search boards find `User.where(active: true)` in.
-fn search_fixture(root: &std::path::Path) -> anyhow::Result<()> {
-    let files = [
-        (
-            "api/app/controllers/users_controller.rb",
-            "class UsersController < ApplicationController\n  before_action :set_user, only: :show\n\n  def index\n    @users = User.where(active: true).order(:name)\n    render json: @users\n  end\n\n  def show\n    render json: @user\n  end\n\n  private\n\n  def set_user\n    @user = User.where(active: true).find(params[:id])\n  end\nend\n",
-        ),
-        (
-            "api/spec/requests/users_spec.rb",
-            "require \"rails_helper\"\n\nRSpec.describe \"Users\", type: :request do\n  describe \"GET /users\" do\n    before { create_list(:user, 30) }\n\n    it \"lists active users\" do\n      get \"/users\"\n      expect(User.where(active: true).count).to eq(30)\n    end\n  end\nend\n",
-        ),
-        (
-            "web/src/api/users.ts",
-            "import { client } from \"./client\";\n\nexport async function activeUsers() {\n  // mirrors User.where(active: true) on the server\n  return client.get(\"/users\");\n}\n",
-        ),
-    ];
-    for (path, text) in files {
-        let path = root.join(path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, text)?;
-    }
-    Ok(())
 }
 
 struct SnapshotStorage;

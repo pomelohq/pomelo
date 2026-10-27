@@ -8,11 +8,11 @@ use crate::fixtures::host::HostWindow;
 use crate::fixtures::window::MainWindow;
 use crate::{Story, StoryDef};
 
-const WINDOW: (f32, f32) = (1440.0, 900.0);
+pub const WINDOW: (f32, f32) = (1440.0, 900.0);
 /// Long enough for a host's terminal and files to arrive over the stand-in wire.
 const SETTLING: Duration = Duration::from_millis(800);
 
-enum Source {
+pub enum Source {
     Main(MainWindow),
     Host(HostWindow),
 }
@@ -21,7 +21,9 @@ struct WindowStory {
     source: Source,
     frame: Option<ui::Frame>,
     opened: Instant,
-    live: bool,
+    settling: Duration,
+    /// The part of the window the board shows; the whole window when none.
+    crop: ui::Rect,
 }
 
 impl WindowStory {
@@ -40,50 +42,84 @@ impl Story for WindowStory {
     fn render(&mut self, width: f32, height: f32) -> ui::Node {
         self.draw();
         let board = ui::div().col().w_px(width).h_px(height);
-        match &self.frame {
-            Some(frame) => board.painted(frame.base.clone()).into(),
-            None => board.into(),
-        }
+        let Some(frame) = &self.frame else {
+            return board.into();
+        };
+        let window = ui::Rect::new(
+            -self.crop.x,
+            -self.crop.y,
+            WINDOW.0,
+            WINDOW.1,
+            ui::Rgba::TRANSPARENT,
+        );
+        board
+            .painted(ui::render(
+                &ui::div().painted(frame.base.clone()).into(),
+                window,
+            ))
+            .into()
     }
 
     fn overlays(&mut self, area: ui::Rect) -> Vec<ui::Overlay> {
         let Some(frame) = &self.frame else {
             return Vec::new();
         };
-        // The window paints from its own top-left; the board sits at `area`.
+        // The window paints from its own top-left; the board sits at `area` and shows the crop of it.
+        let (dx, dy) = (area.x - self.crop.x, area.y - self.crop.y);
+        let window = ui::Rect::new(dx, dy, WINDOW.0, WINDOW.1, ui::Rgba::TRANSPARENT);
         frame
             .overlays
             .iter()
-            .map(|overlay| ui::Overlay {
-                painted: ui::render(
-                    &ui::div()
-                        .w_px(area.w)
-                        .h_px(area.h)
-                        .painted(overlay.painted.clone())
-                        .into(),
-                    area,
-                ),
-                clip: overlay.clip.map(|clip| {
-                    ui::Rect::new(area.x + clip.x, area.y + clip.y, clip.w, clip.h, clip.color)
-                }),
+            .map(|overlay| {
+                let clip = overlay
+                    .clip
+                    .map(|clip| ui::Rect::new(dx + clip.x, dy + clip.y, clip.w, clip.h, clip.color))
+                    .unwrap_or(area);
+                ui::Overlay {
+                    painted: ui::render(&ui::div().painted(overlay.painted.clone()).into(), window),
+                    clip: Some(intersect(clip, area)),
+                }
             })
             .collect()
     }
 
     fn pending(&mut self) -> bool {
-        self.live && self.opened.elapsed() < SETTLING
+        let pending = self.opened.elapsed() < self.settling;
+        if pending {
+            self.draw();
+        }
+        pending
     }
 }
 
-fn story(source: Source, live: bool) -> anyhow::Result<Box<dyn Story>> {
+fn intersect(a: ui::Rect, b: ui::Rect) -> ui::Rect {
+    let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+    let w = ((a.x + a.w).min(b.x + b.w) - x).max(0.0);
+    let h = ((a.y + a.h).min(b.y + b.h) - y).max(0.0);
+    ui::Rect::new(x, y, w, h, a.color)
+}
+
+/// A board over `crop` of a window, redrawn for `settling` while its content arrives.
+pub fn cropped(
+    source: Source,
+    crop: (f32, f32, f32, f32),
+    settling: Duration,
+) -> anyhow::Result<Box<dyn Story>> {
+    let (x, y, w, h) = crop;
     let mut story = WindowStory {
         source,
         frame: None,
         opened: Instant::now(),
-        live,
+        settling,
+        crop: ui::Rect::new(x, y, w, h, ui::Rgba::TRANSPARENT),
     };
     story.draw();
     Ok(Box::new(story))
+}
+
+fn story(source: Source, live: bool) -> anyhow::Result<Box<dyn Story>> {
+    let settling = if live { SETTLING } else { Duration::ZERO };
+    cropped(source, (0.0, 0.0, WINDOW.0, WINDOW.1), settling)
 }
 
 fn main_window() -> anyhow::Result<Box<dyn Story>> {

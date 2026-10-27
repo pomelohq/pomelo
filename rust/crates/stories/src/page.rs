@@ -18,6 +18,13 @@ impl TabStory {
             _keep: Some(Box::new(keep)),
         }
     }
+
+    pub fn boxed(item: Box<dyn workspace::Item>, keep: impl std::any::Any) -> TabStory {
+        TabStory {
+            item,
+            _keep: Some(Box::new(keep)),
+        }
+    }
 }
 
 impl Story for TabStory {
