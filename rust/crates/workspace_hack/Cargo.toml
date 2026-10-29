@@ -51,7 +51,7 @@ typenum = { version = "1", default-features = false, features = ["const-generics
 unicode-bidi = { version = "0.3" }
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
-wasmtime-internal-core = { version = "48", default-features = false, features = ["serde", "std"] }
+wasmtime-internal-core = { version = "50", default-features = false, features = ["serde", "std"] }
 
 [build-dependencies]
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
