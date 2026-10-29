@@ -102,7 +102,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-deny
       - run: cargo deny --locked check
@@ -123,7 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup show
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-hakari
       - run: make hakari-check lint
@@ -166,7 +166,7 @@ jobs:
           restore-keys: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust/rust-toolchain.toml') }}-
       - name: Date sources by what changed since the cached build
         run: scripts/date-sources.sh
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest
       - name: Tests (a test that passes only on its retry is listed as flaky)
@@ -230,7 +230,7 @@ jobs:
       - name: Install the libraries the window and fonts build against
         run: scripts/install-linux-build-deps.sh
       - run: rustup show
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-hakari
       - run: make hakari-check lint
@@ -265,7 +265,7 @@ jobs:
           workspaces: rust
           shared-key: linux-ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest
       - name: Tests (a test that passes only on its retry is listed as flaky)
@@ -382,7 +382,7 @@ jobs:
           workspaces: rust
           shared-key: linux-cli
           save-if: false
-      - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-nextest
       # pom_ptyhost builds the holder binary the terminal tests run.
