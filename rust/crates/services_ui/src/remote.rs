@@ -333,7 +333,7 @@ impl ServicesAccess for RemoteServices {
         ))
     }
 
-    fn mode(&self, target: &ServiceTarget, service: &Service) -> String {
+    fn mode(&self, _config: &Config, target: &ServiceTarget, service: &Service) -> String {
         self.service(target)
             .map(|fact| fact.mode)
             .filter(|mode| !mode.is_empty())

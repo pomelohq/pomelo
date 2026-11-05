@@ -24,10 +24,6 @@ pub const WORKSPACE_REPO: &str = "_ws";
 /// How many lines of a shared service's output are read when none is asked.
 pub const SHARED_LOG_LINES: usize = 200;
 
-/// Modes picked for services (`repo~service` to mode), kept for as long as whoever holds them runs: the app
-/// for this machine, the server for its clients.
-pub type SharedModes = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
-
 fn target(branch: &str, is_main: bool, repo: &str, service: &str) -> ServiceTarget {
     ServiceTarget {
         branch: branch.to_string(),
@@ -227,7 +223,6 @@ pub struct LocalSource {
     state: StateDir,
     holders: SocketDir,
     binary: PathBuf,
-    modes: SharedModes,
 }
 
 /// A project read from disk, with the runner of its services.
@@ -249,14 +244,7 @@ impl LocalSource {
             state,
             holders,
             binary,
-            modes: SharedModes::default(),
         }
-    }
-
-    /// Runs services in the modes `modes` holds, and keeps the ones picked through it there.
-    pub fn with_modes(mut self, modes: SharedModes) -> LocalSource {
-        self.modes = modes;
-        self
     }
 
     pub fn open_project(&self) -> Result<OpenedProject, SourceError> {
@@ -274,18 +262,6 @@ impl LocalSource {
             binary: self.binary.clone(),
             docker: "docker".into(),
         });
-        let modes = self
-            .modes
-            .lock()
-            .map(|modes| modes.clone())
-            .unwrap_or_default();
-        for (key, mode) in modes {
-            if let Some((repo, service)) = key.split_once('~') {
-                if let Err(error) = runner.set_mode(&config, repo, service, &mode) {
-                    eprintln!("mode {key}: {error}");
-                }
-            }
-        }
         Ok(OpenedProject {
             project,
             config,
@@ -729,7 +705,7 @@ impl LocalSource {
                     (false, None) => service_status::STOPPED,
                 };
                 let mode = service_def(config, target)
-                    .map(|service| runner.mode(&target.repo, &target.service, service))
+                    .map(|service| runner.mode(config, target, service))
                     .unwrap_or_default();
                 ServiceFact {
                     repo: target.repo.clone(),
@@ -851,20 +827,10 @@ impl LocalSource {
     ) -> Result<(), SourceError> {
         let opened = self.open_project()?;
         let target = self.service_target(&opened, branch, repo, service)?;
-        let known = service_def(&opened.config, &target)
-            .is_some_and(|def| def.mode_names().iter().any(|name| name == mode));
-        if !known {
-            return Err(SourceError::Failed(format!(
-                "{repo}/{service} has no mode {mode}"
-            )));
-        }
         opened
             .runner
-            .set_mode(&opened.config, repo, service, mode)
+            .set_mode(&opened.config, &target, mode)
             .map_err(|error| SourceError::Failed(error.to_string()))?;
-        if let Ok(mut modes) = self.modes.lock() {
-            modes.insert(format!("{repo}~{service}"), mode.to_string());
-        }
         Ok(())
     }
 

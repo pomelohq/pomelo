@@ -112,7 +112,7 @@ pub trait ServicesAccess: Send + Sync {
         self.url(config, target)
             .ok_or_else(|| "the service has no address".to_string())
     }
-    fn mode(&self, target: &ServiceTarget, service: &Service) -> String;
+    fn mode(&self, config: &Config, target: &ServiceTarget, service: &Service) -> String;
     fn set_mode(&self, config: &Config, target: &ServiceTarget, mode: &str) -> Result<(), String>;
     fn env_profile(&self, config: &Config, target: &ServiceTarget) -> String;
     fn set_env_profile(
@@ -219,13 +219,13 @@ impl ServicesAccess for LocalServices {
         self.runner.proxy_url(config, target)
     }
 
-    fn mode(&self, target: &ServiceTarget, service: &Service) -> String {
-        self.runner.mode(&target.repo, &target.service, service)
+    fn mode(&self, config: &Config, target: &ServiceTarget, service: &Service) -> String {
+        self.runner.mode(config, target, service)
     }
 
     fn set_mode(&self, config: &Config, target: &ServiceTarget, mode: &str) -> Result<(), String> {
         self.runner
-            .set_mode(config, &target.repo, &target.service, mode)
+            .set_mode(config, target, mode)
             .map_err(|error| error.to_string())
     }
 
