@@ -695,6 +695,8 @@ struct FileItem {
     root: PathBuf,
     /// Why the file could not be read, shown in place of its text.
     load_error: Option<String>,
+    /// Its read on the way, while a tab of another machine's file comes back from the last session.
+    restoring: Option<saved_state::Restoring>,
     path: String,
     name: String,
     /// The editable text model (`None` = binary/unpreviewable). Char-offset rope with multi-cursor + undo.
@@ -1547,6 +1549,7 @@ impl FileItem {
             fs,
             root,
             load_error: None,
+            restoring: None,
             path: path.to_string(),
             name,
             buffer,
@@ -4684,6 +4687,14 @@ impl Item for FileItem {
     }
 
     fn tick(&mut self, _clipboard: &dyn Fn() -> Option<String>) -> workspace::ItemTick {
+        if self.restoring.is_some() {
+            let restored = self.poll_restore();
+            return workspace::ItemTick {
+                changed: restored.is_some(),
+                close: restored == Some(false),
+                ..workspace::ItemTick::default()
+            };
+        }
         let saved = self.poll_save();
         let close = self.close_when_saved && self.saving.is_none() && !self.is_dirty();
         let version = self.buffer.as_ref().map(EditorBuffer::version);
@@ -4868,6 +4879,7 @@ impl Item for FileItem {
         }
         if self.buffer.is_none() {
             let message = match &self.load_error {
+                _ if self.restoring.is_some() => "Loading...".to_string(),
                 Some(error) => format!("Cannot open this file: {error}"),
                 None => "Cannot preview this file".to_string(),
             };
@@ -5259,6 +5271,9 @@ impl Item for FileItem {
     }
 
     fn tab_detail(&self) -> Option<String> {
+        if self.restoring.is_some() {
+            return Some("Loading...".into());
+        }
         self.saving.as_ref()?;
         Some(match self.fs.host().filter(|_| self.offline) {
             Some(host) => format!("Waiting for {host}"),
@@ -13671,12 +13686,13 @@ mod remote_files_tests {
     use std::sync::{Arc, Mutex};
 
     /// Files on another machine, as a test holds them: what a read returns and what the feed reports next.
-    /// Saves wait for `release` when `hold` is set; tree changes fail when `refuse` is set.
+    /// Saves wait for `release` when `hold` is set, reads when `hold_reads` is; tree changes fail when `refuse` is set.
     #[derive(Default)]
     struct Elsewhere {
         files: Mutex<HashMap<String, (String, u64)>>,
         events: Arc<Mutex<Vec<files::TreeEvent>>>,
         hold: std::sync::atomic::AtomicBool,
+        hold_reads: std::sync::atomic::AtomicBool,
         released: Mutex<bool>,
         release: std::sync::Condvar,
         offline: std::sync::atomic::AtomicBool,
@@ -13714,6 +13730,20 @@ mod remote_files_tests {
                 .ok()
                 .and_then(|files| files.get(path).cloned())
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+        }
+
+        fn wait_for_release(&self) -> std::io::Result<()> {
+            let mut released = self
+                .released
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?;
+            while !*released {
+                released = self
+                    .release
+                    .wait(released)
+                    .map_err(|_| std::io::Error::other("poisoned"))?;
+            }
+            Ok(())
         }
 
         fn release(&self) {
@@ -13760,6 +13790,9 @@ mod remote_files_tests {
         }
 
         fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+            if self.hold_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                self.wait_for_release()?;
+            }
             let (text, mtime_ns) = self.get(path)?;
             Ok(files::FileResult::from_bytes(text.into_bytes(), mtime_ns))
         }
@@ -13783,16 +13816,7 @@ mod remote_files_tests {
             expect: Option<&files::FileStat>,
         ) -> Result<files::FileStat, files::WriteError> {
             if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
-                let mut released = self
-                    .released
-                    .lock()
-                    .map_err(|_| std::io::Error::other("poisoned"))?;
-                while !*released {
-                    released = self
-                        .release
-                        .wait(released)
-                        .map_err(|_| std::io::Error::other("poisoned"))?;
-                }
+                self.wait_for_release()?;
             }
             if let Ok(mut saves) = self.saves.lock() {
                 saves.push((text.to_string(), expect.map(|stat| stat.mtime_ns)));
@@ -14076,6 +14100,7 @@ mod remote_files_tests {
         let fs: SharedFs = elsewhere.clone();
         let mut back = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"));
         assert!(back.restore_panes(&saved, &mut |_| None));
+        settle(&mut back, |view| open_text(view).is_some());
         assert_eq!(
             open_text(&back).as_deref(),
             Some("// draft\nfn main() {}\n")
@@ -14103,6 +14128,34 @@ mod remote_files_tests {
     }
 
     #[test]
+    fn tabs_of_files_there_come_back_at_once_and_fill_in_when_read() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let view = opened(&elsewhere, false);
+        let Some(saved) = view.save_panes() else {
+            panic!("the editor area should save its panes");
+        };
+        elsewhere
+            .hold_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let fs: SharedFs = elsewhere.clone();
+        let mut back = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"));
+        assert!(back.restore_panes(&saved, &mut |_| None));
+        back.tick_items(&|| None);
+        assert!(open_text(&back).is_none(), "the read is still on its way");
+        assert_eq!(detail(&back).as_deref(), Some("Loading..."));
+        assert_eq!(
+            back.save_panes(),
+            Some(saved),
+            "a tab still loading saves as it was saved"
+        );
+        elsewhere.release();
+        settle(&mut back, |view| open_text(view).is_some());
+        assert_eq!(open_text(&back).as_deref(), Some("fn main() {}\n"));
+        assert_eq!(detail(&back), None);
+    }
+
+    #[test]
     fn unsaved_text_over_a_file_changed_there_meanwhile_is_a_conflict() {
         let elsewhere = Arc::new(Elsewhere::default());
         elsewhere.put("src/main.rs", "fn main() {}\n", 10);
@@ -14116,6 +14169,7 @@ mod remote_files_tests {
         let fs: SharedFs = elsewhere.clone();
         let mut back = FilesView::new(fs, PathBuf::from("/home/dev/pom/myproject/workspace--feat"));
         assert!(back.restore_panes(&saved, &mut |_| None));
+        settle(&mut back, |view| open_text(view).is_some());
         assert_eq!(
             open_text(&back).as_deref(),
             Some("// draft\nfn main() {}\n")

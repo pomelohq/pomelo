@@ -7,6 +7,9 @@ use workspace::Layout;
 
 use crate::{apply_dock_settings, now_seconds, App};
 
+/// How long quitting waits for remote windows' port forwards to close.
+const CLOSE_PORTS_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub(crate) struct RemoteWindow {
     pub host: String,
     pub project: String,
@@ -87,7 +90,7 @@ fn write_update(
 impl Drop for RemoteWindow {
     fn drop(&mut self) {
         if let Some(ports) = self.ports.take() {
-            ports.close();
+            ports.close_in_background();
         }
     }
 }
@@ -702,13 +705,29 @@ impl App {
             .values_mut()
             .filter_map(|main| main.remote.as_mut()?.ports.take())
             .collect();
-        let threads: Vec<_> = closing
-            .into_iter()
-            .map(|ports| std::thread::spawn(move || ports.close()))
-            .collect();
-        for thread in threads {
-            if thread.join().is_err() {
-                eprintln!("ports: closing panicked");
+        let (done, closed) = std::sync::mpsc::channel();
+        let mut waiting = 0;
+        for ports in closing {
+            let done = done.clone();
+            let spawned = std::thread::Builder::new()
+                .name("ports-close".into())
+                .spawn(move || {
+                    ports.close();
+                    // The app may have stopped waiting; nothing is left to tell then.
+                    let _ = done.send(());
+                });
+            match spawned {
+                Ok(_) => waiting += 1,
+                Err(error) => eprintln!("ports: closing thread: {error}"),
+            }
+        }
+        // Quitting waits a little for the host to drop its forwards, never for a link that went quiet.
+        let deadline = std::time::Instant::now() + CLOSE_PORTS_WAIT;
+        for _ in 0..waiting {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if closed.recv_timeout(left).is_err() {
+                eprintln!("ports: quitting before every forward closed");
+                return;
             }
         }
     }

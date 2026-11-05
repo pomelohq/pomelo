@@ -516,11 +516,26 @@ impl Forwarder {
     /// Stops every forward and removes the record.
     pub fn close(&self) {
         let entries = std::mem::take(&mut *locked(&self.entries));
-        for entry in entries {
-            if let Some(carrier) = entry.carrier {
-                self.close_carrier(entry.forward.local_port, entry.forward.remote_port, carrier);
+        // Each shared cancel is its own round trip to the master, so they go at once rather than in turn.
+        std::thread::scope(|scope| {
+            for entry in entries {
+                let (local, remote) = (entry.forward.local_port, entry.forward.remote_port);
+                match entry.carrier {
+                    Some(Carrier::Shared) => {
+                        let spawned = std::thread::Builder::new()
+                            .name("ports-cancel".into())
+                            .spawn_scoped(scope, move || {
+                                self.close_carrier(local, remote, Carrier::Shared)
+                            });
+                        if spawned.is_err() {
+                            self.close_carrier(local, remote, Carrier::Shared);
+                        }
+                    }
+                    Some(carrier) => self.close_carrier(local, remote, carrier),
+                    None => {}
+                }
             }
-        }
+        });
         if let Some(record) = &self.record {
             if let Err(error) = std::fs::remove_file(&record.path) {
                 if error.kind() != std::io::ErrorKind::NotFound {

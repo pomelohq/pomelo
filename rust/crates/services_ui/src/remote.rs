@@ -541,17 +541,23 @@ impl ServicesAccess for RemoteServices {
                 .map_err(|error| eprintln!("services: console: {error}"))
                 .ok()
             });
-        let lines = match self.source.follow_logs(&self.branch, &service) {
-            Ok(Some(feed)) => LineStream::follow(waker, feed),
-            _ => {
-                let (source, branch) = (self.source.clone(), self.branch.clone());
-                LineStream::reread(waker, move || {
-                    source
-                        .logs(&branch, &service)
-                        .map_err(|error| error.to_string())
-                })
-            }
-        };
+        let (source, branch) = (self.source.clone(), self.branch.clone());
+        let (follow_source, follow_branch, follow_service) =
+            (source.clone(), branch.clone(), service.clone());
+        let lines = LineStream::follow_or_reread(
+            waker,
+            move || {
+                follow_source
+                    .follow_logs(&follow_branch, &follow_service)
+                    .ok()
+                    .flatten()
+            },
+            move || {
+                source
+                    .logs(&branch, &service)
+                    .map_err(|error| error.to_string())
+            },
+        );
         Console {
             lines: Some(LogLines::Stream(lines)),
             shell,
@@ -669,30 +675,6 @@ impl LineStream {
         LineStream { state, stop }
     }
 
-    /// The output `feed` streams, from what the service left or printed so far.
-    pub fn follow(waker: Waker, feed: Box<dyn pom_remote::LogFeed>) -> LineStream {
-        let wake = waker.clone();
-        Self::spawn(waker, move |state, stop| {
-            while !stop.load(Ordering::Acquire) {
-                match feed.next(STREAM_WAIT) {
-                    LogEvent::Data(bytes) => {
-                        locked(state).push(&bytes);
-                        wake();
-                    }
-                    LogEvent::StartedOver => {
-                        locked(state).replace("");
-                        wake();
-                    }
-                    LogEvent::Skipped | LogEvent::Idle => {}
-                    LogEvent::Ended(reason) => {
-                        locked(state).push(format!("\n[{reason}]\n").as_bytes());
-                        return;
-                    }
-                }
-            }
-        })
-    }
-
     /// What `read` answers, read again every few seconds.
     pub fn reread(
         waker: Waker,
@@ -700,22 +682,21 @@ impl LineStream {
     ) -> LineStream {
         let wake = waker.clone();
         Self::spawn(waker, move |state, stop| {
-            while !stop.load(Ordering::Acquire) {
-                let text = read().unwrap_or_else(|error| error);
-                let changed = {
-                    let mut state = locked(state);
-                    state.replace(&text);
-                    state.changed
-                };
-                if changed {
-                    wake();
-                }
-                let mut waited = Duration::ZERO;
-                while waited < READ_AGAIN && !stop.load(Ordering::Acquire) {
-                    std::thread::sleep(STREAM_WAIT);
-                    waited += STREAM_WAIT;
-                }
-            }
+            read_again(&read, state, stop, &wake)
+        })
+    }
+
+    /// Streams the feed `open` gives, or reads `read` again every few seconds when it gives none. Opening asks
+    /// the machine, so it runs on the stream's own thread.
+    pub fn follow_or_reread(
+        waker: Waker,
+        open: impl FnOnce() -> Option<Box<dyn pom_remote::LogFeed>> + Send + 'static,
+        read: impl Fn() -> Result<String, String> + Send + 'static,
+    ) -> LineStream {
+        let wake = waker.clone();
+        Self::spawn(waker, move |state, stop| match open() {
+            Some(feed) => stream_feed(&*feed, state, stop, &wake),
+            None => read_again(&read, state, stop, &wake),
         })
     }
 
@@ -738,6 +719,55 @@ impl LineStream {
     /// Whether anything arrived since the last call.
     pub fn take_changed(&mut self) -> bool {
         std::mem::take(&mut locked(&self.state).changed)
+    }
+}
+
+fn stream_feed(
+    feed: &dyn pom_remote::LogFeed,
+    state: &Mutex<StreamState>,
+    stop: &AtomicBool,
+    wake: &Waker,
+) {
+    while !stop.load(Ordering::Acquire) {
+        match feed.next(STREAM_WAIT) {
+            LogEvent::Data(bytes) => {
+                locked(state).push(&bytes);
+                wake();
+            }
+            LogEvent::StartedOver => {
+                locked(state).replace("");
+                wake();
+            }
+            LogEvent::Skipped | LogEvent::Idle => {}
+            LogEvent::Ended(reason) => {
+                locked(state).push(format!("\n[{reason}]\n").as_bytes());
+                return;
+            }
+        }
+    }
+}
+
+fn read_again(
+    read: &dyn Fn() -> Result<String, String>,
+    state: &Mutex<StreamState>,
+    stop: &AtomicBool,
+    wake: &Waker,
+) {
+    while !stop.load(Ordering::Acquire) {
+        let text = read().unwrap_or_else(|error| error);
+        let changed = {
+            let mut state = locked(state);
+            state.replace(&text);
+            state.changed
+        };
+        if changed {
+            wake();
+        }
+        let mut waited = Duration::ZERO;
+        while waited < READ_AGAIN && !stop.load(Ordering::Acquire) {
+            std::thread::sleep(STREAM_WAIT);
+            waited += STREAM_WAIT;
+        }
     }
 }
 
@@ -765,6 +795,29 @@ mod tests {
             here_address("redis://localhost:6379/2", 6379, "127.0.0.1:16379"),
             "redis://127.0.0.1:16379/2"
         );
+    }
+
+    #[test]
+    fn opening_followed_output_never_holds_up_the_caller() {
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let mut stream = LineStream::follow_or_reread(
+            Arc::new(|| {}),
+            move || {
+                if released.recv().is_err() {
+                    eprintln!("the test went away");
+                }
+                None
+            },
+            || Ok("one\ntwo\n".into()),
+        );
+        assert!(stream.lines().is_empty(), "nothing yet while it opens");
+        release.send(()).expect("release");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while stream.lines().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(stream.lines(), ["one", "two"]);
+        assert!(stream.take_changed());
     }
 
     #[test]
