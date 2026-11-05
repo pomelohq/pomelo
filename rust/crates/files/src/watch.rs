@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use notify::{RecursiveMode, Watcher};
@@ -15,6 +16,23 @@ const LATENCY: Duration = Duration::from_millis(100);
 /// `SKIP_DIRS` never are; FSEvents watches a whole tree with one stream.
 const PER_FOLDER: bool = cfg!(target_os = "linux");
 
+/// The watch limit is per user, so once one watcher hits it every other stops asking until watches are freed.
+static AT_LIMIT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the OS refused a watch for lack of room since the last watcher went away.
+pub fn at_watch_limit() -> bool {
+    AT_LIMIT.load(Ordering::Acquire)
+}
+
+fn reached_limit() {
+    if !AT_LIMIT.swap(true, Ordering::AcqRel) {
+        eprintln!(
+            "file tree watcher: the OS file watch limit is reached; new folders are not watched until a \
+             workspace closes (raise fs.inotify.max_user_watches to watch more)"
+        );
+    }
+}
+
 /// Watches a tree and collects the relative paths that changed; `wake` runs once per settled batch.
 pub struct TreeWatcher {
     watcher: Arc<Mutex<notify::RecommendedWatcher>>,
@@ -24,7 +42,7 @@ pub struct TreeWatcher {
 impl TreeWatcher {
     /// Watches every folder of `root` but the skipped ones.
     pub fn new(root: &Path, wake: Arc<dyn Fn() + Send + Sync>) -> notify::Result<TreeWatcher> {
-        let watcher = Self::start(root, wake)?;
+        let watcher = Self::start(root, wake, true)?;
         if PER_FOLDER {
             watch_tree(&watcher.watcher, root, root);
         }
@@ -36,12 +54,17 @@ impl TreeWatcher {
         root: &Path,
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> notify::Result<TreeWatcher> {
-        let watcher = Self::start(root, wake)?;
+        let watcher = Self::start(root, wake, false)?;
         watcher.watch_folder(root);
         Ok(watcher)
     }
 
-    fn start(root: &Path, wake: Arc<dyn Fn() + Send + Sync>) -> notify::Result<TreeWatcher> {
+    /// With `follow_new` a folder made later is watched with all it holds; otherwise the owner adds it.
+    fn start(
+        root: &Path,
+        wake: Arc<dyn Fn() + Send + Sync>,
+        follow_new: bool,
+    ) -> notify::Result<TreeWatcher> {
         let (sender, receiver) = std::sync::mpsc::channel::<Vec<PathBuf>>();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| match event {
@@ -58,12 +81,20 @@ impl TreeWatcher {
         }
         let watcher = Arc::new(Mutex::new(watcher));
         let pending = Arc::new(Mutex::new(HashSet::new()));
-        let (root, collected, adder) = (root.to_path_buf(), pending.clone(), watcher.clone());
+        // Weak: a strong handle here would keep the watcher, and every watch it holds, alive after its owner.
+        let (root, collected, adder) = (
+            root.to_path_buf(),
+            pending.clone(),
+            Arc::downgrade(&watcher),
+        );
         std::thread::Builder::new()
             .name("files-watch".into())
             .spawn(move || {
                 let added = |path: &Path| {
-                    if PER_FOLDER && path.is_dir() && !path.is_symlink() {
+                    if !PER_FOLDER || !follow_new || !path.is_dir() || path.is_symlink() {
+                        return;
+                    }
+                    if let Some(adder) = Weak::upgrade(&adder) {
                         watch_tree(&adder, &root, path);
                     }
                 };
@@ -79,9 +110,7 @@ impl TreeWatcher {
             return;
         }
         if let Ok(mut watcher) = self.watcher.lock() {
-            if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
-                eprintln!("file tree watcher: {}: {error}", path.display());
-            }
+            watch_one(&mut watcher, path);
         }
     }
 
@@ -90,6 +119,34 @@ impl TreeWatcher {
             .lock()
             .map(|mut pending| pending.drain().collect())
             .unwrap_or_default()
+    }
+}
+
+impl Drop for TreeWatcher {
+    fn drop(&mut self) {
+        if PER_FOLDER {
+            AT_LIMIT.store(false, Ordering::Release);
+        }
+    }
+}
+
+/// Adds one folder's watch; false once the OS has no room for more.
+fn watch_one(watcher: &mut notify::RecommendedWatcher, folder: &Path) -> bool {
+    if at_watch_limit() {
+        return false;
+    }
+    match watcher.watch(folder, RecursiveMode::NonRecursive) {
+        Ok(()) => true,
+        Err(error) if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) => {
+            reached_limit();
+            false
+        }
+        Err(error) => {
+            if !matches!(error.kind, notify::ErrorKind::PathNotFound) {
+                eprintln!("file tree watcher: {}: {error}", folder.display());
+            }
+            true
+        }
     }
 }
 
@@ -110,12 +167,8 @@ fn watch_tree(watcher: &Mutex<notify::RecommendedWatcher>, root: &Path, from: &P
     };
     let mut queue = std::collections::VecDeque::from([from.to_path_buf()]);
     while let Some(folder) = queue.pop_front() {
-        if let Err(error) = watcher.watch(&folder, RecursiveMode::NonRecursive) {
-            eprintln!("file tree watcher: {}: {error}", folder.display());
-            if matches!(error.kind, notify::ErrorKind::MaxFilesWatch) {
-                return;
-            }
-            continue;
+        if !watch_one(&mut watcher, &folder) {
+            return;
         }
         let Ok(children) = std::fs::read_dir(&folder) else {
             continue;
@@ -272,6 +325,63 @@ mod live_tests {
             seen.iter().any(|path| path == "src/deep/late.rs"),
             "{seen:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_dropped_watcher_lets_go_of_its_watches() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        std::fs::create_dir_all(temp.path().join("src"))?;
+        let watcher =
+            TreeWatcher::new(temp.path(), Arc::new(|| {})).map_err(std::io::Error::other)?;
+        let inner = Arc::downgrade(&watcher.watcher);
+        std::fs::write(temp.path().join("src/a.rs"), "x")?;
+        changes_within(&watcher, Duration::from_millis(300));
+        drop(watcher);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while inner.upgrade().is_some() {
+            assert!(Instant::now() < deadline, "the watcher outlived its owner");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(())
+    }
+
+    /// The inodes this process holds an inotify watch on, as the kernel lists them.
+    #[cfg(target_os = "linux")]
+    fn watched_inodes() -> std::io::Result<Vec<u64>> {
+        let mut inodes = Vec::new();
+        for fd in std::fs::read_dir("/proc/self/fdinfo")?.flatten() {
+            let Ok(info) = std::fs::read_to_string(fd.path()) else {
+                continue;
+            };
+            for line in info.lines().filter(|line| line.starts_with("inotify wd:")) {
+                let inode = line
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("ino:"))
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok());
+                inodes.extend(inode);
+            }
+        }
+        Ok(inodes)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_following_watch_leaves_new_folders_to_its_owner() -> std::io::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let temp = tempfile::tempdir()?;
+        let watcher =
+            TreeWatcher::following(temp.path(), Arc::new(|| {})).map_err(std::io::Error::other)?;
+        std::fs::create_dir_all(temp.path().join("dist/a/b"))?;
+        changes_within(&watcher, Duration::from_millis(800));
+        let watched = watched_inodes()?;
+        let held = |path: &Path| -> std::io::Result<bool> {
+            Ok(watched.contains(&std::fs::metadata(path)?.ino()))
+        };
+        assert!(held(temp.path())?);
+        for folder in ["dist", "dist/a", "dist/a/b"] {
+            assert!(!held(&temp.path().join(folder))?, "{folder} is watched");
+        }
         Ok(())
     }
 

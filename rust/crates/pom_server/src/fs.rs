@@ -840,13 +840,19 @@ impl RootWatch {
     }
 
     /// A lazy tree watches only the folders it lists; the full one watched its whole tree at the start.
-    fn watch_listed(&self, batch: &[FileEntry]) {
+    fn watch_listed(&self, batch: &[FileEntry]) -> Vec<String> {
         if !self.lazy {
-            return;
+            return Vec::new();
         }
-        for entry in batch.iter().filter(|entry| entry.is_dir && !entry.lazy) {
-            self.watcher.watch_folder(&self.root.join(&entry.path));
+        let folders: Vec<String> = batch
+            .iter()
+            .filter(|entry| entry.is_dir && !entry.lazy)
+            .map(|entry| entry.path.clone())
+            .collect();
+        for folder in &folders {
+            self.watcher.watch_folder(&self.root.join(folder));
         }
+        folders
     }
 
     /// Whether `path` lies in a folder whose contents nobody opened, so no client has it.
@@ -900,10 +906,18 @@ impl RootWatch {
             if changes.is_empty() {
                 return;
             }
-            files::fs::patch_lazily(&self.root, &changes, &self.opened)
+            let patch = files::fs::patch_lazily(&self.root, &changes, &self.opened);
+            let made = self.watch_listed(&patch.upserted);
+            self.publish(patch);
+            if made.is_empty() {
+                return;
+            }
+            // What landed in a new folder before its watch existed is only found by listing it again.
+            files::fs::patch_lazily(&self.root, &made, &self.opened)
         } else {
             files::fs::patch_for(&self.root, &changes, Links::Stay)
         };
+        self.watch_listed(&patch.upserted);
         self.publish(patch);
     }
 
@@ -1116,6 +1130,76 @@ mod tests {
                 break;
             }
             assert!(Instant::now() < deadline, "no patch for dist/new.js");
+        }
+        Ok(())
+    }
+
+    /// The inodes this process holds an inotify watch on, as the kernel lists them.
+    #[cfg(target_os = "linux")]
+    fn watched_inodes() -> std::io::Result<Vec<u64>> {
+        let mut inodes = Vec::new();
+        for fd in std::fs::read_dir("/proc/self/fdinfo")?.flatten() {
+            let Ok(info) = std::fs::read_to_string(fd.path()) else {
+                continue;
+            };
+            for line in info.lines().filter(|line| line.starts_with("inotify wd:")) {
+                let inode = line
+                    .split_whitespace()
+                    .find_map(|field| field.strip_prefix("ino:"))
+                    .and_then(|hex| u64::from_str_radix(hex, 16).ok());
+                inodes.extend(inode);
+            }
+        }
+        Ok(inodes)
+    }
+
+    #[test]
+    fn a_lazy_tree_follows_a_new_folder_but_not_a_new_ignored_one() -> std::io::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().canonicalize()?;
+        std::fs::create_dir(root.join(".git"))?;
+        std::fs::write(root.join(".gitignore"), "dist/\n")?;
+        std::fs::write(root.join("main.rs"), "x")?;
+        let reject = |_: pom_rpc::Request, _: &pom_rpc::RequestContext| {
+            Err(RemoteError::new(error_code::METHOD_NOT_FOUND, "none"))
+        };
+        let (client, server) = pom_rpc::mock::connected(pom_rpc::Config::default(), reject)
+            .map_err(std::io::Error::other)?;
+        let service = FsService::new();
+        let subscription = client.subscribe().map_err(std::io::Error::other)?;
+        let publisher = server
+            .publisher(subscription.channel())
+            .map_err(std::io::Error::other)?;
+        assert!(service.watch(&root, true, publisher).is_ok());
+        entries_until_last(&subscription);
+        std::fs::create_dir_all(root.join("src/deep"))?;
+        std::fs::create_dir_all(root.join("dist/assets/fonts"))?;
+        std::thread::sleep(Duration::from_millis(500));
+        std::fs::write(root.join("src/deep/late.rs"), "x")?;
+        std::fs::write(root.join("dist/assets/fonts/a.woff"), "x")?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let entries = entries_until_last(&subscription);
+            assert!(
+                !entries.iter().any(|(path, _)| path.starts_with("dist/")),
+                "{entries:?}"
+            );
+            if entries.iter().any(|(path, _)| path == "src/deep/late.rs") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "no patch for src/deep/late.rs");
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let watched = watched_inodes()?;
+            let held = |folder: &str| -> std::io::Result<bool> {
+                Ok(watched.contains(&std::fs::metadata(root.join(folder))?.ino()))
+            };
+            assert!(held("src/deep")?);
+            for folder in ["dist", "dist/assets", "dist/assets/fonts"] {
+                assert!(!held(folder)?, "{folder} is watched");
+            }
         }
         Ok(())
     }
