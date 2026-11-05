@@ -75,6 +75,8 @@ impl Drop for Link {
 enum LinkSlot {
     /// Never opened yet: the next caller opens it.
     Closed,
+    /// The first session is being opened; other callers wait for it rather than dialing too.
+    Dialing,
     Open(Link),
     /// The host cannot serve; every read goes over plain ssh from now on.
     Fallback,
@@ -454,42 +456,58 @@ impl Inner {
     /// The open connection, opening the first one; `None` once the host fell back to plain ssh. A session that
     /// dropped is the supervisor's to reopen, so this waits a little for it rather than dialing too.
     pub(crate) fn connection(self: &Arc<Self>) -> Result<Option<Connection>, SourceError> {
-        let mut link = locked(&self.link);
-        match &*link {
-            LinkSlot::Fallback => return Ok(None),
-            LinkSlot::Open(open) if open.connection.state() == pom_rpc::ConnectionState::Open => {
-                return Ok(Some(open.connection.clone()))
+        {
+            let mut link = locked(&self.link);
+            match &*link {
+                LinkSlot::Fallback => return Ok(None),
+                LinkSlot::Open(open)
+                    if open.connection.state() == pom_rpc::ConnectionState::Open =>
+                {
+                    return Ok(Some(open.connection.clone()))
+                }
+                LinkSlot::Open(_) | LinkSlot::Dialing => {
+                    drop(link);
+                    return self.wait_for_link(LINK_WAIT);
+                }
+                LinkSlot::Closed => *link = LinkSlot::Dialing,
             }
-            LinkSlot::Open(_) => {
-                drop(link);
-                return self.wait_for_link(LINK_WAIT);
-            }
-            LinkSlot::Closed => {}
         }
-        match self.dial(false) {
+        let dialed = self.dial(false);
+        let mut link = locked(&self.link);
+        let outcome = match dialed {
             Ok(dialed) => {
                 let connection = self.install(&mut link, dialed);
                 drop(link);
                 self.supervise();
-                Ok(Some(connection))
+                return Ok(Some(connection));
             }
             Err(failure @ (Failure::Fallback(_) | Failure::Mismatch { .. })) => {
                 self.fall_back(&mut link, failure);
-                Ok(None)
+                return Ok(None);
             }
-            Err(Failure::ServerGone) => Err(SourceError::Unreachable(format!(
-                "pom server on {} is gone",
-                self.host.name
-            ))),
-            Err(Failure::Source(error)) => Err(error),
-        }
+            Err(Failure::ServerGone) => {
+                SourceError::Unreachable(format!("pom server on {} is gone", self.host.name))
+            }
+            Err(Failure::Source(error)) => error,
+        };
+        *link = LinkSlot::Closed;
+        drop(link);
+        self.changed.notify_all();
+        Err(outcome)
     }
 
     fn wait_for_link(&self, timeout: Duration) -> Result<Option<Connection>, SourceError> {
         let deadline = Instant::now() + timeout;
         loop {
-            if matches!(*locked(&self.link), LinkSlot::Fallback) {
-                return Ok(None);
+            match &*locked(&self.link) {
+                LinkSlot::Fallback => return Ok(None),
+                LinkSlot::Closed => {
+                    return Err(SourceError::Unreachable(format!(
+                        "could not reach pom server on {}",
+                        self.host.name
+                    )))
+                }
+                _ => {}
             }
             if let Some(connection) = self.live_connection() {
                 return Ok(Some(connection));
@@ -576,13 +594,11 @@ impl Inner {
     }
 
     /// One reconnect: to the same server when it still runs, else to a fresh one.
-    fn redial(&self, link: &mut LinkSlot) -> Result<(), Failure> {
-        let dialed = match self.dial(true) {
-            Err(Failure::ServerGone) => self.dial(false)?,
-            other => other?,
-        };
-        self.install(link, dialed);
-        Ok(())
+    fn redial(&self) -> Result<Dialed, Failure> {
+        match self.dial(true) {
+            Err(Failure::ServerGone) => self.dial(false),
+            other => other,
+        }
     }
 }
 
@@ -596,7 +612,7 @@ fn supervise(weak: &Weak<Inner>) {
             let connection = match &*locked(&inner.link) {
                 LinkSlot::Open(open) => open.connection.clone(),
                 LinkSlot::Fallback => return,
-                LinkSlot::Closed => break,
+                LinkSlot::Closed | LinkSlot::Dialing => break,
             };
             drop(inner);
             if connection.wait_closed(SUPERVISOR_TICK).is_some() {
@@ -630,11 +646,19 @@ fn supervise(weak: &Weak<Inner>) {
             if !inner.wait_or_kick(Some(delay)) {
                 return;
             }
-            let mut link = locked(&inner.link);
-            match inner.redial(&mut link) {
-                Ok(()) => break,
+            // Dialed unlocked: a redial can take a whole ssh timeout, and the UI asks the slot every frame.
+            match inner.redial() {
+                Ok(dialed) => {
+                    let mut link = locked(&inner.link);
+                    if matches!(*link, LinkSlot::Fallback) {
+                        dialed.connection.close();
+                        return;
+                    }
+                    inner.install(&mut link, dialed);
+                    break;
+                }
                 Err(failure @ (Failure::Fallback(_) | Failure::Mismatch { .. })) => {
-                    inner.fall_back(&mut link, failure);
+                    inner.fall_back(&mut locked(&inner.link), failure);
                     return;
                 }
                 Err(Failure::ServerGone) => reason = "pom server is gone".to_string(),
