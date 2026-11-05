@@ -74,7 +74,32 @@ impl GitPanel {
         }
     }
 
+    /// A job runs on what this row shows: its file, its folder or its repo.
+    fn row_busy(&self, index: usize) -> bool {
+        match self.rows.get(index) {
+            Some(Row::File { repo, entry, .. }) => self.jobs.path_busy(*repo, &entry.path),
+            Some(Row::Directory { repo, path, .. }) => self.jobs.path_busy(*repo, path),
+            Some(Row::RepoHeader { repo, .. } | Row::Section { repo, .. }) => {
+                self.jobs.repo_busy(*repo)
+            }
+            _ => false,
+        }
+    }
+
+    /// Stands where a checkbox would while git works on the row, and takes no clicks.
+    fn busy_mark(&self) -> Node {
+        div()
+            .row()
+            .h_px(20.0)
+            .items_center()
+            .child(components::spinner(self.jobs.seconds()).size(14.0))
+            .into()
+    }
+
     fn check(&self, index: usize, staging: Staging, tip: &str) -> Node {
+        if self.row_busy(index) {
+            return self.busy_mark();
+        }
         let id = self.id(index, Control::Check);
         let boxed = div().child(checkbox(id, staging, self.hot(id)));
         if self.hot(id) {
@@ -911,6 +936,8 @@ impl GitPanel {
                 _ => "Stage",
             };
             row = row.child(self.check(index, shown, tip));
+        } else if self.row_busy(index) {
+            row = row.child(self.busy_mark());
         }
         let name_color = if reviewed {
             colors.text_placeholder

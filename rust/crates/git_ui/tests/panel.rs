@@ -173,6 +173,7 @@ fn settle(panel: &mut GitPanel) -> Vec<PanelRequest> {
         requests.extend(panel.take_requests());
         if !panel.operation_running() || std::time::Instant::now() > deadline {
             panel.wait_for_scan();
+            requests.extend(panel.take_requests());
             return requests;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -464,6 +465,8 @@ fn history_groups_by_repo_or_runs_as_one_timeline() {
     );
 
     click(&mut panel, "Web one");
+    assert!(texts(&mut panel).contains("Loading files..."));
+    panel.wait_for_scan();
     let shown = texts(&mut panel);
     assert!(
         shown.contains("extra.txt"),
@@ -620,6 +623,7 @@ fn discards_after_confirming() {
     let mut panel = panel(vec![source("api", &root, "feat")]);
     let file = id_at(&mut panel, "app.rs");
     panel.click(file);
+    panel.wait_for_scan();
     assert!(matches!(
         panel.take_requests().as_slice(),
         [PanelRequest::OpenDiff { path, base: Some(base) }] if path.ends_with("app.rs") && base == "one\n"
@@ -646,6 +650,7 @@ fn discards_after_confirming() {
         panic!("asks again");
     };
     panel.prompt_answered(tag, 0);
+    panel.wait_for_scan();
     assert_eq!(
         std::fs::read_to_string(root.join("app.rs")).expect("read"),
         "one\n"
@@ -893,6 +898,7 @@ fn a_conflicted_file_is_marked_resolved_only_without_markers() {
 
     assert!(panel.open_menu(file));
     menu_pick(&mut panel, "Mark Resolved");
+    panel.wait_for_scan();
     assert!(matches!(
         panel.take_requests().as_slice(),
         [PanelRequest::Toast(message)] if message.contains("still has 1 conflict")
@@ -926,4 +932,95 @@ fn a_host_that_cannot_serve_git_says_why_instead_of_listing_repos() {
     let shown = texts(&mut panel);
     assert!(shown.contains("cannot show its repos here"), "{shown}");
     assert!(!shown.contains("Commit"), "{shown}");
+}
+
+/// Git on a slow link: changes wait until the test lets them through, and note the order they ran in.
+struct SlowGit {
+    open: std::sync::Mutex<bool>,
+    opened: std::sync::Condvar,
+    ran: std::sync::Mutex<Vec<String>>,
+}
+
+impl SlowGit {
+    fn let_through(&self) {
+        if let Ok(mut open) = self.open.lock() {
+            *open = true;
+        }
+        self.opened.notify_all();
+    }
+}
+
+impl git::access::GitAccess for SlowGit {
+    fn scan(&self, repo: &RepoSource) -> git::scan::RepoScan {
+        git::access::LocalGit.scan(repo)
+    }
+
+    fn act(
+        &self,
+        repo: &RepoSource,
+        op: git::access::GitOp,
+    ) -> Result<(), git::working_copy::CommandError> {
+        let mut open = self.open.lock().expect("gate");
+        while !*open {
+            open = self.opened.wait(open).expect("gate");
+        }
+        drop(open);
+        if let git::access::GitOp::Stage { paths } = &op {
+            self.ran.lock().expect("ran").extend(paths.iter().cloned());
+        }
+        git::access::LocalGit.act(repo, op)
+    }
+
+    fn read(
+        &self,
+        repo: &RepoSource,
+        query: git::access::GitRead,
+    ) -> Result<git::access::GitAnswer, String> {
+        git::access::LocalGit.read(repo, query)
+    }
+
+    fn remote(
+        &self,
+        repo: &RepoSource,
+        command: git::access::RemoteCommand,
+        progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
+        git::access::LocalGit.remote(repo, command, progress)
+    }
+}
+
+#[test]
+fn a_slow_machine_never_holds_up_a_click_and_its_changes_land_in_order() {
+    let temp = tempfile::tempdir().expect("temp");
+    let root = repo(temp.path(), "api", &["a.rs", "b.rs"], "feat");
+    write(&root, "a.rs", "two\n");
+    write(&root, "b.rs", "two\n");
+    let slow = Arc::new(SlowGit {
+        open: std::sync::Mutex::new(false),
+        opened: std::sync::Condvar::new(),
+        ran: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut panel = GitPanel::new(vec![source("api", &root, "feat")], None, Arc::new(|| {}))
+        .with_access(slow.clone());
+    panel.set_view(false, false);
+    panel.render(WIDTH, HEIGHT);
+    panel.wait_for_scan();
+
+    let first = id_at(&mut panel, "a.rs");
+    let second = id_at(&mut panel, "b.rs");
+    panel.click(first + CHECK);
+    panel.click(second + CHECK);
+    assert!(panel.operation_running(), "both wait on the machine");
+    assert_eq!(staged(&root), "", "nothing ran on the click");
+    let ids: Vec<u64> = painted(&mut panel).hits.iter().map(|(_, id)| *id).collect();
+    assert!(
+        !ids.contains(&(first + CHECK)) && !ids.contains(&(second + CHECK)),
+        "a busy row shows a spinner in place of its checkbox"
+    );
+
+    slow.let_through();
+    panel.wait_for_scan();
+    assert!(!panel.operation_running());
+    assert_eq!(*slow.ran.lock().expect("ran"), ["a.rs", "b.rs"]);
+    assert_eq!(staged(&root), "a.rs\nb.rs");
 }

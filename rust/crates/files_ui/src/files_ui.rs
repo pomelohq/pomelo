@@ -6844,6 +6844,16 @@ fn load_text_in_pieces(full: &Path, len: u64) -> std::io::Result<(EditorBuffer, 
     ))
 }
 
+/// A diff of a file on another machine, waiting for the file's read.
+struct PendingDiff {
+    fs: SharedFs,
+    root: PathBuf,
+    path: String,
+    base: Option<String>,
+    pane: u64,
+    receiver: std::sync::mpsc::Receiver<Option<files::FileResult>>,
+}
+
 struct PendingOpen {
     fs: SharedFs,
     root: PathBuf,
@@ -7337,6 +7347,7 @@ pub struct FilesView {
     finder_candidates: std::sync::Arc<file_finder::Candidates>,
     finder_loading: Option<std::sync::mpsc::Receiver<file_finder::Candidates>>,
     pending_opens: Vec<PendingOpen>,
+    pending_diffs: Vec<PendingDiff>,
     /// The file last clicked in the tree and when: a second click on it opens it for good.
     last_tree_click: Option<(std::time::Instant, String)>,
     /// The file tree has the keyboard, and the row its arrows are on.
@@ -7792,6 +7803,7 @@ impl FilesView {
             finder_candidates: Default::default(),
             finder_loading: None,
             pending_opens: Vec::new(),
+            pending_diffs: Vec::new(),
             last_tree_click: None,
             tree_focused: false,
             tree_selected: None,
@@ -8027,6 +8039,80 @@ impl FilesView {
                 }
             }
         }
+    }
+
+    /// Every read of another machine's file is a round trip, so the diff's tab opens once the read is back.
+    fn read_diff_in_background(&mut self, path: String, base: Option<String>) {
+        if self
+            .pending_diffs
+            .iter()
+            .any(|pending| pending.path == path)
+        {
+            return;
+        }
+        let Some(pane) = self.panes.active_pane_mut().map(|pane| pane.id) else {
+            return;
+        };
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (worker_fs, worker_path) = (self.fs.clone(), path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("diff-read".into())
+            .spawn(move || {
+                if sender.send(worker_fs.read(&worker_path).ok()).is_ok() {
+                    ui::wake();
+                }
+            });
+        match spawned {
+            Ok(_) => self.pending_diffs.push(PendingDiff {
+                fs: self.fs.clone(),
+                root: self.root.clone(),
+                path,
+                base,
+                pane,
+                receiver,
+            }),
+            Err(error) => eprintln!("read {path} for its diff: {error}"),
+        }
+    }
+
+    fn poll_pending_diffs(&mut self) -> bool {
+        let mut opened = false;
+        let mut index = 0;
+        while index < self.pending_diffs.len() {
+            let read = match self.pending_diffs[index].receiver.try_recv() {
+                Ok(read) => read,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    index += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+            };
+            let pending = self.pending_diffs.remove(index);
+            let item = FileItem::branch_diff_in(
+                pending.fs,
+                pending.root,
+                &pending.path,
+                read,
+                pending.base,
+            );
+            let mut item: Option<Box<dyn workspace::Item>> = Some(Box::new(item));
+            self.track_nav(|view| {
+                view.panes.group.for_each_pane_mut(&mut |pane| {
+                    if pane.id == pending.pane {
+                        if let Some(item) = item.take() {
+                            pane.add_item(item);
+                        }
+                    }
+                });
+                if let Some(item) = item.take() {
+                    if let Some(pane) = view.panes.active_pane_mut() {
+                        pane.add_item(item);
+                    }
+                }
+            });
+            opened = true;
+        }
+        opened
     }
 
     fn poll_pending_opens(&mut self) -> bool {
@@ -10368,6 +10454,7 @@ impl FunctionView for FilesView {
         self.panes.keep_edited_previews();
         outcome.changed |= self.poll_finder_candidates();
         outcome.changed |= self.poll_pending_opens();
+        outcome.changed |= self.poll_pending_diffs();
         outcome.changed |= self.serve_server_logs();
         outcome.changed |= self.poll_tree();
         outcome.changed |= self.poll_reloads();
@@ -10465,21 +10552,16 @@ impl FunctionView for FilesView {
                 return;
             };
             let relative = relative.to_string_lossy().into_owned();
-            let (fs, root) = (self.fs.clone(), self.root.clone());
-            self.track_nav(|view| {
-                let Some(pane) = view.panes.active_pane_mut() else {
-                    return;
-                };
-                let id = format!("{DIFF_ID_PREFIX}{relative}");
-                if let Some(index) = pane.index_of_id(&id) {
-                    pane.activate_user(index);
-                    return;
-                }
-                let read = fs.read(&relative).ok();
-                pane.add_item(Box::new(FileItem::branch_diff_in(
-                    fs, root, &relative, read, base,
-                )));
+            let id = format!("{DIFF_ID_PREFIX}{relative}");
+            let open = self.track_nav(|view| {
+                let pane = view.panes.active_pane_mut()?;
+                let index = pane.index_of_id(&id)?;
+                pane.activate_user(index);
+                Some(())
             });
+            if open.is_none() {
+                self.read_diff_in_background(relative, base);
+            }
             return;
         }
         let path = path.to_path_buf();
@@ -13671,12 +13753,13 @@ mod remote_files_tests {
     use std::sync::{Arc, Mutex};
 
     /// Files on another machine, as a test holds them: what a read returns and what the feed reports next.
-    /// Saves wait for `release` when `hold` is set; tree changes fail when `refuse` is set.
+    /// Saves wait for `release` when `hold` is set, reads when `hold_reads` is; tree changes fail when `refuse` is set.
     #[derive(Default)]
     struct Elsewhere {
         files: Mutex<HashMap<String, (String, u64)>>,
         events: Arc<Mutex<Vec<files::TreeEvent>>>,
         hold: std::sync::atomic::AtomicBool,
+        hold_reads: std::sync::atomic::AtomicBool,
         released: Mutex<bool>,
         release: std::sync::Condvar,
         offline: std::sync::atomic::AtomicBool,
@@ -13714,6 +13797,20 @@ mod remote_files_tests {
                 .ok()
                 .and_then(|files| files.get(path).cloned())
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no such file"))
+        }
+
+        fn wait_for_release(&self) -> std::io::Result<()> {
+            let mut released = self
+                .released
+                .lock()
+                .map_err(|_| std::io::Error::other("poisoned"))?;
+            while !*released {
+                released = self
+                    .release
+                    .wait(released)
+                    .map_err(|_| std::io::Error::other("poisoned"))?;
+            }
+            Ok(())
         }
 
         fn release(&self) {
@@ -13760,6 +13857,9 @@ mod remote_files_tests {
         }
 
         fn read(&self, path: &str) -> std::io::Result<files::FileResult> {
+            if self.hold_reads.load(std::sync::atomic::Ordering::SeqCst) {
+                self.wait_for_release()?;
+            }
             let (text, mtime_ns) = self.get(path)?;
             Ok(files::FileResult::from_bytes(text.into_bytes(), mtime_ns))
         }
@@ -13783,16 +13883,7 @@ mod remote_files_tests {
             expect: Option<&files::FileStat>,
         ) -> Result<files::FileStat, files::WriteError> {
             if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
-                let mut released = self
-                    .released
-                    .lock()
-                    .map_err(|_| std::io::Error::other("poisoned"))?;
-                while !*released {
-                    released = self
-                        .release
-                        .wait(released)
-                        .map_err(|_| std::io::Error::other("poisoned"))?;
-                }
+                self.wait_for_release()?;
             }
             if let Ok(mut saves) = self.saves.lock() {
                 saves.push((text.to_string(), expect.map(|stat| stat.mtime_ns)));
@@ -13855,6 +13946,39 @@ mod remote_files_tests {
 
     fn dirty(view: &FilesView) -> bool {
         view.panes.active_item().is_some_and(|item| item.is_dirty())
+    }
+
+    #[test]
+    fn a_diff_of_a_file_there_reads_it_off_the_ui_thread() {
+        let elsewhere = Arc::new(Elsewhere::default());
+        elsewhere.put("src/main.rs", "fn main() {}\n", 10);
+        let mut view = opened(&elsewhere, false);
+        elsewhere
+            .hold_reads
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let path = view.root.join("src/main.rs");
+        view.open_diff(&path, Some("fn old() {}\n".into()));
+        view.open_diff(&path, Some("fn old() {}\n".into()));
+        view.tick_items(&|| None);
+        let diff_open = |view: &FilesView| {
+            view.panes
+                .active_item()
+                .and_then(|item| item.id())
+                .is_some_and(|id| id == "diff:src/main.rs")
+        };
+        assert!(!diff_open(&view), "the tab waits for the read");
+        elsewhere.release();
+        settle(&mut view, diff_open);
+        assert!(diff_open(&view));
+        let mut diffs = 0;
+        view.panes.group.for_each_pane(&mut |pane| {
+            diffs += pane
+                .open
+                .iter()
+                .filter(|item| item.id().as_deref() == Some("diff:src/main.rs"))
+                .count();
+        });
+        assert_eq!(diffs, 1, "asking twice while it reads opens one tab");
     }
 
     #[test]

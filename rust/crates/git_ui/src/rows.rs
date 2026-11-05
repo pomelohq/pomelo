@@ -383,14 +383,18 @@ impl GitPanel {
         }
         if let Some(opened) = self.opened.clone() {
             rows.push(Row::CommitHeader);
-            if opened.files.is_empty() {
+            let Some(files) = opened.files.as_ref() else {
+                Self::message(&mut rows, "Loading files...", 10.0);
+                return rows;
+            };
+            if files.is_empty() {
                 Self::message(
                     &mut rows,
                     "No file changes to show (a merge or an empty commit)",
                     10.0,
                 );
             }
-            let entries = opened.files.iter().map(FileEntry::from_change).collect();
+            let entries = files.iter().map(FileEntry::from_change).collect();
             self.file_rows(scan, opened.repo, Scope::Commit, entries, 0, &mut rows);
             return rows;
         }

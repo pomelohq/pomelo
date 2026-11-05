@@ -2550,6 +2550,7 @@ fn main() -> anyhow::Result<()> {
             Some((repo.parse::<usize>().ok()?, index.parse::<usize>().ok()?))
         }) {
             panel.open_history_commit(repo, index);
+            panel.wait_for_scan();
         }
         match std::env::var("GITVIEW").as_deref() {
             Ok("tree") => panel.set_view(true, true),

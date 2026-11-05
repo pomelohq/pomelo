@@ -2,6 +2,7 @@
 //! history, and the same panel in the window of a project on a host.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
 use workspace::SidePanelView;
@@ -27,6 +28,8 @@ enum Access {
     Host,
     /// The host's pom is too old to serve its repos.
     Unserved,
+    /// The host answers scans but nothing else yet, so the board shows the work waiting on it.
+    Stalled,
 }
 
 struct Made {
@@ -45,6 +48,13 @@ struct GitStory {
     failed: Option<String>,
     // Dropped after the panel, whose scans read these repos.
     _scratch: Option<Scratch>,
+    stalled: Arc<AtomicBool>,
+}
+
+impl Drop for GitStory {
+    fn drop(&mut self) {
+        self.stalled.store(true, Ordering::Release);
+    }
 }
 
 impl GitStory {
@@ -82,6 +92,16 @@ impl GitStory {
             return;
         }
         self.scanned = true;
+        if matches!(self.access, Access::Stalled) {
+            match self.tab {
+                git_ui::Tab::History => panel.open_history_commit(0, 0),
+                _ => {
+                    panel.toggle_staged(0, "spec/requests/users_spec.rb");
+                    panel.stage_whole_repo(1, true);
+                }
+            }
+            return;
+        }
         if self.tab == git_ui::Tab::Remote {
             for path in [
                 "app/controllers/users_controller.rb",
@@ -112,6 +132,9 @@ impl GitStory {
         panel = match self.access {
             Access::Local => panel,
             Access::Host => panel.with_access(Arc::new(fixture::WireGit)),
+            Access::Stalled => panel.with_access(Arc::new(fixture::StalledGit {
+                released: self.stalled.clone(),
+            })),
             Access::Unserved => panel.with_access(Arc::new(git::access::UnservedGit::new(
                 "pom 0.9.6 on dev cannot show its repos here. Update pom there to use Git in this window.",
             ))),
@@ -225,6 +248,7 @@ fn build(repos: Repos, tab: git_ui::Tab, access: Access) -> anyhow::Result<Box<d
         scanned: false,
         failed: None,
         _scratch: None,
+        stalled: Arc::new(AtomicBool::new(false)),
     }))
 }
 
@@ -278,6 +302,24 @@ pub fn stories() -> Vec<StoryDef> {
         story("git-panel-host", "On a host", || {
             build(Repos::Changes(State::Staged), Tab::Changes, Access::Host)
         }),
+        story("git-panel-host-staging", "Staging on a slow host", || {
+            build(
+                Repos::Changes(State::Unstaged),
+                Tab::Changes,
+                Access::Stalled,
+            )
+        }),
+        story(
+            "git-panel-host-commit-loading",
+            "Opening a commit on a slow host",
+            || {
+                build(
+                    Repos::Remote(RemoteState::Differ),
+                    Tab::History,
+                    Access::Stalled,
+                )
+            },
+        ),
         story("git-panel-host-unserved", "Host pom too old", || {
             build(
                 Repos::Changes(State::Unstaged),

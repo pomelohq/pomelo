@@ -4,6 +4,7 @@
 //! the panel refreshes while it is shown.
 
 mod commit_area;
+mod jobs;
 mod keys;
 mod render;
 mod rows;
@@ -18,11 +19,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use commit_area::{CommitArea, CommitTarget, RemoteJob, RemoteRequest};
+use commit_area::{CommitArea, CommitTarget, RemoteRequest, RemoteWork};
 use git::access::{GitAccess, GitOp, LocalGit};
 use git::history::CommitSummary;
 use git::working_copy::{self, Staging, Upstream};
 use git::{ChangeStatus, FileChange};
+use jobs::{Jobs, Mark};
 use rows::Row;
 use scan::{review_key, RepoScan, Scan, Scanner};
 use workspace::list_nav::ListNav;
@@ -127,7 +129,8 @@ enum Control {
 pub(crate) struct OpenedCommit {
     pub repo: usize,
     pub commit: CommitSummary,
-    pub files: Vec<FileChange>,
+    /// `None` while its files are being read.
+    pub files: Option<Vec<FileChange>>,
     pub incoming: bool,
 }
 
@@ -179,6 +182,7 @@ enum Confirm {
 
 pub struct GitPanel {
     access: Arc<dyn GitAccess>,
+    jobs: Jobs,
     sources: Arc<Vec<RepoSource>>,
     scan: Arc<Mutex<Arc<Scan>>>,
     scanning: Arc<AtomicBool>,
@@ -236,6 +240,7 @@ impl GitPanel {
         let access: Arc<dyn GitAccess> = Arc::new(LocalGit);
         GitPanel {
             access: access.clone(),
+            jobs: Jobs::new(access.clone(), waker.clone()),
             watching: Arc::new(Mutex::new(None)),
             reviews_file,
             reviewed,
@@ -276,6 +281,7 @@ impl GitPanel {
     /// Runs git where `access` says: on the machine of a remote project, instead of here.
     pub fn with_access(mut self, access: Arc<dyn GitAccess>) -> GitPanel {
         self.commit.access = access.clone();
+        self.jobs.access = access.clone();
         self.access = access;
         self
     }
@@ -296,6 +302,30 @@ impl GitPanel {
         if !self.is_reviewed(&self.current(), repo, path) {
             self.toggle_reviewed(repo, path);
         }
+    }
+
+    /// Stages or unstages a changed file as its checkbox would (previews and tests).
+    pub fn toggle_staged(&mut self, repo: usize, path: &str) {
+        let Some(status) = self
+            .repo_scan(repo)
+            .and_then(|state| state.status.into_iter().find(|entry| entry.path == path))
+        else {
+            return;
+        };
+        let entry = FileEntry {
+            path: status.path.clone(),
+            old_path: status.original_path.clone(),
+            status: ChangeStatus::Modified,
+            added: None,
+            deleted: None,
+            staging: Some(status.staging()),
+        };
+        self.stage_file(repo, Scope::Working, &entry);
+    }
+
+    /// Stages or unstages everything in a repo as its header's checkbox would (previews and tests).
+    pub fn stage_whole_repo(&mut self, repo: usize, stage: bool) {
+        self.stage_repo(repo, stage);
     }
 
     /// Opens the `index`th commit of `repo`'s branch history, as clicking it in History would.
@@ -405,15 +435,35 @@ impl GitPanel {
     }
 
     pub fn operation_running(&self) -> bool {
-        self.commit.busy()
+        self.commit.busy() || !self.jobs.idle()
+    }
+
+    /// Applies the git work that finished in the background.
+    fn apply_finished(&mut self) {
+        let had_requests = !self.requests.is_empty();
+        for apply in self.jobs.take_done() {
+            apply(self);
+        }
+        if !had_requests && !self.requests.is_empty() {
+            (self.waker)();
+        }
     }
 
     pub fn scanning(&self) -> bool {
         self.scanning.load(Ordering::Acquire)
     }
 
-    /// Blocks until the running re-read finishes (tests).
-    pub fn wait_for_scan(&self) {
+    /// Blocks until the git work asked so far and the re-read after it finish, and applies their results (tests).
+    pub fn wait_for_scan(&mut self) {
+        loop {
+            while !self.jobs.finished() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            self.apply_finished();
+            if self.jobs.idle() {
+                break;
+            }
+        }
         while self.scanning.load(Ordering::Acquire) {
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -559,21 +609,57 @@ impl GitPanel {
         }
     }
 
-    fn act(&self, repo: usize, op: GitOp) -> Result<(), working_copy::CommandError> {
-        match self.sources.get(repo) {
-            Some(source) => self.access.act(source, op),
-            None => Ok(()),
-        }
+    /// Runs `op` on one repo after the changes asked before it; a failure becomes a toast, then the panel re-reads.
+    fn act(&mut self, repo: usize, mark: Mark, op: GitOp) {
+        let Some(source) = self.sources.get(repo).cloned() else {
+            return;
+        };
+        self.jobs.change(vec![mark], move |access| {
+            let result = access.act(&source, op);
+            Box::new(move |panel: &mut GitPanel| {
+                if let Err(error) = result {
+                    panel.requests.push(PanelRequest::Toast(error.message));
+                }
+                panel.refresh();
+            })
+        });
     }
 
-    fn report(&mut self, result: Result<(), working_copy::CommandError>) {
-        if let Err(error) = result {
-            self.requests.push(PanelRequest::Toast(error.message));
+    /// Runs `op` on each of `repos` in turn, then reports every failure in one toast.
+    fn act_on_each(&mut self, repos: Vec<usize>, op: GitOp) {
+        let sources: Vec<RepoSource> = repos
+            .iter()
+            .filter_map(|repo| self.sources.get(*repo).cloned())
+            .collect();
+        if sources.is_empty() {
+            return;
         }
-        self.refresh();
+        let marks = repos.into_iter().map(Mark::Repo).collect();
+        self.jobs.change(marks, move |access| {
+            let failures: Vec<String> = sources
+                .iter()
+                .filter_map(|source| {
+                    access
+                        .act(source, op.clone())
+                        .err()
+                        .map(|error| format!("{}: {}", source.name, error.message))
+                })
+                .collect();
+            Box::new(move |panel: &mut GitPanel| {
+                if !failures.is_empty() {
+                    panel
+                        .requests
+                        .push(PanelRequest::Toast(failures.join("; ")));
+                }
+                panel.refresh();
+            })
+        });
     }
 
     fn stage_file(&mut self, repo: usize, scope: Scope, entry: &FileEntry) {
+        if self.jobs.path_busy(repo, &entry.path) {
+            return;
+        }
         let mut paths = vec![entry.path.clone()];
         paths.extend(entry.old_path.clone());
         let unstage = match scope {
@@ -586,68 +672,64 @@ impl GitPanel {
         } else {
             GitOp::Stage { paths }
         };
-        let result = self.act(repo, op);
-        self.report(result);
+        self.act(repo, Mark::Path(repo, entry.path.clone()), op);
     }
 
     /// Stages a conflicted file once no conflict markers are left in it, the way `git add` settles a conflict.
     fn mark_resolved(&mut self, repo: usize, path: &str) {
-        let result = self.act(
-            repo,
-            GitOp::MarkResolved {
-                path: path.to_string(),
-            },
-        );
-        self.report(result);
+        let op = GitOp::MarkResolved {
+            path: path.to_string(),
+        };
+        self.act(repo, Mark::Path(repo, path.to_string()), op);
     }
 
     fn stage_directory(&mut self, repo: usize, scope: Scope, path: &str, staging: Staging) {
+        if self.jobs.path_busy(repo, path) {
+            return;
+        }
         let unstage = match scope {
             Scope::Staged => true,
             Scope::Unstaged => false,
             _ => staging == Staging::Staged,
         };
         let path = path.to_string();
+        let mark = Mark::Path(repo, path.clone());
         let op = if unstage {
             GitOp::UnstageDirectory { path }
         } else {
             GitOp::StageDirectory { path }
         };
-        let result = self.act(repo, op);
-        self.report(result);
+        self.act(repo, mark, op);
     }
 
     fn stage_repo(&mut self, repo: usize, stage: bool) {
+        if self.jobs.repo_busy(repo) {
+            return;
+        }
         let op = if stage {
             GitOp::StageAll
         } else {
             GitOp::UnstageAll
         };
-        let result = self.act(repo, op);
-        self.report(result);
+        self.act(repo, Mark::Repo(repo), op);
     }
 
     fn stage_everything(&mut self, stage: bool) {
         let scan = self.current();
-        let mut failures = Vec::new();
-        for (source, repo) in self.sources.iter().zip(&scan.repos) {
-            if repo.status.is_empty() {
-                continue;
-            }
-            let op = if stage {
-                GitOp::StageAll
-            } else {
-                GitOp::UnstageAll
-            };
-            let result = self.access.act(source, op);
-            if let Err(error) = result {
-                failures.push(format!("{}: {}", source.name, error.message));
-            }
-        }
-        if !failures.is_empty() {
-            self.requests.push(PanelRequest::Toast(failures.join("; ")));
-        }
-        self.refresh();
+        let repos = scan
+            .repos
+            .iter()
+            .enumerate()
+            .take(self.sources.len())
+            .filter(|(_, repo)| !repo.status.is_empty())
+            .map(|(index, _)| index)
+            .collect();
+        let op = if stage {
+            GitOp::StageAll
+        } else {
+            GitOp::UnstageAll
+        };
+        self.act_on_each(repos, op);
     }
 
     fn everything_staged(scan: &Scan) -> bool {
@@ -661,27 +743,26 @@ impl GitPanel {
 
     fn stash(&mut self, pop: bool) {
         let scan = self.current();
-        let mut failures = Vec::new();
-        for (source, repo) in self.sources.iter().zip(&scan.repos) {
-            let result = if pop {
-                if !repo.has_stash {
-                    continue;
+        let repos = scan
+            .repos
+            .iter()
+            .enumerate()
+            .take(self.sources.len())
+            .filter(|(_, repo)| {
+                if pop {
+                    repo.has_stash
+                } else {
+                    !repo.status.is_empty()
                 }
-                self.access.act(source, GitOp::StashPop)
-            } else {
-                if repo.status.is_empty() {
-                    continue;
-                }
-                self.access.act(source, GitOp::StashAll)
-            };
-            if let Err(error) = result {
-                failures.push(format!("{}: {}", source.name, error.message));
-            }
-        }
-        if !failures.is_empty() {
-            self.requests.push(PanelRequest::Toast(failures.join("; ")));
-        }
-        self.refresh();
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let op = if pop {
+            GitOp::StashPop
+        } else {
+            GitOp::StashAll
+        };
+        self.act_on_each(repos, op);
     }
 
     fn ask(&mut self, confirm: Confirm, message: String, detail: String, button: &str) {
@@ -712,70 +793,87 @@ impl GitPanel {
                 .push(PanelRequest::Toast(format!("{} was deleted", entry.path)));
             return;
         }
-        let Some(source) = self.sources.get(repo) else {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        let root = state.branch.root.clone();
-        let base = match entry.status {
-            ChangeStatus::Added => None,
-            _ => {
-                let revision = match scope {
-                    Scope::Branch => state.branch.fork_point.as_deref().unwrap_or("HEAD"),
-                    _ => "HEAD",
-                };
-                let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
-                self.access.file_at(source, revision, earlier)
-            }
-        };
-        self.requests.push(PanelRequest::OpenDiff {
-            path: root.join(&entry.path),
-            base,
+        let path = state.branch.root.join(&entry.path);
+        let revision = match scope {
+            Scope::Branch => state.branch.fork_point.clone(),
+            _ => None,
+        }
+        .unwrap_or_else(|| "HEAD".into());
+        let earlier = (entry.status != ChangeStatus::Added)
+            .then(|| entry.old_path.clone().unwrap_or_else(|| entry.path.clone()));
+        let mark = Mark::Path(repo, entry.path.clone());
+        self.jobs.read(vec![mark], move |access| {
+            let base = earlier.and_then(|earlier| access.file_at(&source, &revision, &earlier));
+            Box::new(move |panel: &mut GitPanel| {
+                panel.requests.push(PanelRequest::OpenDiff { path, base });
+            })
         });
     }
 
     fn open_commit(&mut self, repo: usize, commit: CommitSummary, incoming: bool) {
-        let Some(source) = self.sources.get(repo) else {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
-        let files = self.access.commit_files(source, &commit.sha);
+        let sha = commit.sha.clone();
         self.opened = Some(OpenedCommit {
             repo,
             commit,
-            files,
+            files: None,
             incoming,
         });
         self.scroll = 0.0;
+        self.jobs.read(Vec::new(), move |access| {
+            let files = access.commit_files(&source, &sha);
+            Box::new(move |panel: &mut GitPanel| {
+                if let Some(opened) = panel.opened.as_mut().filter(|opened| {
+                    opened.repo == repo && opened.commit.sha == sha && opened.files.is_none()
+                }) {
+                    opened.files = Some(files);
+                }
+            })
+        });
     }
 
     /// A read-only tab: the file as the commit left it against its parent's version.
     fn open_commit_file(&mut self, opened: &OpenedCommit, entry: &FileEntry) {
-        let Some(source) = self.sources.get(opened.repo) else {
+        let Some(source) = self.sources.get(opened.repo).cloned() else {
             return;
         };
-        let sha = &opened.commit.sha;
-        let text = (entry.status != ChangeStatus::Deleted)
-            .then(|| self.access.file_at(source, sha, &entry.path))
-            .flatten();
-        let base = self.access.parent_of(source, sha).and_then(|parent| {
-            let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
-            self.access.file_at(source, &parent, earlier)
+        let sha = opened.commit.sha.clone();
+        let short_sha = opened.commit.short_sha.clone();
+        let entry = entry.clone();
+        let mark = Mark::Path(opened.repo, entry.path.clone());
+        self.jobs.read(vec![mark], move |access| {
+            let text = (entry.status != ChangeStatus::Deleted)
+                .then(|| access.file_at(&source, &sha, &entry.path))
+                .flatten();
+            let base = access.parent_of(&source, &sha).and_then(|parent| {
+                let earlier = entry.old_path.as_deref().unwrap_or(&entry.path);
+                access.file_at(&source, &parent, earlier)
+            });
+            Box::new(move |panel: &mut GitPanel| {
+                let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
+                panel
+                    .requests
+                    .push(PanelRequest::OpenItem(files_ui::revision_diff(
+                        format!("git-commit:{}:{sha}:{}", source.name, entry.path),
+                        format!("{name} @ {short_sha}"),
+                        source.root.clone(),
+                        &entry.path,
+                        text,
+                        base,
+                    )));
+            })
         });
-        let name = entry.path.rsplit('/').next().unwrap_or(&entry.path);
-        self.requests
-            .push(PanelRequest::OpenItem(files_ui::revision_diff(
-                format!("git-commit:{}:{sha}:{}", source.name, entry.path),
-                format!("{name} @ {}", opened.commit.short_sha),
-                source.root.clone(),
-                &entry.path,
-                text,
-                base,
-            )));
     }
 
     /// One tab with every repo's patch: uncommitted work against HEAD, or the branch against main.
     fn open_all_diffs(&mut self, uncommitted: bool) {
         let scan = self.current();
-        let mut text = String::new();
+        let mut wanted: Vec<(RepoSource, String, Vec<String>)> = Vec::new();
         for (source, repo) in self.sources.iter().zip(&scan.repos) {
             let against = if uncommitted {
                 "HEAD"
@@ -785,42 +883,52 @@ impl GitPanel {
                     None => continue,
                 }
             };
-            let untracked: Vec<&str> = repo
+            let untracked = repo
                 .status
                 .iter()
                 .filter(|entry| entry.untracked)
-                .map(|entry| entry.path.as_str())
+                .map(|entry| entry.path.clone())
                 .collect();
-            let patch = self.access.patch(source, against);
-            if patch.is_none() && untracked.is_empty() {
-                continue;
-            }
-            text.push_str(&format!("# {}\n", source.name));
-            if let Some(patch) = patch {
-                text.push_str(&patch);
+            wanted.push((source.clone(), against.to_string(), untracked));
+        }
+        self.jobs.read(Vec::new(), move |access| {
+            let mut text = String::new();
+            for (source, against, untracked) in wanted {
+                let patch = access.patch(&source, &against);
+                if patch.is_none() && untracked.is_empty() {
+                    continue;
+                }
+                text.push_str(&format!("# {}\n", source.name));
+                if let Some(patch) = patch {
+                    text.push_str(&patch);
+                    text.push('\n');
+                }
+                for path in untracked {
+                    text.push_str(&format!("new file, not added yet: {path}\n"));
+                }
                 text.push('\n');
             }
-            for path in untracked {
-                text.push_str(&format!("new file, not added yet: {path}\n"));
-            }
-            text.push('\n');
-        }
-        if text.is_empty() {
-            self.requests
-                .push(PanelRequest::Toast("No changes to show".into()));
-            return;
-        }
-        let (id, title) = if uncommitted {
-            ("git-diff:uncommitted", "Uncommitted changes.diff")
-        } else {
-            ("git-diff:branch", "Branch changes.diff")
-        };
-        self.requests
-            .push(PanelRequest::OpenItem(files_ui::text_tab(
-                id.into(),
-                title.into(),
-                &text,
-            )));
+            Box::new(move |panel: &mut GitPanel| {
+                if text.is_empty() {
+                    panel
+                        .requests
+                        .push(PanelRequest::Toast("No changes to show".into()));
+                    return;
+                }
+                let (id, title) = if uncommitted {
+                    ("git-diff:uncommitted", "Uncommitted changes.diff")
+                } else {
+                    ("git-diff:branch", "Branch changes.diff")
+                };
+                panel
+                    .requests
+                    .push(PanelRequest::OpenItem(files_ui::text_tab(
+                        id.into(),
+                        title.into(),
+                        &text,
+                    )));
+            })
+        });
     }
 
     fn commit_targets(&self, scan: &Scan) -> Vec<CommitTarget> {
@@ -899,12 +1007,18 @@ impl GitPanel {
             .cloned()
             .collect();
         let suggestion = self.suggestion(&included, scan).is_some();
-        self.commit.plan(
+        let mut plan = self.commit.plan(
             &staged,
             &self.excluded,
             suggestion,
             self.amend_target(scan).as_ref(),
-        )
+        );
+        // A commit must not overtake the staging the user asked for just before it.
+        if plan.enabled && self.jobs.changing() {
+            plan.enabled = false;
+            plan.hint = "Waiting for git to finish".into();
+        }
+        plan
     }
 
     fn commit_now(&mut self) {
@@ -931,11 +1045,23 @@ impl GitPanel {
 
     fn toggle_amend(&mut self) {
         let scan = self.current();
-        if let Some(target) = self.amend_target(&scan) {
-            self.commit.toggle_amend(&target.source);
-        } else {
+        let Some(target) = self.amend_target(&scan) else {
             self.commit.amend = false;
+            return;
+        };
+        self.commit.amend = !self.commit.amend;
+        if !self.commit.amend || !self.commit.editor.text().trim().is_empty() {
+            return;
         }
+        self.jobs.read(Vec::new(), move |access| {
+            let message = access.head_message(&target.source);
+            Box::new(move |panel: &mut GitPanel| {
+                let still_empty = panel.commit.editor.text().trim().is_empty();
+                if let (Some(message), true, true) = (message, panel.commit.amend, still_empty) {
+                    panel.commit.editor.set_text(&message);
+                }
+            })
+        });
     }
 
     /// Undoes the commit just made in each of its repos, keeping its changes staged and its message in the editor.
@@ -944,9 +1070,9 @@ impl GitPanel {
             return;
         };
         let scan = self.current();
-        let mut undone = Vec::new();
+        let mut undoable = Vec::new();
+        let mut marks = Vec::new();
         let mut pushed = Vec::new();
-        let mut message = None;
         for name in repos {
             let Some(repo) = self.repo_index(&name) else {
                 continue;
@@ -965,22 +1091,8 @@ impl GitPanel {
                 pushed.push(name);
                 continue;
             }
-            message = message.or_else(|| self.access.head_message(&source));
-            match self.access.act(&source, GitOp::SoftReset) {
-                Ok(()) => undone.push(name),
-                Err(error) => self.requests.push(PanelRequest::Toast(error.message)),
-            }
-        }
-        if self.commit.editor.text().trim().is_empty() {
-            if let Some(message) = message {
-                self.commit.editor.set_text(&message);
-            }
-        }
-        if !undone.is_empty() {
-            self.requests.push(PanelRequest::Toast(format!(
-                "Uncommitted in {}: the changes are staged again",
-                undone.join(", ")
-            )));
+            undoable.push(source);
+            marks.push(Mark::Repo(repo));
         }
         if !pushed.is_empty() {
             self.requests.push(PanelRequest::Toast(format!(
@@ -988,66 +1100,55 @@ impl GitPanel {
                 pushed.join(", ")
             )));
         }
-        self.refresh();
-    }
-
-    fn remote_job(&self, repo: usize, request: RemoteRequest) -> Result<RemoteJob, String> {
-        let source = self.sources.get(repo).ok_or("No such repository")?;
-        let head = self
-            .repo_scan(repo)
-            .and_then(|state| state.head)
-            .or_else(|| self.access.head_state(source))
-            .ok_or_else(|| format!("{}: could not read its branch", source.name))?;
-        let remote = if matches!(request, RemoteRequest::Fetch(_)) {
-            String::new()
-        } else {
-            let branch = head
-                .branch
-                .clone()
-                .ok_or_else(|| format!("{}: no branch is checked out", source.name))?;
-            match head.upstream_ref.clone() {
-                Some((remote, _)) if head.upstream != Upstream::Gone => remote,
-                _ => {
-                    let remotes = self.access.push_remotes(source, &branch);
-                    remotes
-                        .iter()
-                        .find(|remote| remote.as_str() == "origin")
-                        .or(remotes.first())
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "{}: no remote to push to. Add a remote to publish changes.",
-                                source.name
-                            )
-                        })?
+        if undoable.is_empty() {
+            return;
+        }
+        self.jobs.change(marks, move |access| {
+            let mut undone = Vec::new();
+            let mut failures = Vec::new();
+            let mut message = None;
+            for source in &undoable {
+                message = message.or_else(|| access.head_message(source));
+                match access.act(source, GitOp::SoftReset) {
+                    Ok(()) => undone.push(source.name.clone()),
+                    Err(error) => failures.push(error.message),
                 }
             }
-        };
-        Ok(RemoteJob {
-            repo: source.name.clone(),
-            source: source.clone(),
-            head,
-            request,
-            remote,
-        })
+            Box::new(move |panel: &mut GitPanel| {
+                if panel.commit.editor.text().trim().is_empty() {
+                    if let Some(message) = message {
+                        panel.commit.editor.set_text(&message);
+                    }
+                }
+                panel
+                    .requests
+                    .extend(failures.into_iter().map(PanelRequest::Toast));
+                if !undone.is_empty() {
+                    panel.requests.push(PanelRequest::Toast(format!(
+                        "Uncommitted in {}: the changes are staged again",
+                        undone.join(", ")
+                    )));
+                }
+                panel.refresh();
+            })
+        });
     }
 
     fn run_remote(&mut self, work: Vec<(usize, RemoteRequest)>) {
         if self.commit.busy() {
             return;
         }
-        let mut jobs = Vec::new();
-        let mut problems = Vec::new();
-        for (repo, request) in work {
-            match self.remote_job(repo, request) {
-                Ok(job) => jobs.push(job),
-                Err(problem) => problems.push(problem),
-            }
-        }
-        if !problems.is_empty() {
-            self.requests.push(PanelRequest::Toast(problems.join("; ")));
-        }
-        self.commit.run_remote(jobs);
+        let work = work
+            .into_iter()
+            .filter_map(|(repo, request)| {
+                Some(RemoteWork {
+                    source: self.sources.get(repo)?.clone(),
+                    head: self.repo_scan(repo).and_then(|state| state.head),
+                    request,
+                })
+            })
+            .collect();
+        self.commit.run_remote(work);
     }
 
     fn remote_primary(&mut self, repo: usize) {
@@ -1128,20 +1229,26 @@ impl GitPanel {
     }
 
     fn create_pull_request(&mut self, repo: usize) {
-        let Some(source) = self.sources.get(repo) else {
+        let Some(source) = self.sources.get(repo).cloned() else {
             return;
         };
         let branch = self
             .repo_scan(repo)
             .and_then(|state| state.branch_name().map(str::to_string));
-        let url = branch.and_then(|branch| {
-            self.access
-                .remote_url(source, "origin")
-                .and_then(|remote| working_copy::create_pull_request_url(&remote, &branch))
-        });
-        self.requests.push(match url {
-            Some(url) => PanelRequest::OpenUrl(url),
-            None => PanelRequest::Toast("Only GitHub remotes can start a pull request here".into()),
+        self.jobs.read(vec![Mark::Repo(repo)], move |access| {
+            let url = branch.and_then(|branch| {
+                access
+                    .remote_url(&source, "origin")
+                    .and_then(|remote| working_copy::create_pull_request_url(&remote, &branch))
+            });
+            Box::new(move |panel: &mut GitPanel| {
+                panel.requests.push(match url {
+                    Some(url) => PanelRequest::OpenUrl(url),
+                    None => PanelRequest::Toast(
+                        "Only GitHub remotes can start a pull request here".into(),
+                    ),
+                });
+            })
         });
     }
 
@@ -1622,6 +1729,7 @@ impl SidePanelView for GitPanel {
             self.refresh();
             self.spawn_poller();
         }
+        self.apply_finished();
         if let Some(outcome) = self.commit.poll() {
             let committing = self.committing.take();
             if matches!(outcome, commit_area::Outcome::Committed) {
@@ -1839,32 +1947,24 @@ impl SidePanelView for GitPanel {
         }
         match confirm {
             Confirm::Discard { repo, path } => {
-                let Some(source) = self.sources.get(repo).cloned() else {
-                    return;
-                };
-                if let Err(error) = self.access.act(&source, GitOp::Discard { path }) {
-                    self.requests.push(PanelRequest::Toast(error.message));
-                }
+                self.act(
+                    repo,
+                    Mark::Path(repo, path.clone()),
+                    GitOp::Discard { path },
+                );
             }
             Confirm::DiscardTracked => {
-                let sources = self.sources.clone();
                 let scan = self.current();
-                let failures: Vec<String> = sources
+                let repos = scan
+                    .repos
                     .iter()
-                    .zip(&scan.repos)
+                    .enumerate()
+                    .take(self.sources.len())
                     .filter(|(_, repo)| repo.head_commit.is_some() && !repo.status.is_empty())
-                    .filter_map(|(source, _)| {
-                        self.access
-                            .act(source, GitOp::DiscardTracked)
-                            .err()
-                            .map(|error| format!("{}: {}", source.name, error.message))
-                    })
+                    .map(|(index, _)| index)
                     .collect();
-                if !failures.is_empty() {
-                    self.requests.push(PanelRequest::Toast(failures.join("; ")));
-                }
+                self.act_on_each(repos, GitOp::DiscardTracked);
             }
         }
-        self.refresh();
     }
 }
