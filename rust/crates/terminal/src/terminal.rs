@@ -286,6 +286,8 @@ pub struct TerminalOptions {
     pub holder: Option<HolderOptions>,
     /// A holder on another machine, opened through its server; wins over `holder`.
     pub remote: Option<RemoteOptions>,
+    /// What to open on that machine instead when `remote` cannot be attached (a saved shell that is gone).
+    pub remote_fallback: Option<RemoteTarget>,
 }
 
 impl Default for TerminalOptions {
@@ -298,14 +300,100 @@ impl Default for TerminalOptions {
             cursor_shape: CursorShape::Block,
             holder: None,
             remote: None,
+            remote_fallback: None,
         }
     }
+}
+
+/// Where a terminal stands: its shell reachable, still being started or attached off the UI thread, or never
+/// reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartState<'a> {
+    Running,
+    Starting,
+    Failed(&'a str),
 }
 
 enum Backend {
     Local(Notifier),
     Holder(holder::HolderBackend),
     Remote(remote::RemoteBackend),
+    Starting(Starting),
+    Failed { planned: Planned, error: String },
+}
+
+/// The holder a terminal is starting or attaching to, known before it is reached.
+#[derive(Clone)]
+enum Planned {
+    Holder(HolderOptions),
+    Remote(RemoteOptions),
+}
+
+struct Starting {
+    planned: Planned,
+    handoff: Arc<Mutex<Handoff>>,
+    /// Typed before the shell was reached, sent once it is.
+    input: Vec<u8>,
+    primary: bool,
+}
+
+/// What the starting thread and the terminal tell each other; whoever comes second acts on it.
+enum Handoff {
+    Waiting,
+    Ready(Result<Attached, String>),
+    Terminate,
+    Abandoned,
+}
+
+struct Attached {
+    backend: Backend,
+    shell_pid: u32,
+}
+
+fn lock_handoff(handoff: &Mutex<Handoff>) -> std::sync::MutexGuard<'_, Handoff> {
+    handoff
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Starting {
+    /// The terminal goes away (`Abandoned`) or ends its shell (`Terminate`) before taking the attached backend.
+    fn give_up(&self, reason: Handoff) {
+        let mut slot = lock_handoff(&self.handoff);
+        match std::mem::replace(&mut *slot, Handoff::Waiting) {
+            Handoff::Ready(Ok(attached)) => match reason {
+                Handoff::Terminate => attached.backend.terminate(),
+                _ => attached.backend.detach(),
+            },
+            Handoff::Terminate => {
+                *slot = Handoff::Terminate;
+                return;
+            }
+            Handoff::Waiting | Handoff::Abandoned | Handoff::Ready(Err(_)) => {}
+        }
+        *slot = reason;
+    }
+}
+
+fn hand_over(handoff: &Mutex<Handoff>, result: Result<Attached, String>, waker: &Waker) {
+    let mut slot = lock_handoff(handoff);
+    match &*slot {
+        Handoff::Waiting => {
+            *slot = Handoff::Ready(result);
+            drop(slot);
+            waker();
+        }
+        Handoff::Terminate => {
+            if let Ok(attached) = result {
+                attached.backend.terminate();
+            }
+        }
+        Handoff::Abandoned | Handoff::Ready(_) => {
+            if let Ok(attached) = result {
+                attached.backend.detach();
+            }
+        }
+    }
 }
 
 impl Backend {
@@ -314,6 +402,8 @@ impl Backend {
             Backend::Local(notifier) => notifier.notify(bytes),
             Backend::Holder(holder) => holder.write(&bytes.into()),
             Backend::Remote(remote) => remote.write(&bytes.into()),
+            Backend::Starting(starting) => starting.input.extend_from_slice(&bytes.into()),
+            Backend::Failed { .. } => {}
         }
     }
 
@@ -326,6 +416,48 @@ impl Backend {
             }
             Backend::Holder(holder) => holder.resize(size),
             Backend::Remote(remote) => remote.resize(size),
+            Backend::Starting(_) | Backend::Failed { .. } => {}
+        }
+    }
+
+    fn planned(&self) -> Option<&Planned> {
+        match self {
+            Backend::Starting(starting) => Some(&starting.planned),
+            Backend::Failed { planned, .. } => Some(planned),
+            Backend::Local(_) | Backend::Holder(_) | Backend::Remote(_) => None,
+        }
+    }
+
+    /// Ends the shell: a holder here is killed off this thread, one on another machine closed.
+    fn terminate(&self) {
+        match self {
+            Backend::Holder(holder) => {
+                let (dir, name) = (holder.options.dir.clone(), holder.options.name.clone());
+                holder.detach();
+                std::thread::spawn(move || {
+                    if let Err(error) = dir.kill_holder(&name) {
+                        eprintln!("terminal holder kill: {error}");
+                    }
+                });
+            }
+            Backend::Remote(remote) => remote.close(),
+            Backend::Starting(starting) => starting.give_up(Handoff::Terminate),
+            Backend::Local(_) | Backend::Failed { .. } => {}
+        }
+    }
+
+    /// Lets go of the shell; a holder keeps running.
+    fn detach(&self) {
+        match self {
+            Backend::Local(notifier) => {
+                if let Err(error) = notifier.0.send(Msg::Shutdown) {
+                    eprintln!("terminal shutdown: {error}");
+                }
+            }
+            Backend::Holder(holder) => holder.detach(),
+            Backend::Remote(remote) => remote.detach(),
+            Backend::Starting(starting) => starting.give_up(Handoff::Abandoned),
+            Backend::Failed { .. } => {}
         }
     }
 }
@@ -375,6 +507,8 @@ pub fn terminal_env(mut env: HashMap<String, String>) -> HashMap<String, String>
 }
 
 impl Terminal {
+    /// A holder-backed terminal returns at once, still starting: the holder is started (or the remote one
+    /// opened) and attached on a thread of its own, and `sync` takes it over once it is reached.
     pub fn spawn(options: TerminalOptions, waker: Waker) -> anyhow::Result<Self> {
         let config = Config {
             scrolling_history: options.scroll_history.min(MAX_SCROLL_HISTORY_LINES),
@@ -388,63 +522,77 @@ impl Terminal {
         let coalesced = Arc::new(Coalesced::default());
         let listener = Listener {
             events: events_tx,
-            waker,
+            waker: waker.clone(),
             coalesced: coalesced.clone(),
         };
         let bounds = TerminalBounds::default();
         let term = Arc::new(FairMutex::new(Term::new(config, &bounds, listener.clone())));
+        let size = bounds.window_size();
         if let Some(remote_options) = options.remote {
-            let backend = remote::RemoteBackend::attach(
-                remote_options,
-                bounds.window_size(),
-                term.clone(),
-                listener,
-            )?;
-            return Ok(Self::with_backend(
-                term,
-                Backend::Remote(backend),
-                events,
-                coalesced,
-                bounds,
-                pty_info::PtyProcessInfo::for_shell(0),
-            ));
+            let planned = Planned::Remote(remote_options.clone());
+            let fallback = options.remote_fallback;
+            let (shared_term, shared_listener) = (term.clone(), listener.clone());
+            return Self::starting(term, events, coalesced, bounds, planned, waker, move || {
+                let attach = |options: RemoteOptions| {
+                    remote::RemoteBackend::attach(
+                        options,
+                        size,
+                        shared_term.clone(),
+                        shared_listener.clone(),
+                    )
+                };
+                let backend = match (attach(remote_options.clone()), fallback) {
+                    (Err(_), Some(target)) => attach(RemoteOptions {
+                        target,
+                        ..remote_options
+                    }),
+                    (attached, _) => attached,
+                }?;
+                Ok(Attached {
+                    backend: Backend::Remote(backend),
+                    shell_pid: 0,
+                })
+            });
         }
         if let Some(holder_options) = options.holder {
+            if holder_options.attach_only && !holder_options.dir.holder_alive(&holder_options.name)
+            {
+                anyhow::bail!("{} is not running", holder_options.name);
+            }
             let env: Vec<(String, String)> = terminal_env(options.env).into_iter().collect();
-            let argv = match options.shell {
-                Some((program, args)) => std::iter::once(program).chain(args).collect(),
-                None => login_shell_argv(),
-            };
+            let shell = options.shell;
             let cwd = options
                 .working_directory
                 .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                 .unwrap_or_else(|| PathBuf::from("/"));
-            let size = bounds.window_size();
-            let spawn = pom_ptyhost::SpawnRequest {
-                group: holder_options.group.as_ref(),
-                binary: &holder_options.binary,
-                name: &holder_options.name,
-                cwd: &cwd,
-                cols: size.num_cols,
-                rows: size.num_lines,
-                argv: &argv,
-                env: &env,
-            };
-            let backend = holder::HolderBackend::attach(
-                holder_options.clone(),
-                spawn,
-                term.clone(),
-                listener,
-            )?;
-            let process = pty_info::PtyProcessInfo::for_shell(backend.shell_pid.unwrap_or(0));
-            return Ok(Self::with_backend(
-                term,
-                Backend::Holder(backend),
-                events,
-                coalesced,
-                bounds,
-                process,
-            ));
+            let planned = Planned::Holder(holder_options.clone());
+            let shared_term = term.clone();
+            return Self::starting(term, events, coalesced, bounds, planned, waker, move || {
+                let argv: Vec<String> = match shell {
+                    Some((program, args)) => std::iter::once(program).chain(args).collect(),
+                    None => login_shell_argv(),
+                };
+                let spawn = pom_ptyhost::SpawnRequest {
+                    group: holder_options.group.as_ref(),
+                    binary: &holder_options.binary,
+                    name: &holder_options.name,
+                    cwd: &cwd,
+                    cols: size.num_cols,
+                    rows: size.num_lines,
+                    argv: &argv,
+                    env: &env,
+                };
+                let backend = holder::HolderBackend::attach(
+                    holder_options.clone(),
+                    spawn,
+                    shared_term,
+                    listener,
+                )?;
+                Ok(Attached {
+                    shell_pid: backend.shell_pid.unwrap_or(0),
+                    backend: Backend::Holder(backend),
+                })
+            });
         }
         let pty_options = tty::Options {
             shell: options
@@ -470,6 +618,83 @@ impl Terminal {
             bounds,
             process,
         ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn starting(
+        term: Arc<FairMutex<Term<Listener>>>,
+        events: mpsc::Receiver<BackendEvent>,
+        coalesced: Arc<Coalesced>,
+        bounds: TerminalBounds,
+        planned: Planned,
+        waker: Waker,
+        attach: impl FnOnce() -> anyhow::Result<Attached> + Send + 'static,
+    ) -> anyhow::Result<Self> {
+        let handoff = Arc::new(Mutex::new(Handoff::Waiting));
+        let shared = handoff.clone();
+        std::thread::Builder::new()
+            .name("terminal-start".into())
+            .spawn(move || {
+                let result = attach().map_err(|error| format!("{error:#}"));
+                hand_over(&shared, result, &waker);
+            })?;
+        let starting = Starting {
+            planned,
+            handoff,
+            input: Vec::new(),
+            primary: false,
+        };
+        Ok(Self::with_backend(
+            term,
+            Backend::Starting(starting),
+            events,
+            coalesced,
+            bounds,
+            pty_info::PtyProcessInfo::for_shell(0),
+        ))
+    }
+
+    /// Takes over the shell the starting thread reached, or its error; returns whether either came in.
+    fn take_started(&mut self) -> bool {
+        let Backend::Starting(starting) = &mut self.pty else {
+            return false;
+        };
+        let result = {
+            let mut slot = lock_handoff(&starting.handoff);
+            if !matches!(*slot, Handoff::Ready(_)) {
+                return false;
+            }
+            match std::mem::replace(&mut *slot, Handoff::Waiting) {
+                Handoff::Ready(result) => result,
+                _ => return false,
+            }
+        };
+        let input = std::mem::take(&mut starting.input);
+        let (planned, primary) = (starting.planned.clone(), starting.primary);
+        match result {
+            Ok(attached) => {
+                self.pty = attached.backend;
+                self.process = pty_info::PtyProcessInfo::for_shell(attached.shell_pid);
+                self.redraw_on_resize = true;
+                self.pending_resize = Some(self.pending_resize.unwrap_or(self.content.bounds));
+                if primary {
+                    self.make_primary();
+                }
+                if !input.is_empty() {
+                    self.pty.notify(input);
+                }
+            }
+            Err(error) => self.pty = Backend::Failed { planned, error },
+        }
+        true
+    }
+
+    pub fn start_state(&self) -> StartState<'_> {
+        match &self.pty {
+            Backend::Starting(_) => StartState::Starting,
+            Backend::Failed { error, .. } => StartState::Failed(error),
+            Backend::Local(_) | Backend::Holder(_) | Backend::Remote(_) => StartState::Running,
+        }
     }
 
     fn with_backend(
@@ -510,49 +735,46 @@ impl Terminal {
     }
 
     pub fn holder(&self) -> Option<&HolderOptions> {
-        match &self.pty {
-            Backend::Holder(holder) => Some(&holder.options),
-            Backend::Local(_) | Backend::Remote(_) => None,
+        match (&self.pty, self.pty.planned()) {
+            (Backend::Holder(holder), _) => Some(&holder.options),
+            (_, Some(Planned::Holder(options))) => Some(options),
+            _ => None,
         }
     }
 
-    /// The holder the shell runs in, here or on another machine.
+    /// The holder the shell runs in, here or on another machine; one on another machine is known before it is
+    /// reached only when it was named.
     pub fn holder_name(&self) -> Option<String> {
-        match &self.pty {
-            Backend::Holder(holder) => Some(holder.options.name.clone()),
-            Backend::Remote(remote) => Some(remote.holder().to_string()),
-            Backend::Local(_) => None,
+        match (&self.pty, self.pty.planned()) {
+            (Backend::Holder(holder), _) => Some(holder.options.name.clone()),
+            (Backend::Remote(remote), _) => Some(remote.holder().to_string()),
+            (_, Some(Planned::Holder(options))) => Some(options.name.clone()),
+            (_, Some(Planned::Remote(options))) => match &options.target {
+                RemoteTarget::Holder(name) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
     pub fn remote(&self) -> Option<&RemoteOptions> {
-        match &self.pty {
-            Backend::Remote(remote) => Some(&remote.options),
-            Backend::Local(_) | Backend::Holder(_) => None,
+        match (&self.pty, self.pty.planned()) {
+            (Backend::Remote(remote), _) => Some(&remote.options),
+            (_, Some(Planned::Remote(options))) => Some(options),
+            _ => None,
         }
     }
 
     pub fn terminate(&mut self) {
-        match &self.pty {
-            Backend::Holder(holder) => {
-                let (dir, name) = (holder.options.dir.clone(), holder.options.name.clone());
-                holder.detach();
-                std::thread::spawn(move || {
-                    if let Err(error) = dir.kill_holder(&name) {
-                        eprintln!("terminal holder kill: {error}");
-                    }
-                });
-            }
-            Backend::Remote(remote) => remote.close(),
-            Backend::Local(_) => {}
-        }
+        self.pty.terminate();
     }
 
     pub fn make_primary(&mut self) {
         match &mut self.pty {
             Backend::Holder(holder) => holder.make_primary(),
             Backend::Remote(remote) => remote.make_primary(),
-            Backend::Local(_) => {}
+            Backend::Starting(starting) => starting.primary = true,
+            Backend::Local(_) | Backend::Failed { .. } => {}
         }
     }
 
@@ -1006,8 +1228,10 @@ impl Terminal {
 
     /// Apply queued resizes/scrolls and backend events, then refresh the snapshot.
     pub fn sync(&mut self, host: &dyn TerminalHost) -> SyncOutcome {
+        let started = self.take_started();
         let mut outcome = SyncOutcome {
-            changed: self.apply_resize(),
+            changed: self.apply_resize() || started,
+            title_changed: started,
             ..SyncOutcome::default()
         };
         if std::mem::take(&mut self.pending_scroll_to_bottom) {
@@ -1183,15 +1407,7 @@ fn backend_side(side: Side) -> BackendSide {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        match &self.pty {
-            Backend::Local(notifier) => {
-                if let Err(error) = notifier.0.send(Msg::Shutdown) {
-                    eprintln!("terminal shutdown: {error}");
-                }
-            }
-            Backend::Holder(holder) => holder.detach(),
-            Backend::Remote(remote) => remote.detach(),
-        }
+        self.pty.detach();
     }
 }
 
@@ -1361,10 +1577,10 @@ mod tests {
         };
         let host = host();
         let mut terminal = Terminal::spawn(options, Arc::new(|| {}))?;
-        assert_eq!(terminal.holder_name().as_deref(), Some("term-demo-main-1"));
         wait_for(&mut terminal, &host, |t, _| {
             t.screen_text().contains("first-line")
         });
+        assert_eq!(terminal.holder_name().as_deref(), Some("term-demo-main-1"));
         terminal.input(&b"typed-remotely"[..]);
         wait_for(&mut terminal, &host, |t, _| {
             t.screen_text().contains("typed-remotely")
@@ -1441,6 +1657,137 @@ mod tests {
         wait_for(&mut reattached, &host, |t, outcome| {
             outcome.close || t.child_exit().is_some()
         });
+        Ok(())
+    }
+
+    fn holder_options(dir: &pom_ptyhost::SocketDir, name: &str, binary: &str) -> TerminalOptions {
+        TerminalOptions {
+            shell: Some(("/bin/sh".into(), Vec::new())),
+            holder: Some(HolderOptions {
+                dir: dir.clone(),
+                name: name.into(),
+                binary: PathBuf::from(binary),
+                attach_only: false,
+                group: None,
+            }),
+            ..TerminalOptions::default()
+        }
+    }
+
+    #[test]
+    fn a_holder_terminal_opens_before_its_holder_is_up_and_keeps_what_was_typed(
+    ) -> anyhow::Result<()> {
+        let temp = tempfile::Builder::new().prefix("pty").tempdir_in("/tmp")?;
+        let dir = pom_ptyhost::SocketDir::new(temp.path());
+        // The started binary exits at once; the holder only comes up when the test serves it below.
+        let options = holder_options(&dir, "appsh-slow", "/usr/bin/true");
+        let host = host();
+        let mut terminal = Terminal::spawn(options, Arc::new(|| {}))?;
+        assert_eq!(terminal.start_state(), StartState::Starting);
+        assert_eq!(terminal.holder_name().as_deref(), Some("appsh-slow"));
+        terminal.input(&b"typed-early\n"[..]);
+        terminal.make_primary();
+        std::thread::sleep(Duration::from_millis(300));
+        terminal.sync(&host);
+        assert_eq!(terminal.start_state(), StartState::Starting);
+
+        let session = pom_ptyhost::listen_and_serve(
+            &dir,
+            "appsh-slow",
+            None,
+            pom_ptyhost::StartOptions {
+                argv: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf slow-shell; exec cat".into(),
+                ],
+                dir: PathBuf::from("/"),
+                env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+                cols: 80,
+                rows: 24,
+                on_exit: None,
+            },
+        )?;
+        wait_for(&mut terminal, &host, |t, _| {
+            let screen = t.screen_text();
+            screen.contains("slow-shell") && screen.contains("typed-early")
+        });
+        assert_eq!(terminal.start_state(), StartState::Running);
+        session.kill();
+        Ok(())
+    }
+
+    #[test]
+    fn a_holder_that_cannot_start_leaves_its_error_in_the_terminal() -> anyhow::Result<()> {
+        let temp = tempfile::Builder::new().prefix("pty").tempdir_in("/tmp")?;
+        let dir = pom_ptyhost::SocketDir::new(temp.path());
+        let options = holder_options(&dir, "appsh-broken", "/nonexistent/pomelo");
+        let host = host();
+        let mut terminal = Terminal::spawn(options, Arc::new(|| {}))?;
+        terminal.input(&b"lost\n"[..]);
+        wait_for(&mut terminal, &host, |t, outcome| {
+            assert!(!outcome.close, "a failed start keeps its tab");
+            matches!(t.start_state(), StartState::Failed(_))
+        });
+        let StartState::Failed(error) = terminal.start_state() else {
+            unreachable!("waited for the failure");
+        };
+        assert!(
+            error.contains("could not start /nonexistent/pomelo"),
+            "{error}"
+        );
+        assert_eq!(terminal.holder_name().as_deref(), Some("appsh-broken"));
+        Ok(())
+    }
+
+    struct Unreachable;
+
+    impl PtyProvider for Unreachable {
+        fn attach(
+            &self,
+            _request: &pom_rpc::pty::Request,
+        ) -> Result<pom_rpc::pty::Terminal, String> {
+            std::thread::sleep(Duration::from_millis(200));
+            Err("connection refused".into())
+        }
+
+        fn close(&self, _holder: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn host(&self) -> Option<String> {
+            Some("devbox".into())
+        }
+    }
+
+    #[test]
+    fn a_remote_terminal_that_cannot_open_names_the_host() -> anyhow::Result<()> {
+        let options = TerminalOptions {
+            remote: Some(RemoteOptions {
+                provider: Arc::new(Unreachable),
+                target: RemoteTarget::Shell { cwd: None },
+                mode: RemoteMode::ReadWrite,
+            }),
+            ..TerminalOptions::default()
+        };
+        let host = host();
+        let started = Instant::now();
+        let mut terminal = Terminal::spawn(options, Arc::new(|| {}))?;
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "spawn waited for the host"
+        );
+        assert_eq!(terminal.start_state(), StartState::Starting);
+        wait_for(&mut terminal, &host, |t, _| {
+            matches!(t.start_state(), StartState::Failed(_))
+        });
+        let StartState::Failed(error) = terminal.start_state() else {
+            unreachable!("waited for the failure");
+        };
+        assert!(
+            error.starts_with("could not open the terminal on devbox: "),
+            "{error}"
+        );
         Ok(())
     }
 

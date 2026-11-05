@@ -1674,6 +1674,10 @@ impl Terminals {
 }
 
 impl PtyProvider for Terminals {
+    fn host(&self) -> Option<String> {
+        Some(self.inner.host.name.clone())
+    }
+
     fn unconfirmed_input_limit(&self) -> usize {
         self.inner.unconfirmed_input_limit.load(Ordering::Acquire)
     }

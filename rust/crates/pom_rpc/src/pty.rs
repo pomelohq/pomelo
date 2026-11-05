@@ -242,6 +242,10 @@ pub trait PtyProvider: Send + Sync {
     fn link(&self) -> LinkState {
         LinkState::Connected
     }
+    /// The machine the terminals run on, for messages about them.
+    fn host(&self) -> Option<String> {
+        None
+    }
     /// Bytes of typed input kept until the server has surely written them, to send again after a drop.
     fn unconfirmed_input_limit(&self) -> usize {
         UNCONFIRMED_INPUT_LIMIT

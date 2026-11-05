@@ -1,4 +1,5 @@
-//! The terminal dock of a project's window over a stand-in shell, and the bar over a side agent's console.
+//! The terminal dock of a project's window over a stand-in shell, a terminal whose shell is still starting or
+//! never came up, and the bar over a side agent's console.
 
 use std::time::Duration;
 
@@ -16,6 +17,40 @@ const CENTER: (f32, f32, f32, f32) = (256.0, 40.0, 1178.0, 832.0);
 fn panel(mode: &str, crop: (f32, f32, f32, f32)) -> anyhow::Result<Box<dyn Story>> {
     let window = HostWindow::open(mode, WINDOW, 1.0)?;
     cropped(Source::Host(window), crop, SETTLING)
+}
+
+/// The spinner turns on its own, so this board keeps asking the gallery for frames.
+struct Starting {
+    opened: std::time::Instant,
+}
+
+impl Story for Starting {
+    fn render(&mut self, width: f32, height: f32) -> ui::Node {
+        ui::div()
+            .col()
+            .w_px(width)
+            .h_px(height)
+            .child(terminal_ui::starting_view(
+                self.opened.elapsed().as_secs_f32(),
+            ))
+            .into()
+    }
+
+    fn animating(&self) -> bool {
+        true
+    }
+}
+
+fn start_failed(width: f32, height: f32) -> ui::Node {
+    ui::div()
+        .col()
+        .w_px(width)
+        .h_px(height)
+        .child(terminal_ui::start_failed_view(
+            "could not open the terminal on devbox: connection refused",
+            width,
+        ))
+        .into()
 }
 
 fn side_bar(
@@ -125,6 +160,24 @@ pub fn stories() -> Vec<StoryDef> {
             "Kept while the host is down",
             (center_w, center_h),
             || panel("terminal-disconnected", CENTER),
+        ),
+        story(
+            "terminal-starting",
+            "Terminal panel",
+            "Starting",
+            (dock_w, dock_h),
+            || {
+                Ok(Box::new(Starting {
+                    opened: std::time::Instant::now(),
+                }))
+            },
+        ),
+        story(
+            "terminal-start-failed",
+            "Terminal panel",
+            "Could not start",
+            (dock_w, dock_h),
+            || still(start_failed),
         ),
         story(
             "terminal-side-agent-bar",

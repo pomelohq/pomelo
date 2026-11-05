@@ -54,9 +54,24 @@ impl HolderBackend {
                     format!("{} is not running", options.name),
                 ));
             }
-            pom_ptyhost::spawn_holder(&options.dir, &spawn)?;
+            pom_ptyhost::spawn_holder(&options.dir, &spawn).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("could not start {}: {error}", options.binary.display()),
+                )
+            })?;
         }
-        pom_ptyhost::wait_for_holder(&options.dir, &options.name, HOLDER_START_TIMEOUT)?;
+        pom_ptyhost::wait_for_holder(&options.dir, &options.name, HOLDER_START_TIMEOUT).map_err(
+            |error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "the shell did not come up within {}s: {error}",
+                        HOLDER_START_TIMEOUT.as_secs()
+                    ),
+                )
+            },
+        )?;
         let attached = pom_ptyhost::attach(&options.dir, &options.name, 0)?;
         let mut processor: Processor = Processor::new();
         processor.advance(&mut *term.lock(), &attached.snapshot);

@@ -70,6 +70,15 @@ pub fn remote_agent_item(
     role: &str,
     number: u64,
 ) -> Option<Box<dyn workspace::Item>> {
+    remote_agent_terminal(watch, role, number)
+        .map(|item| Box::new(item) as Box<dyn workspace::Item>)
+}
+
+fn remote_agent_terminal(
+    watch: &Watch,
+    role: &str,
+    number: u64,
+) -> Option<terminal_ui::TerminalItem> {
     let provider = watch.terminals()?;
     let snapshot = watch.snapshot();
     let root = snapshot
@@ -96,9 +105,7 @@ pub fn remote_agent_item(
         true,
         std::sync::Arc::new(ui::wake),
     ) {
-        Ok(item) => Some(Box::new(
-            item.with_lease(Box::new(RemoteLease::new(watch.clone(), role))),
-        )),
+        Ok(item) => Some(item.with_lease(Box::new(RemoteLease::new(watch.clone(), role)))),
         Err(error) => {
             eprintln!("remote agent {role}: {error}");
             None
@@ -113,8 +120,8 @@ pub struct RestoredTab {
     pub item: Box<dyn workspace::Item>,
 }
 
-/// The agent tabs saved for the watched workspace, each attached again to its agent; an agent that no longer
-/// runs gets no tab. Item numbers come from `next_number`.
+/// The agent tabs saved for the watched workspace, each attached again to its agent; the tab of an agent that
+/// no longer runs closes once the host says so. Item numbers come from `next_number`.
 pub fn restore_agent_tabs(
     watch: &Watch,
     tabs: &RemoteAgentTabs,
@@ -128,11 +135,11 @@ pub fn restore_agent_tabs(
         .filter_map(|tab| {
             let number = *next_number;
             *next_number += 1;
-            let item = remote_agent_item(watch, &tab.role, number)?;
+            let item = remote_agent_terminal(watch, &tab.role, number)?.closing_if_unreachable();
             Some(RestoredTab {
                 id: agent_item_id(&branch, &tab.role),
                 center: tab.center,
-                item,
+                item: Box::new(item),
             })
         })
         .collect()

@@ -397,14 +397,7 @@ impl TerminalPanelView for TerminalPanel {
                 }
                 backing
             });
-            let mut spawned =
-                spawn_terminal(root, waker, next_item_id, spawn_error, cwd.clone(), backing);
-            if spawned.is_none() && remote {
-                let fresh = holders
-                    .as_ref()
-                    .map(|scope| scope.backing(*next_item_id, cwd.as_deref(), None));
-                spawned = spawn_terminal(root, waker, next_item_id, spawn_error, cwd, fresh);
-            }
+            let spawned = spawn_terminal(root, waker, next_item_id, spawn_error, cwd, backing);
             spawned.map(|mut terminal| {
                 terminal.set_agent(agent);
                 Box::new(terminal) as Box<dyn Item>
