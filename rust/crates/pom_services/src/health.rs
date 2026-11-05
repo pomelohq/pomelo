@@ -182,7 +182,7 @@ impl ServiceRunner {
             .get(&target.repo)
             .and_then(|dir| dir.services.get(&target.service));
         let mode = service
-            .map(|service| self.mode(&target.repo, &target.service, service))
+            .map(|service| self.mode(config, target, service))
             .unwrap_or_default();
         let check = Self::healthcheck_of(config, target);
         let healthy = check

@@ -41,12 +41,17 @@ use workspaces::WorkspaceCommand;
 pub const USAGE: &str = "usage: pom [-H <host>] [-w <workspace>] [-c <pom.yml>] <command> [args]
 
 services
-  start <target> [--wait [--timeout 120s]]
+  start <target> [--mode m] [--wait [--timeout 120s]]
                      start a service, a repo's services, or a `workspaces:` group; --wait blocks until
                      each is ready (its healthcheck, else its port) and the shared services answer
-                     on their host port: exit 0 ready, 2 timeout, 3 stopped
+                     on their host port: exit 0 ready, 2 timeout, 3 stopped; --mode runs them in
+                     that mode first, as `pom mode` does
   stop [target]      stop them; with no target, every service of the workspace
   restart <target>   stop, then start
+  mode [<mode> [target] | --reset [target]]
+                     the mode each service runs in (pom.yml `modes:`); with a mode, pick it for
+                     every service of the workspace (or of target) that has it and restart the
+                     running ones; --reset goes back to pom.yml's `mode:`. Kept per workspace
   status [-o json]   services of the workspace and whether they run (json: up, ready, healthy;
                      shared: up, ready)
   logs <service> [--since <mark>] [--raw] [-o json]
@@ -293,6 +298,7 @@ enum Command {
     Start(StartArgs),
     Stop(Option<String>),
     Restart(String),
+    Mode(ModeArgs),
     Status { json: bool },
     Logs(marks::LogsArgs),
     Mark(marks::MarkArgs),
@@ -450,6 +456,7 @@ pub fn run(args: &[String], cwd: &Path, out: &mut dyn Write, err: &mut dyn Write
 #[derive(Debug, Default, PartialEq, Eq)]
 struct StartArgs {
     target: String,
+    mode: Option<String>,
     wait: bool,
     timeout: Option<std::time::Duration>,
 }
@@ -507,8 +514,8 @@ fn parse_queue(rest: &[&str]) -> Result<QueueArgs, String> {
 }
 
 fn parse_start(rest: &[&str]) -> Result<StartArgs, String> {
-    let args = args::Args::parse(rest, &["--timeout"])?;
-    args.allow(&["--wait", "--timeout"])?;
+    let args = args::Args::parse(rest, &["--timeout", "--mode"])?;
+    args.allow(&["--wait", "--timeout", "--mode"])?;
     let [target] = args.positional.as_slice() else {
         return Err("start needs one target".into());
     };
@@ -522,8 +529,35 @@ fn parse_start(rest: &[&str]) -> Result<StartArgs, String> {
     }
     Ok(StartArgs {
         target: target.clone(),
+        mode: args.value(&["--mode"]),
         wait,
         timeout,
+    })
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ModeArgs {
+    /// None lists the modes, unless `reset`.
+    mode: Option<String>,
+    reset: bool,
+    target: Option<String>,
+}
+
+fn parse_mode(rest: &[&str]) -> Result<ModeArgs, String> {
+    let args = args::Args::parse(rest, &[])?;
+    args.allow(&["--reset"])?;
+    let reset = args.has("--reset");
+    let (mode, target) = match (reset, args.positional.as_slice()) {
+        (_, []) => (None, None),
+        (false, [mode]) => (Some(mode.clone()), None),
+        (false, [mode, target]) => (Some(mode.clone()), Some(target.clone())),
+        (true, [target]) => (None, Some(target.clone())),
+        _ => return Err("usage: pom mode [<mode> [target] | --reset [target]]".into()),
+    };
+    Ok(ModeArgs {
+        mode,
+        reset,
+        target,
     })
 }
 
@@ -570,6 +604,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
                         | "doctor"
                         | "disk"
                         | "start"
+                        | "mode"
                         | "status"
                         | "logs"
                         | "mark"
@@ -622,6 +657,7 @@ fn parse(args: &[String]) -> Result<Invocation, String> {
             _ => Command::Stop(Some(one("target")?)),
         },
         "restart" => Command::Restart(one("a target")?),
+        "mode" => Command::Mode(parse_mode(rest)?),
         "status" => {
             let args = args::Args::parse(rest, &["-o", "--output"])?;
             args.allow(&["-o", "--output"])?;
@@ -1012,7 +1048,21 @@ impl Session {
         err: &mut dyn Write,
     ) -> Result<(), String> {
         match command {
-            Command::Start(start) => self.start(&start.target, out, err),
+            Command::Start(start) => {
+                if let Some(mode) = &start.mode {
+                    self.switch_mode(Some(&start.target), mode, out, err)?;
+                }
+                self.start(&start.target, out, err)
+            }
+            Command::Mode(args) => match (&args.mode, args.reset) {
+                (None, false) => self.list_modes(args.target.as_deref(), out),
+                (mode, _) => self.switch_mode(
+                    args.target.as_deref(),
+                    mode.as_deref().unwrap_or_default(),
+                    out,
+                    err,
+                ),
+            },
             Command::Stop(target) => self.stop(target.as_deref(), out),
             Command::Restart(target) => {
                 self.stop(Some(target), out)?;
@@ -1234,7 +1284,7 @@ impl Session {
                 if let Some(port) = self.runner.port(&self.config, &target) {
                     line.push_str(&format!("  :{port}"));
                 }
-                let mode = self.runner.mode(repo, name, service);
+                let mode = self.runner.mode(&self.config, &target, service);
                 if !mode.is_empty() {
                     line.push_str(&format!("  {mode}"));
                 }
@@ -1261,6 +1311,12 @@ impl Session {
 
     /// `start`, then waits until every started service is ready: 0 ready, 2 timed out, 3 one stopped.
     fn start_and_wait(&self, start: &StartArgs, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+        if let Some(mode) = &start.mode {
+            if let Err(message) = self.switch_mode(Some(&start.target), mode, out, err) {
+                report(err, &format!("error: {message}"));
+                return 1;
+            }
+        }
         if let Err(message) = self.start(&start.target, out, err) {
             report(err, &format!("error: {message}"));
             return 1;
@@ -1422,6 +1478,103 @@ impl Session {
     }
 
     /// `status -o json`: every repo service's up / ready / healthy, and the shared services.
+    /// Services of `target` (every repo service without one) that declare modes.
+    fn moded_services(
+        &self,
+        target: Option<&str>,
+    ) -> Result<Vec<(ServiceTarget, &pom_config::Service)>, String> {
+        let pairs = match target {
+            Some(target) => self.ordered(target, false)?,
+            None => self
+                .config
+                .repos
+                .iter()
+                .flat_map(|(repo, dir)| {
+                    dir.services
+                        .keys()
+                        .map(move |service| (repo.clone(), service.clone()))
+                })
+                .collect(),
+        };
+        Ok(pairs
+            .into_iter()
+            .filter_map(|(repo, name)| {
+                let service = self.config.repos.get(&repo)?.services.get(&name)?;
+                (!service.modes.is_empty()).then(|| (self.target(&repo, &name), service))
+            })
+            .collect())
+    }
+
+    fn list_modes(&self, target: Option<&str>, out: &mut dyn Write) -> Result<(), String> {
+        let services = self.moded_services(target)?;
+        if services.is_empty() {
+            return say(out, "no service has modes (pom.yml `modes:`)");
+        }
+        for (target, service) in services {
+            let mode = self.runner.mode(&self.config, &target, service);
+            let current = if mode.is_empty() { "default" } else { &mode };
+            say(
+                out,
+                &format!(
+                    "{}/{}  {current}  (modes: {})",
+                    target.repo,
+                    target.service,
+                    service.mode_names().join(", ")
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Picks `mode` (empty: pom.yml's) for the services that have it and restarts the running ones it changed.
+    fn switch_mode(
+        &self,
+        target: Option<&str>,
+        mode: &str,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+    ) -> Result<(), String> {
+        let services: Vec<_> = self
+            .moded_services(target)?
+            .into_iter()
+            .filter(|(_, service)| mode.is_empty() || service.modes.contains_key(mode))
+            .collect();
+        let scope = target
+            .map(|target| format!(" in {target}"))
+            .unwrap_or_default();
+        if services.is_empty() {
+            return Err(if mode.is_empty() {
+                format!("no service{scope} has modes")
+            } else {
+                format!("no service{scope} has mode {mode}")
+            });
+        }
+        let mut restart = Vec::new();
+        for (target, service) in services {
+            let before = self.runner.mode(&self.config, &target, service);
+            self.runner
+                .set_mode(&self.config, &target, mode)
+                .map_err(|error| error.to_string())?;
+            let after = self.runner.mode(&self.config, &target, service);
+            let name = format!("{}/{}", target.repo, target.service);
+            say(
+                out,
+                &format!(
+                    "{name}  {}",
+                    if after.is_empty() { "default" } else { &after }
+                ),
+            )?;
+            if before != after && self.runner.is_running(&target) {
+                restart.push(name);
+            }
+        }
+        for name in restart {
+            self.stop(Some(&name), out)?;
+            self.start(&name, out, err)?;
+        }
+        Ok(())
+    }
+
     fn status_json(&self, out: &mut dyn Write) -> Result<(), String> {
         let report =
             pom_remote::status_report(&self.config, &self.runner, &self.branch, self.is_main);
@@ -1642,8 +1795,38 @@ mod tests {
                 target: "api".into(),
                 wait: true,
                 timeout: Some(std::time::Duration::from_secs(30)),
+                ..StartArgs::default()
             }))
         );
+        assert_eq!(
+            parsed("start web --mode build").map(|i| i.command),
+            Ok(Command::Start(StartArgs {
+                target: "web".into(),
+                mode: Some("build".into()),
+                ..StartArgs::default()
+            }))
+        );
+        assert_eq!(
+            parsed("mode").map(|i| i.command),
+            Ok(Command::Mode(ModeArgs::default()))
+        );
+        assert_eq!(
+            parsed("mode build api").map(|i| i.command),
+            Ok(Command::Mode(ModeArgs {
+                mode: Some("build".into()),
+                target: Some("api".into()),
+                ..ModeArgs::default()
+            }))
+        );
+        assert_eq!(
+            parsed("mode --reset").map(|i| i.command),
+            Ok(Command::Mode(ModeArgs {
+                reset: true,
+                ..ModeArgs::default()
+            }))
+        );
+        assert!(parsed("mode --reset api web").is_err());
+        assert!(parsed("mode build api web").is_err());
         assert!(
             parsed("start api --timeout 30s").is_err(),
             "--timeout needs --wait"

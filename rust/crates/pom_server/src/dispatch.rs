@@ -256,8 +256,6 @@ pub struct Dispatcher {
     jobs: Jobs,
     files: FsService,
     search: SearchService,
-    /// Modes picked for each project's services, kept while the server runs.
-    modes: Mutex<HashMap<PathBuf, pom_remote::SharedModes>>,
     usage: UsageService,
     jira: JiraService,
     paste: PasteService,
@@ -279,7 +277,6 @@ impl Dispatcher {
             holders,
             binary,
             ops: Ops::new(op_memory),
-            modes: Mutex::new(HashMap::new()),
             usage: UsageService::from_env(),
             jira: JiraService::from_env(),
             git: GitService::new(),
@@ -523,20 +520,12 @@ impl Dispatcher {
 
     fn source(&self, cfg: &str) -> Result<LocalSource, RemoteError> {
         let config = registered_config(&self.state, cfg)?;
-        let modes = self
-            .modes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(config.clone())
-            .or_default()
-            .clone();
         Ok(LocalSource::new(
             config,
             self.state.clone(),
             self.holders.clone(),
             self.binary.clone(),
-        )
-        .with_modes(modes))
+        ))
     }
 
     fn workspace_source(&self, params: &WorkspaceParams) -> Result<LocalSource, RemoteError> {

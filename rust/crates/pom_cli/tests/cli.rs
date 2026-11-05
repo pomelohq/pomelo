@@ -162,3 +162,64 @@ fn mistakes_are_reported_plainly() {
     let nowhere = fixture.pom(fixture.temp.path(), &["status"]);
     assert!(text(&nowhere).contains("no pom.yml here or in any parent"));
 }
+
+#[test]
+fn a_mode_picked_for_one_workspace_stays_with_it_and_start_can_pick_one() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.root().join("pom.yml"),
+        r#"session: demo
+default_branch: main
+repos:
+  api:
+    services:
+      web:
+        type: backend
+        mode: dev
+        modes:
+          dev: "echo web-dev-$PORT; exec nc -lk 127.0.0.1 $PORT"
+          build: "echo web-build-$PORT; exec nc -lk 127.0.0.1 $PORT"
+"#,
+    )
+    .expect("pom.yml");
+    let root = fixture.root();
+
+    let picked = fixture.pom(&root, &["-w", "feat", "mode", "build"]);
+    assert!(picked.status.success(), "{}", text(&picked));
+    assert_eq!(text(&picked).trim(), "api/web  build");
+    assert_eq!(
+        text(&fixture.pom(&root, &["-w", "feat", "mode"])).trim(),
+        "api/web  build  (modes: build, dev)"
+    );
+    assert_eq!(
+        text(&fixture.pom(&root, &["mode"])).trim(),
+        "api/web  dev  (modes: build, dev)",
+        "main keeps pom.yml's mode"
+    );
+    let unknown = fixture.pom(&root, &["-w", "feat", "mode", "prod"]);
+    assert!(!unknown.status.success());
+    assert!(
+        text(&unknown).contains("no service has mode prod"),
+        "{}",
+        text(&unknown)
+    );
+
+    let reset = fixture.pom(&root, &["-w", "feat", "mode", "--reset"]);
+    assert_eq!(text(&reset).trim(), "api/web  dev");
+
+    let started = fixture.pom(&root, &["-w", "feat", "start", "web", "--mode", "build"]);
+    assert!(started.status.success(), "{}", text(&started));
+    let status = text(&fixture.pom(&root, &["-w", "feat", "status"]));
+    assert!(status.contains("build"), "{status}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let logs = text(&fixture.pom(&root, &["-w", "feat", "logs", "web"]));
+        if logs.contains("web-build-") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no build banner in {logs:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let stopped = fixture.pom(&root, &["-w", "feat", "stop"]);
+    assert!(stopped.status.success(), "{}", text(&stopped));
+}

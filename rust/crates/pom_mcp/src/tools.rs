@@ -237,7 +237,7 @@ impl Workspace {
                     let mode = if service.modes.is_empty() {
                         String::new()
                     } else {
-                        let mode = self.runner.mode(&repo.name, name, service);
+                        let mode = self.runner.mode(config, &target, service);
                         if mode.is_empty() {
                             "default".to_string()
                         } else {

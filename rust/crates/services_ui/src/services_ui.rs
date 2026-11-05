@@ -1122,7 +1122,7 @@ impl ServicesPanel {
             .get(&target.repo)?
             .services
             .get(&target.service)?;
-        Some(self.model.context.access.mode(target, service))
+        Some(self.model.context.access.mode(&config, target, service))
     }
 
     fn url(&self, target: &ServiceTarget) -> Option<String> {
@@ -1317,7 +1317,7 @@ impl ServicesPanel {
         let mut command = String::new();
         if let (Some((dir, service)), Some(config)) = (service, config.as_ref()) {
             modes = service.mode_names();
-            let current_mode = context.access.mode(target, service);
+            let current_mode = context.access.mode(config, target, service);
             command = service.active_cmd(&current_mode).trim().to_string();
             profiles = dir.env_profiles(Some(service));
             let current_profile = context.access.env_profile(config, target);
@@ -1630,7 +1630,7 @@ impl ServicesPanel {
                         .get(&target.repo)?
                         .services
                         .get(&target.service)?;
-                    let mode = context.access.mode(target, service);
+                    let mode = context.access.mode(&config, target, service);
                     Some(service.active_cmd(&mode).trim().to_string())
                 });
                 if let Some(command) = command {

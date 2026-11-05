@@ -661,7 +661,7 @@ impl ServiceItem {
         };
         if let Some(mode) = self
             .service()
-            .map(|(_, service)| self.context.access.mode(&self.target, &service))
+            .map(|(config, service)| self.context.access.mode(&config, &self.target, &service))
             .filter(|mode| !mode.is_empty())
         {
             title = title.child(components::chip(mode).color(theme().text_muted));
@@ -886,7 +886,7 @@ impl ServiceItem {
                 ));
             }
             let modes = service.mode_names();
-            let current_mode = self.context.access.mode(&self.target, &service);
+            let current_mode = self.context.access.mode(&config, &self.target, &service);
             // How it runs follows where it is reached and what it reads: the mode comes after the env facts.
             let mode_fact = if modes.len() > 1 && self.offers(ServiceControl::Mode) {
                 Some(Self::fact(
@@ -932,7 +932,7 @@ impl ServiceItem {
                 }
             }
             facts.extend(mode_fact);
-            let mode = self.context.access.mode(&self.target, &service);
+            let mode = self.context.access.mode(&config, &self.target, &service);
             let command = service.active_cmd(&mode).trim().to_string();
             if !command.is_empty() {
                 facts.push(Self::fact(
@@ -1153,8 +1153,8 @@ impl ServiceItem {
                 }
             }
             COPY_COMMAND => {
-                if let Some((_, service)) = self.service() {
-                    let mode = self.context.access.mode(&self.target, &service);
+                if let Some((config, service)) = self.service() {
+                    let mode = self.context.access.mode(&config, &self.target, &service);
                     self.ask(TabRequest::Copy(
                         service.active_cmd(&mode).trim().to_string(),
                     ));

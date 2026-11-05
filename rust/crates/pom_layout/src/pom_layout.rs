@@ -229,6 +229,9 @@ pub struct WorkspaceState {
     /// Service key (`repo/svc`) or repo name -> environment profile.
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub service_envs: IndexMap<String, String>,
+    /// Service key (`repo/svc`) -> the mode it runs in instead of the one pom.yml names.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub service_modes: IndexMap<String, String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub display_name: String,
     /// Repo -> the branch it uses when that is not the workspace branch.

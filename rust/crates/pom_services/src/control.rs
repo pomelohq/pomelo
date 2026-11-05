@@ -2,9 +2,7 @@
 //! session, workspace, repo and service, so it keeps running when the app quits and any client can
 //! reattach to its console.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use pom_config::{Config, Dir, Service};
@@ -49,6 +47,7 @@ impl ServiceTarget {
 pub enum ServiceError {
     UnknownRepo(String),
     UnknownService(String),
+    UnknownMode { service: String, mode: String },
     NoFreePort,
     PortBusy { port: u16, owner: Option<String> },
     Io(std::io::Error),
@@ -60,6 +59,9 @@ impl std::fmt::Display for ServiceError {
             ServiceError::UnknownRepo(repo) => write!(formatter, "unknown repo: {repo}"),
             ServiceError::UnknownService(service) => {
                 write!(formatter, "unknown or blank service: {service}")
+            }
+            ServiceError::UnknownMode { service, mode } => {
+                write!(formatter, "{service} has no mode {mode}")
             }
             ServiceError::NoFreePort => write!(
                 formatter,
@@ -112,8 +114,6 @@ pub struct ServiceRunner {
     holders: SocketDir,
     binary: PathBuf,
     pub(crate) docker: PathBuf,
-    /// `repo~service` -> mode picked for this app run.
-    modes: Mutex<HashMap<String, String>>,
     database_wait: Duration,
 }
 
@@ -134,7 +134,6 @@ impl ServiceRunner {
             holders: options.holders,
             binary: options.binary,
             docker: options.docker,
-            modes: Mutex::new(HashMap::new()),
             database_wait: DATABASE_WAIT,
         }
     }
@@ -336,34 +335,53 @@ impl ServiceRunner {
         &self.binary
     }
 
+    /// Picks `mode` for the service in its workspace, kept across runs; an empty mode goes back to pom.yml's.
     pub fn set_mode(
         &self,
         config: &Config,
-        repo: &str,
-        service: &str,
+        target: &ServiceTarget,
         mode: &str,
     ) -> Result<(), ServiceError> {
         let dir = config
             .repos
-            .get(repo)
-            .ok_or_else(|| ServiceError::UnknownRepo(repo.to_string()))?;
-        match dir.services.get(service) {
-            Some(own) if !own.modes.is_empty() => {}
-            _ => return Err(ServiceError::UnknownService(service.to_string())),
+            .get(&target.repo)
+            .ok_or_else(|| ServiceError::UnknownRepo(target.repo.clone()))?;
+        let service = match dir.services.get(&target.service) {
+            Some(own) if !own.modes.is_empty() => own,
+            _ => return Err(ServiceError::UnknownService(target.service.clone())),
+        };
+        if !mode.is_empty() && !service.modes.contains_key(mode) {
+            return Err(ServiceError::UnknownMode {
+                service: format!("{}/{}", target.repo, target.service),
+                mode: mode.to_string(),
+            });
         }
-        if let Ok(mut modes) = self.modes.lock() {
-            modes.insert(format!("{repo}~{service}"), mode.to_string());
+        let folder = pom_layout::workspace_folder(&self.project_root, &target.branch);
+        let mut state = WorkspaceState::load(&folder);
+        let key = format!("{}/{}", alias(&target.repo, dir), target.service);
+        if mode.is_empty() || mode == service.mode {
+            state.service_modes.shift_remove(&key);
+        } else {
+            state.service_modes.insert(key, mode.to_string());
         }
+        std::fs::create_dir_all(&folder)?;
+        state.save(&folder)?;
         Ok(())
     }
 
-    pub fn mode(&self, repo: &str, service_name: &str, service: &Service) -> String {
-        self.modes
-            .lock()
-            .ok()
-            .and_then(|modes| modes.get(&format!("{repo}~{service_name}")).cloned())
-            .filter(|mode| !mode.is_empty())
-            .unwrap_or_else(|| service.mode.clone())
+    pub fn mode(&self, config: &Config, target: &ServiceTarget, service: &Service) -> String {
+        let picked = config.repos.get(&target.repo).and_then(|dir| {
+            let state = WorkspaceState::load(&pom_layout::workspace_folder(
+                &self.project_root,
+                &target.branch,
+            ));
+            state
+                .service_modes
+                .get(&format!("{}/{}", alias(&target.repo, dir), target.service))
+                .filter(|mode| service.modes.contains_key(mode.as_str()))
+                .cloned()
+        });
+        picked.unwrap_or_else(|| service.mode.clone())
     }
 
     pub fn env_profile(&self, config: &Config, target: &ServiceTarget) -> String {
@@ -482,7 +500,7 @@ impl ServiceRunner {
             Some(key) => Some(self.preflight_port(key)?),
             None => None,
         };
-        let mode = self.mode(&target.repo, &target.service, service);
+        let mode = self.mode(config, target, service);
         let command = service_command(&worktree, dir, service, port, &mode);
         let ws_key = pom_env::port_ws_key(&target.branch);
         self.allocate_slots(config, &ws_key)?;
@@ -633,7 +651,7 @@ impl ServiceRunner {
         let port = self
             .lease_key(config, target)
             .and_then(|key| self.ports.port_of(&key));
-        let mode = self.mode(&target.repo, &target.service, service);
+        let mode = self.mode(config, target, service);
         let command = service_command(&worktree, dir, service, port, &mode);
         let env = self
             .workspace_env(config, &target.branch)
