@@ -480,6 +480,53 @@ impl git::access::GitAccess for WireGit {
     }
 }
 
+/// A host on a link so slow that nothing it is asked comes back while the board is shown: only scans answer.
+pub struct StalledGit {
+    pub released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StalledGit {
+    fn hold(&self) {
+        while !self.released.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+}
+
+impl git::access::GitAccess for StalledGit {
+    fn scan(&self, repo: &git::access::RepoSource) -> git::scan::RepoScan {
+        WireGit.scan(repo)
+    }
+
+    fn act(
+        &self,
+        repo: &git::access::RepoSource,
+        op: git::access::GitOp,
+    ) -> Result<(), git::working_copy::CommandError> {
+        self.hold();
+        WireGit.act(repo, op)
+    }
+
+    fn read(
+        &self,
+        repo: &git::access::RepoSource,
+        query: git::access::GitRead,
+    ) -> Result<git::access::GitAnswer, String> {
+        self.hold();
+        WireGit.read(repo, query)
+    }
+
+    fn remote(
+        &self,
+        repo: &git::access::RepoSource,
+        command: git::access::RemoteCommand,
+        progress: &(dyn Fn(&str) + Sync),
+    ) -> Result<git::working_copy::CommandOutput, git::working_copy::CommandError> {
+        self.hold();
+        WireGit.remote(repo, command, progress)
+    }
+}
+
 /// The pull requests the Remote and History boards show for `roots` on `branch`, kept under `state`.
 pub fn pull_requests(
     roots: &[PathBuf],

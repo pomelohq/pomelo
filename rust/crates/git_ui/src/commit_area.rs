@@ -57,6 +57,13 @@ impl RemoteRequest {
     }
 }
 
+/// A remote operation asked of one repo, with its head when the panel has read it already.
+pub(crate) struct RemoteWork {
+    pub source: RepoSource,
+    pub head: Option<HeadState>,
+    pub request: RemoteRequest,
+}
+
 /// One repo's part of a remote operation: where it runs, the branch it acts on, what to do and with which remote.
 pub(crate) struct RemoteJob {
     pub repo: String,
@@ -94,6 +101,11 @@ pub(crate) enum Outcome {
         advice: Option<String>,
     },
     Committed,
+    /// Repos that could not start, said before what the others did.
+    Also {
+        problems: String,
+        then: Box<Outcome>,
+    },
 }
 
 struct Running {
@@ -257,23 +269,15 @@ impl CommitArea {
         });
     }
 
-    pub fn toggle_amend(&mut self, source: &RepoSource) {
-        self.amend = !self.amend;
-        if self.amend && self.editor.text().trim().is_empty() {
-            if let Some(message) = self.access.head_message(source) {
-                self.editor.set_text(&message);
-            }
-        }
-    }
-
-    /// Runs each repo's job in turn; a single job reports as itself, several as one summary.
-    pub fn run_remote(&mut self, jobs: Vec<RemoteJob>) {
-        if self.busy() || jobs.is_empty() {
+    /// Runs each repo's job in turn; a single job reports as itself, several as one summary. Finding a repo's
+    /// branch and remote may ask its machine, so that happens on the operation's thread too.
+    pub fn run_remote(&mut self, work: Vec<RemoteWork>) {
+        if self.busy() || work.is_empty() {
             return;
         }
-        let kind = jobs
+        let kind = work
             .iter()
-            .map(|job| job.request.kind())
+            .map(|work| work.request.kind())
             .reduce(|first, next| {
                 if first == next {
                     first
@@ -285,6 +289,14 @@ impl CommitArea {
         let access = self.access.clone();
         let waker = self.waker.clone();
         self.start(Some(kind), move |progress| {
+            let mut jobs = Vec::new();
+            let mut problems = Vec::new();
+            for work in work {
+                match remote_job(access.as_ref(), work) {
+                    Ok(job) => jobs.push(job),
+                    Err(problem) => problems.push(problem),
+                }
+            }
             let several = jobs.len() > 1;
             let outcomes: Vec<(String, Outcome)> = jobs
                 .iter()
@@ -306,14 +318,19 @@ impl CommitArea {
                     )
                 })
                 .collect();
-            if let [(_, _)] = outcomes.as_slice() {
-                return outcomes
-                    .into_iter()
-                    .next()
-                    .map(|(_, outcome)| outcome)
-                    .unwrap_or(Outcome::Committed);
+            let outcome = match outcomes.len() {
+                0 => None,
+                1 => outcomes.into_iter().next().map(|(_, outcome)| outcome),
+                _ => Some(combine_outcomes(kind, outcomes)),
+            };
+            match (problems.is_empty(), outcome) {
+                (true, outcome) => outcome.unwrap_or(Outcome::Committed),
+                (false, None) => Outcome::Toast(problems.join("; ")),
+                (false, Some(outcome)) => Outcome::Also {
+                    problems: problems.join("; "),
+                    then: Box::new(outcome),
+                },
             }
-            combine_outcomes(kind, outcomes)
         });
     }
 
@@ -535,7 +552,7 @@ fn combine_outcomes(kind: RemoteKind, outcomes: Vec<(String, Outcome)>) -> Outco
                 failures.push(format!("{repo}:\n{log}"));
                 advice = advice.or(said);
             }
-            Outcome::Committed => {}
+            Outcome::Committed | Outcome::Also { .. } => {}
         }
     }
     if !failures.is_empty() {
@@ -693,7 +710,55 @@ pub(crate) fn outcome_requests(outcome: Outcome) -> Vec<PanelRequest> {
             then: Box::new(log_tab(action, log)),
         }],
         Outcome::Committed => Vec::new(),
+        Outcome::Also { problems, then } => {
+            let mut requests = vec![PanelRequest::Toast(problems)];
+            requests.extend(outcome_requests(*then));
+            requests
+        }
     }
+}
+
+fn remote_job(access: &dyn GitAccess, work: RemoteWork) -> Result<RemoteJob, String> {
+    let RemoteWork {
+        source,
+        head,
+        request,
+    } = work;
+    let head = head
+        .or_else(|| access.head_state(&source))
+        .ok_or_else(|| format!("{}: could not read its branch", source.name))?;
+    let remote = if matches!(request, RemoteRequest::Fetch(_)) {
+        String::new()
+    } else {
+        let branch = head
+            .branch
+            .clone()
+            .ok_or_else(|| format!("{}: no branch is checked out", source.name))?;
+        match head.upstream_ref.clone() {
+            Some((remote, _)) if head.upstream != Upstream::Gone => remote,
+            _ => {
+                let remotes = access.push_remotes(&source, &branch);
+                remotes
+                    .iter()
+                    .find(|remote| remote.as_str() == "origin")
+                    .or(remotes.first())
+                    .cloned()
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: no remote to push to. Add a remote to publish changes.",
+                            source.name
+                        )
+                    })?
+            }
+        }
+    };
+    Ok(RemoteJob {
+        repo: source.name.clone(),
+        source,
+        head,
+        request,
+        remote,
+    })
 }
 
 /// What a repo's one remote button offers, as its label says: `(label, request, ahead, behind)`.
