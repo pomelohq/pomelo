@@ -420,6 +420,34 @@ struct Flaky {
     /// The generation `--reconnect` still finds; another one means the old server is gone.
     reachable_generation: AtomicUsize,
     dials: Mutex<Vec<bool>>,
+    /// While set, a dial hangs like ssh waiting out its connect timeout.
+    stalled: Mutex<bool>,
+    unstalled: std::sync::Condvar,
+    stalling: std::sync::atomic::AtomicBool,
+}
+
+impl Flaky {
+    fn stall(&self, stalled: bool) {
+        if let Ok(mut flag) = self.stalled.lock() {
+            *flag = stalled;
+        }
+        self.unstalled.notify_all();
+    }
+
+    fn wait_while_stalled(&self) {
+        let Ok(stalled) = self.stalled.lock() else {
+            return;
+        };
+        if !*stalled {
+            return;
+        }
+        self.stalling.store(true, Ordering::SeqCst);
+        let waited =
+            self.unstalled
+                .wait_timeout_while(stalled, Duration::from_secs(30), |stalled| *stalled);
+        drop(waited);
+        self.stalling.store(false, Ordering::SeqCst);
+    }
 }
 
 fn flaky_source() -> (ServerSource, Arc<Served>, Arc<Flaky>) {
@@ -430,6 +458,7 @@ fn flaky_source() -> (ServerSource, Arc<Served>, Arc<Flaky>) {
         if let Ok(mut dials) = host_state.dials.lock() {
             dials.push(reconnect);
         }
+        host_state.wait_while_stalled();
         if host_state.unreachable.load(Ordering::SeqCst) {
             return Err(std::io::Error::other(
                 "ssh: connect to host: Connection refused",
@@ -568,6 +597,53 @@ fn a_dropped_session_comes_back_with_backoff_and_a_new_server_counts_as_a_restar
         report.state == LinkState::Connected && report.restarts == 1
     });
     assert_eq!(source.server_id(), "server-1");
+    assert!(source.workspaces().is_ok());
+}
+
+#[test]
+fn a_slow_reconnect_never_blocks_the_online_check_and_requests_wait_a_bounded_time() {
+    let (source, served, flaky) = flaky_source();
+    source.workspaces().expect("connect");
+    let files = source.files("main").expect("a server with files");
+    assert!(files.online());
+
+    flaky.stall(true);
+    cut(&served);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !flaky.stalling.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the supervisor never redialed");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    let asked = Instant::now();
+    assert!(!files.online());
+    assert!(source.link().is_some());
+    assert!(
+        asked.elapsed() < Duration::from_millis(500),
+        "online() waited {:?} on the redial",
+        asked.elapsed()
+    );
+
+    let asked = Instant::now();
+    assert!(matches!(
+        source.workspaces(),
+        Err(pom_remote::SourceError::Unreachable(_))
+    ));
+    assert!(
+        asked.elapsed() < Duration::from_secs(8),
+        "a request waited {:?} on the redial",
+        asked.elapsed()
+    );
+    assert!(
+        flaky.stalling.load(Ordering::SeqCst),
+        "the redial still runs"
+    );
+
+    flaky.stall(false);
+    wait_link(&source, "connected again", |report| {
+        report.state == pom_remote::LinkState::Connected
+    });
+    assert!(files.online());
     assert!(source.workspaces().is_ok());
 }
 
