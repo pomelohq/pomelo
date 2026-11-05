@@ -16,6 +16,12 @@ pub(crate) const IMAGE_KIND: &str = "image";
 /// Characters kept from each end of a fold, to find it again when the file changed while the app was closed.
 const FOLD_FINGERPRINT_CHARS: usize = 32;
 
+/// A file tab of another machine coming back: what was saved of it, and its read on its way.
+pub(crate) struct Restoring {
+    item: SerializedItem,
+    receiver: std::sync::mpsc::Receiver<std::io::Result<files::FileResult>>,
+}
+
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct SavedFile {
     root: PathBuf,
@@ -239,6 +245,9 @@ impl FileItem {
     }
 
     pub(crate) fn saved_state(&self) -> Option<SerializedItem> {
+        if let Some(restoring) = self.restoring.as_ref() {
+            return Some(restoring.item.clone());
+        }
         let buffer = self.buffer.as_ref()?;
         let rope = &buffer.rope;
         let folds = self
@@ -305,7 +314,7 @@ impl FileItem {
             return None;
         }
         if let Some(fs) = remote {
-            return Self::from_saved_remote(fs, saved);
+            return Self::from_saved_remote(fs, item, saved);
         }
         let SavedFile {
             root,
@@ -336,13 +345,66 @@ impl FileItem {
         Some(file)
     }
 
-    /// A file of the other machine: read again there, with the text left unsaved laid over it. The tab keeps
-    /// the version it was based on, so a save after a change there meanwhile is a conflict.
-    fn from_saved_remote(fs: &crate::SharedFs, saved: SavedFile) -> Option<FileItem> {
+    /// A file of the other machine: read again there, with the text left unsaved laid over it. The read is a
+    /// round trip, so the tab comes back at once and fills in when the read is back.
+    fn from_saved_remote(
+        fs: &crate::SharedFs,
+        item: &SerializedItem,
+        saved: SavedFile,
+    ) -> Option<FileItem> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (worker_fs, path) = (fs.clone(), saved.path.clone());
+        let spawned = std::thread::Builder::new()
+            .name("file-restore".into())
+            .spawn(move || {
+                if sender.send(worker_fs.read(&path)).is_ok() {
+                    ui::wake();
+                }
+            });
+        if let Err(error) = spawned {
+            eprintln!("restore {}: {error}", saved.path);
+            let read = fs.read(&saved.path);
+            return Self::restored_remote(fs, saved, read);
+        }
+        let mut file = FileItem::in_fs(fs.clone(), saved.root, &saved.path, None);
+        file.restoring = Some(Restoring {
+            item: item.clone(),
+            receiver,
+        });
+        Some(file)
+    }
+
+    /// The tab once its read is back: whether to show it, and closed when the file is gone with nothing unsaved.
+    pub(crate) fn poll_restore(&mut self) -> Option<bool> {
+        let restoring = self.restoring.as_ref()?;
+        let read = match restoring.receiver.try_recv() {
+            Ok(read) => read,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(std::io::Error::other("the read stopped"))
+            }
+        };
+        let restoring = self.restoring.take()?;
+        let restored = serde_json::from_value::<SavedFile>(restoring.item.data)
+            .ok()
+            .and_then(|saved| Self::restored_remote(&self.fs, saved, read));
+        match restored {
+            Some(file) => {
+                *self = file;
+                Some(true)
+            }
+            None => Some(false),
+        }
+    }
+
+    fn restored_remote(
+        fs: &crate::SharedFs,
+        saved: SavedFile,
+        read: std::io::Result<files::FileResult>,
+    ) -> Option<FileItem> {
         let contents = saved
             .contents
             .or_else(|| saved.contents_file.and_then(|file| read_unsaved(&file)));
-        let read = fs.read(&saved.path);
         let text = match (&read, &contents) {
             (Ok(read), _) => read.text.clone(),
             (Err(_), Some(_)) => Some(String::new()),

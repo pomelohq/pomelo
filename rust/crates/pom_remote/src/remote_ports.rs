@@ -216,6 +216,18 @@ impl RemotePorts {
         }
     }
 
+    /// [`RemotePorts::close`] on a thread of its own, for a window that must not wait for the host.
+    pub fn close_in_background(self: Arc<Self>) {
+        let ports = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("ports-close".into())
+            .spawn(move || ports.close());
+        if let Err(error) = spawned {
+            eprintln!("ports: closing thread: {error}");
+            self.close();
+        }
+    }
+
     /// Changes whenever a forward or a notice does.
     pub fn version(&self) -> u64 {
         self.inner.version.load(Ordering::Acquire)
@@ -505,6 +517,42 @@ mod tests {
         }
     }
 
+    /// A host that takes its time to say where its dev proxy listens.
+    struct SlowHost;
+
+    impl ProjectSource for SlowHost {
+        fn location(&self) -> String {
+            Host8767.location()
+        }
+        fn workspaces(&self) -> Result<WorkspaceList, SourceError> {
+            Host8767.workspaces()
+        }
+        fn status(&self, branch: &str) -> Result<StatusReport, SourceError> {
+            Host8767.status(branch)
+        }
+        fn logs(&self, branch: &str, service: &str) -> Result<String, SourceError> {
+            Host8767.logs(branch, service)
+        }
+        fn agents(&self, branch: &str) -> Result<Vec<pom_agent::SessionView>, SourceError> {
+            Host8767.agents(branch)
+        }
+        fn agent_turn(&self, branch: &str, role: &str) -> Result<Option<AgentTurn>, SourceError> {
+            Host8767.agent_turn(branch, role)
+        }
+        fn act(
+            &self,
+            branch: &str,
+            action: ServiceAction,
+            target: &str,
+        ) -> Result<String, SourceError> {
+            Host8767.act(branch, action, target)
+        }
+        fn dev_proxy_port(&self) -> Option<u16> {
+            std::thread::sleep(Duration::from_millis(1500));
+            Host8767.dev_proxy_port()
+        }
+    }
+
     fn free_run(start: u16, length: u16) -> u16 {
         (start..start + 5000)
             .step_by(37)
@@ -686,6 +734,45 @@ mod tests {
             "postgres, then the proxy and 9229 on close: {cancels:?}"
         );
         assert!(!records.join("myproject.json").exists());
+    }
+
+    #[test]
+    fn closing_in_the_background_never_waits_for_a_slow_host() {
+        let temp = tempfile::Builder::new()
+            .prefix("pomp")
+            .tempdir_in("/tmp")
+            .expect("temp");
+        let log = temp.path().join("ssh.log");
+        let ssh = Ssh::custom(
+            PathBuf::from(FAKE_SSH),
+            Some(temp.path().join("control")),
+            vec![("FAKE_SSH_LOG".into(), log.to_string_lossy().into())],
+        );
+        let ports = Arc::new(RemotePorts::start(PortsSetup {
+            source: Arc::new(SlowHost),
+            ssh,
+            host: Host {
+                name: "dev".into(),
+                url: HostUrl::parse("ssh://dev@dev.example.net").expect("url"),
+                pom_path: None,
+                transport: None,
+            },
+            project: "myproject".into(),
+            record_dir: None,
+            proxy_port_here: free_run(43000, 1),
+            waker: Arc::new(|| {}),
+        }));
+        ports.sync(&snapshot(Connection::Connected, &[]));
+        std::thread::sleep(Duration::from_millis(100));
+        let asked = Instant::now();
+        ports.close_in_background();
+        assert!(
+            asked.elapsed() < Duration::from_millis(500),
+            "returned while the host was still answering"
+        );
+        wait("the proxy forward cancelled once the host answered", || {
+            !calls(&log, "cancel").is_empty()
+        });
     }
 
     #[test]
