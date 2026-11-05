@@ -12,7 +12,7 @@ pub use fs::{
     ChangedFile, FileResult, FileStat, LocalFs, ProjectFs, TreeEvent, TreeFeed, TreePatch,
     UnservedFs, WriteError,
 };
-pub use watch::TreeWatcher;
+pub use watch::{at_watch_limit, TreeWatcher};
 
 /// Directory names never descended into (the Go walk's `skipDirNames` plus `target`: the walk is eager and
 /// recursive, and a Rust `target/` has enough files to stall the synchronous rebuild on window open).
