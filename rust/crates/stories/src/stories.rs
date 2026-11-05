@@ -348,7 +348,7 @@ pub fn group_note(group: &str) -> Option<&'static str> {
         "Editor popovers" => "What opens over the text: find and replace, go to line in each of its states, the hover with a diagnostic and the docs, and completions with the chosen one's doc.",
         "Project search" => "cmd-shift-f in a tab: the matches by file with replace and the include filter open, and the tab before the first search.",
         "Diagnostics" => "Every problem the language servers report across the project, by file, each opened to its line.",
-        "Terminal panel" => "The terminal dock of a project on a host: a shell with its output, and the same shell kept open under the notice while the host is down.",
+        "Terminal panel" => "The terminal dock of a project on a host: a shell with its output, the same shell kept open under the notice while the host is down, a tab whose shell is still starting, and one whose shell could not be started or reached.",
         "Side agent bar" => "The strip over a side agent's console: its role, whether it may edit, what it started with, and Send to main. A narrow dock drops the send label, then the context, then the tag.",
         "Windows" => "Whole windows as the app lays them out and paints them: the main window over a project on this Mac, and a project on a host with its editor, services, terminal and agents.",
         _ => return None,

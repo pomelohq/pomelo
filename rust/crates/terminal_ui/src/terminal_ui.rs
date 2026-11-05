@@ -16,7 +16,7 @@ use terminal::{
 use ui::{div, label, Node, Rect, Rgba, ThemeColors};
 
 pub use contrast::{apca_contrast, ensure_minimum_contrast};
-pub use item::{ConsoleAction, ConsoleToolbar, TerminalItem};
+pub use item::{start_failed_view, starting_view, ConsoleAction, ConsoleToolbar, TerminalItem};
 pub use lease_bar::{
     strip as lease_strip, LeaseBar, LeaseButton, LeaseSource, LeaseState, TakeOver,
 };

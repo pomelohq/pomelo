@@ -48,7 +48,13 @@ impl RemoteBackend {
             claim: None,
         };
         let (terminal, output, _) = ResumingTerminal::attach(options.provider.clone(), &request)
-            .map_err(anyhow::Error::msg)?;
+            .map_err(|error| {
+                let host = options.provider.host();
+                anyhow::anyhow!(
+                    "could not open the terminal on {}: {error}",
+                    host.as_deref().unwrap_or("the host")
+                )
+            })?;
         std::thread::Builder::new()
             .name("terminal-remote".into())
             .spawn(move || read_output(output, &term, &listener))?;

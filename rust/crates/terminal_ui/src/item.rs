@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use editor::search::SearchQuery;
 use terminal::{
     GridPoint, HyperlinkMatch, Keystroke, Modifiers, MouseButton, Palette, PathWithPosition,
-    SyncOutcome, Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
+    StartState, SyncOutcome, Terminal, TerminalAction, TerminalHost, TerminalOptions, Waker,
 };
-use ui::{div, theme, IconKind, Node, Painted, Rect, Rgba, Space};
+use ui::{div, label, theme, IconKind, LabelSize, Node, Painted, Rect, Rgba, Space};
 use workspace::search_bar::{SearchSupport, Searchable};
 use workspace::{ClipboardSlice, Item, ItemTick, TerminalKeyOutcome, TerminalOpenTarget};
 
@@ -62,6 +62,49 @@ pub struct TerminalItem {
     close_requested: bool,
     /// Kept first and pinned in its pane (the workspace's main agent).
     pinned_first: bool,
+    /// A tab that cannot reach its program closes instead of showing why (an agent that no longer runs).
+    close_if_unreachable: bool,
+    /// The clock of the spinner shown while the program starts.
+    opened: std::time::Instant,
+}
+
+/// What a terminal shows while its program is being started or attached.
+pub fn starting_view(seconds: f32) -> Node {
+    let colors = theme();
+    div()
+        .col()
+        .flex(1.0)
+        .bg(colors.terminal_background)
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .row()
+                .justify_center()
+                .items_center()
+                .gap(Space::S8)
+                .child(components::spinner(seconds))
+                .child(
+                    label("Starting...")
+                        .size(LabelSize::Small)
+                        .color(colors.text_muted),
+                ),
+        )
+        .into()
+}
+
+/// What a terminal shows when its program could not be started or reached; `width` is the body's.
+pub fn start_failed_view(error: &str, width: f32) -> Node {
+    div()
+        .col()
+        .flex(1.0)
+        .bg(theme().terminal_background)
+        .child(
+            components::empty_state("Could not start the terminal")
+                .icon(IconKind::Warning)
+                .body(error.to_string(), (width - 64.0).clamp(160.0, 480.0)),
+        )
+        .into()
 }
 
 /// Controls a console tab shows above its output (a service's header and facts). It can hand the tab a new
@@ -171,7 +214,7 @@ impl TerminalItem {
         waker: Waker,
         backing: Option<crate::Backing>,
     ) -> anyhow::Result<Self> {
-        let start_dir = cwd.unwrap_or_else(|| root.clone());
+        let start_dir = cwd.clone().unwrap_or_else(|| root.clone());
         let (holder, remote) = match backing {
             Some(crate::Backing::Holder(holder)) => (Some(holder), None),
             Some(crate::Backing::Remote(remote)) => (None, Some(remote)),
@@ -191,6 +234,13 @@ impl TerminalItem {
         };
         if defaults.scrollback > 0 {
             options.scroll_history = defaults.scrollback;
+        }
+        if let Some(terminal::RemoteTarget::Holder(_)) =
+            options.remote.as_ref().map(|remote| &remote.target)
+        {
+            options.remote_fallback = Some(terminal::RemoteTarget::Shell {
+                cwd: cwd.map(|cwd| cwd.to_string_lossy().into_owned()),
+            });
         }
         let mut item = Self::with_terminal(id, root, Terminal::spawn(options, waker)?);
         item.start_dir = start_dir;
@@ -368,7 +418,15 @@ impl TerminalItem {
             stop_on_close: false,
             close_requested: false,
             pinned_first: false,
+            close_if_unreachable: false,
+            opened: std::time::Instant::now(),
         }
+    }
+
+    /// Closes the tab when its program cannot be reached, instead of showing why.
+    pub fn closing_if_unreachable(mut self) -> Self {
+        self.close_if_unreachable = true;
+        self
     }
 
     /// A read-only console tab identified by `item_id`; it stays open after its program ends.
@@ -468,6 +526,15 @@ impl TerminalItem {
         self.terminal
             .set_size(metrics.bounds(body.w / scale, body_h));
         self.terminal.apply_resize();
+        let state = match self.terminal.start_state() {
+            StartState::Running => None,
+            StartState::Starting => Some(starting_view(self.opened.elapsed().as_secs_f32())),
+            StartState::Failed(error) => Some(start_failed_view(error, body.w / scale)),
+        };
+        if let Some(state) = state {
+            self.grid_origin = (body.x, body.y);
+            return ui::render(&state, body);
+        }
         let content = self.terminal.content();
         let padding_top = if anchor_to_bottom(content) {
             body_h - content.bounds.height
@@ -1014,15 +1081,22 @@ impl Item for TerminalItem {
         {
             self.terminal.scroll_to_bottom();
         }
+        let unreachable = self.close_if_unreachable
+            && matches!(self.terminal.start_state(), StartState::Failed(_));
         ItemTick {
             changed: result.changed || result.title_changed,
             clipboard_store: result.clipboard_store,
-            close: result.close
-                && !self
-                    .console
-                    .as_ref()
-                    .is_some_and(|console| console.keep_after_exit),
+            close: unreachable
+                || result.close
+                    && !self
+                        .console
+                        .as_ref()
+                        .is_some_and(|console| console.keep_after_exit),
         }
+    }
+
+    fn is_busy(&self) -> bool {
+        self.terminal.start_state() == StartState::Starting
     }
 
     fn take_open_request(&mut self) -> Option<TerminalOpenTarget> {

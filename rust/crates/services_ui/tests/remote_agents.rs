@@ -1,5 +1,5 @@
-//! Agent tabs of a project on another machine come back attached to their agents, and an agent that no longer
-//! runs gets no tab; the lease of a tab is read from the pushed presence.
+//! Agent tabs of a project on another machine come back attached to their agents, and the tab of an agent that
+//! no longer runs closes; the lease of a tab is read from the pushed presence.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -186,23 +186,31 @@ fn saved_remote_agent_tabs_reattach_to_running_agents_only() {
     )
     .expect("save");
     let mut number = 10;
-    let restored = restore_agent_tabs(&watch, &tabs, "dev", "myproject", &mut number);
+    let mut restored = restore_agent_tabs(&watch, &tabs, "dev", "myproject", &mut number);
     assert_eq!(number, 12);
-    assert_eq!(
-        restored.len(),
-        1,
-        "an agent that no longer runs gets no tab"
-    );
+    let holder_of = |tab: &services_ui::RestoredTab| {
+        tab.item
+            .as_any()
+            .and_then(|any| any.downcast_ref::<terminal_ui::TerminalItem>())
+            .and_then(|terminal| terminal.terminal().holder_name())
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        restored.retain_mut(|tab| !tab.item.tick(&|| None).close);
+        if restored.len() == 1 && holder_of(&restored[0]).is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "tabs did not settle");
+        std::thread::sleep(Duration::from_millis(10));
+    }
     let tab = &restored[0];
-    assert_eq!(tab.id, "agent:feat-login/dev");
-    assert!(tab.center, "the tab goes back next to the code");
-    let holder = tab
-        .item
-        .as_any()
-        .and_then(|any| any.downcast_ref::<terminal_ui::TerminalItem>())
-        .and_then(|terminal| terminal.terminal().holder_name());
     assert_eq!(
-        holder.as_deref(),
+        tab.id, "agent:feat-login/dev",
+        "an agent that no longer runs loses its tab"
+    );
+    assert!(tab.center, "the tab goes back next to the code");
+    assert_eq!(
+        holder_of(tab).as_deref(),
         Some(DEV),
         "the tab is attached to the agent"
     );
